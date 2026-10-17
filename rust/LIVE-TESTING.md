@@ -206,23 +206,27 @@ create, select, spawn, move, chat, leave). `parity` exits with 2 when there are 
 `load` when a bot failed.
 
 The `quest` subcommand audits the quest engine against a `rust/tools/quest_audit/plan.py` plan:
-it logs in with the GM account, creates/selects the character like `full`, enables god mode
-(`/godmode true`), raises the level per quest to `min_level` (`/level`, which only adds the
-missing experience; a `Level` requirement counts too) and runs the selected quests in order —
-accept at the giver NPC, talk / hunts, report — recording one JSON result line per quest
-(`completed`, `failed`, `stuck`, `rejected`, `prereq_missing`, `requirement_unmet`,
-`blocked_plan`, `runner_unsupported`, `needs_trigger`, `error`) with the per-step outcomes, the
-final quest status/objectives and the chat messages seen. An accept answers within 5 s
-(`SCErrorMsg` decoded, e.g. `QuestDailyLimit`) or the step ends as `rejected` /
-"no answer from server" — the server ignores duplicate ids, failed start requirements and
-wrong acceptors silently (`systems/quests/engine.rs::add_quest`). `prereq_quests` that are
-neither in the select snapshot nor completed during the run skip with `prereq_missing`;
-`--all-ok` orders the run so prerequisites come first. A target that only exists after a
-`SpawnEffect` skill cannot be driven (`needs_trigger`); hunts kill with `/kill`, which credits
-the bot as the killer through the normal death path
-(`systems/services/commands/scripts/kill.rs`). `--quest` selects single quest ids (repeatable),
-`--all-ok` every plan quest with status `ok`, `--summary` prints the result counts and top
-failure reasons; the lines are printed and appended to `--out`:
+it logs in with the GM account, selects the character like `full` (or creates a fresh one with
+`--new-character`, named `<config character>+hex suffix` under the server's
+`CharacterNameRegex`; `--race nuian|elf|firran|harani` and `--gender m|f` pick race / gender,
+and a full account — 6 characters, the login server's `MaxCharactersPerAccount` — fails setup
+with a message to delete one), enables god mode (`/godmode true`), raises the level per quest
+to `min_level` (`/level`, which only adds the missing experience; a `Level` requirement counts
+too) and runs the selected quests in prerequisite order — explicit `--quest` lists and
+`--all-ok` alike; `--with-prereqs` pulls the prerequisite chains of the requested quests into
+the run. Each quest records one JSON result line (`completed`, `failed`, `stuck`, `rejected`,
+`prereq_missing`, `requirement_unmet`, `blocked_plan`, `runner_unsupported`, `needs_trigger`,
+`error`) with the character name / race / gender / starting level (so lines of several bots
+can be merged), the per-step outcomes, the final quest status/objectives and the chat messages
+seen. An accept answers within 5 s (`SCErrorMsg` decoded, e.g. `QuestDailyLimit`) or the step
+ends as `rejected` / "no answer from server" — the server ignores duplicate ids, failed start
+requirements and wrong acceptors silently (`systems/quests/engine.rs::add_quest`).
+`prereq_quests` that are neither in the select snapshot nor completed during the run skip with
+`prereq_missing`. A target that only exists after a `SpawnEffect` skill cannot be driven
+(`needs_trigger`); hunts kill with `/kill`, which credits the bot as the killer through the
+normal death path (`systems/services/commands/scripts/kill.rs`). `--quest` selects single quest
+ids (repeatable), `--all-ok` every plan quest with status `ok`, `--summary` prints the result
+counts and top failure reasons; the lines are printed and appended to `--out`:
 
 ```sh
 $TC quest --config testclient.local.json --login 127.0.0.1:21237 \

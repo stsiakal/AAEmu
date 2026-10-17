@@ -11,7 +11,8 @@
 //! aaemu-testclient load   [--config F] [--login H:P] --bots N [--prefix load] [--ramp-ms 20]
 //!                         [--scenario load]
 //! aaemu-testclient quest  [--config F] [--login H:P] --plan plan.json
-//!                         (--quest ID...|--all-ok) [--out results.jsonl]
+//!                         (--quest ID...|--all-ok) [--with-prereqs] [--new-character]
+//!                         [--race name|id] [--gender m|f] [--out results.jsonl]
 //!                         [--step-timeout-secs N] [--summary]
 //! ```
 //!
@@ -267,19 +268,26 @@ async fn main() -> anyhow::Result<()> {
                 .iter()
                 .map(|v| v.parse::<u32>().context("--quest needs a numeric quest id"))
                 .collect::<anyhow::Result<_>>()?;
-            let all_ok = args.has("all-ok");
-            let step_timeout =
-                Duration::from_secs(args.get("step-timeout-secs").unwrap_or("60").parse()?);
-            let out = args.get("out").map(PathBuf::from);
-            let report = questrun::run(
-                &cfg,
-                &plan,
-                &requested,
-                all_ok,
-                out.as_deref(),
-                step_timeout,
-            )
-            .await?;
+            let race = match args.get("race") {
+                Some(value) => questrun::parse_race(value)?,
+                None => 1,
+            };
+            let gender = match args.get("gender") {
+                Some(value) => questrun::parse_gender(value)?,
+                None => 1,
+            };
+            let opts = questrun::RunOptions {
+                all_ok: args.has("all-ok"),
+                with_prereqs: args.has("with-prereqs"),
+                new_character: args.has("new-character"),
+                race,
+                gender,
+                step_timeout: Duration::from_secs(
+                    args.get("step-timeout-secs").unwrap_or("60").parse()?,
+                ),
+                out: args.get("out").map(PathBuf::from),
+            };
+            let report = questrun::run(&cfg, &plan, &requested, &opts).await?;
             let completed = report
                 .results
                 .iter()

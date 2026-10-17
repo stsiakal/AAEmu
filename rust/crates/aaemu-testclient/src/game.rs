@@ -62,11 +62,16 @@ pub fn packet_name(dir: Dir, level: u8, opcode: u16) -> &'static str {
     name_of(table, opcode).unwrap_or("Unknown")
 }
 
-/// A character of `SCCharacterListPacket` / `SCCreateCharacterResponsePacket`.
+/// A character of `SCCharacterListPacket` / `SCCreateCharacterResponsePacket`. The first
+/// fields are the `Character.Write` head (`models/character.rs`), so they can be read without
+/// decoding the variable equipment / model data that follows.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CharInfo {
     pub id: u32,
     pub name: String,
+    pub race: u8,
+    pub gender: u8,
+    pub level: u8,
 }
 
 /// A unit seen in `SCUnitStatePacket`.
@@ -93,7 +98,13 @@ pub struct GameState {
     pub stream_port: u16,
     pub last_change_state: Option<i32>,
     pub characters: Vec<CharInfo>,
+    /// Characters the last `CSListCharacterPacket` burst reported (the sum of the per-packet
+    /// counts; each packet carries up to two characters and only the first head is decoded).
+    pub character_count: u32,
     pub char_list_done: bool,
+    /// The selected character's `Character.Write` head, from the `SCCharacterStatePacket`
+    /// select snapshot.
+    pub self_info: Option<CharInfo>,
     pub selected_char: u32,
     pub self_obj: u32,
     pub self_pos: (f32, f32, f32),
@@ -370,19 +381,22 @@ pub(crate) fn observe_into(st: &mut GameState, p: &Packet) -> anyhow::Result<()>
     } else if p.is_sc(sc::SCCharacterListPacket) {
         let last = s.read_bool()?;
         let n = s.read_u8()?;
+        // A packet carries up to two rows (`SCCharacterListPacket::chunked`); only the first
+        // head can be decoded (the equipment / model data after it is variable), so the total
+        // comes from the per-packet count.
+        st.character_count = st.character_count.saturating_add(u32::from(n));
         if n > 0 {
-            // Only the first entry can be located without decoding a whole Character.
-            let id = s.read_u32()?;
-            let name = s.read_string()?;
-            if !st.characters.iter().any(|c| c.id == id) {
-                st.characters.push(CharInfo { id, name });
+            let info = read_character_head(&mut s)?;
+            if !st.characters.iter().any(|c| c.id == info.id) {
+                st.characters.push(info);
             }
         }
         st.char_list_done |= last;
     } else if p.is_sc(sc::SCCreateCharacterResponsePacket) {
-        let id = s.read_u32()?;
-        let name = s.read_string()?;
-        st.characters.push(CharInfo { id, name });
+        let info = read_character_head(&mut s)?;
+        if !st.characters.iter().any(|c| c.id == info.id) {
+            st.characters.push(info);
+        }
     } else if p.is_sc(sc::SCUnitStatePacket) {
         let obj_id = s.read_bc()?;
         let name = s.read_string()?;
@@ -485,6 +499,13 @@ pub(crate) fn observe_into(st: &mut GameState, p: &Packet) -> anyhow::Result<()>
         st.last_reset = Some(quest_id);
         st.quests.remove(&quest_id);
     } else if p.is_sc(sc::SCCharacterStatePacket) {
+        // `unit_state::character_state`: instance id, guid (sized bytes), rwd, then
+        // `Character.Write` (id, name, race, gender, level, ...).
+        s.read_u32()?; // instance id
+        let guid_len = s.read_u16()?;
+        s.read_bytes(usize::from(guid_len))?;
+        s.read_i32()?; // rwd
+        st.self_info = Some(read_character_head(&mut s)?);
         // A character-select snapshot starts here; the quest / completed packets follow.
         st.quests.clear();
         st.completed_quests.clear();
@@ -549,6 +570,23 @@ pub fn chat_text(p: &Packet) -> Option<String> {
     s.read_string().ok()
 }
 
+/// The fixed head of `Character.Write` (`models/character.rs`): id, name, race, gender, level.
+/// The equipment / model data after it is variable and irrelevant to the runner.
+fn read_character_head(s: &mut PacketStream) -> anyhow::Result<CharInfo> {
+    let id = s.read_u32()?;
+    let name = s.read_string()?;
+    let race = s.read_u8()?;
+    let gender = s.read_u8()?;
+    let level = s.read_u8()?;
+    Ok(CharInfo {
+        id,
+        name,
+        race,
+        gender,
+        level,
+    })
+}
+
 impl GameClient {
     // ----- C2G packets -----
 
@@ -573,8 +611,12 @@ impl GameClient {
         self.send_proxy(pp::FinishStatePacket, s.as_bytes()).await
     }
 
-    /// `CSListCharacterPacket`.
+    /// `CSListCharacterPacket`. Resets the previous list result, so
+    /// [`GameState::character_count`] and [`GameState::characters`] describe this request.
     pub async fn list_characters(&mut self) -> anyhow::Result<()> {
+        self.state.characters.clear();
+        self.state.character_count = 0;
+        self.state.char_list_done = false;
         let mut s = PacketStream::new();
         s.write_i32(0).write_bytes_sized(&[]);
         self.send_cs(cs::CSListCharacterPacket, s.as_bytes()).await
@@ -582,18 +624,20 @@ impl GameClient {
 
     /// `CSCreateCharacterPacket`: Nuian (1) male (1) Fighter (ability 1), default appearance.
     pub async fn create_character(&mut self, name: &str) -> anyhow::Result<()> {
-        let mut s = PacketStream::new();
-        s.write_str(name).write_u8(1).write_u8(1);
-        for _ in 0..7 {
-            s.write_u32(0); // body items: template defaults
-        }
-        write_custom_model(&mut s);
-        s.write_u8(1) // ability1: Fight
-            .write_u8(11) // ability2: None
-            .write_u8(11) // ability3: None
-            .write_u8(1); // level
-        self.send_cs(cs::CSCreateCharacterPacket, s.as_bytes())
-            .await
+        self.create_character_as(name, 1, 1).await
+    }
+
+    /// `CSCreateCharacterPacket` with the chosen race / gender (Fighter ability 1, default
+    /// appearance). The server needs a `characters` template for the pair
+    /// (`data.characters.template`, keyed `16 * gender + race`).
+    pub async fn create_character_as(
+        &mut self,
+        name: &str,
+        race: u8,
+        gender: u8,
+    ) -> anyhow::Result<()> {
+        let body = create_character_body(name, race, gender);
+        self.send_cs(cs::CSCreateCharacterPacket, &body).await
     }
 
     /// `CSSelectCharacterPacket`.
@@ -884,6 +928,22 @@ fn chat_message_body(chat_type: i16, target_name: &str, message: &str) -> Vec<u8
     s.into_bytes()
 }
 
+/// `CSCreateCharacterPacket` body as the bot sends it: name, race, gender, default body items,
+/// default appearance, Fighter ability 1/None/None and level 1. Matches the server's `read`.
+fn create_character_body(name: &str, race: u8, gender: u8) -> Vec<u8> {
+    let mut s = PacketStream::new();
+    s.write_str(name).write_u8(race).write_u8(gender);
+    for _ in 0..7 {
+        s.write_u32(0); // body items: template defaults
+    }
+    write_custom_model(&mut s);
+    s.write_u8(1) // ability1: Fight
+        .write_u8(11) // ability2: None
+        .write_u8(11) // ability3: None
+        .write_u8(1); // level
+    s.into_bytes()
+}
+
 /// `CSTeleportEndedPacket` body (`systems/npcs/portal/packets.rs` `read`): the fixed point x/y,
 /// z and 16 orientation bytes.
 fn teleport_ended_body(pos: (f32, f32, f32)) -> Vec<u8> {
@@ -956,6 +1016,14 @@ mod body_tests {
     use super::*;
     use aaemu_game::net::registry::ClientPacket;
 
+    fn packet(opcode: u16, body: Vec<u8>) -> Packet {
+        Packet {
+            level: LEVEL_GAME,
+            opcode,
+            body,
+        }
+    }
+
     #[test]
     fn chat_body_decodes_with_the_server_reader() {
         let body = chat_message_body(chat_type::WHITE, "", "/move 1 2 3");
@@ -979,5 +1047,128 @@ mod body_tests {
         .unwrap();
         assert_eq!((p.x, p.y, p.z), (1234.5, -678.25, 78.5));
         assert_eq!(p.ori, [0u8; 16]);
+    }
+
+    #[test]
+    fn create_character_body_decodes_with_the_server_reader() {
+        let body = create_character_body("SomeBot", 6, 2);
+        let p = aaemu_game::packets::c2g_world::CSCreateCharacterPacket::read(
+            &mut PacketStream::from_bytes(body),
+        )
+        .unwrap()
+        .0;
+        assert_eq!(p.name, "SomeBot");
+        assert_eq!(p.race, 6);
+        assert_eq!(p.gender, 2);
+        assert_eq!(p.body_items, [0; 7]);
+        assert_eq!((p.ability1, p.ability2, p.ability3), (1, 11, 11));
+        assert_eq!(p.level, 1);
+    }
+
+    #[test]
+    fn character_list_head_carries_count_and_race_gender_level() {
+        // `SCCharacterListPacket::write`: [last][u8 count], then `Character.Write` rows of
+        // which only the head is needed (id, name, race, gender, level; `models/character.rs`).
+        let mut st = GameState::default();
+        let mut body = PacketStream::new();
+        body.write_bool(true)
+            .write_u8(1)
+            .write_u32(0x1234)
+            .write_str("Tester")
+            .write_u8(4)
+            .write_u8(2)
+            .write_u8(7);
+        observe_into(
+            &mut st,
+            &packet(sc::SCCharacterListPacket, body.into_bytes()),
+        )
+        .unwrap();
+        assert_eq!(st.character_count, 1);
+        assert_eq!(
+            st.characters,
+            vec![CharInfo {
+                id: 0x1234,
+                name: "Tester".into(),
+                race: 4,
+                gender: 2,
+                level: 7,
+            }]
+        );
+        assert!(st.char_list_done);
+
+        // Pairs: the count counts both rows, the parsed list keeps the first of each packet.
+        let mut body = PacketStream::new();
+        body.write_bool(false)
+            .write_u8(2)
+            .write_u32(1)
+            .write_str("A")
+            .write_u8(1)
+            .write_u8(1)
+            .write_u8(3); // the second row is not decoded (variable data follows)
+        observe_into(
+            &mut st,
+            &packet(sc::SCCharacterListPacket, body.into_bytes()),
+        )
+        .unwrap();
+        assert_eq!(st.character_count, 3);
+        assert_eq!(st.characters.len(), 2);
+        assert_eq!(st.characters[1].name, "A");
+    }
+
+    #[test]
+    fn create_response_head_carries_race_gender_level() {
+        let mut body = PacketStream::new();
+        body.write_u32(0x99)
+            .write_str("NewBot")
+            .write_u8(5)
+            .write_u8(1)
+            .write_u8(1);
+        let mut st = GameState::default();
+        observe_into(
+            &mut st,
+            &packet(sc::SCCreateCharacterResponsePacket, body.into_bytes()),
+        )
+        .unwrap();
+        assert_eq!(
+            st.characters,
+            vec![CharInfo {
+                id: 0x99,
+                name: "NewBot".into(),
+                race: 5,
+                gender: 1,
+                level: 1,
+            }]
+        );
+    }
+
+    #[test]
+    fn character_state_head_sets_self_info() {
+        // `unit_state::character_state`: instance id, sized guid, rwd, `Character.Write`.
+        let mut body = PacketStream::new();
+        body.write_u32(100)
+            .write_u16(16)
+            .write_raw(&[0u8; 16])
+            .write_i32(0)
+            .write_u32(0x77)
+            .write_str("Me")
+            .write_u8(6)
+            .write_u8(2)
+            .write_u8(14);
+        let mut st = GameState::default();
+        observe_into(
+            &mut st,
+            &packet(sc::SCCharacterStatePacket, body.into_bytes()),
+        )
+        .unwrap();
+        assert_eq!(
+            st.self_info,
+            Some(CharInfo {
+                id: 0x77,
+                name: "Me".into(),
+                race: 6,
+                gender: 2,
+                level: 14,
+            })
+        );
     }
 }

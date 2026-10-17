@@ -12,7 +12,8 @@ use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap, HashSet};
 use std::fs::{File, OpenOptions};
 use std::io::{BufWriter, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use aaemu_game::opcodes::{pp, sc};
@@ -44,9 +45,119 @@ const FINAL_QUIET: Duration = Duration::from_millis(500);
 const FINAL_MAX: Duration = Duration::from_secs(2);
 /// The world the bot spawns in; v1 only teleports within it.
 const MAIN_WORLD: &str = "main_world";
-/// The bot creates Nuian (1) male (1) Fighter characters (`scenario::BotConfig` defaults).
-const CREATED_RACE: u8 = 1;
-const CREATED_GENDER: u8 = 1;
+/// The login server's `MaxCharactersPerAccount` (`aaemu-login/src/network/login.rs`).
+pub const MAX_CHARACTERS_PER_ACCOUNT: u32 = 6;
+/// `CharacterNameRegex` / `NameManager::DEFAULT_CHARACTER_NAME_REGEX` length
+/// (`aaemu-game/src/managers/name.rs`).
+pub const CHARACTER_NAME_MAX: usize = 18;
+
+/// The playable 1.2 races: id and the C# `Race` enum name (`AAEmu.Game/Models/Game/Char/
+/// Race.cs`, mirrored by the `characters` rows of compact.sqlite3).
+pub const PLAYABLE_RACES: [(u8, &str); 4] =
+    [(1, "nuian"), (4, "elf"), (5, "harani"), (6, "firran")];
+
+/// Every `characters` template race id (`Race` enum), playable or not.
+fn race_name(id: u8) -> &'static str {
+    match id {
+        1 => "nuian",
+        2 => "fairy",
+        3 => "dwarf",
+        4 => "elf",
+        5 => "harani",
+        6 => "firran",
+        7 => "returned",
+        8 => "warborn",
+        _ => "unknown",
+    }
+}
+
+/// `--race <name|id>`: the playable 1.2 races only. Fairy / Dwarf / Returned / Warborn have
+/// templates in the data but were not playable in 1.2 and are rejected with the reason.
+pub fn parse_race(value: &str) -> anyhow::Result<u8> {
+    let trimmed = value.trim();
+    let id = match trimmed.parse::<u8>() {
+        Ok(id) => id,
+        Err(_) => match trimmed.to_ascii_lowercase().as_str() {
+            "nuian" => 1,
+            "elf" => 4,
+            "harani" | "hariharan" => 5,
+            "firran" | "ferre" => 6,
+            "fairy" => 2,
+            "dwarf" => 3,
+            "returned" => 7,
+            "warborn" => 8,
+            _ => bail!(
+                "unknown race '{value}'; playable races: nuian(1), elf(4), harani(5), firran(6)"
+            ),
+        },
+    };
+    if PLAYABLE_RACES.iter().any(|(race, _)| *race == id) {
+        return Ok(id);
+    }
+    bail!(
+        "race {id} ({}) is not playable in 1.2; playable races: nuian(1), elf(4), harani(5), firran(6)",
+        race_name(id)
+    )
+}
+
+/// `--gender <m|f>` (`Character.gender`: 1 = male, 2 = female).
+pub fn parse_gender(value: &str) -> anyhow::Result<u8> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "m" | "male" | "1" => Ok(1),
+        "f" | "female" | "2" => Ok(2),
+        other => bail!("unknown gender '{other}' (use m or f)"),
+    }
+}
+
+/// The server's `CharacterNameRegex` (`^[a-zA-Z0-9а-яА-Я]{1,18}$`): ASCII alphanumerics or
+/// Cyrillic, 1..=18 characters.
+pub fn valid_character_name(name: &str) -> bool {
+    !name.is_empty() && name.chars().count() <= CHARACTER_NAME_MAX && name.chars().all(is_name_char)
+}
+
+fn is_name_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || ('а'..='я').contains(&c) || ('А'..='Я').contains(&c)
+}
+
+/// `prefix` + `suffix` under the name regex: the prefix is truncated (by characters) so the
+/// suffix fits into 18. A prefix with characters the regex rejects is an operator config error
+/// and fails instead of being silently cleaned.
+pub fn compose_character_name(prefix: &str, suffix: &str) -> anyhow::Result<String> {
+    if !valid_character_name(suffix) {
+        bail!("generated name suffix '{suffix}' does not match the server's CharacterNameRegex");
+    }
+    if prefix.chars().any(|c| !is_name_char(c)) {
+        bail!(
+            "character name prefix '{prefix}' does not match the server's CharacterNameRegex \
+             (^[a-zA-Z0-9а-яА-Я]{{1,18}}$)"
+        );
+    }
+    let room = CHARACTER_NAME_MAX - suffix.chars().count();
+    let kept: String = prefix.chars().take(room).collect();
+    Ok(format!("{kept}{suffix}"))
+}
+
+/// A unique `--new-character` name: `prefix` plus a short suffix from the millisecond clock
+/// and a process-local counter (hex), so repeated runs and concurrent bots do not collide.
+pub fn generated_character_name(
+    prefix: &str,
+    timestamp_ms: u64,
+    sequence: u64,
+) -> anyhow::Result<String> {
+    let suffix = format!("{:06x}{:02x}", timestamp_ms & 0xff_ffff, sequence & 0xff);
+    compose_character_name(prefix, &suffix)
+}
+
+/// [`generated_character_name`] with the real clock and counter.
+fn new_character_name(prefix: &str) -> anyhow::Result<String> {
+    static NAME_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+    let millis = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    let sequence = NAME_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    generated_character_name(prefix, millis, sequence)
+}
 
 // ----- plan model (`plan.py` output) -----
 
@@ -258,6 +369,12 @@ pub struct FailedStep {
 pub struct QuestResult {
     pub quest_id: u32,
     pub name: String,
+    /// Character the bot drove (so lines of several bots can be merged).
+    pub character: String,
+    pub race: u8,
+    pub gender: u8,
+    /// The character's level when the run started.
+    pub start_level: u8,
     pub result: QuestOutcome,
     pub failed_step: Option<FailedStep>,
     pub steps: Vec<StepOutcome>,
@@ -275,6 +392,33 @@ pub struct RunReport {
     pub aborted: bool,
     /// Quest count appended in plan order because prerequisite edges form a cycle.
     pub ordering_cyclic: usize,
+}
+
+/// CLI options of the `quest` command.
+#[derive(Debug, Clone)]
+pub struct RunOptions {
+    pub all_ok: bool,
+    /// Pull prerequisite chains of the requested quests into the run (`--with-prereqs`).
+    pub with_prereqs: bool,
+    /// Create a fresh character instead of selecting an existing one (`--new-character`).
+    pub new_character: bool,
+    /// Race for character creation (`parse_race`); ignored when an existing character is used.
+    pub race: u8,
+    /// Gender for character creation (`parse_gender`); ignored for existing characters.
+    pub gender: u8,
+    pub step_timeout: Duration,
+    pub out: Option<PathBuf>,
+}
+
+/// The character a run drives: recorded in every result line and used for the requirement
+/// facts (race / gender / starting level come from the server's own character data).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunCharacter {
+    pub name: String,
+    pub race: u8,
+    pub gender: u8,
+    /// The level at character creation / select, before any `/level` of this run.
+    pub start_level: u8,
 }
 
 // ----- step dispatch -----
@@ -502,43 +646,44 @@ pub fn requirement_gate(quest: &PlanQuest, facts: &KnownFacts<'_>) -> Option<Str
     None
 }
 
-/// A stable topological order of the selected plan indices (`selection` in plan order):
-/// prerequisites first, ties by plan order. `cyclic` is the number of quests appended in plan
-/// order because prerequisite edges form a cycle.
+/// A stable topological order of the selected plan indices: prerequisites first, ties by plan
+/// order (independent of the order `selection` is given in). `cyclic` is the number of quests
+/// appended in plan order because prerequisite edges form a cycle.
 pub struct TopoOrder {
     pub order: Vec<usize>,
     pub cyclic: usize,
 }
 
-/// Stable topological order over the plan indices in `selection` (plan order).
+/// Stable topological order over the plan indices in `selection`. The input order does not
+/// matter: ready quests are always taken in plan order, so explicit `--quest` lists and
+/// `--all-ok` produce the same order for the same set.
 pub fn topological_order(plan: &[PlanQuest], selection: &[usize]) -> TopoOrder {
-    let position: BTreeMap<u32, usize> = selection
-        .iter()
-        .enumerate()
-        .map(|(pos, &i)| (plan[i].quest_id, pos))
-        .collect();
-    let mut in_degree = vec![0usize; selection.len()];
-    let mut dependents: Vec<Vec<usize>> = vec![Vec::new(); selection.len()];
-    for (pos, &i) in selection.iter().enumerate() {
+    let mut selected: Vec<usize> = selection.to_vec();
+    selected.sort_unstable();
+    selected.dedup();
+    let position: BTreeMap<u32, usize> = selected.iter().map(|&i| (plan[i].quest_id, i)).collect();
+    let mut in_degree = vec![0usize; plan.len()];
+    let mut dependents: Vec<Vec<usize>> = vec![Vec::new(); plan.len()];
+    for &i in &selected {
         for prereq in &plan[i].prereq_quests {
             if let Some(&q) = position.get(prereq) {
-                if q != pos {
-                    in_degree[pos] += 1;
-                    dependents[q].push(pos);
+                if q != i {
+                    in_degree[i] += 1;
+                    dependents[q].push(i);
                 }
             }
         }
     }
     let mut ready = BinaryHeap::new();
-    for (pos, &degree) in in_degree.iter().enumerate() {
-        if degree == 0 {
-            ready.push(Reverse(pos));
+    for &i in &selected {
+        if in_degree[i] == 0 {
+            ready.push(Reverse(i));
         }
     }
-    let mut order = Vec::with_capacity(selection.len());
-    while let Some(Reverse(pos)) = ready.pop() {
-        order.push(selection[pos]);
-        for &next in &dependents[pos] {
+    let mut order = Vec::with_capacity(selected.len());
+    while let Some(Reverse(i)) = ready.pop() {
+        order.push(i);
+        for &next in &dependents[i] {
             in_degree[next] -= 1;
             if in_degree[next] == 0 {
                 ready.push(Reverse(next));
@@ -546,10 +691,10 @@ pub fn topological_order(plan: &[PlanQuest], selection: &[usize]) -> TopoOrder {
         }
     }
     let mut cyclic = 0;
-    if order.len() < selection.len() {
+    if order.len() < selected.len() {
         // Cycle: append the remaining quests in plan order and note it.
         let done: HashSet<usize> = order.iter().copied().collect();
-        for &i in selection {
+        for &i in &selected {
             if !done.contains(&i) {
                 order.push(i);
                 cyclic += 1;
@@ -557,6 +702,31 @@ pub fn topological_order(plan: &[PlanQuest], selection: &[usize]) -> TopoOrder {
         }
     }
     TopoOrder { order, cyclic }
+}
+
+/// `--with-prereqs`: the selected plan indices plus every prerequisite of theirs that exists in
+/// the plan, recursively. The result is sorted by plan index (the topological run order is
+/// computed afterwards); prerequisites outside the plan cannot be pulled.
+pub fn expand_prerequisites(plan: &[PlanQuest], selection: &[usize]) -> Vec<usize> {
+    let by_id: BTreeMap<u32, usize> = plan
+        .iter()
+        .enumerate()
+        .map(|(i, q)| (q.quest_id, i))
+        .collect();
+    let mut seen: HashSet<usize> = selection.iter().copied().collect();
+    let mut queue: Vec<usize> = selection.to_vec();
+    while let Some(i) = queue.pop() {
+        for prereq in &plan[i].prereq_quests {
+            if let Some(&j) = by_id.get(prereq) {
+                if seen.insert(j) {
+                    queue.push(j);
+                }
+            }
+        }
+    }
+    let mut out: Vec<usize> = seen.into_iter().collect();
+    out.sort_unstable();
+    out
 }
 
 // ----- summary -----
@@ -682,28 +852,42 @@ enum Selected<'a> {
 }
 
 /// Runs the selected quests of `plan`; one JSON line per quest goes to stdout and, when
-/// given, is appended to `out`.
+/// given, is appended to `opts.out`.
 pub async fn run(
     cfg: &BotConfig,
     plan: &[PlanQuest],
     requested: &[u32],
-    all_ok: bool,
-    out: Option<&Path>,
-    step_timeout: Duration,
+    opts: &RunOptions,
 ) -> anyhow::Result<RunReport> {
-    let mut ordering_cyclic = 0usize;
+    let ordering_cyclic: usize;
     let selected: Vec<Selected> = if !requested.is_empty() {
+        // Explicit lists run in the same stable prerequisite order as `--all-ok`:
+        // resolve the ids, optionally pull the prerequisite chain, then sort.
         let mut seen = HashSet::new();
-        requested
-            .iter()
-            .filter(|id| seen.insert(**id))
-            .map(|id| {
-                plan.iter()
-                    .find(|q| q.quest_id == *id)
-                    .map_or(Selected::Unknown(*id), Selected::Plan)
-            })
+        let mut known = Vec::new();
+        let mut unknown = Vec::new();
+        for id in requested {
+            if !seen.insert(*id) {
+                continue;
+            }
+            match plan.iter().position(|q| q.quest_id == *id) {
+                Some(i) => known.push(i),
+                None => unknown.push(*id),
+            }
+        }
+        let known = if opts.with_prereqs {
+            expand_prerequisites(plan, &known)
+        } else {
+            known
+        };
+        let topo = topological_order(plan, &known);
+        ordering_cyclic = topo.cyclic;
+        topo.order
+            .into_iter()
+            .map(|i| Selected::Plan(&plan[i]))
+            .chain(unknown.into_iter().map(Selected::Unknown))
             .collect()
-    } else if all_ok {
+    } else if opts.all_ok {
         // Prerequisites first: stable topological order over the plan order.
         let selected_indices: Vec<usize> = plan
             .iter()
@@ -724,7 +908,7 @@ pub async fn run(
         tracing::warn!("prerequisite cycles: kept plan order for {ordering_cyclic} quest(s)");
     }
 
-    let mut writer = match out {
+    let mut writer = match &opts.out {
         Some(path) => Some(BufWriter::new(
             OpenOptions::new()
                 .create(true)
@@ -736,11 +920,11 @@ pub async fn run(
     };
 
     let rec = Recorder::new(false);
-    let (mut game, created) = setup_world(cfg, &rec).await?;
+    let (mut game, character) = setup_world(cfg, &rec, opts).await?;
     // God mode keeps the bot alive while it stands in the spawns; `/level` is issued per quest.
     game.gm("godmode true", Duration::from_secs(1)).await.ok();
 
-    let mut raised_level = 1u32;
+    let mut raised_level = u32::from(character.start_level).max(1);
     let mut report = RunReport {
         ordering_cyclic,
         ..RunReport::default()
@@ -749,8 +933,8 @@ pub async fn run(
         if game.state.disconnected {
             // The connection dropped between two quests: still write the error line.
             let result = match target {
-                Selected::Plan(quest) => disconnected_result(quest),
-                Selected::Unknown(id) => missing_quest_result(id),
+                Selected::Plan(quest) => disconnected_result(quest, &character),
+                Selected::Unknown(id) => missing_quest_result(id, &character),
             };
             emit(&mut writer, &result)?;
             report.results.push(result);
@@ -759,9 +943,16 @@ pub async fn run(
         }
         let result = match target {
             Selected::Plan(quest) => {
-                run_quest(&mut game, quest, &mut raised_level, created, step_timeout).await
+                run_quest(
+                    &mut game,
+                    quest,
+                    &character,
+                    &mut raised_level,
+                    opts.step_timeout,
+                )
+                .await
             }
-            Selected::Unknown(id) => missing_quest_result(id),
+            Selected::Unknown(id) => missing_quest_result(id, &character),
         };
         emit(&mut writer, &result)?;
         report.results.push(result);
@@ -784,10 +975,14 @@ fn emit(out: &mut Option<BufWriter<File>>, result: &QuestResult) -> anyhow::Resu
     Ok(())
 }
 
-fn missing_quest_result(id: u32) -> QuestResult {
+fn missing_quest_result(id: u32, character: &RunCharacter) -> QuestResult {
     QuestResult {
         quest_id: id,
         name: String::new(),
+        character: character.name.clone(),
+        race: character.race,
+        gender: character.gender,
+        start_level: character.start_level,
         result: QuestOutcome::BlockedPlan,
         failed_step: None,
         steps: Vec::new(),
@@ -799,10 +994,14 @@ fn missing_quest_result(id: u32) -> QuestResult {
 }
 
 /// The `error` line written when the connection is lost between two quests.
-fn disconnected_result(quest: &PlanQuest) -> QuestResult {
+fn disconnected_result(quest: &PlanQuest, character: &RunCharacter) -> QuestResult {
     QuestResult {
         quest_id: quest.quest_id,
         name: quest.name.clone(),
+        character: character.name.clone(),
+        race: character.race,
+        gender: character.gender,
+        start_level: character.start_level,
         result: QuestOutcome::Error,
         failed_step: None,
         steps: Vec::new(),
@@ -833,10 +1032,49 @@ pub fn error_reason(code: i16) -> String {
     }
 }
 
+/// `CharacterCreateError` reason names (`aaemu-game/src/managers/name.rs`).
+fn creation_error_reason(reason: u8) -> &'static str {
+    match reason {
+        3 => "the name already exists or is pending deletion",
+        4 => "the name already exists",
+        5 => "the name does not match the server's CharacterNameRegex",
+        _ => "unknown failure",
+    }
+}
+
+/// Sends `CSCreateCharacterPacket` and waits for the answer; a failure is an operator error.
+async fn create_and_wait(
+    game: &mut GameClient,
+    name: &str,
+    race: u8,
+    gender: u8,
+) -> anyhow::Result<()> {
+    game.create_character_as(name, race, gender).await?;
+    let p = game
+        .wait_for("character creation result", |p| {
+            p.is_sc(sc::SCCreateCharacterResponsePacket)
+                || p.is_sc(sc::SCCharacterCreationFailedPacket)
+        })
+        .await?;
+    if p.is_sc(sc::SCCharacterCreationFailedPacket) {
+        let reason = p.body.first().copied().unwrap_or(0);
+        bail!(
+            "character creation failed: {} (name {name:?})",
+            creation_error_reason(reason)
+        );
+    }
+    Ok(())
+}
+
 /// Character creation / selection like the `full` scenario: login, lobby burst, character
-/// (create the first time), select, spawn and notify. The `bool` reports whether the bot
-/// created the character (its race / gender are then known).
-async fn setup_world(cfg: &BotConfig, rec: &Recorder) -> anyhow::Result<(GameClient, bool)> {
+/// (created for `--new-character` or when the account is empty), select, spawn and notify.
+/// The returned [`RunCharacter`] is the selected character's race / gender / level as the
+/// server reports them.
+async fn setup_world(
+    cfg: &BotConfig,
+    rec: &Recorder,
+    opts: &RunOptions,
+) -> anyhow::Result<(GameClient, RunCharacter)> {
     let mut login = LoginClient::connect(&cfg.login, rec.clone()).await?;
     let account_id = login.auth_trion(&cfg.user, &cfg.password).await?;
     anyhow::ensure!(account_id != 0, "account id 0");
@@ -875,29 +1113,76 @@ async fn setup_world(cfg: &BotConfig, rec: &Recorder) -> anyhow::Result<(GameCli
     .await?;
     game.drain(Duration::from_millis(300), Duration::from_secs(2))
         .await?;
-    let created = game.state.characters.is_empty();
-    if created {
-        game.create_character(&cfg.character).await?;
-        let p = game
-            .wait_for("character creation result", |p| {
-                p.is_sc(sc::SCCreateCharacterResponsePacket)
-                    || p.is_sc(sc::SCCharacterCreationFailedPacket)
-            })
-            .await?;
-        anyhow::ensure!(
-            !p.is_sc(sc::SCCharacterCreationFailedPacket),
-            "character creation failed with reason {:?}",
-            p.body.first()
-        );
+
+    let listed = game.state.character_count;
+    let mut character: Option<RunCharacter> = None;
+    if opts.new_character {
+        if listed >= MAX_CHARACTERS_PER_ACCOUNT {
+            bail!(
+                "the account already has {listed} characters; the login server allows \
+                 {MAX_CHARACTERS_PER_ACCOUNT} per account (MaxCharactersPerAccount). Delete a \
+                 character from the character-select screen before using --new-character; this \
+                 runner never deletes characters."
+            );
+        }
+        let name = new_character_name(&cfg.character)?;
+        create_and_wait(&mut game, &name, opts.race, opts.gender).await?;
+        character = Some(RunCharacter {
+            name,
+            race: opts.race,
+            gender: opts.gender,
+            start_level: 1,
+        });
+    } else if listed == 0 {
+        // The account is empty: create the configured character; `--race` / `--gender` apply.
+        if !valid_character_name(&cfg.character) {
+            bail!(
+                "config character '{}' does not match the server's CharacterNameRegex \
+                 (^[a-zA-Z0-9а-яА-Я]{{1,18}}$)",
+                cfg.character
+            );
+        }
+        create_and_wait(&mut game, &cfg.character, opts.race, opts.gender).await?;
+        character = Some(RunCharacter {
+            name: cfg.character.clone(),
+            race: opts.race,
+            gender: opts.gender,
+            start_level: 1,
+        });
     }
-    let ch = game
-        .state
-        .characters
-        .first()
-        .cloned()
-        .context("no character after the list / create handshake")?;
-    game.select_character(ch.id).await?;
+
+    let target = match &character {
+        Some(created) => game
+            .state
+            .characters
+            .iter()
+            .find(|c| c.name == created.name)
+            .cloned()
+            .with_context(|| format!("created character {:?} is not in the list", created.name))?,
+        None => game
+            .state
+            .characters
+            .first()
+            .cloned()
+            .context("the account has no character to select")?,
+    };
+    let mut character = character.unwrap_or_else(|| RunCharacter {
+        name: target.name.clone(),
+        race: target.race,
+        gender: target.gender,
+        start_level: target.level,
+    });
+    game.select_character(target.id).await?;
     game.wait_sc(sc::SCCharacterStatePacket).await?;
+    // The select snapshot is authoritative for race / gender / level.
+    if let Some(info) = game.state.self_info.clone() {
+        character = RunCharacter {
+            name: info.name,
+            race: info.race,
+            gender: info.gender,
+            start_level: info.level,
+        };
+    }
     game.drain(Duration::from_millis(1500), Duration::from_secs(10))
         .await?;
     game.spawn_character().await?;
@@ -908,7 +1193,7 @@ async fn setup_world(cfg: &BotConfig, rec: &Recorder) -> anyhow::Result<(GameCli
     game.drain(Duration::from_millis(1500), Duration::from_secs(15))
         .await?;
     anyhow::ensure!(game.state.self_obj != 0, "own unit state not received");
-    Ok((game, created))
+    Ok((game, character))
 }
 
 /// Best-effort clean leave at the end of the run.
@@ -932,8 +1217,8 @@ async fn leave(game: &mut GameClient) {
 async fn run_quest(
     game: &mut GameClient,
     quest: &PlanQuest,
+    character: &RunCharacter,
     raised_level: &mut u32,
-    created: bool,
     step_timeout: Duration,
 ) -> QuestResult {
     let start = Instant::now();
@@ -944,7 +1229,9 @@ async fn run_quest(
     let mut outcome = None;
 
     if let Some(gate) = plan_gate(quest) {
-        return result_line(game, quest, gate, None, steps, last_info, chat_start, start);
+        return result_line(
+            game, quest, character, gate, None, steps, last_info, chat_start, start,
+        );
     }
 
     // Prerequisites first: a quest whose prerequisite is neither in the select snapshot nor
@@ -962,6 +1249,7 @@ async fn run_quest(
         return result_line(
             game,
             quest,
+            character,
             QuestOutcome::PrereqMissing,
             Some(gate_failed_step(reason)),
             steps,
@@ -981,19 +1269,20 @@ async fn run_quest(
         *raised_level = demand;
     }
 
-    // `unit_reqs` the runner can decide (race / gender of a character it created, quest
-    // contexts, level caps). Unknown kinds do not block: the accept attempt lets the server
-    // decide and a silent rejection shows up as `rejected` / "no answer from server".
+    // `unit_reqs` the runner can decide (race / gender / level from the selected character,
+    // quest contexts). Unknown kinds do not block: the accept attempt lets the server decide
+    // and a silent rejection shows up as `rejected` / "no answer from server".
     let facts = KnownFacts {
-        level: *raised_level,
-        race: created.then_some(CREATED_RACE),
-        gender: created.then_some(CREATED_GENDER),
+        level: (*raised_level).max(u32::from(character.start_level)),
+        race: Some(character.race),
+        gender: Some(character.gender),
         completed: &game.state.completed_quests,
     };
     if let Some(reason) = requirement_gate(quest, &facts) {
         return result_line(
             game,
             quest,
+            character,
             QuestOutcome::RequirementUnmet,
             Some(gate_failed_step(reason)),
             steps,
@@ -1090,6 +1379,7 @@ async fn run_quest(
     result_line(
         game,
         quest,
+        character,
         outcome,
         failed_step,
         steps,
@@ -1103,6 +1393,7 @@ async fn run_quest(
 fn result_line(
     game: &GameClient,
     quest: &PlanQuest,
+    character: &RunCharacter,
     outcome: QuestOutcome,
     failed_step: Option<FailedStep>,
     steps: Vec<StepOutcome>,
@@ -1119,6 +1410,10 @@ fn result_line(
     QuestResult {
         quest_id: quest.quest_id,
         name: quest.name.clone(),
+        character: character.name.clone(),
+        race: character.race,
+        gender: character.gender,
+        start_level: character.start_level,
         result: outcome,
         failed_step,
         steps,
@@ -1702,6 +1997,10 @@ mod tests {
         QuestResult {
             quest_id: id,
             name: format!("quest {id}"),
+            character: "Tester".into(),
+            race: 1,
+            gender: 1,
+            start_level: 1,
             result,
             failed_step: reason.map(|r| FailedStep {
                 act_id: 0,
@@ -2097,6 +2396,10 @@ mod tests {
         let result = QuestResult {
             quest_id: 10,
             name: "Test quest".into(),
+            character: "AiBot01".into(),
+            race: 6,
+            gender: 2,
+            start_level: 5,
             result: QuestOutcome::RunnerUnsupported,
             failed_step: Some(FailedStep {
                 act_id: 13979,
@@ -2127,6 +2430,10 @@ mod tests {
             serde_json::json!({
                 "quest_id": 10,
                 "name": "Test quest",
+                "character": "AiBot01",
+                "race": 6,
+                "gender": 2,
+                "start_level": 5,
                 "result": "runner_unsupported",
                 "failed_step": {
                     "act_id": 13979,
@@ -2145,13 +2452,113 @@ mod tests {
             })
         );
         // Null final state and no failed step are valid lines too (blocked / dynamic quests).
-        let blocked = missing_quest_result(99);
+        let character = RunCharacter {
+            name: "Tester".into(),
+            race: 4,
+            gender: 2,
+            start_level: 3,
+        };
+        let blocked = missing_quest_result(99, &character);
         let value = serde_json::to_value(&blocked).unwrap();
         assert_eq!(value["result"], "blocked_plan");
+        assert_eq!(value["character"], "Tester");
+        assert_eq!(value["race"], 4);
+        assert_eq!(value["start_level"], 3);
         assert_eq!(value["failed_step"], serde_json::json!(null));
         assert_eq!(
             value["messages"],
             serde_json::json!(["quest 99 is not in the plan"])
         );
+    }
+
+    #[test]
+    fn explicit_lists_order_prerequisites_first_over_plan_order() {
+        let mut plan = vec![quest(10, "ok"), quest(11, "ok"), quest(12, "ok")];
+        plan[2].prereq_quests = vec![11]; // 12 requires 11
+                                          // Requested in reverse; ready quests are taken in plan order.
+        let topo = topological_order(&plan, &[2, 1, 0]);
+        assert_eq!(topo.order, vec![0, 1, 2]);
+        assert_eq!(topo.cyclic, 0);
+        // Requested subset keeps the same relative order.
+        let topo = topological_order(&plan, &[2, 1]);
+        assert_eq!(topo.order, vec![1, 2]);
+    }
+
+    #[test]
+    fn with_prereqs_pulls_the_chain_recursively() {
+        let mut plan = vec![
+            quest(10, "ok"),
+            quest(11, "ok"),
+            quest(12, "ok"),
+            quest(13, "ok"),
+        ];
+        plan[1].prereq_quests = vec![10]; // 11 -> 10
+        plan[2].prereq_quests = vec![11]; // 12 -> 11 -> 10
+        plan[3].prereq_quests = vec![999]; // outside the plan: cannot be pulled
+                                           // Requesting 12 pulls 11 and 10 into the run, ordered before it.
+        let expanded = expand_prerequisites(&plan, &[2]);
+        assert_eq!(expanded, vec![0, 1, 2]);
+        assert_eq!(topological_order(&plan, &expanded).order, vec![0, 1, 2]);
+        // Requesting 11 and 12 does not duplicate 11.
+        assert_eq!(expand_prerequisites(&plan, &[1, 2]), vec![0, 1, 2]);
+        // A prerequisite outside the plan stays missing (later `prereq_missing`).
+        assert_eq!(expand_prerequisites(&plan, &[3]), vec![3]);
+    }
+
+    #[test]
+    fn generated_character_names_match_the_server_regex() {
+        assert!(valid_character_name("Tester"));
+        assert!(valid_character_name("Тестер")); // Cyrillic
+        assert!(valid_character_name("a0Z"));
+        assert!(!valid_character_name(""));
+        let too_long = "a".repeat(19);
+        assert!(!valid_character_name(&too_long));
+        assert!(!valid_character_name("bad-name"));
+        assert!(!valid_character_name("bad name"));
+
+        let name = generated_character_name("audit", 0x1234_5678_9abc, 5).unwrap();
+        assert!(valid_character_name(&name));
+        assert!(name.starts_with("audit"));
+        assert_eq!(name.chars().count(), 5 + 8);
+
+        // A long prefix is truncated so the suffix still fits into 18 characters.
+        let long = generated_character_name("abcdefghijklmnop", 0, 0).unwrap();
+        assert!(valid_character_name(&long));
+        assert_eq!(long.chars().count(), 18);
+        assert_eq!(&long[..10], "abcdefghij");
+
+        // Prefixes the regex rejects are an operator error, not silently cleaned.
+        assert!(generated_character_name("bot-1", 0, 0).is_err());
+        assert!(valid_character_name(&new_character_name("audit").unwrap()));
+    }
+
+    #[test]
+    fn race_and_gender_flags_parse() {
+        assert_eq!(parse_race("nuian").unwrap(), 1);
+        assert_eq!(parse_race("Elf").unwrap(), 4);
+        assert_eq!(parse_race("harani").unwrap(), 5);
+        assert_eq!(parse_race("hariharan").unwrap(), 5);
+        assert_eq!(parse_race("firran").unwrap(), 6);
+        assert_eq!(parse_race("6").unwrap(), 6);
+        assert_eq!(parse_race("1").unwrap(), 1);
+        // Races with templates but not playable in 1.2 are rejected with the reason.
+        for (value, name) in [
+            ("3", "dwarf"),
+            ("dwarf", "dwarf"),
+            ("2", "fairy"),
+            ("warborn", "warborn"),
+            ("returned", "returned"),
+        ] {
+            let error = parse_race(value).unwrap_err().to_string();
+            assert!(error.contains(name), "{error}");
+            assert!(error.contains("not playable"), "{error}");
+        }
+        assert!(parse_race("kitten").is_err());
+
+        assert_eq!(parse_gender("m").unwrap(), 1);
+        assert_eq!(parse_gender("MALE").unwrap(), 1);
+        assert_eq!(parse_gender("F").unwrap(), 2);
+        assert_eq!(parse_gender("2").unwrap(), 2);
+        assert!(parse_gender("x").is_err());
     }
 }
