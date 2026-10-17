@@ -1092,7 +1092,7 @@ mod tests {
         assert_eq!(cfg.login_network.port, 1234);
         assert_eq!(cfg.connections.mysql_provider.port, 3306);
         let web = cfg.web_api_network.as_ref().expect("WebApiNetwork");
-        assert_eq!((web.host.as_str(), web.port), ("*", 1280));
+        assert_eq!((web.host.as_str(), web.port), ("127.0.0.1", 1280));
         assert_eq!(cfg.max_concurency_thread_pool, 8);
         assert!(cfg.discord_token.is_none());
         // World.json

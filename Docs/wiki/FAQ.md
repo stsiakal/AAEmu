@@ -107,7 +107,8 @@ Common defaults:
 - `1237`: login public
 - `1239`: game public
 - `1250`: game stream
-- `1280`: optional game Web API
+- `1280`: optional game Web API. It has no authentication (it can send mail with items), so it
+  listens on `127.0.0.1` by default; never expose it publicly
 
 ### What should `GameServers` host be for local use
 
