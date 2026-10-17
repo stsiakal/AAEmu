@@ -1,0 +1,465 @@
+"""Static quest plan for a bot: ordered world targets from compact.sqlite3 + spawn data.
+
+Read-only in, JSON out. For every loaded quest context (the loader skips the
+category-45 tutorials, see `data.rs::QUEST_CATEGORY_TUTORIAL`) the acts are ordered
+like the loader (`load_components`: quest_context_id, component_kind_id, id; acts by
+act id) and each act carries its target ids, up to five spawn locations for
+npc/doodad targets and a status. Quests whose non-optional npc/doodad targets have
+no spawn anywhere in the world files are flagged; npc targets that are only summoned
+at runtime by `SpawnEffect` skills (`spawn_effects.owner_type_id == 1`) get
+"dynamic_spawn" with their sources instead; act types the plan cannot map are
+flagged "unsupported", never guessed. Run:
+
+    python plan.py --db compact.sqlite3 --worlds Data/Worlds --output plan.json
+"""
+
+import argparse
+from collections import Counter, defaultdict
+import json
+from pathlib import Path
+import sqlite3
+
+
+# `QUEST_CATEGORY_TUTORIAL` (systems/quests/data.rs); these contexts are not loaded.
+TUTORIAL = 45
+# `QuestComponentKind` member names (`systems/quests/model.rs::kind`).
+COMPONENT_KINDS = {0: "Invalid", 1: "None", 2: "Start", 3: "Supply", 4: "Progress",
+                   5: "Fail", 6: "Ready", 7: "Drop", 8: "Reward"}
+# Fail / Drop are the terminal failure branches of `QuestEngine::go_to_next_step`; a
+# bot completing the quest never needs their spawns, so missing targets there do not
+# block the plan.
+OPTIONAL_KINDS = {5, 7}
+# act class -> (target kind, detail table, target id column, count column or None).
+# Tables and columns verified against compact.sqlite3 and `data.rs::load_detail_acts`;
+# the cited handler is the `acts.rs` arm that consumes the detail row.
+ACT_TARGETS = {
+    "QuestActConAcceptNpc": ("npc", "quest_act_con_accept_npcs", "npc_id", None),
+    "QuestActConReportNpc": ("npc", "quest_act_con_report_npcs", "npc_id", None),
+    "QuestActObjTalk": ("npc", "quest_act_obj_talks", "npc_id", None),
+    "QuestActObjMonsterHunt": ("npc", "quest_act_obj_monster_hunts", "npc_id", "count"),
+    "QuestActConAcceptNpcKill": ("npc", "quest_act_con_accept_npc_kills", "npc_id", None),
+    "QuestActObjInteraction": ("doodad", "quest_act_obj_interactions", "doodad_id", "count"),
+    "QuestActConAcceptDoodad": ("doodad", "quest_act_con_accept_doodads", "doodad_id", None),
+    "QuestActConReportDoodad": ("doodad", "quest_act_con_report_doodads", "doodad_id", None),
+    "QuestActObjItemGather": ("item", "quest_act_obj_item_gathers", "item_id", "count"),
+    "QuestActObjItemUse": ("item", "quest_act_obj_item_uses", "item_id", "count"),
+    "QuestActConAcceptItem": ("item", "quest_act_con_accept_items", "item_id", None),
+    "QuestActObjSphere": ("sphere", "quest_act_obj_spheres", "sphere_id", None),
+    "QuestActConAcceptSphere": ("sphere", "quest_act_con_accept_spheres", "sphere_id", None),
+    # acts.rs act_event `(EtcItemObtain, QuestEvent::ItemGather)` (the C# disables the check).
+    "QuestActEtcItemObtain": ("item", "quest_act_etc_item_obtains", "item_id", "count"),
+    # acts.rs RunAct `ConAcceptItemGain { item_id }` -> `check_items(count)`.
+    "QuestActConAcceptItemGain": ("item", "quest_act_con_accept_item_gains", "item_id", "count"),
+    # acts.rs RunAct `ConAcceptComponent { .. } => true`; the detail names the quest context.
+    "QuestActConAcceptComponent": ("quest", "quest_act_con_accept_components",
+                                   "quest_context_id", None),
+    # acts.rs act_event `(ObjCompleteQuest { quest_id }, QuestEvent::QuestComplete)`.
+    "QuestActObjCompleteQuest": ("quest", "quest_act_obj_complete_quests", "quest_id", None),
+}
+
+
+def rows(conn, table):
+    # Identifiers come from the audited source, never CLI input.
+    return [dict(row) for row in conn.execute('SELECT * FROM "' + table.replace('"', '""') + '"')]
+
+
+def prop(obj, name):
+    """Newtonsoft member match: exact first, then case-insensitive (`json.rs::prop`)."""
+    if name in obj:
+        return obj[name]
+    for key, value in obj.items():
+        if key.lower() == name.lower():
+            return value
+    return None
+
+
+def clean_json(text):
+    """The lenient Newtonsoft dialect of the World files (`config::relax_json`):
+    `//` and `/* */` comments plus trailing commas outside strings."""
+
+    def skip_trivia(j):
+        while j < len(text):
+            while j < len(text) and text[j].isspace():
+                j += 1
+            if text.startswith("//", j):
+                while j < len(text) and text[j] != "\n":
+                    j += 1
+            elif text.startswith("/*", j):
+                j += 2
+                while j + 1 < len(text) and text[j:j + 2] != "*/":
+                    j += 1
+                j = min(j + 2, len(text))
+            else:
+                return j
+        return j
+
+    out = []
+    i = 0
+    in_string = False
+    while i < len(text):
+        c = text[i]
+        if in_string:
+            out.append(c)
+            if c == "\\" and i + 1 < len(text):
+                out.append(text[i + 1])
+                i += 2
+                continue
+            if c == '"':
+                in_string = False
+            i += 1
+        elif c == '"':
+            in_string = True
+            out.append(c)
+            i += 1
+        elif c == "/" and text.startswith(("/", "*"), i + 1):
+            i = skip_trivia(i)
+        elif c == ",":
+            # Drop a trailing comma (the next significant character closes the container).
+            j = skip_trivia(i + 1)
+            if j < len(text) and text[j] in "}]":
+                i += 1
+            else:
+                out.append(c)
+                i += 1
+        else:
+            out.append(c)
+            i += 1
+    return "".join(out)
+
+
+def load_spawns(worlds, ids_by_kind, npc_spawner_npcs=()):
+    """Spawn locations by template id: ``{kind: {id: [(world, x, y, z), ...]}}``.
+
+    Mirrors `SpawnManager::load_npc_spawns` / `load_doodad_spawns`: `UnitId` is the
+    *template* id (NPC: `npcs.id`, doodad: `doodad_almighties.id`) checked with
+    `exists.npc` / `exists.doodad`, not an `npc_spawners` row. The compact spawner
+    tables are indirect only: an ordinary NPC entry (no `NpcSpawnerIds`) clones the
+    game-data spawner templates whose `npc_spawner_npcs.member_id` is the UnitId, so
+    those members can spawn at the same spot and are expanded here; event entries
+    (`NpcSpawnerIds` set, `[0]` counts as empty) spawn the UnitId alone. Doodad
+    entries have no such indirection. Files are read in the load order
+    (`spawn_files` name sort, then `files.reverse()`), with the same per-UnitId
+    near-duplicate filter (2.0 for NPCs, 0.01 for doodads).
+    """
+    spawner_members = defaultdict(list)
+    member_spawners = defaultdict(list)
+    for spawner_id, member_id in npc_spawner_npcs:
+        spawner_members[spawner_id].append(member_id)
+        member_spawners[member_id].append(spawner_id)
+    spawns = {"npc": defaultdict(list), "doodad": defaultdict(list)}
+    for world_dir in sorted(path for path in worlds.iterdir() if path.is_dir()):
+        for kind, prefix, tolerance in (("npc", "npc_spawns", 2.0),
+                                        ("doodad", "doodad_spawns", 0.01)):
+            files = sorted((f for f in world_dir.iterdir()
+                            if f.is_file() and f.name.lower().startswith(prefix)
+                            and f.name.lower().endswith(".json")),
+                           key=lambda f: f.name.lower())
+            stored = defaultdict(list)
+            for path in reversed(files):
+                text = path.read_text(encoding="utf-8-sig")
+                if not text.strip():
+                    continue
+                for entry in json.loads(clean_json(text)):
+                    if not isinstance(entry, dict):
+                        continue
+                    unit_id = prop(entry, "UnitId")
+                    position = prop(entry, "Position")
+                    if not isinstance(unit_id, int) or not isinstance(position, dict):
+                        continue
+                    x, y, z = (prop(position, axis) for axis in "XYZ")
+                    if any(not isinstance(v, (int, float)) for v in (x, y, z)):
+                        continue
+                    if unit_id not in ids_by_kind[kind]:
+                        continue
+                    if any(abs(sx - x) < tolerance and abs(sy - y) < tolerance
+                           and abs(sz - z) < tolerance for sx, sy, sz in stored[unit_id]):
+                        continue
+                    stored[unit_id].append((x, y, z))
+                    location = (world_dir.name, float(x), float(y), float(z))
+                    event_ids = prop(entry, "NpcSpawnerIds")
+                    event = isinstance(event_ids, list) and event_ids and event_ids != [0]
+                    members = {unit_id}
+                    if kind == "npc" and not event:
+                        for spawner_id in member_spawners.get(unit_id, []):
+                            members.update(spawner_members[spawner_id])
+                    for member in members:
+                        if member in ids_by_kind[kind]:
+                            spawns[kind][member].append(location)
+    return {kind: dict(by_id) for kind, by_id in spawns.items()}
+
+
+def closest(locations, limit=5):
+    """The first location plus the up to `limit` - 1 nearest of the rest."""
+    if not locations:
+        return []
+    unique = list(dict.fromkeys(locations))
+    anchor = unique[0]
+    rest = sorted(unique[1:], key=lambda l: (l[1] - anchor[1]) ** 2
+                  + (l[2] - anchor[2]) ** 2 + (l[3] - anchor[3]) ** 2)
+    return [anchor] + rest[:limit - 1]
+
+
+def detail_of(conn, cache, table, detail_id):
+    if table not in cache:
+        cache[table] = {row["id"]: row for row in rows(conn, table)}
+    return cache[table].get(detail_id)
+
+
+def count_of(detail, column):
+    if column and detail and isinstance(detail.get(column), int) and detail[column] > 0:
+        return detail[column]
+    return 1
+
+
+def int_of(row, column, default=0):
+    value = row.get(column) if row else None
+    return value if isinstance(value, int) else default
+
+
+# The four "reach a level" objectives (`acts.rs` RunAct) and their detail tables.
+LEVEL_ACTS = {
+    "QuestActObjAbilityLevel": "quest_act_obj_ability_levels",
+    "QuestActObjMateLevel": "quest_act_obj_mate_levels",
+    "QuestActObjLevel": "quest_act_obj_levels",
+    "QuestActConAcceptLevelUp": "quest_act_con_accept_level_ups",
+}
+
+
+def load_lookups(conn):
+    """Member relations the act targets expand through (all small tables)."""
+    lookup = {"group_npcs": defaultdict(list), "group_items": defaultdict(list),
+              "craft_items": defaultdict(list)}
+    for row in rows(conn, "quest_monster_npcs"):
+        lookup["group_npcs"][row["quest_monster_group_id"]].append(row["npc_id"])
+    for row in rows(conn, "quest_item_group_items"):
+        lookup["group_items"][row["quest_item_group_id"]].append(row["item_id"])
+    for row in rows(conn, "craft_products"):
+        lookup["craft_items"][row["craft_id"]].append(row["item_id"])
+    return lookup
+
+
+def dynamic_npc_sources(conn):
+    """NPC template id -> spawn sources applied at runtime instead of the world files.
+
+    `spawn_effects.owner_type_id == 1` is the NPC branch of `bridges.rs::spawn_effect`
+    (`sub_type` = NPC template id, spawned at the caster/target position, so no world
+    location exists). The skills come from the `skill_effects` -> `effects` chain of
+    `skills/data/mod.rs` (`effects.actual_type == 'SpawnEffect'`, actual id =
+    `spawn_effects.id`); skills must exist like the loader requires.
+    """
+    sub_types = {row["id"]: row["sub_type"] for row in rows(conn, "spawn_effects")
+                 if row["owner_type_id"] == 1}
+    skills = defaultdict(list)
+    for row in conn.execute(
+            "SELECT se.skill_id, ef.actual_id FROM skill_effects se"
+            " JOIN effects ef ON ef.id = se.effect_id"
+            " JOIN skills s ON s.id = se.skill_id"
+            " WHERE ef.actual_type = 'SpawnEffect'"):
+        if row["actual_id"] in sub_types:
+            skills[row["actual_id"]].append(row["skill_id"])
+    sources = defaultdict(list)
+    for effect_id, sub_type in sorted(sub_types.items()):
+        sources[sub_type].append({"effect_id": effect_id,
+                                  "skill_ids": sorted(set(skills[effect_id]))})
+    return sources
+
+
+def step_target(conn, details, lookup, act_class, detail_id):
+    """The plan `target` of one act from its detail row; None when unsupported."""
+
+    def target(kind, ids, count, **extra):
+        return dict({"kind": kind, "ids": ids, "count": count}, **extra)
+
+    if act_class == "QuestActObjMonsterGroupHunt":
+        detail = detail_of(conn, details, "quest_act_obj_monster_group_hunts", detail_id)
+        ids = list(lookup["group_npcs"].get(int_of(detail, "quest_monster_group_id"), []))
+        return target("npc", ids, count_of(detail, "count"))
+    if act_class == "QuestActObjTalkNpcGroup":
+        # acts.rs act_event `(ObjTalkNpcGroup { npc_group_id }, QuestEvent::TalkNpcGroupMade)`;
+        # members are the `quest_monster_npcs` rows (`data.rs` `_groupNpcs`).
+        detail = detail_of(conn, details, "quest_act_obj_talk_npc_groups", detail_id)
+        ids = list(lookup["group_npcs"].get(int_of(detail, "npc_group_id"), []))
+        return target("npc", ids, 1)
+    if act_class == "QuestActObjExpressFire":
+        # acts.rs act_event `(ObjExpressFire { express_key_id, npc_group_id }, QuestEvent::
+        # ExpressFire { emotion_id, npc_id })` with `group_npcs.contains(npc_group_id, npc_id)`.
+        detail = detail_of(conn, details, "quest_act_obj_express_fires", detail_id)
+        ids = list(lookup["group_npcs"].get(int_of(detail, "npc_group_id"), []))
+        return target("npc", ids, count_of(detail, "count"),
+                      emotion_id=int_of(detail, "express_key_id"))
+    if act_class in ("QuestActObjItemGroupGather", "QuestActObjItemGroupUse"):
+        # acts.rs act_event `(ObjItemGroupGather/Use { item_group_id }, ...)`; members are the
+        # `quest_item_group_items` rows (`data.rs` `_groupItems`).
+        table = ("quest_act_obj_item_group_gathers" if act_class == "QuestActObjItemGroupGather"
+                 else "quest_act_obj_item_group_uses")
+        detail = detail_of(conn, details, table, detail_id)
+        ids = list(lookup["group_items"].get(int_of(detail, "item_group_id"), []))
+        return target("item", ids, count_of(detail, "count"))
+    if act_class == "QuestActObjCraft":
+        # acts.rs act_event `(ObjCraft { craft_id }, QuestEvent::Craft)`; the crafted items are
+        # the `craft_products` rows of the recipe.
+        detail = detail_of(conn, details, "quest_act_obj_crafts", detail_id)
+        craft_id = int_of(detail, "craft_id")
+        return target("item", list(lookup["craft_items"].get(craft_id, [])),
+                      count_of(detail, "count"), craft_id=craft_id)
+    if act_class == "QuestActObjZoneKill":
+        # acts.rs act_event `(ObjZoneKill { .. }, QuestEvent::ZoneKill)`: npc victims filtered by
+        # lv_min_npc/lv_max_npc (player victims by lv_min/lv_max); `data.rs` count is
+        # max(count_npc, count_pk).
+        detail = detail_of(conn, details, "quest_act_obj_zone_kills", detail_id)
+        if int_of(detail, "count_npc") > 0:
+            level_min, level_max = int_of(detail, "lv_min_npc"), int_of(detail, "lv_max_npc")
+        else:
+            level_min, level_max = int_of(detail, "lv_min"), int_of(detail, "lv_max")
+        count = max(int_of(detail, "count_npc"), int_of(detail, "count_pk")) or 1
+        return target("zone", [], count, zone_id=int_of(detail, "zone_id"),
+                      level_min=level_min, level_max=level_max)
+    if act_class in LEVEL_ACTS:
+        # acts.rs RunAct `ObjAbilityLevel` / `ObjMateLevel` (mate_level_objective) / `ObjLevel` /
+        # `ConAcceptLevelUp` compare the level (and the mate item for ObjMateLevel).
+        detail = detail_of(conn, details, LEVEL_ACTS[act_class], detail_id)
+        extra = {"level": int_of(detail, "LEVEL")}
+        if act_class == "QuestActObjAbilityLevel":
+            extra["ability_id"] = int_of(detail, "ability_id")
+        elif act_class == "QuestActObjMateLevel":
+            extra["item_id"] = int_of(detail, "item_id")
+        return target("level", [], 1, **extra)
+    if act_class == "QuestActObjCinema":
+        # acts.rs act_event `(ObjCinema { cinema_id }, QuestEvent::CinemaStarted/Ended)`.
+        detail = detail_of(conn, details, "quest_act_obj_cinemas", detail_id)
+        return target("none", [], 1, cinema_id=int_of(detail, "cinema_id"))
+    if act_class == "QuestActObjAggro":
+        # acts.rs act_event `(ObjAggro { rank1..rank3 }, QuestEvent::Kill)` keys on the quest
+        # acceptor NPC and the victim's aggro_percent; `data.rs` count 3 (MaxRankObjective).
+        detail = detail_of(conn, details, "quest_act_obj_aggros", detail_id)
+        return target("none", [], 3, rank1=int_of(detail, "rank1"), rank2=int_of(detail, "rank2"),
+                      rank3=int_of(detail, "rank3"))
+    if act_class == "QuestActConReportJournal":
+        # acts.rs act_event `(ConReportJournal, QuestEvent::ReportJournal)`; report from the
+        # journal, no world target.
+        return target("none", [], 1)
+    mapped = ACT_TARGETS.get(act_class)
+    if mapped:
+        kind, table, id_column, count_column = mapped
+        detail = detail_of(conn, details, table, detail_id)
+        value = detail.get(id_column) if detail else None
+        return target(kind, ([value] if value else []), count_of(detail, count_column))
+    if act_class == "QuestActConAutoComplete" or act_class.startswith(
+            ("QuestActSupply", "QuestActCheck")):
+        return target("none", [], 1)
+    return None
+
+
+def plan(conn, spawns, quest_filter=None):
+    """Quest plans (sorted by quest id) plus the summary counters."""
+    contexts = rows(conn, "quest_contexts")
+    components = rows(conn, "quest_components")
+    acts = rows(conn, "quest_acts")
+    lookups = load_lookups(conn)
+    dynamic = dynamic_npc_sources(conn)
+    by_quest = defaultdict(list)
+    for component in components:
+        by_quest[component["quest_context_id"]].append(component)
+    by_component = defaultdict(list)
+    for act in acts:
+        by_component[act["quest_component_id"]].append(act)
+    details = {}
+    quests = []
+    status_counts = Counter()
+    unsupported_acts = Counter()
+    missing_spawns = {"npc": set(), "doodad": set()}
+    dynamic_steps = 0
+    for quest in sorted(contexts, key=lambda q: q["id"]):
+        if quest["category_id"] == TUTORIAL:
+            continue
+        if quest_filter and quest["id"] not in quest_filter:
+            continue
+        steps = []
+        blockers = []
+        blocked = partial = False
+        ordered = sorted(by_quest[quest["id"]], key=lambda c: (c["component_kind_id"], c["id"]))
+        for component in ordered:
+            kind_id = component["component_kind_id"]
+            for act in sorted(by_component[component["id"]], key=lambda a: a["id"]):
+                act_class = act["act_detail_type"]
+                target = step_target(conn, details, lookups, act_class, act["act_detail_id"])
+                kind = target["kind"] if target else "none"
+                ids = target["ids"] if target else []
+                found = []
+                if kind in ("npc", "doodad"):
+                    found = [loc for t in ids for loc in spawns[kind].get(t, [])]
+                sources = []
+                if target is None:
+                    status = "unsupported"
+                elif kind == "npc" and not found:
+                    # Summoned at runtime by a SpawnEffect skill: no static location needed.
+                    sources = [source for t in ids for source in dynamic.get(t, [])]
+                    status = "dynamic_spawn" if sources else "no_spawn"
+                elif kind == "doodad" and not found:
+                    status = "no_spawn"
+                else:
+                    status = "ok"
+                step = {"component_id": component["id"],
+                        "component_kind": COMPONENT_KINDS.get(kind_id, str(kind_id)),
+                        "act_id": act["id"], "act_type": act_class,
+                        "target": target or {"kind": "none", "ids": [], "count": 1},
+                        "locations": [{"world": w, "x": x, "y": y, "z": z}
+                                      for w, x, y, z in closest(found)],
+                        "status": status}
+                if status == "dynamic_spawn":
+                    dynamic_steps += 1
+                    step["sources"] = sources
+                steps.append(step)
+                optional = kind_id in OPTIONAL_KINDS
+                if status == "unsupported":
+                    partial = True
+                    unsupported_acts[act_class] += 1
+                    blockers.append(f"unsupported act {act_class} "
+                                    f"(act {act['id']}, component {component['id']})")
+                elif status == "no_spawn" and not optional:
+                    blocked = True
+                    missing_spawns[kind].add(quest["id"])
+                    targets = " ".join(map(str, ids)) if ids else "unresolved"
+                    blockers.append(f"no spawn for {kind} {targets} "
+                                    f"({act_class}, component {component['id']})")
+        quest_status = "blocked" if blocked else ("partial" if partial else "ok")
+        status_counts[quest_status] += 1
+        quests.append({"quest_id": quest["id"], "name": quest["name"],
+                       "category_id": quest["category_id"], "level": quest["LEVEL"],
+                       "steps": steps, "status": quest_status, "blockers": blockers})
+    summary = {"quests": len(quests), "status": dict(sorted(status_counts.items())),
+               "unsupported_act_types": dict(unsupported_acts.most_common(20)),
+               "blocked_missing_npc_spawns": len(missing_spawns["npc"]),
+               "blocked_missing_doodad_spawns": len(missing_spawns["doodad"]),
+               "dynamic_spawn_steps": dynamic_steps}
+    return {"quests": quests, "summary": summary}
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--db", type=Path, required=True)
+    parser.add_argument("--worlds", type=Path, required=True)
+    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--quest", type=int, action="append", dest="quests",
+                        help="Only plan this quest context id (repeatable)")
+    args = parser.parse_args()
+    db = args.db.resolve(strict=True)
+    worlds = args.worlds.resolve(strict=True)
+    if args.output.resolve() == db:
+        parser.error("Output must not overwrite the source database")
+    with sqlite3.connect(f"file:{db.as_posix()}?mode=ro", uri=True) as conn:
+        conn.row_factory = sqlite3.Row
+        ids = {"npc": {row["id"] for row in rows(conn, "npcs")},
+               "doodad": {row["id"] for row in rows(conn, "doodad_almighties")}}
+        spawner_npcs = [(row["npc_spawner_id"], row["member_id"])
+                        for row in rows(conn, "npc_spawner_npcs")]
+        spawns = load_spawns(worlds, ids, spawner_npcs)
+        result = plan(conn, spawns, set(args.quests) if args.quests else None)
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    args.output.write_text(json.dumps(result["quests"], ensure_ascii=False, indent=2) + "\n",
+                           encoding="utf-8")
+    print(json.dumps(result["summary"], indent=2))
+
+
+if __name__ == "__main__":
+    main()

@@ -124,6 +124,15 @@ python rust/tools/quest_audit/audit.py --db rust/crates/aaemu-game/app/Data/comp
 python -m unittest discover -s rust/tools/quest_audit -v
 ```
 
+`plan.py` writes the per-quest step plan used by the quest bot: for every loaded quest the
+ordered acts, their NPC/doodad/item/zone targets and up to five spawn locations from
+`Data/Worlds`. Targets with no world spawn are `no_spawn` (the quest is `blocked`), NPCs
+summoned by a `SpawnEffect` are `dynamic_spawn` with the effect and skill ids:
+
+```powershell
+python -I rust/tools/quest_audit/plan.py --db rust/crates/aaemu-game/app/Data/compact.sqlite3 --worlds rust/crates/aaemu-game/app/Data/Worlds --output D:/aaemu-audits/quest-plan.json
+```
+
 Run from `rust/` to verify actual loader accounting and optional client geometry:
 
 ```powershell
