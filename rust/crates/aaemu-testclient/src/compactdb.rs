@@ -19,6 +19,19 @@ pub const DEFAULT_COMPACT_DB_FROM_RUST: &str = "crates/aaemu-game/app/Data/compa
 /// `WorldInteractionType.Use` (`systems/npcs/doodad/interactions.rs`).
 const WI_USE: i64 = 19;
 
+/// What `items.use_skill_id` resolves to in the game data.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ItemUseSkill {
+    /// The use skill exists; `target_type_id` is its `SkillTargetType`.
+    Known { skill_id: u32, target_type: u8 },
+    /// `use_skill_id` points at a skill row that is missing from the data: the server's item
+    /// cast is dropped (`systems/skills/handlers.rs::template_skill` returns `None`), so the
+    /// use cannot advance a `QuestActObjItemUse` objective.
+    MissingSkill { skill_id: u32 },
+    /// The item has no `use_skill_id` (0 / NULL).
+    None,
+}
+
 /// Open `path` read-only; the connection is used for single-row lookups only.
 pub struct CompactDb {
     conn: rusqlite::Connection,
@@ -32,20 +45,38 @@ impl CompactDb {
         Ok(Self { conn })
     }
 
-    /// `items.use_skill_id` and that skill's `target_type_id` (`SkillTargetType`), if the item
-    /// has a use skill. `None` when the item is unknown or not usable.
-    pub fn item_use_skill(&self, item_id: u32) -> anyhow::Result<Option<(u32, u8)>> {
-        let row = self
+    /// `items.use_skill_id` and, when the skill exists, its `target_type_id`
+    /// (`SkillTargetType`).
+    pub fn item_use_skill(&self, item_id: u32) -> anyhow::Result<ItemUseSkill> {
+        let skill_id = self
             .conn
             .query_row(
-                "SELECT s.id, s.target_type_id \
-                 FROM items i JOIN skills s ON s.id = i.use_skill_id \
-                 WHERE i.id = ?1 AND i.use_skill_id > 0",
+                "SELECT use_skill_id FROM items WHERE id = ?1",
                 [item_id],
-                |r| Ok((r.get::<_, u32>(0)?, r.get::<_, Option<u8>>(1)?.unwrap_or(0))),
+                |r| r.get::<_, Option<u32>>(0),
             )
-            .optional()?;
-        Ok(row)
+            .optional()?
+            .flatten()
+            .unwrap_or(0);
+        if skill_id == 0 {
+            return Ok(ItemUseSkill::None);
+        }
+        let target_type = self
+            .conn
+            .query_row(
+                "SELECT target_type_id FROM skills WHERE id = ?1",
+                [skill_id],
+                |r| r.get::<_, Option<u8>>(0),
+            )
+            .optional()?
+            .flatten();
+        Ok(match target_type {
+            Some(target_type) => ItemUseSkill::Known {
+                skill_id,
+                target_type,
+            },
+            None => ItemUseSkill::MissingSkill { skill_id },
+        })
     }
 
     /// The lowest skill id whose effect is an `InteractionEffect` with `wi_id = 19`
@@ -84,6 +115,8 @@ mod tests {
         let db = CompactDb::open(path).unwrap();
         // The interaction skill table is non-empty in 1.2 data.
         assert!(db.interaction_use_skill().unwrap().is_some());
+        // An unknown item has no use skill.
+        assert_eq!(db.item_use_skill(0).unwrap(), ItemUseSkill::None);
         // The first `quest_act_obj_item_uses` row has an item; its skill may still be 0.
         let item_uses = db
             .conn
@@ -94,6 +127,19 @@ mod tests {
             .collect::<Result<Vec<_>, _>>()
             .unwrap();
         assert!(!item_uses.is_empty());
-        assert!(db.item_use_skill(0).unwrap().is_none());
+        // Quest 1394's item 14177 references `use_skill_id` 12043, which has no `skills` row in
+        // the 1.2 data: the server drops the cast (`skills/handlers.rs` `template_skill`).
+        assert_eq!(
+            db.item_use_skill(14_177).unwrap(),
+            ItemUseSkill::MissingSkill { skill_id: 12_043 }
+        );
+        // A known item/skill pair resolves with its target type.
+        assert!(matches!(
+            db.item_use_skill(5145).unwrap(),
+            ItemUseSkill::Known {
+                skill_id: 13416,
+                ..
+            }
+        ));
     }
 }

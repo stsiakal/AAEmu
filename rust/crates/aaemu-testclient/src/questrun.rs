@@ -21,7 +21,7 @@ use aaemu_game::systems::skills::types::SkillCastTarget;
 use anyhow::{bail, Context};
 use serde::{Deserialize, Serialize};
 
-use crate::compactdb::CompactDb;
+use crate::compactdb::{CompactDb, ItemUseSkill};
 use crate::game::{DoodadInfo, GameClient, GameState, Packet, UnitInfo, LEVEL_PROXY};
 use crate::login::LoginClient;
 use crate::quest::{self, QuestInfo};
@@ -239,6 +239,28 @@ pub struct PlanStep {
     /// Present on item steps: how each target item can be obtained (`plan.py::item_sources`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub item_sources: Option<Vec<PlanItemSources>>,
+    /// Present on sphere steps with `--spheres`: the sign-sphere areas of the component.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spheres: Option<Vec<PlanSphere>>,
+}
+
+/// One `quest_sign_sphere.g` area of a sphere step (`plan.py --spheres`, world coordinates).
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Default)]
+pub struct PlanSphere {
+    #[serde(default)]
+    pub world: String,
+    #[serde(default)]
+    pub x: f32,
+    #[serde(default)]
+    pub y: f32,
+    #[serde(default)]
+    pub z: f32,
+    #[serde(default)]
+    pub radius: f32,
+    #[serde(default)]
+    pub zone_id: u32,
+    #[serde(default)]
+    pub component_id: u32,
 }
 
 /// The sources of one target item of an item step.
@@ -355,6 +377,9 @@ pub enum QuestOutcome {
     BlockedPlan,
     /// A loaded quest record without a Start component: not acceptable in play.
     Auxiliary,
+    /// The quest never started: its Start component has no accept act in the plan and the
+    /// server ignored the empty accept (`engine.rs::starter_accepts`).
+    NoStarter,
     RunnerUnsupported,
     NeedsTrigger,
     Error,
@@ -362,7 +387,7 @@ pub enum QuestOutcome {
 
 impl QuestOutcome {
     /// Every variant, for stable summary counts.
-    pub const ALL: [QuestOutcome; 11] = [
+    pub const ALL: [QuestOutcome; 12] = [
         QuestOutcome::Completed,
         QuestOutcome::Failed,
         QuestOutcome::Stuck,
@@ -371,6 +396,7 @@ impl QuestOutcome {
         QuestOutcome::RequirementUnmet,
         QuestOutcome::BlockedPlan,
         QuestOutcome::Auxiliary,
+        QuestOutcome::NoStarter,
         QuestOutcome::RunnerUnsupported,
         QuestOutcome::NeedsTrigger,
         QuestOutcome::Error,
@@ -387,6 +413,7 @@ impl QuestOutcome {
             QuestOutcome::RequirementUnmet => "requirement_unmet",
             QuestOutcome::BlockedPlan => "blocked_plan",
             QuestOutcome::Auxiliary => "auxiliary",
+            QuestOutcome::NoStarter => "no_starter",
             QuestOutcome::RunnerUnsupported => "runner_unsupported",
             QuestOutcome::NeedsTrigger => "needs_trigger",
             QuestOutcome::Error => "error",
@@ -516,8 +543,10 @@ pub enum StepAction {
     Gather,
     /// `QuestActObjItemUse`: use a bag item with its use skill.
     UseItem,
-    /// `QuestActObjSphere` / `QuestActConAcceptSphere`: sphere geometry is client-pak data.
+    /// `QuestActObjSphere` / `QuestActCheckSphere`: enter the sign sphere for the objective.
     Sphere,
+    /// `QuestActConAcceptSphere`: the server starts the quest when the player enters the sphere.
+    AcceptSphere,
     /// `QuestActConAutoComplete` / `QuestActSupply*` / `QuestActCheck*`: nothing to send.
     Passive,
     /// A dynamic NPC target (summoned by a `SpawnEffect` skill) for an act the runner cannot
@@ -572,7 +601,8 @@ pub fn step_action(step: &PlanStep) -> StepAction {
             StepAction::Gather
         }
         "QuestActObjItemUse" => StepAction::UseItem,
-        "QuestActObjSphere" | "QuestActConAcceptSphere" => StepAction::Sphere,
+        "QuestActObjSphere" | "QuestActCheckSphere" => StepAction::Sphere,
+        "QuestActConAcceptSphere" => StepAction::AcceptSphere,
         t if t == "QuestActConAutoComplete"
             || t.starts_with("QuestActSupply")
             || t.starts_with("QuestActCheck") =>
@@ -1438,6 +1468,29 @@ async fn run_quest(
         );
     }
 
+    // Quests whose plan has no accept act (a Start component without acts: the server accepts
+    // those from any source, `engine.rs::starter_accepts` `conditions.is_empty()`) get the
+    // implicit empty `CSStartQuestContextPacket`; a refusal / silence is `no_starter` instead
+    // of a reason-less `stuck`.
+    if needs_implicit_accept(quest)
+        && !game.state.quests.contains_key(&quest.quest_id)
+        && !quest_completed(game, quest.quest_id)
+    {
+        if let Err(f) = implicit_accept(game, quest.quest_id, Instant::now() + step_timeout).await {
+            return result_line(
+                game,
+                quest,
+                character,
+                f.quest,
+                Some(gate_failed_step(f.reason)),
+                steps,
+                last_info,
+                chat_start,
+                start,
+            );
+        }
+    }
+
     let indices = objective_indices(&quest.steps);
     for (i, step) in quest.steps.iter().enumerate() {
         let t0 = Instant::now();
@@ -1478,7 +1531,12 @@ async fn run_quest(
             StepAction::UseItem => {
                 step_use_item(game, quest.quest_id, step, indices[i], compact_db, deadline).await
             }
-            StepAction::Sphere => step_sphere(step, deadline).await,
+            StepAction::Sphere => {
+                step_sphere(game, quest.quest_id, step, indices[i], deadline).await
+            }
+            StepAction::AcceptSphere => {
+                step_accept_sphere(game, quest.quest_id, step, deadline).await
+            }
             StepAction::Unsupported => Err(StepFailure::unsupported(&step.act_type)),
             StepAction::NeedsTrigger => Err(StepFailure::plan(
                 QuestOutcome::NeedsTrigger,
@@ -1539,18 +1597,8 @@ async fn run_quest(
         None if quest_failed(game, quest.quest_id) => QuestOutcome::Failed,
         None if drain_failed => QuestOutcome::Error,
         None => {
-            if let Some(step) = quest
-                .steps
-                .iter()
-                .rev()
-                .find(|s| !matches!(step_action(s), StepAction::Skip | StepAction::Passive))
-            {
-                failed_step = Some(FailedStep {
-                    act_id: step.act_id,
-                    act_type: step.act_type.clone(),
-                    reason: "quest not completed after all steps".into(),
-                });
-            }
+            // A quest whose run produced no step failure must still carry a clear reason.
+            failed_step = Some(stuck_failed_step(quest));
             QuestOutcome::Stuck
         }
     };
@@ -1669,6 +1717,7 @@ fn dist2(a: (f32, f32, f32), b: (f32, f32, f32)) -> f32 {
 
 // ----- step failures -----
 
+#[derive(Debug)]
 struct StepFailure {
     quest: QuestOutcome,
     step: StepOutcomeKind,
@@ -2448,25 +2497,33 @@ async fn gather_source(
                 return Ok(None);
             }
             let positions = source_positions(source);
-            let until = (Instant::now() + SOURCE_WINDOW).min(deadline);
-            let goal = KillGoal::Kills { want: 1 };
-            let Some((_note, killed)) =
-                hunt_until(game, &source.npc_ids, &positions, goal, until).await?
-            else {
-                return Ok(Some(format!(
-                    "npc_loot pack {} (no dropper found)",
-                    source.loot_pack_id
-                )));
-            };
-            if let Some(corpse) = killed.first().copied() {
-                game.loot_all(corpse).await.map_err(StepFailure::io)?;
-                game.close_loot_bag(corpse).await.map_err(StepFailure::io)?;
-                let until = (Instant::now() + LOOT_WAIT).min(deadline);
+            let window = (Instant::now() + SOURCE_WINDOW).min(deadline);
+            let mut kills = 0usize;
+            while !gather_done(&game.state, ids, want, quest_id, objective)
+                && Instant::now() < window
+            {
+                // One dropper per pass; `hunt_until` cycles the source's locations (and waits
+                // for respawns) while hunting.
+                let goal = KillGoal::Kills { want: 1 };
+                let Some((_, killed)) =
+                    hunt_until(game, &source.npc_ids, &positions, goal, window).await?
+                else {
+                    break;
+                };
+                kills += killed.len();
+                for corpse in killed {
+                    game.loot_all(corpse).await.map_err(StepFailure::io)?;
+                    game.close_loot_bag(corpse).await.map_err(StepFailure::io)?;
+                }
+                let until = (Instant::now() + LOOT_WAIT).min(window);
                 let _ = wait_for_gather(game, quest_id, ids, want, objective, until)
                     .await
                     .map_err(StepFailure::io)?;
             }
-            Ok(Some(format!("npc_loot pack {}", source.loot_pack_id)))
+            Ok(Some(format!(
+                "npc_loot pack {} ({kills} kill(s))",
+                source.loot_pack_id
+            )))
         }
         "doodad" => {
             // `DoodadFuncPurchase` opens a merchant (needs the store packets): skipped.
@@ -2490,49 +2547,79 @@ async fn gather_source(
                 return Ok(Some("doodad (no interaction skill in the data)".into()));
             };
             let positions = source_positions(source);
-            if let Some(pos) = positions.first() {
-                game.teleport(near(*pos)).await.map_err(StepFailure::io)?;
-                settle(game, deadline).await;
+            let mut used: HashSet<u32> = HashSet::new();
+            let mut used_count = 0usize;
+            let mut next_location = 0usize;
+            let mut last_template = 0u32;
+            while !gather_done(&game.state, ids, want, quest_id, objective)
+                && Instant::now() < deadline
+            {
+                // Using a doodad changes its phase or despawns it, so consume every visible
+                // doodad of the source templates exactly once; only then move on to the next
+                // plan location (and keep cycling while respawns come back).
+                let visible = find_unused_doodad(game, &source.doodad_ids, &used);
+                let doodad = match visible {
+                    Some(doodad) => doodad,
+                    None => {
+                        if !positions.is_empty() {
+                            let pos = positions[next_location % positions.len()];
+                            next_location += 1;
+                            game.teleport(near(pos)).await.map_err(StepFailure::io)?;
+                            settle(game, deadline).await;
+                        }
+                        let appear = (Instant::now() + APPEAR_WAIT).min(deadline);
+                        match wait_for_unused_doodad(game, &source.doodad_ids, &used, appear)
+                            .await?
+                        {
+                            Some(doodad) => doodad,
+                            None if positions.is_empty() => break,
+                            None => continue,
+                        }
+                    }
+                };
+                last_template = doodad.template_id;
+                game.use_doodad(skill, doodad.obj_id)
+                    .await
+                    .map_err(StepFailure::io)?;
+                used.insert(doodad.obj_id);
+                used_count += 1;
+                let until = (Instant::now() + USE_WAIT).min(deadline);
+                let _ = wait_for_gather(game, quest_id, ids, want, objective, until)
+                    .await
+                    .map_err(StepFailure::io)?;
             }
-            let appear = (Instant::now() + APPEAR_WAIT).min(deadline);
-            let doodad = wait_for_any_doodad(game, &source.doodad_ids, appear).await?;
-            let note = format!(
-                "doodad {} ({})",
-                source.func.as_deref().unwrap_or(""),
-                doodad.as_ref().map_or(0, |d| d.template_id)
-            );
-            let Some(doodad) = doodad else {
-                return Ok(Some(format!("{note} not visible")));
-            };
-            game.use_doodad(skill, doodad.obj_id)
-                .await
-                .map_err(StepFailure::io)?;
-            let until = (Instant::now() + USE_WAIT).min(deadline);
-            let _ = wait_for_gather(game, quest_id, ids, want, objective, until)
-                .await
-                .map_err(StepFailure::io)?;
-            Ok(Some(note))
+            Ok(Some(format!(
+                "doodad {} x{used_count} (last template {last_template})",
+                source.func.as_deref().unwrap_or("")
+            )))
         }
         // `craft` and `store` need the crafting / store UI packet flows (later runner scope).
         _ => Ok(Some(format!("{}(not driven)", source.kind))),
     }
 }
 
-/// Waits for any doodad of the ids to become visible; `Ok(None)` on the deadline.
-async fn wait_for_any_doodad(
+/// The nearest visible doodad of `ids` that has not been used yet.
+fn find_unused_doodad(game: &GameClient, ids: &[u32], used: &HashSet<u32>) -> Option<DoodadInfo> {
+    game.state
+        .doodads
+        .values()
+        .filter(|d| ids.contains(&d.template_id) && !used.contains(&d.obj_id))
+        .min_by(|a, b| {
+            dist2(a.pos, game.state.self_pos).total_cmp(&dist2(b.pos, game.state.self_pos))
+        })
+        .cloned()
+}
+
+/// Waits for an unused doodad of the ids to become visible; `Ok(None)` on the deadline.
+async fn wait_for_unused_doodad(
     game: &mut GameClient,
     ids: &[u32],
+    used: &HashSet<u32>,
     deadline: Instant,
 ) -> Result<Option<DoodadInfo>, StepFailure> {
     loop {
-        let found = ids
-            .iter()
-            .filter_map(|id| game.state.find_doodad(*id))
-            .min_by(|a, b| {
-                dist2(a.pos, game.state.self_pos).total_cmp(&dist2(b.pos, game.state.self_pos))
-            });
-        if found.is_some() {
-            return Ok(found);
+        if let Some(found) = find_unused_doodad(game, ids, used) {
+            return Ok(Some(found));
         }
         let left = deadline.saturating_duration_since(Instant::now());
         if left.is_zero() {
@@ -2544,22 +2631,198 @@ async fn wait_for_any_doodad(
     }
 }
 
-/// `QuestActObjSphere` / `QuestActConAcceptSphere`: the plan carries the sphere id but no
-/// coordinates. The geometry (centre and radius) lives in the client pak's
-/// `quest_sign_sphere.g` files (`sphere_quest.rs::load_quest_spheres`); the compact database
-/// only stores the sphere metadata, so the runner cannot reach the sphere.
-async fn step_sphere(step: &PlanStep, _deadline: Instant) -> StepRun {
-    Err(StepFailure::unsupported_reason(sphere_unsupported_reason(
-        step.target.ids.first().copied().unwrap_or(0),
+/// The first sign sphere of a step, or `runner_unsupported` with the stable "no sign sphere
+/// for component N" wording when the plan has no geometry (a real `quest_sign_sphere.g` data
+/// gap; `plan.py --spheres` fills it).
+fn sphere_of(step: &PlanStep) -> Result<&PlanSphere, StepFailure> {
+    let sphere = step
+        .spheres
+        .as_ref()
+        .and_then(|spheres| spheres.first())
+        .ok_or_else(|| {
+            StepFailure::unsupported_reason(format!(
+                "no sign sphere for component {}",
+                step.component_id
+            ))
+        })?;
+    if !sphere.world.eq_ignore_ascii_case(MAIN_WORLD) {
+        return Err(StepFailure::unsupported_reason(format!(
+            "sphere component {} is in world '{}' (runner only teleports within {MAIN_WORLD})",
+            sphere.component_id, sphere.world
+        )));
+    }
+    Ok(sphere)
+}
+
+/// Enters a sign sphere: teleport to the centre, then a small move that stays inside. The
+/// server's 500 ms sphere tick (`quests/spheres.rs::tick`) compares the player's last check
+/// position with the current one and dispatches the `EnterSphere` / starter event on the
+/// outside -> inside transition, so the server-side transform must move.
+async fn enter_sphere(
+    game: &mut GameClient,
+    sphere: &PlanSphere,
+    deadline: Instant,
+) -> Result<(), StepFailure> {
+    game.teleport((sphere.x, sphere.y, sphere.z))
+        .await
+        .map_err(StepFailure::io)?;
+    settle(game, deadline).await;
+    let step = (sphere.radius * 0.25).clamp(0.5, 2.0);
+    game.move_to((sphere.x + step, sphere.y, sphere.z), 1000)
+        .await
+        .map_err(StepFailure::io)?;
+    settle(game, deadline).await;
+    Ok(())
+}
+
+fn sphere_note(sphere: &PlanSphere) -> String {
+    format!(
+        "sphere component {} ({:.0},{:.0},{:.0} r{:.0})",
+        sphere.component_id, sphere.x, sphere.y, sphere.z, sphere.radius
+    )
+}
+
+/// `QuestActObjSphere` / `QuestActCheckSphere`: enter the sign sphere and wait for the
+/// objective (`ObjSphere` sets counter 1 on `EnterSphere`); `CheckSphere` only sets the
+/// server-side presence flag, so it is done once inside.
+async fn step_sphere(
+    game: &mut GameClient,
+    quest_id: u32,
+    step: &PlanStep,
+    objective: Option<u8>,
+    deadline: Instant,
+) -> StepRun {
+    let sphere = sphere_of(step)?.clone();
+    enter_sphere(game, &sphere, deadline).await?;
+    let note = sphere_note(&sphere);
+    let want = step.target.count.max(1);
+    if objective.is_none() {
+        // `CheckSphere`: presence flag only (no counter and no update packet); a short wait
+        // still catches a quest update driven by the entry.
+        let until = (Instant::now() + USE_WAIT).min(deadline);
+        let _ = wait_progress(game, quest_id, objective, want, until)
+            .await
+            .map_err(StepFailure::io)?;
+        return Ok((
+            StepOutcomeKind::Ok,
+            format!("{note} (presence set; no counter)"),
+        ));
+    }
+    let advanced = wait_progress(game, quest_id, objective, want, deadline)
+        .await
+        .map_err(StepFailure::io)?;
+    if advanced || quest_completed(game, quest_id) {
+        return Ok((StepOutcomeKind::Ok, note));
+    }
+    if quest_failed(game, quest_id) {
+        return Err(StepFailure::quest_failed(quest_id));
+    }
+    Err(StepFailure::timeout(format!(
+        "sphere objective of quest {quest_id} not reached"
     )))
 }
 
-/// The `runner_unsupported` reason of a sphere step (kept pure for tests).
-pub fn sphere_unsupported_reason(sphere_id: u32) -> String {
-    format!(
-        "sphere geometry not available (sphere {sphere_id} is a client-pak \
-         quest_sign_sphere.g area, not in the compact database)"
-    )
+/// `QuestActConAcceptSphere`: the server starts the quest when the player enters the holder
+/// sphere itself (`spheres.rs::tick` -> `events::on_enter_quest_starter_sphere` ->
+/// `add_quest(.., acceptor::SPHERE, sphere_id)`); no client packet is involved.
+async fn step_accept_sphere(
+    game: &mut GameClient,
+    quest_id: u32,
+    step: &PlanStep,
+    deadline: Instant,
+) -> StepRun {
+    let sphere = sphere_of(step)?.clone();
+    enter_sphere(game, &sphere, deadline).await?;
+    let answer_deadline = (Instant::now() + ACCEPT_WAIT).min(deadline);
+    let found = wait_for_packet(game, answer_deadline, |p| {
+        started_for(p, quest_id) || p.is_sc(sc::SCErrorMsgPacket)
+    })
+    .await
+    .map_err(StepFailure::io)?;
+    let note = sphere_note(&sphere);
+    match found {
+        Some(p) if started_for(&p, quest_id) => Ok((StepOutcomeKind::Ok, note)),
+        Some(p) => {
+            let code = p.stream().read_i16().unwrap_or(0);
+            Err(StepFailure::plan(
+                QuestOutcome::Rejected,
+                StepOutcomeKind::Rejected,
+                format!("sphere accept rejected: {}", error_reason(code)),
+            ))
+        }
+        None => Err(StepFailure::plan(
+            QuestOutcome::Rejected,
+            StepOutcomeKind::Rejected,
+            "no SCQuestContextStarted after entering the sphere (starter tick saw no entry)",
+        )),
+    }
+}
+
+/// The plan has no accept act at all: the runner must send the implicit empty accept before
+/// the steps (`engine.rs::starter_accepts` `conditions.is_empty()`).
+fn needs_implicit_accept(quest: &PlanQuest) -> bool {
+    !quest
+        .steps
+        .iter()
+        .any(|s| s.act_type.starts_with("QuestActConAccept"))
+}
+
+/// The failure point of a `stuck` result: the last non-passive step, or a generic reason when
+/// every step was passive (never a reason-less stuck).
+fn stuck_failed_step(quest: &PlanQuest) -> FailedStep {
+    quest
+        .steps
+        .iter()
+        .rev()
+        .find(|s| !matches!(step_action(s), StepAction::Skip | StepAction::Passive))
+        .map(|step| FailedStep {
+            act_id: step.act_id,
+            act_type: step.act_type.clone(),
+            reason: "quest not completed after all steps".into(),
+        })
+        .unwrap_or_else(|| {
+            gate_failed_step(
+                "quest not completed after all steps (only passive steps; the server did not \
+                 finish it)"
+                    .into(),
+            )
+        })
+}
+
+/// Quest starts whose plan has no accept act: the Start component has no acts, so the server
+/// accepts the quest from any source (`engine.rs::starter_accepts`: `conditions.is_empty()`).
+/// The empty `CSStartQuestContextPacket` is sent; a refusal / silence is `no_starter`.
+async fn implicit_accept(
+    game: &mut GameClient,
+    quest_id: u32,
+    deadline: Instant,
+) -> Result<(), StepFailure> {
+    game.start_quest(quest_id, 0)
+        .await
+        .map_err(StepFailure::io)?;
+    let answer_deadline = (Instant::now() + ACCEPT_WAIT).min(deadline);
+    let found = wait_for_packet(game, answer_deadline, |p| {
+        started_for(p, quest_id) || p.is_sc(sc::SCErrorMsgPacket)
+    })
+    .await
+    .map_err(StepFailure::io)?;
+    match found {
+        Some(p) if started_for(&p, quest_id) => Ok(()),
+        Some(p) => {
+            let code = p.stream().read_i16().unwrap_or(0);
+            Err(StepFailure::plan(
+                QuestOutcome::NoStarter,
+                StepOutcomeKind::Rejected,
+                format!("no starter: accept rejected ({})", error_reason(code)),
+            ))
+        }
+        None => Err(StepFailure::plan(
+            QuestOutcome::NoStarter,
+            StepOutcomeKind::Rejected,
+            "no starter: the plan has no accept act and the server ignored the empty accept \
+             (see engine.rs::starter_accepts)",
+        )),
+    }
 }
 
 /// `QuestActConAcceptComponent`: the act is always satisfied when the Start component runs
@@ -2639,14 +2902,24 @@ async fn step_accept_item(
             "starter item {ids:?} is not in the bag"
         )));
     };
-    let Some((skill, target_type)) = db
-        .item_use_skill(item.template_id)
-        .map_err(StepFailure::io)?
-    else {
-        return Err(StepFailure::unsupported_reason(format!(
-            "starter item {} has no use_skill_id",
-            item.template_id
-        )));
+    let (skill, target_type) = match db.item_use_skill(item.template_id) {
+        Ok(ItemUseSkill::Known {
+            skill_id,
+            target_type,
+        }) => (skill_id, target_type),
+        Ok(ItemUseSkill::MissingSkill { skill_id }) => {
+            return Err(StepFailure::unsupported_reason(format!(
+                "starter item {} use_skill_id {skill_id} has no skills row in the game data",
+                item.template_id
+            )));
+        }
+        Ok(ItemUseSkill::None) => {
+            return Err(StepFailure::unsupported_reason(format!(
+                "starter item {} has no use_skill_id",
+                item.template_id
+            )));
+        }
+        Err(e) => return Err(StepFailure::io(e)),
     };
     let target = use_item_target(game, target_type, step)?;
     game.use_item(item.item_id, item.template_id, skill, target)
@@ -2740,14 +3013,28 @@ async fn step_use_item(
                 "item {ids:?} left the bag before the objective was reached"
             )));
         };
-        let Some((skill, target_type)) = db
-            .item_use_skill(item.template_id)
-            .map_err(StepFailure::io)?
-        else {
-            return Err(StepFailure::unsupported_reason(format!(
-                "item {} has no use_skill_id",
-                item.template_id
-            )));
+        let (skill, target_type) = match db.item_use_skill(item.template_id) {
+            Ok(ItemUseSkill::Known {
+                skill_id,
+                target_type,
+            }) => (skill_id, target_type),
+            Ok(ItemUseSkill::MissingSkill { skill_id }) => {
+                // The client would cast this id; the server's `template_skill` lookup returns
+                // `None` and drops the use (`skills/handlers.rs`), so the objective cannot
+                // advance. Quest 1394 / item 14177 (use_skill_id 12043) is this data gap.
+                return Err(StepFailure::unsupported_reason(format!(
+                    "item {} use_skill_id {skill_id} has no skills row in the game data \
+                     (the server drops the use cast: systems/skills/handlers.rs::template_skill)",
+                    item.template_id
+                )));
+            }
+            Ok(ItemUseSkill::None) => {
+                return Err(StepFailure::unsupported_reason(format!(
+                    "item {} has no use_skill_id",
+                    item.template_id
+                )));
+            }
+            Err(e) => return Err(StepFailure::io(e)),
         };
         let target = use_item_target(game, target_type, step)?;
         game.use_item(item.item_id, item.template_id, skill, target)
@@ -3128,6 +3415,7 @@ mod tests {
             status: "ok".into(),
             sources: None,
             item_sources: None,
+            spheres: None,
         }
     }
 
@@ -3303,7 +3591,8 @@ mod tests {
             ("Start", "QuestActConAcceptItemGain", StepAction::Gather),
             ("Progress", "QuestActObjItemUse", StepAction::UseItem),
             ("Progress", "QuestActObjSphere", StepAction::Sphere),
-            ("Start", "QuestActConAcceptSphere", StepAction::Sphere),
+            ("Progress", "QuestActCheckSphere", StepAction::Sphere),
+            ("Start", "QuestActConAcceptSphere", StepAction::AcceptSphere),
             ("Ready", "QuestActConAutoComplete", StepAction::Passive),
             ("Reward", "QuestActSupplyItem", StepAction::Passive),
             ("Reward", "QuestActSupplyCopper", StepAction::Passive),
@@ -3448,10 +3737,121 @@ mod tests {
     }
 
     #[test]
-    fn sphere_steps_report_the_missing_client_pak_geometry() {
-        let reason = sphere_unsupported_reason(1234);
-        assert!(reason.contains("sphere geometry not available"), "{reason}");
-        assert!(reason.contains("1234"), "{reason}");
+    fn implicit_accept_only_for_plans_without_accept_acts() {
+        // Quests 3880 / 6038 / 6217: a Start component with no acts, only Reward steps.
+        let mut no_acts = quest(3880, "ok");
+        no_acts.steps = vec![
+            step("Reward", "QuestActSupplyExp"),
+            step("Reward", "QuestActConAutoComplete"),
+        ];
+        assert!(needs_implicit_accept(&no_acts));
+
+        let mut accept = quest(10, "ok");
+        accept.steps = vec![step("Start", "QuestActConAcceptNpc")];
+        assert!(!needs_implicit_accept(&accept));
+
+        // A dynamic (needs_trigger) accept act still counts as an accept act.
+        let mut dynamic = quest(11, "ok");
+        let mut step_ = step("Start", "QuestActConAcceptNpc");
+        step_.sources = Some(vec![PlanSource {
+            effect_id: 1,
+            skill_ids: vec![2],
+        }]);
+        dynamic.steps = vec![step_];
+        assert!(!needs_implicit_accept(&dynamic));
+
+        // Every accept class counts, including item / sphere / component starts.
+        for act_type in [
+            "QuestActConAcceptDoodad",
+            "QuestActConAcceptItem",
+            "QuestActConAcceptItemGain",
+            "QuestActConAcceptSphere",
+            "QuestActConAcceptComponent",
+        ] {
+            let mut q = quest(12, "ok");
+            q.steps = vec![step("Start", act_type)];
+            assert!(!needs_implicit_accept(&q), "{act_type}");
+        }
+    }
+
+    #[test]
+    fn stuck_without_a_failed_step_still_carries_a_reason() {
+        let mut all_passive = quest(3880, "ok");
+        all_passive.steps = vec![
+            step("Reward", "QuestActSupplyExp"),
+            step("Reward", "QuestActConAutoComplete"),
+        ];
+        let failed = stuck_failed_step(&all_passive);
+        assert_eq!(failed.act_id, 0);
+        assert!(
+            failed.reason.contains("only passive steps"),
+            "{}",
+            failed.reason
+        );
+
+        let mut with_kill = quest(10, "ok");
+        with_kill.steps = vec![step("Progress", "QuestActObjMonsterHunt")];
+        let failed = stuck_failed_step(&with_kill);
+        assert_eq!(failed.act_id, 2);
+        assert_eq!(failed.act_type, "QuestActObjMonsterHunt");
+    }
+
+    #[test]
+    fn sphere_steps_without_geometry_report_the_stable_reason() {
+        let without = step("Progress", "QuestActObjSphere");
+        let failure = sphere_of(&without).unwrap_err();
+        assert_eq!(failure.reason, "no sign sphere for component 1");
+        assert_eq!(failure.quest, QuestOutcome::RunnerUnsupported);
+
+        let mut with = step("Progress", "QuestActObjSphere");
+        with.spheres = Some(vec![PlanSphere {
+            world: "main_world".into(),
+            x: 1.0,
+            y: 2.0,
+            z: 3.0,
+            radius: 30.0,
+            zone_id: 140,
+            component_id: 64,
+        }]);
+        assert_eq!(sphere_of(&with).unwrap().radius, 30.0);
+
+        // Other worlds (instances) are not reachable over `/move`.
+        let mut instance = step("Progress", "QuestActObjSphere");
+        instance.spheres = Some(vec![PlanSphere {
+            world: "instance_burntcastle_armory".into(),
+            radius: 10.0,
+            ..PlanSphere::default()
+        }]);
+        let failure = sphere_of(&instance).unwrap_err();
+        assert!(
+            failure.reason.contains("instance_burntcastle_armory"),
+            "{}",
+            failure.reason
+        );
+    }
+
+    #[test]
+    fn plan_spheres_deserialize_the_plan_shape() {
+        let plan_step: PlanStep = serde_json::from_str(
+            r#"{
+              "component_id": 64, "component_kind": "Start", "act_id": 11435,
+              "act_type": "QuestActConAcceptSphere",
+              "target": {"kind": "sphere", "ids": [5], "count": 1},
+              "locations": [{"world": "main_world", "x": 12595.5, "y": 14006.63, "z": 108.25}],
+              "status": "ok",
+              "spheres": [{"world": "main_world", "x": 12595.5, "y": 14006.63, "z": 108.25,
+                           "radius": 30.0, "zone_id": 140, "component_id": 64}]
+            }"#,
+        )
+        .unwrap();
+        let sphere = sphere_of(&plan_step).unwrap().clone();
+        assert_eq!(sphere.component_id, 64);
+        assert_eq!(sphere.radius, 30.0);
+        assert_eq!(sphere.zone_id, 140);
+        assert!((sphere.x - 12595.5).abs() < 0.01);
+
+        // Steps without `spheres` (old plans / the data gap) load with an empty option.
+        assert!(step("Progress", "QuestActObjSphere").spheres.is_none());
     }
 
     #[test]
@@ -3660,6 +4060,7 @@ mod tests {
             (QuestOutcome::RequirementUnmet, "requirement_unmet"),
             (QuestOutcome::BlockedPlan, "blocked_plan"),
             (QuestOutcome::Auxiliary, "auxiliary"),
+            (QuestOutcome::NoStarter, "no_starter"),
             (QuestOutcome::RunnerUnsupported, "runner_unsupported"),
             (QuestOutcome::NeedsTrigger, "needs_trigger"),
             (QuestOutcome::Error, "error"),
