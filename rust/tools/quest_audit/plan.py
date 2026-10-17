@@ -17,7 +17,10 @@ source gets "unknown_item_source": it is reported but does not block the quest,
 because items also come from paths the plan does not model (skill effects, mail,
 other quests); the live runner decides. Each quest also carries the accept prerequisites
 (`unit_reqs` of its Start components, owner type "QuestComponent", the only quest
-owner type the accept path evaluates) plus `min_level` and `prereq_quests`. Run:
+owner type the accept path evaluates) plus `min_level` and `prereq_quests`. With
+`--spheres` the sphere steps (ObjSphere / ConAcceptSphere / CheckSphere) get their
+`quest_sign_sphere.g` centres (world.xml zone origins are required in the export;
+see `load_spheres`). Run:
 
     python plan.py --db compact.sqlite3 --worlds Data/Worlds --output plan.json
 """
@@ -27,6 +30,7 @@ from collections import Counter, defaultdict
 import json
 from pathlib import Path
 import sqlite3
+import sys
 
 
 # `QUEST_CATEGORY_TUTORIAL` (systems/quests/data.rs); these contexts are not loaded.
@@ -49,6 +53,9 @@ ITEM_SOURCE_ACTS = {"QuestActObjItemGather", "QuestActObjItemUse", "QuestActConA
 # Act class -> supply detail table (the earlier-act `quest_supply` source).
 ITEM_SUPPLY_ACTS = {"QuestActSupplyItem": "quest_act_supply_items",
                     "QuestActSupplySelectiveItem": "quest_act_supply_selective_items"}
+# The acts whose `quest_sign_sphere.g` component spheres are exported by the gated
+# `real_compact_db_quest_accounting` test (systems/quests/tests.rs).
+SPHERE_ACTS = {"QuestActObjSphere", "QuestActConAcceptSphere", "QuestActCheckSphere"}
 # `unit_reqs.kind_id` -> symbolic name. The names are the failure keys of
 # `systems/skills/unit_reqs.rs::validate` (`skill_urk_*` without the prefix); kinds whose
 # skill arm returns the generic "skill_failure" take the constant name of
@@ -330,6 +337,58 @@ def location_dicts(kind, ids, spawns):
             for placement in closest(list(merged))]
 
 
+def load_spheres(path):
+    """Quest sign spheres from the `real_compact_db_quest_accounting` export.
+
+    The world conversion is the server's: `spheres.rs::SphereQuestManager::load`
+    sets ``xyz = (origin_x * 1024 + local[0], origin_y * 1024 + local[1], local[2])``
+    where the origin is `zone_origin_cell` (`mod.rs::System::start` ->
+    `subzone.rs::zone_origin_cell` -> `WorldTemplates.xml_world_zones`, the
+    `<Zone originX= originY=>` attributes of the client pak's world.xml,
+    `data/world_templates.rs::read_zone`; `data.rs::load_sign_spheres` reads the
+    zone-local `pos`). The compact DB has no origin cells, so the export must
+    carry them: a top-level ``"zone_origins": {"<zone_id>": [origin_x, origin_y]}``
+    map, or ``"origin": [x, y]`` / ``"originX"/"originY"`` on each row. Rows
+    without an origin are indexed but produce no coordinates.
+    """
+    export = json.loads(Path(path).read_text(encoding="utf-8"))
+    rows = export.get("sign_spheres", []) if isinstance(export, dict) else export
+    origins = export.get("zone_origins", {}) if isinstance(export, dict) else {}
+
+    def origin_of(row):
+        origin = row.get("origin")
+        if origin is None and "originX" in row:
+            origin = [row.get("originX"), row.get("originY")]
+        if origin is None:
+            origin = origins.get(str(row.get("zone_id")))
+            if origin is None:
+                origin = origins.get(row.get("zone_id"))
+        if isinstance(origin, dict):
+            return origin.get("origin_x", origin.get("x")), origin.get("origin_y", origin.get("y"))
+        if isinstance(origin, (list, tuple)) and len(origin) == 2:
+            return origin[0], origin[1]
+        return None
+
+    index = {"by_component": defaultdict(list), "by_quest": defaultdict(list),
+             "with_origin": 0, "without_origin": 0}
+    for row in rows:
+        entry = {"quest_id": row.get("quest_id"), "component_id": row.get("component_id"),
+                 "zone_id": row.get("zone_id"), "radius": row.get("radius")}
+        origin = origin_of(row)
+        local = row.get("local") or [0.0, 0.0, 0.0]
+        if (origin and len(local) == 3
+                and all(isinstance(v, (int, float)) for v in origin + tuple(local[:3]))):
+            entry.update(world=row.get("world", "main_world"),
+                         x=origin[0] * 1024.0 + local[0],
+                         y=origin[1] * 1024.0 + local[1], z=local[2])
+            index["with_origin"] += 1
+        else:
+            index["without_origin"] += 1
+        index["by_component"][(entry["quest_id"], entry["component_id"])].append(entry)
+        index["by_quest"][entry["quest_id"]].append(entry)
+    return index
+
+
 def closest(locations, limit=5):
     """The first location plus the up to `limit` - 1 nearest of the rest."""
     if not locations:
@@ -606,8 +665,12 @@ def step_target(conn, details, lookup, act_class, detail_id):
     return None
 
 
-def plan(conn, spawns, quest_filter=None):
-    """Quest plans (sorted by quest id) plus the summary counters."""
+def plan(conn, spawns, quest_filter=None, spheres=None):
+    """Quest plans (sorted by quest id) plus the summary counters.
+
+    `spheres` is the `load_spheres` index (or None without `--spheres`); sphere
+    steps then carry `spheres` and their first location is the sphere centre.
+    """
     contexts = rows(conn, "quest_contexts")
     components = rows(conn, "quest_components")
     acts = rows(conn, "quest_acts")
@@ -629,6 +692,7 @@ def plan(conn, spawns, quest_filter=None):
     details = {}
     quests = []
     missing_by_quest = defaultdict(set)
+    sphere_quest_only = Counter()
     for quest in sorted(contexts, key=lambda q: q["id"]):
         if quest["category_id"] == TUTORIAL:
             continue
@@ -704,6 +768,27 @@ def plan(conn, spawns, quest_filter=None):
                     step["sources"] = sources
                 if item_targets is not None:
                     step["item_sources"] = item_targets
+                if spheres is not None and act_class in SPHERE_ACTS:
+                    # `quest_sign_sphere.g` areas are keyed by (quest, component); fall back
+                    # to any sphere of the quest when the component has none.
+                    matched = spheres["by_component"].get((quest["id"], component["id"]))
+                    if matched:
+                        sphere_data = matched
+                    else:
+                        sphere_data = spheres["by_quest"].get(quest["id"], [])
+                        if sphere_data:
+                            sphere_quest_only[quest["id"]] += 1
+                    converted = [s for s in sphere_data if "x" in s]
+                    step["spheres"] = [{"world": s["world"], "x": s["x"], "y": s["y"],
+                                        "z": s["z"], "radius": s["radius"],
+                                        "zone_id": s["zone_id"],
+                                        "component_id": s["component_id"]}
+                                       for s in converted]
+                    if converted:
+                        centres = [(s["world"], s["x"], s["y"], s["z"]) for s in converted]
+                        step["locations"] = [
+                            {"world": w, "x": x, "y": y, "z": z}
+                            for w, x, y, z in closest(centres)] + step["locations"]
                 steps.append(step)
                 optional = kind_id in OPTIONAL_KINDS
                 if status == "unsupported":
@@ -754,6 +839,14 @@ def plan(conn, spawns, quest_filter=None):
                    "doodad" in missing_by_quest[q["quest_id"]] for q in quests),
                "dynamic_spawn_steps": sum(
                    s["status"] == "dynamic_spawn" for q in quests for s in q["steps"]),
+               "sphere_steps": sum(
+                   s["act_type"] in SPHERE_ACTS for q in quests for s in q["steps"]),
+               "sphere_steps_with_coordinates": sum(
+                   bool(s.get("spheres")) for q in quests for s in q["steps"]),
+               "sphere_steps_quest_only_match": sum(
+                   sphere_quest_only[q["quest_id"]] for q in quests),
+               "sign_spheres_with_origin": spheres["with_origin"] if spheres else 0,
+               "sign_spheres_without_origin": spheres["without_origin"] if spheres else 0,
                "scheduled_spawn_steps": sum(
                    s["status"] == "scheduled_spawn" for q in quests for s in q["steps"]),
                "unknown_item_source_steps": sum(
@@ -777,11 +870,26 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--quest", type=int, action="append", dest="quests",
                         help="Only plan this quest context id (repeatable)")
+    parser.add_argument("--spheres", type=Path,
+                        help="quest-sign-sphere export of real_compact_db_quest_accounting")
     args = parser.parse_args()
     db = args.db.resolve(strict=True)
     worlds = args.worlds.resolve(strict=True)
     if args.output.resolve() == db:
         parser.error("Output must not overwrite the source database")
+    spheres = None
+    if args.spheres:
+        spheres = load_spheres(args.spheres.resolve(strict=True))
+        if spheres["without_origin"]:
+            print(
+                f"warning: {spheres['without_origin']} of "
+                f"{spheres['without_origin'] + spheres['with_origin']} sign spheres have no "
+                'zone origin cells; add a top-level "zone_origins": {"<zone_id>": '
+                "[origin_x, origin_y]} map (or per-row \"origin\": [x, y]) to the export "
+                "for world coordinates. The values are the <Zone originX= originY=> "
+                "attributes of the client pak world.xml "
+                "(WorldTemplates.xml_world_zones, subzone.rs::zone_origin_cell).",
+                file=sys.stderr)
     with sqlite3.connect(f"file:{db.as_posix()}?mode=ro", uri=True) as conn:
         conn.row_factory = sqlite3.Row
         ids = {"npc": {row["id"] for row in rows(conn, "npcs")},
@@ -800,7 +908,7 @@ def main():
         known_schedules = {row["id"] for row in rows(conn, "game_schedules")}
         spawns = load_spawns(worlds, ids, spawner_npcs, schedule_spawners,
                              schedule_doodads, windows, known_schedules)
-        result = plan(conn, spawns, set(args.quests) if args.quests else None)
+        result = plan(conn, spawns, set(args.quests) if args.quests else None, spheres)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(result["quests"], ensure_ascii=False, indent=2) + "\n",
                            encoding="utf-8")

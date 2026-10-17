@@ -133,6 +133,10 @@ summoned by a `SpawnEffect` are `dynamic_spawn` with the effect and skill ids:
 python -I rust/tools/quest_audit/plan.py --db rust/crates/aaemu-game/app/Data/compact.sqlite3 --worlds rust/crates/aaemu-game/app/Data/Worlds --output D:/aaemu-audits/quest-plan.json
 ```
 
+Add `--spheres D:/aaemu-audits/quests-spheres.json` (the export of the gated
+`real_compact_db_quest_accounting` test below, which also writes the zone origin cells) to give
+sphere steps world coordinates.
+
 Run from `rust/` to verify actual loader accounting and optional client geometry:
 
 ```powershell

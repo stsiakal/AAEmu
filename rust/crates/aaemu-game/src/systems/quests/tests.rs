@@ -2647,7 +2647,27 @@ async fn real_compact_db_quest_accounting() {
     });
     eprintln!("quest accounting: {summary}");
     if let Ok(path) = std::env::var("AAEMU_QUEST_SPHERE_AUDIT") {
-        let artifact = serde_json::json!({"summary": summary, "sign_spheres": raw});
+        // The sphere positions are zone-local; `SphereQuestManager::load` adds the zone origin
+        // cell (x 1024) from the client world.xml, so export those origins as well.
+        let app = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("app");
+        let zone_origins: serde_json::Map<String, serde_json::Value> =
+            match crate::data::world_templates::WorldTemplates::load(&files, &app) {
+                Ok(worlds) => d
+                    .sign_spheres
+                    .iter()
+                    .map(|s| s.zone_id)
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .into_iter()
+                    .map(|zone| {
+                        let (x, y) = crate::systems::npcs::subzone::zone_origin_cell(&worlds, zone);
+                        (zone.to_string(), serde_json::json!([x, y]))
+                    })
+                    .collect(),
+                Err(_) => serde_json::Map::new(),
+            };
+        let artifact = serde_json::json!({
+            "summary": summary, "sign_spheres": raw, "zone_origins": zone_origins,
+        });
         std::fs::write(path, serde_json::to_vec_pretty(&artifact).unwrap()).unwrap();
     }
 }

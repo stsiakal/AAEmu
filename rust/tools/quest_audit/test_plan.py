@@ -6,7 +6,7 @@ import sqlite3
 import tempfile
 import unittest
 
-from plan import closest, load_spawns, plan
+from plan import closest, load_spawns, load_spheres, plan
 
 
 def database():
@@ -557,6 +557,71 @@ class QuestPlanTests(unittest.TestCase):
             self.assertEqual(source["locations"], [{
                 "world": "main_world", "x": 1.0, "y": 2.0, "z": 3.0,
                 "schedule": {"spawner_id": 15059, "schedule_ids": [7]}}])
+
+    def test_sphere_steps_get_world_coordinates(self):
+        with database() as conn, tempfile.TemporaryDirectory() as tmp:
+            quest(conn, 1)
+            component(conn, 9, 1, 2)
+            component(conn, 10, 1, 4)
+            conn.execute("INSERT INTO quest_act_obj_spheres VALUES (1, 500)")
+            act(conn, 1, 10, 1, "QuestActObjSphere")
+            path = Path(tmp) / "spheres.json"
+            path.write_text(json.dumps({
+                "sign_spheres": [{"quest_id": 1, "component_id": 10, "zone_id": 133,
+                                  "local": [100.0, 200.0, 300.0], "radius": 25.0}],
+                "zone_origins": {"133": [9, 14]}}), encoding="utf-8")
+            result = plan(conn, {"npc": {}, "doodad": {}}, spheres=load_spheres(path))
+            step = result["quests"][0]["steps"][0]
+            self.assertEqual(step["spheres"], [{
+                "world": "main_world", "x": 9 * 1024.0 + 100.0, "y": 14 * 1024.0 + 200.0,
+                "z": 300.0, "radius": 25.0, "zone_id": 133, "component_id": 10}])
+            # The sphere centre is the first location (spheres.rs::SphereQuestManager::load:
+            # origin cell * 1024 + zone-local pos).
+            self.assertEqual(step["locations"][0],
+                             {"world": "main_world", "x": 9 * 1024.0 + 100.0,
+                              "y": 14 * 1024.0 + 200.0, "z": 300.0})
+            self.assertEqual((result["summary"]["sphere_steps"],
+                              result["summary"]["sphere_steps_with_coordinates"],
+                              result["summary"]["sphere_steps_quest_only_match"],
+                              result["summary"]["sign_spheres_with_origin"]), (1, 1, 0, 1))
+
+    def test_sphere_quest_only_match_and_missing_origin_rows(self):
+        with database() as conn, tempfile.TemporaryDirectory() as tmp:
+            quest(conn, 1)
+            component(conn, 9, 1, 2)
+            component(conn, 10, 1, 4)
+            conn.execute("INSERT INTO quest_act_con_accept_spheres VALUES (1, 500)")
+            act(conn, 1, 10, 1, "QuestActConAcceptSphere")
+            path = Path(tmp) / "spheres.json"
+            path.write_text(json.dumps({"sign_spheres": [
+                {"quest_id": 1, "component_id": 99, "zone_id": 133,
+                 "local": [1.0, 2.0, 3.0], "radius": 5.0}]}), encoding="utf-8")
+            result = plan(conn, {"npc": {}, "doodad": {}}, spheres=load_spheres(path))
+            step = result["quests"][0]["steps"][0]
+            # The only sphere row of the quest matches via the quest-only fallback but has
+            # no origin cell, so no world coordinates are attached.
+            self.assertEqual(step["spheres"], [])
+            self.assertEqual(step["locations"], [])
+            self.assertEqual((result["summary"]["sphere_steps_quest_only_match"],
+                              result["summary"]["sphere_steps_with_coordinates"],
+                              result["summary"]["sign_spheres_without_origin"]), (1, 0, 1))
+
+    def test_sphere_per_row_origin_and_check_sphere(self):
+        with database() as conn, tempfile.TemporaryDirectory() as tmp:
+            quest(conn, 1)
+            component(conn, 9, 1, 2)
+            component(conn, 10, 1, 4)
+            act(conn, 1, 10, 1, "QuestActCheckSphere")
+            path = Path(tmp) / "spheres.json"
+            path.write_text(json.dumps({"sign_spheres": [
+                {"quest_id": 1, "component_id": 10, "zone_id": 7,
+                 "local": [1.0, 2.0, 3.0], "radius": 5.0, "origin": [1, 2]}]}),
+                encoding="utf-8")
+            result = plan(conn, {"npc": {}, "doodad": {}}, spheres=load_spheres(path))
+            step = result["quests"][0]["steps"][0]
+            self.assertEqual(step["spheres"], [{
+                "world": "main_world", "x": 1025.0, "y": 2050.0, "z": 3.0, "radius": 5.0,
+                "zone_id": 7, "component_id": 10}])
 
     def test_filter_selects_requested_quests_and_skips_tutorials(self):
         with database() as conn:
