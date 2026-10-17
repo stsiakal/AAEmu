@@ -4,19 +4,24 @@
 //! level 2 (proxy / CryNetwork) just `[u16 opcode]`. 1.2 traffic is neither encrypted nor
 //! compressed.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::time::{Duration, Instant};
 
+use aaemu_commons::helpers;
 use aaemu_commons::net::FrameCodec;
 use aaemu_commons::PacketStream;
 use aaemu_game::opcodes::{cs, name_of, pp, sc};
-use anyhow::{anyhow, bail, Context};
+use aaemu_game::systems::quests::model::status as quest_status;
+use aaemu_game::systems::services::commands::COMMAND_PREFIX;
+use aaemu_game::systems::social::chat::chat_type;
+use anyhow::{anyhow, bail, ensure, Context};
 use futures::{SinkExt, StreamExt};
 use tokio::net::tcp::OwnedWriteHalf;
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 use tokio_util::codec::{FramedRead, FramedWrite};
 
+use crate::quest::{self, QuestInfo};
 use crate::record::{Channel, Dir, Recorder};
 
 pub const LEVEL_GAME: u8 = 1;
@@ -75,6 +80,12 @@ pub struct UnitInfo {
     pub pos: (f32, f32, f32),
 }
 
+/// How many recent inbound chat texts [`GameState`] keeps.
+pub const CHAT_LOG_LIMIT: usize = 64;
+
+/// Move time reported by the landing `CSMoveUnitPacket` after a teleport.
+const TELEPORT_LAND_MS: u32 = 1000;
+
 /// What the bot learned from the server so far.
 #[derive(Debug, Default)]
 pub struct GameState {
@@ -87,6 +98,19 @@ pub struct GameState {
     pub self_obj: u32,
     pub self_pos: (f32, f32, f32),
     pub units: HashMap<u32, UnitInfo>,
+    /// Active quests by template id (`SCQuestsPacket`, whose select snapshot is sent in chunks
+    /// of 20, and the `SCQuestContext*` updates).
+    pub quests: BTreeMap<u32, QuestInfo>,
+    /// Quest template ids completed during this session (also the `SCCompletedQuestsPacket`
+    /// snapshot of the character select).
+    pub completed_quests: BTreeSet<u32>,
+    /// Quest template ids whose status went to `FAILED` (or an `SCQuestContextFailedPacket`).
+    pub failed_quests: BTreeSet<u32>,
+    /// Template id of the last `SCQuestContextResetPacket`.
+    pub last_reset: Option<u32>,
+    /// The last [`CHAT_LOG_LIMIT`] inbound `SCChatMessagePacket` texts (say, system and GM
+    /// command replies).
+    pub chat_log: VecDeque<String>,
     /// First item of the bag (`SCCharacterInvenContentsPacket`, slot type 2): `(item id, slot)`.
     pub bag_items: Vec<(u64, u8, u32)>,
     pub bag_slots: u8,
@@ -321,103 +345,195 @@ impl GameClient {
 
     /// Updates [`GameState`] from a packet.
     fn observe(&mut self, p: &Packet) -> anyhow::Result<()> {
-        let mut s = p.stream();
-        let st = &mut self.state;
-        if p.is(LEVEL_PROXY, pp::ChangeStatePacket) {
-            st.last_change_state = Some(s.read_i32()?);
-        } else if p.is_sc(sc::X2EnterWorldResponsePacket) {
-            let _reason = s.read_i16()?;
-            let _gm = s.read_bool()?;
-            st.token = s.read_u32()?;
-            st.stream_port = s.read_u16()?;
-        } else if p.is_sc(sc::SCCharacterListPacket) {
-            let last = s.read_bool()?;
-            let n = s.read_u8()?;
-            if n > 0 {
-                // Only the first entry can be located without decoding a whole Character.
-                let id = s.read_u32()?;
-                let name = s.read_string()?;
-                if !st.characters.iter().any(|c| c.id == id) {
-                    st.characters.push(CharInfo { id, name });
-                }
-            }
-            st.char_list_done |= last;
-        } else if p.is_sc(sc::SCCreateCharacterResponsePacket) {
+        observe_into(&mut self.state, p)
+    }
+}
+
+/// Applies one received packet to `state` (a free function so tests can drive the parsing
+/// without a connection).
+pub(crate) fn observe_into(st: &mut GameState, p: &Packet) -> anyhow::Result<()> {
+    let mut s = p.stream();
+    if p.is(LEVEL_PROXY, pp::ChangeStatePacket) {
+        st.last_change_state = Some(s.read_i32()?);
+    } else if p.is_sc(sc::X2EnterWorldResponsePacket) {
+        let _reason = s.read_i16()?;
+        let _gm = s.read_bool()?;
+        st.token = s.read_u32()?;
+        st.stream_port = s.read_u16()?;
+    } else if p.is_sc(sc::SCCharacterListPacket) {
+        let last = s.read_bool()?;
+        let n = s.read_u8()?;
+        if n > 0 {
+            // Only the first entry can be located without decoding a whole Character.
             let id = s.read_u32()?;
             let name = s.read_string()?;
-            st.characters.push(CharInfo { id, name });
-        } else if p.is_sc(sc::SCUnitStatePacket) {
-            let obj_id = s.read_bc()?;
-            let name = s.read_string()?;
-            let unit_type = s.read_u8()?;
-            let id = match unit_type {
-                0 => {
-                    let id = s.read_u32()?;
-                    s.read_u64()?;
-                    id
-                }
-                1 => {
-                    s.read_bc()?;
-                    let tpl = s.read_u32()?;
-                    s.read_u32()?;
-                    s.read_u8()?;
-                    tpl
-                }
-                _ => return Ok(()),
-            };
-            let _owner = s.read_string()?;
-            let pos = s.read_position()?;
-            if unit_type == 0 && id == st.selected_char && id != 0 {
-                st.self_obj = obj_id;
-                st.self_pos = pos;
-            }
-            st.units.insert(
-                obj_id,
-                UnitInfo {
-                    obj_id,
-                    name,
-                    unit_type,
-                    id,
-                    pos,
-                },
-            );
-        } else if p.is_sc(sc::SCOneUnitMovementPacket) {
-            // objId, MoveTypeEnum (1 = Unit), time, flags [+ scType, phase], position.
-            let obj_id = s.read_bc()?;
-            if s.read_u8()? == 1 {
-                s.read_u32()?;
-                let flags = s.read_u8()?;
-                if flags & 0x10 != 0 {
-                    s.read_u32()?;
-                    s.read_u8()?;
-                }
-                let pos = s.read_position()?;
-                if let Some(u) = st.units.get_mut(&obj_id) {
-                    u.pos = pos;
-                }
-            }
-        } else if p.is_sc(sc::SCUnitsRemovedPacket) {
-            let n = s.read_u16()?;
-            for _ in 0..n {
-                let id = s.read_bc()?;
-                st.units.remove(&id);
-            }
-        } else if p.is_sc(sc::SCCharacterInvenContentsPacket) {
-            let slot_type = s.read_u8()?;
-            let _num_chunks = s.read_u8()?;
-            let chunk = s.read_u8()?;
-            if slot_type == 2 {
-                // 10 items per chunk; only leading items can be located (variable layout).
-                let tpl = s.read_u32()?;
-                if tpl != 0 {
-                    let id = s.read_u64()?;
-                    st.bag_items.push((id, chunk * 10, tpl));
-                }
+            if !st.characters.iter().any(|c| c.id == id) {
+                st.characters.push(CharInfo { id, name });
             }
         }
-        Ok(())
+        st.char_list_done |= last;
+    } else if p.is_sc(sc::SCCreateCharacterResponsePacket) {
+        let id = s.read_u32()?;
+        let name = s.read_string()?;
+        st.characters.push(CharInfo { id, name });
+    } else if p.is_sc(sc::SCUnitStatePacket) {
+        let obj_id = s.read_bc()?;
+        let name = s.read_string()?;
+        let unit_type = s.read_u8()?;
+        let id = match unit_type {
+            0 => {
+                let id = s.read_u32()?;
+                s.read_u64()?;
+                id
+            }
+            1 => {
+                s.read_bc()?;
+                let tpl = s.read_u32()?;
+                s.read_u32()?;
+                s.read_u8()?;
+                tpl
+            }
+            _ => return Ok(()),
+        };
+        let _owner = s.read_string()?;
+        let pos = s.read_position()?;
+        if unit_type == 0 && id == st.selected_char && id != 0 {
+            st.self_obj = obj_id;
+            st.self_pos = pos;
+        }
+        st.units.insert(
+            obj_id,
+            UnitInfo {
+                obj_id,
+                name,
+                unit_type,
+                id,
+                pos,
+            },
+        );
+    } else if p.is_sc(sc::SCOneUnitMovementPacket) {
+        // objId, MoveTypeEnum (1 = Unit), time, flags [+ scType, phase], position.
+        let obj_id = s.read_bc()?;
+        if s.read_u8()? == 1 {
+            s.read_u32()?;
+            let flags = s.read_u8()?;
+            if flags & 0x10 != 0 {
+                s.read_u32()?;
+                s.read_u8()?;
+            }
+            let pos = s.read_position()?;
+            if let Some(u) = st.units.get_mut(&obj_id) {
+                u.pos = pos;
+            }
+        }
+    } else if p.is_sc(sc::SCUnitsRemovedPacket) {
+        let n = s.read_u16()?;
+        for _ in 0..n {
+            let id = s.read_bc()?;
+            st.units.remove(&id);
+        }
+    } else if p.is_sc(sc::SCCharacterInvenContentsPacket) {
+        let slot_type = s.read_u8()?;
+        let _num_chunks = s.read_u8()?;
+        let chunk = s.read_u8()?;
+        if slot_type == 2 {
+            // 10 items per chunk; only leading items can be located (variable layout).
+            let tpl = s.read_u32()?;
+            if tpl != 0 {
+                let id = s.read_u64()?;
+                st.bag_items.push((id, chunk * 10, tpl));
+            }
+        }
+    } else if p.is_sc(sc::SCQuestsPacket) {
+        // The select snapshot arrives in chunks of 20; upsert row by row.
+        for q in quest::quest_rows(&p.body)? {
+            upsert_quest(st, q);
+        }
+    } else if p.is_sc(sc::SCCompletedQuestsPacket) {
+        for id in quest::completed_quest_rows(&p.body)? {
+            st.completed_quests.insert(id);
+        }
+    } else if p.is_sc(sc::SCQuestContextStartedPacket) || p.is_sc(sc::SCQuestContextUpdatedPacket) {
+        upsert_quest(st, quest::read_quest_row(&mut s)?);
+    } else if p.is_sc(sc::SCQuestContextCompletedPacket) {
+        let quest_id = s.read_u32()?;
+        s.read_u64()?; // body8
+        s.read_u32()?; // component id
+        st.completed_quests.insert(quest_id);
+        st.quests.remove(&quest_id);
+    } else if p.is_sc(sc::SCQuestContextFailedPacket) {
+        // No Rust definition: the 1.2 table declares the opcode but neither server sends
+        // it. The layout follows the Completed / Reset siblings (`quests/packets.rs`).
+        let quest_id = s.read_u32()?;
+        s.read_u64()?; // body8
+        s.read_u32()?; // component id
+        st.failed_quests.insert(quest_id);
+        st.quests.remove(&quest_id);
+    } else if p.is_sc(sc::SCQuestContextResetPacket) {
+        let quest_id = s.read_u32()?;
+        s.read_u64()?; // body8
+        s.read_u32()?; // component id
+        st.last_reset = Some(quest_id);
+        st.quests.remove(&quest_id);
+    } else if p.is_sc(sc::SCCharacterStatePacket) {
+        // A character-select snapshot starts here; the quest / completed packets follow.
+        st.quests.clear();
+        st.completed_quests.clear();
+        st.failed_quests.clear();
+        st.last_reset = None;
+    } else if p.is_sc(sc::SCChatMessagePacket) {
+        if let Some(text) = chat_text(p) {
+            if st.chat_log.len() == CHAT_LOG_LIMIT {
+                st.chat_log.pop_front();
+            }
+            st.chat_log.push_back(text);
+        }
+    } else if p.is_sc(sc::SCTeleportUnitPacket) {
+        // Every teleport (GM `/move` included) confirms the own position with this packet;
+        // the client answers with `CSTeleportEndedPacket`.
+        s.read_u8()?; // reason
+        s.read_i16()?; // error message
+        let pos = s.read_position()?;
+        s.read_f32()?; // z2 (yaw)
+        st.self_pos = pos;
+        if st.self_obj != 0 {
+            if let Some(u) = st.units.get_mut(&st.self_obj) {
+                u.pos = pos;
+            }
+        }
     }
+    Ok(())
+}
 
+/// Records `q` as an active quest; a `FAILED` status is also remembered in
+/// [`GameState::failed_quests`].
+fn upsert_quest(st: &mut GameState, q: QuestInfo) {
+    if q.status == quest_status::FAILED {
+        st.failed_quests.insert(q.template_id);
+    }
+    st.quests.insert(q.template_id, q);
+}
+
+/// Message text of an `SCChatMessagePacket` (the second string, after the sender), `None` for
+/// any other packet or a malformed body.
+pub fn chat_text(p: &Packet) -> Option<String> {
+    if !p.is_sc(sc::SCChatMessagePacket) {
+        return None;
+    }
+    let mut s = p.stream();
+    s.read_i16().ok()?; // chat type
+    s.read_i16().ok()?; // packed sub type
+    s.read_u32().ok()?; // packed faction
+    s.read_bc().ok()?; // sender object id
+    s.read_u32().ok()?; // sender character id
+    s.read_u8().ok()?; // language type
+    s.read_u8().ok()?; // race
+    s.read_u32().ok()?; // faction
+    s.read_string().ok()?; // sender name
+    s.read_string().ok()
+}
+
+impl GameClient {
     // ----- C2G packets -----
 
     /// `X2EnterWorldPacket`.
@@ -538,18 +654,61 @@ impl GameClient {
         self.send_cs(cs::CSMoveUnitPacket, s.as_bytes()).await
     }
 
+    /// Teleports over the `/move x y z` GM command and waits for the server's
+    /// `SCTeleportUnitPacket` confirmation (which updates [`GameState::self_pos`]). Completes the
+    /// client handshake (`CSTeleportEndedPacket` clears the server's disabled-set-position flag
+    /// and re-sends the visible objects; the landing move then applies the new position), so
+    /// the region-change `SCUnitsRemovedPacket`s that follow prune the stale units.
+    pub async fn teleport(&mut self, pos: (f32, f32, f32)) -> anyhow::Result<()> {
+        let command = format!("{COMMAND_PREFIX}move {} {} {}", pos.0, pos.1, pos.2);
+        self.chat(chat_type::WHITE, &command).await?;
+        self.wait_sc(sc::SCTeleportUnitPacket).await?;
+        let (x, y, z) = self.state.self_pos;
+        ensure!(
+            (x - pos.0).abs() < 0.5 && (y - pos.1).abs() < 0.5 && (z - pos.2).abs() < 0.5,
+            "server confirmed a teleport to ({x}, {y}, {z}), not {pos:?}"
+        );
+        self.teleport_ended(pos).await?;
+        self.move_to(pos, TELEPORT_LAND_MS).await
+    }
+
     /// `CSSendChatMessagePacket`.
     pub async fn chat(&mut self, chat_type: i16, message: &str) -> anyhow::Result<()> {
-        let mut s = PacketStream::new();
-        s.write_i16(chat_type)
-            .write_i16(0)
-            .write_i32(0)
-            .write_str("") // target
-            .write_str(message)
-            .write_u8(0) // language
-            .write_i32(0); // ability
-        self.send_cs(cs::CSSendChatMessagePacket, s.as_bytes())
-            .await
+        let body = chat_message_body(chat_type, "", message);
+        self.send_cs(cs::CSSendChatMessagePacket, &body).await
+    }
+
+    /// Runs a GM chat command (`/name args`, see `aaemu_game::systems::services::commands::
+    /// COMMAND_PREFIX`; the server strips the slash from any chat type) and returns the
+    /// `SCChatMessagePacket` texts received within `wait` (the command replies are system
+    /// chat).
+    pub async fn gm(&mut self, command: &str, wait: Duration) -> anyhow::Result<Vec<String>> {
+        let text = if command.starts_with(COMMAND_PREFIX) {
+            command.to_string()
+        } else {
+            format!("{COMMAND_PREFIX}{command}")
+        };
+        self.chat(chat_type::WHITE, &text).await?;
+        let deadline = Instant::now() + wait;
+        let mut messages = Vec::new();
+        loop {
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return Ok(messages);
+            }
+            let slice = left.min(Duration::from_millis(250));
+            if let Some(p) = self.recv_within(slice).await? {
+                if let Some(text) = chat_text(&p) {
+                    messages.push(text);
+                }
+            }
+        }
+    }
+
+    /// `CSTeleportEndedPacket` (the client's answer to `SCTeleportUnitPacket`).
+    async fn teleport_ended(&mut self, pos: (f32, f32, f32)) -> anyhow::Result<()> {
+        let body = teleport_ended_body(pos);
+        self.send_cs(cs::CSTeleportEndedPacket, &body).await
     }
 
     /// `CSStartSkillPacket`: unit caster (us) on a unit target.
@@ -601,6 +760,44 @@ impl GameClient {
             .await
     }
 
+    /// `CSCompleteQuestContextPacket`: turn in / report a quest at an object (`obj_id == 0`
+    /// reports without one). The server resolves the NPC field first and the doodad field
+    /// second (`systems::quests::events::on_report`), so a tracked NPC unit goes into the NPC
+    /// field and any other object into the doodad field.
+    pub async fn complete_quest(
+        &mut self,
+        quest_id: u32,
+        obj_id: u32,
+        selected_reward: i32,
+    ) -> anyhow::Result<()> {
+        let is_npc = self
+            .state
+            .units
+            .get(&obj_id)
+            .is_some_and(|u| u.unit_type == 1);
+        let (npc_obj, doodad_obj) = if is_npc { (obj_id, 0) } else { (0, obj_id) };
+        let body = quest::complete_quest_body(quest_id, npc_obj, doodad_obj, selected_reward);
+        self.send_cs(cs::CSCompleteQuestContextPacket, &body).await
+    }
+
+    /// `CSQuestTalkMadePacket`: the answer to a quest talk act while the objective runs.
+    pub async fn quest_talk(
+        &mut self,
+        quest_id: u32,
+        npc_obj: u32,
+        component_id: u32,
+        act_id: u32,
+    ) -> anyhow::Result<()> {
+        let body = quest::quest_talk_body(npc_obj, quest_id, component_id, act_id);
+        self.send_cs(cs::CSQuestTalkMadePacket, &body).await
+    }
+
+    /// `CSDropQuestContextPacket`.
+    pub async fn drop_quest(&mut self, quest_id: u32) -> anyhow::Result<()> {
+        let body = quest::drop_quest_body(quest_id);
+        self.send_cs(cs::CSDropQuestContextPacket, &body).await
+    }
+
     /// `CSLeaveWorldPacket` (0 = quit, 1 = character select, 2 = server select).
     pub async fn leave_world(&mut self, target: u8) -> anyhow::Result<()> {
         self.send_cs(cs::CSLeaveWorldPacket, &[target]).await
@@ -613,6 +810,20 @@ impl GameClient {
             .units
             .values()
             .filter(|u| u.unit_type == unit_type && u.obj_id != self.state.self_obj)
+            .min_by(|a, b| dist2(a.pos, me).total_cmp(&dist2(b.pos, me)))
+            .cloned()
+    }
+
+    /// Closest unit of `unit_type` with the given template / character id (type 1: NPC template
+    /// id, type 0: character id), measured from our own position.
+    pub fn find_unit(&self, unit_type: u8, template_id: u32) -> Option<UnitInfo> {
+        let me = self.state.self_pos;
+        self.state
+            .units
+            .values()
+            .filter(|u| {
+                u.unit_type == unit_type && u.id == template_id && u.obj_id != self.state.self_obj
+            })
             .min_by(|a, b| dist2(a.pos, me).total_cmp(&dist2(b.pos, me)))
             .cloned()
     }
@@ -641,6 +852,31 @@ impl GameClient {
 fn dist2(a: (f32, f32, f32), b: (f32, f32, f32)) -> f32 {
     let (dx, dy, dz) = (a.0 - b.0, a.1 - b.1, a.2 - b.2);
     dx * dx + dy * dy + dz * dz
+}
+
+/// `CSSendChatMessagePacket` body as the bot sends chat (no target, language 0, ability 0),
+/// matching the server's `read`.
+fn chat_message_body(chat_type: i16, target_name: &str, message: &str) -> Vec<u8> {
+    let mut s = PacketStream::new();
+    s.write_i16(chat_type)
+        .write_i16(0)
+        .write_i32(0)
+        .write_str(target_name)
+        .write_str(message)
+        .write_u8(0) // language
+        .write_i32(0); // ability
+    s.into_bytes()
+}
+
+/// `CSTeleportEndedPacket` body (`systems/npcs/portal/packets.rs` `read`): the fixed point x/y,
+/// z and 16 orientation bytes.
+fn teleport_ended_body(pos: (f32, f32, f32)) -> Vec<u8> {
+    let mut s = PacketStream::new();
+    s.write_i64(helpers::convert_coord_to_long(pos.0))
+        .write_i64(helpers::convert_coord_to_long(pos.1))
+        .write_f32(pos.2)
+        .write_raw(&[0u8; 16]);
+    s.into_bytes()
 }
 
 fn facing_direction(pos: (f32, f32, f32), target: (f32, f32, f32)) -> i8 {
@@ -696,5 +932,36 @@ mod facing_tests {
         ] {
             assert_eq!(facing_direction(origin, target), direction);
         }
+    }
+}
+
+#[cfg(test)]
+mod body_tests {
+    use super::*;
+    use aaemu_game::net::registry::ClientPacket;
+
+    #[test]
+    fn chat_body_decodes_with_the_server_reader() {
+        let body = chat_message_body(chat_type::WHITE, "", "/move 1 2 3");
+        let p = aaemu_game::packets::c2g_world::CSSendChatMessagePacket::read(
+            &mut PacketStream::from_bytes(body),
+        )
+        .unwrap();
+        assert_eq!(p.chat_type, chat_type::WHITE);
+        assert_eq!(p.target_name, "");
+        assert_eq!(p.message, "/move 1 2 3");
+        assert_eq!(p.language_type, 0);
+        assert_eq!(p.ability, 0);
+    }
+
+    #[test]
+    fn teleport_ended_body_decodes_with_the_server_reader() {
+        let body = teleport_ended_body((1234.5, -678.25, 78.5));
+        let p = aaemu_game::systems::npcs::portal::packets::CSTeleportEndedPacket::read(
+            &mut PacketStream::from_bytes(body),
+        )
+        .unwrap();
+        assert_eq!((p.x, p.y, p.z), (1234.5, -678.25, 78.5));
+        assert_eq!(p.ori, [0u8; 16]);
     }
 }

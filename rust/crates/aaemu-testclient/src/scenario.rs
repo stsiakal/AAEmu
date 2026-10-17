@@ -3,7 +3,6 @@
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
-use aaemu_commons::PacketStream;
 use aaemu_game::opcodes::{pp, sc};
 use aaemu_game::systems::quests::model::status;
 use aaemu_game::systems::skills::types::{SkillCastTarget, SkillCaster, SkillObject};
@@ -12,6 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::game::{GameClient, Packet, UnitInfo, LEVEL_PROXY};
 use crate::login::LoginClient;
+use crate::quest::quest_rows;
 use crate::record::Recorder;
 use crate::stream::StreamClient;
 
@@ -660,8 +660,8 @@ async fn npc_return(
         .filter(|p| p.is_sc(sc::SCQuestsPacket))
         .filter_map(|p| quest_rows(&p.body).ok())
         .flatten()
-        .find(|(template, _)| *template == cfg.quest_id);
-    let (template, st) = row.with_context(|| {
+        .find(|q| q.template_id == cfg.quest_id);
+    let (template, st) = row.map(|q| (q.template_id, q.status)).with_context(|| {
         format!(
             "quest {} is not in SCQuestsPacket after the away/return cycle",
             cfg.quest_id
@@ -770,43 +770,6 @@ fn quest_template_id(p: &Packet) -> anyhow::Result<u32> {
     let mut s = p.stream();
     s.read_i64()?;
     Ok(s.read_u32()?)
-}
-
-/// One `ActiveQuest` row as written by `Quest.Write` (`systems/quests/packets.rs`), reduced to
-/// the fields the readback asserts: `(template_id, status)`.
-fn read_quest_row(s: &mut PacketStream) -> anyhow::Result<(u32, u8)> {
-    s.read_i64()?; // quest instance id (long)
-    let template = s.read_u32()?;
-    let status = s.read_u8()?;
-    for _ in 0..5 {
-        s.read_i32()?; // objectives
-    }
-    s.read_bool()?; // isCheckSet
-    s.read_bc()?; // obj id
-    s.read_u32()?; // type id
-    s.read_bc()?; // obj id
-    s.read_bc()?; // obj id
-    s.read_i32()?; // left time
-    s.read_u32()?; // component id (0 without a time limit)
-    s.read_i64()?; // doodad id
-    s.read_i64()?; // accept time (seconds)
-    s.read_u8()?; // acceptor type
-    s.read_u32()?; // acceptor id
-    Ok((template, status))
-}
-
-/// `SCQuestsPacket` body (`[i32 count][ActiveQuest...]`) as `(template_id, status)` rows. The
-/// count is untrusted: negatives are rejected and the rows are parsed incrementally (no
-/// capacity reservation from the wire value).
-fn quest_rows(body: &[u8]) -> anyhow::Result<Vec<(u32, u8)>> {
-    let mut s = PacketStream::from_bytes(body.to_vec());
-    let count = s.read_i32()?;
-    ensure!(count >= 0, "negative SCQuestsPacket quest count {count}");
-    let mut rows = Vec::new();
-    for _ in 0..count {
-        rows.push(read_quest_row(&mut s)?);
-    }
-    Ok(rows)
 }
 
 /// Walks up to the closest `combat_npc_template` NPC (following its movement) and hits it with
@@ -939,7 +902,7 @@ mod skill_response_tests {
 #[cfg(test)]
 mod npc_return_tests {
     use super::*;
-    use aaemu_commons::Marshal;
+    use aaemu_commons::{Marshal, PacketStream};
     use aaemu_game::models::char_data::ActiveQuest;
     use aaemu_game::systems::quests::model::{acceptor, kind};
     use aaemu_game::systems::quests::packets::{
@@ -960,59 +923,6 @@ mod npc_return_tests {
             acceptor_id: 3597,
             time_ms: ActiveQuest::DATETIME_MIN_MS,
         }
-    }
-
-    #[test]
-    fn sc_quests_packet_rows_decode_the_active_quest_layout() {
-        let mut body = PacketStream::new();
-        body.write_i32(1);
-        quest(330, status::PROGRESS).write(&mut body, 0);
-        assert_eq!(
-            quest_rows(body.as_bytes()).unwrap(),
-            vec![(330, status::PROGRESS)]
-        );
-    }
-
-    #[test]
-    fn sc_quests_packet_rows_decode_multiple_rows_in_order() {
-        let mut body = PacketStream::new();
-        body.write_i32(2);
-        quest(330, status::PROGRESS).write(&mut body, 0);
-        quest(331, status::READY).write(&mut body, 0);
-        assert_eq!(
-            quest_rows(body.as_bytes()).unwrap(),
-            vec![(330, status::PROGRESS), (331, status::READY)]
-        );
-    }
-
-    #[test]
-    fn sc_quests_packet_rejects_negative_and_malformed_counts() {
-        let mut negative = PacketStream::new();
-        negative.write_i32(-1);
-        assert!(quest_rows(negative.as_bytes()).is_err());
-
-        assert!(quest_rows(&[]).is_err());
-
-        let mut body = PacketStream::new();
-        body.write_i32(2);
-        quest(330, status::PROGRESS).write(&mut body, 0);
-        quest(331, status::READY).write(&mut body, 0);
-        let mut bytes = body.into_bytes();
-        bytes.truncate(bytes.len() - 8);
-        assert!(quest_rows(&bytes).is_err());
-    }
-
-    #[test]
-    fn read_quest_row_parses_incrementally_and_errors_on_truncation() {
-        let mut body = PacketStream::new();
-        quest(330, status::PROGRESS).write(&mut body, 0);
-        quest(331, status::READY).write(&mut body, 0);
-        let mut bytes = body.into_bytes();
-        bytes.truncate(bytes.len() - 8);
-
-        let mut s = PacketStream::from_bytes(bytes);
-        assert_eq!(read_quest_row(&mut s).unwrap(), (330, status::PROGRESS));
-        assert!(read_quest_row(&mut s).is_err());
     }
 
     #[test]

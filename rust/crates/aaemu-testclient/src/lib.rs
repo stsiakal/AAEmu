@@ -6,6 +6,7 @@ pub mod diff;
 pub mod game;
 pub mod load;
 pub mod login;
+pub mod quest;
 pub mod record;
 pub mod scenario;
 pub mod stream;
