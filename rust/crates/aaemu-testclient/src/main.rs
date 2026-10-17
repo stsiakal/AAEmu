@@ -12,7 +12,7 @@
 //!                         [--scenario load]
 //! aaemu-testclient quest  [--config F] [--login H:P] --plan plan.json
 //!                         (--quest ID...|--all-ok) [--out results.jsonl]
-//!                         [--step-timeout-secs N]
+//!                         [--step-timeout-secs N] [--summary]
 //! ```
 //!
 //! Settings come from `--config` (JSON, see `testclient.example.json`), then the flags. Keep
@@ -289,6 +289,9 @@ async fn main() -> anyhow::Result<()> {
                 "[quest] {} result line(s), {completed} completed",
                 report.results.len()
             );
+            if args.has("summary") {
+                println!("{}", questrun::render_summary(&report));
+            }
             if report.aborted {
                 bail!("connection lost during the quest run");
             }

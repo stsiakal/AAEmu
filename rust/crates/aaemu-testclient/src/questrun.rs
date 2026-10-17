@@ -8,7 +8,8 @@
 //! [`crate::game::GameState`] (filled by the packet observers); every bounded wait fails the
 //! step with `timeout` instead of hanging.
 
-use std::collections::HashSet;
+use std::cmp::Reverse;
+use std::collections::{BTreeMap, BTreeSet, BinaryHeap, HashSet};
 use std::fs::{File, OpenOptions};
 use std::io::{BufWriter, Write};
 use std::path::Path;
@@ -26,6 +27,9 @@ use crate::scenario::BotConfig;
 
 /// Unit-appearance wait after a teleport.
 const APPEAR_WAIT: Duration = Duration::from_secs(15);
+/// The accept answer is sent by the `CSStartQuestContextPacket` handler itself, so 5 s is
+/// already generous; when it stays empty the accept was silently ignored (see `step_accept`).
+const ACCEPT_WAIT: Duration = Duration::from_secs(5);
 /// Default per-step timeout (`--step-timeout-secs`).
 pub const DEFAULT_STEP_TIMEOUT: Duration = Duration::from_secs(60);
 /// `/kill` is instant; its reply (if any) is the error text.
@@ -40,6 +44,9 @@ const FINAL_QUIET: Duration = Duration::from_millis(500);
 const FINAL_MAX: Duration = Duration::from_secs(2);
 /// The world the bot spawns in; v1 only teleports within it.
 const MAIN_WORLD: &str = "main_world";
+/// The bot creates Nuian (1) male (1) Fighter characters (`scenario::BotConfig` defaults).
+const CREATED_RACE: u8 = 1;
+const CREATED_GENDER: u8 = 1;
 
 // ----- plan model (`plan.py` output) -----
 
@@ -54,6 +61,15 @@ pub struct PlanQuest {
     /// `quest_contexts.LEVEL`; null for quests without one.
     #[serde(default)]
     pub level: Option<u32>,
+    /// `unit_reqs` rows of the quest's start components, when the plan carries them.
+    #[serde(default)]
+    pub requires: Vec<PlanRequirement>,
+    /// Preferred level demand (`min_level` wins over `level` when present).
+    #[serde(default)]
+    pub min_level: Option<u32>,
+    /// Quest contexts that must already be completed to accept this one.
+    #[serde(default)]
+    pub prereq_quests: Vec<u32>,
     #[serde(default)]
     pub steps: Vec<PlanStep>,
     /// `"ok"` / `"partial"` / `"blocked"`.
@@ -61,6 +77,24 @@ pub struct PlanQuest {
     pub status: String,
     #[serde(default)]
     pub blockers: Vec<String>,
+}
+
+/// One `unit_reqs` row of a quest (`systems/quests/unit_reqs.rs`). `kind_id` is the
+/// `UnitReqsKindType`; `kind` is its name when the plan provides one. `or_group` marks
+/// alternative requirements (any member satisfies the group); `false` / null / absent means no
+/// group.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub struct PlanRequirement {
+    #[serde(default)]
+    pub kind_id: u32,
+    #[serde(default)]
+    pub kind: String,
+    #[serde(default)]
+    pub value1: i64,
+    #[serde(default)]
+    pub value2: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub or_group: Option<serde_json::Value>,
 }
 
 /// One act of a quest component, in the loader's order.
@@ -142,10 +176,48 @@ pub enum QuestOutcome {
     Completed,
     Failed,
     Stuck,
+    /// The server answered the accept with an error, or stayed silent (v2 answer window).
+    Rejected,
+    /// A prerequisite quest is neither in the select snapshot nor completed live in this run.
+    PrereqMissing,
+    /// A `unit_reqs` requirement the runner can check is not met.
+    RequirementUnmet,
     BlockedPlan,
     RunnerUnsupported,
     NeedsTrigger,
     Error,
+}
+
+impl QuestOutcome {
+    /// Every variant, for stable summary counts.
+    pub const ALL: [QuestOutcome; 10] = [
+        QuestOutcome::Completed,
+        QuestOutcome::Failed,
+        QuestOutcome::Stuck,
+        QuestOutcome::Rejected,
+        QuestOutcome::PrereqMissing,
+        QuestOutcome::RequirementUnmet,
+        QuestOutcome::BlockedPlan,
+        QuestOutcome::RunnerUnsupported,
+        QuestOutcome::NeedsTrigger,
+        QuestOutcome::Error,
+    ];
+
+    /// The `snake_case` serialization name.
+    pub fn name(self) -> &'static str {
+        match self {
+            QuestOutcome::Completed => "completed",
+            QuestOutcome::Failed => "failed",
+            QuestOutcome::Stuck => "stuck",
+            QuestOutcome::Rejected => "rejected",
+            QuestOutcome::PrereqMissing => "prereq_missing",
+            QuestOutcome::RequirementUnmet => "requirement_unmet",
+            QuestOutcome::BlockedPlan => "blocked_plan",
+            QuestOutcome::RunnerUnsupported => "runner_unsupported",
+            QuestOutcome::NeedsTrigger => "needs_trigger",
+            QuestOutcome::Error => "error",
+        }
+    }
 }
 
 /// What one step did.
@@ -159,6 +231,8 @@ pub enum StepOutcomeKind {
     Unsupported,
     NeedsTrigger,
     Failed,
+    /// The server answered the action with an error, or ignored it (accepts).
+    Rejected,
     Error,
 }
 
@@ -199,6 +273,8 @@ pub struct RunReport {
     pub results: Vec<QuestResult>,
     /// The connection was lost; the run stopped after the last written line.
     pub aborted: bool,
+    /// Quest count appended in plan order because prerequisite edges form a cycle.
+    pub ordering_cyclic: usize,
 }
 
 // ----- step dispatch -----
@@ -252,6 +328,296 @@ pub fn step_action(step: &PlanStep) -> StepAction {
 /// A blocked plan quest is recorded without running (`blocked_plan`).
 fn plan_gate(quest: &PlanQuest) -> Option<QuestOutcome> {
     (quest.status == "blocked").then_some(QuestOutcome::BlockedPlan)
+}
+
+// ----- prerequisites and unit requirements -----
+
+/// Prerequisite quest ids that are neither in the character-select snapshot nor completed live
+/// in this run. [`GameState::completed_quests`] is exactly that union (the select
+/// `SCCompletedQuestsPacket` ids plus the live `SCQuestContextCompletedPacket` ids).
+pub fn missing_prerequisites(prereq_quests: &[u32], completed: &BTreeSet<u32>) -> Vec<u32> {
+    prereq_quests
+        .iter()
+        .copied()
+        .filter(|p| !completed.contains(p))
+        .collect()
+}
+
+/// What the runner knows about the character when it checks `unit_reqs`.
+pub struct KnownFacts<'a> {
+    /// Highest level the runner ensured, a lower bound of the real level.
+    pub level: u32,
+    /// Race / gender when the bot created the character (`None` = unknown, attempt anyway).
+    pub race: Option<u8>,
+    pub gender: Option<u8>,
+    /// Completed quests (select snapshot + live completions).
+    pub completed: &'a BTreeSet<u32>,
+}
+
+/// The result of checking one `unit_reqs` entry; `Unknown` never blocks (the server decides).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReqState {
+    Met,
+    Unmet,
+    Unknown,
+}
+
+/// `UnitReqsKindType` ids the runner can check (`systems/quests/unit_reqs.rs::req_kind`).
+const REQ_LEVEL: u32 = 0x01;
+const REQ_RACE: u32 = 0x03;
+const REQ_GENDER: u32 = 0x04;
+const REQ_COMPLETE_QUEST_CONTEXT: u32 = 0x1F;
+const REQ_EXCEPT_COMPLETE_QUEST_CONTEXT: u32 = 0x24;
+const REQ_MAX_LEVEL: u32 = 0x45;
+
+/// The `kind` name without case, spaces or underscores (`"CompleteQuestContext"` ->
+/// `"completequestcontext"`).
+fn kind_key(kind: &str) -> String {
+    kind.chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
+/// The level the quest demands: `min_level` when present, else `level`, plus any `Level`
+/// requirement value (the runner can satisfy those by raising).
+pub fn level_demand(quest: &PlanQuest) -> u32 {
+    let mut level = quest.min_level.or(quest.level).unwrap_or(0);
+    for req in &quest.requires {
+        if (req.kind_id == REQ_LEVEL || kind_key(&req.kind) == "level") && req.value1 > 0 {
+            level = level.max(req.value1.min(i64::from(u32::MAX)) as u32);
+        }
+    }
+    level
+}
+
+/// Checks one requirement against the facts. Level uses `known >= value1` (and the `value2`
+/// cap as an upper bound); race / gender only when the bot created the character (Nuian male);
+/// quest contexts use the completed set.
+pub fn requirement_state(req: &PlanRequirement, facts: &KnownFacts<'_>) -> ReqState {
+    let key = kind_key(&req.kind);
+    let (v1, v2) = (req.value1, req.value2);
+    if req.kind_id == REQ_LEVEL || key == "level" {
+        return if v2 > 0 && i64::from(facts.level) > v2 {
+            ReqState::Unmet
+        } else if i64::from(facts.level) >= v1 && v2 <= 0 {
+            ReqState::Met
+        } else {
+            ReqState::Unknown
+        };
+    }
+    if req.kind_id == REQ_MAX_LEVEL || key == "maxlevel" {
+        return if i64::from(facts.level) > v1 {
+            ReqState::Unmet
+        } else {
+            ReqState::Unknown
+        };
+    }
+    if req.kind_id == REQ_RACE || key == "race" {
+        return match facts.race {
+            Some(race) if i64::from(race) == v1 => ReqState::Met,
+            Some(_) => ReqState::Unmet,
+            None => ReqState::Unknown,
+        };
+    }
+    if req.kind_id == REQ_GENDER || key == "gender" {
+        return match facts.gender {
+            Some(gender) if i64::from(gender) == v1 => ReqState::Met,
+            Some(_) => ReqState::Unmet,
+            None => ReqState::Unknown,
+        };
+    }
+    if req.kind_id == REQ_COMPLETE_QUEST_CONTEXT || key == "completequestcontext" {
+        let Some(id) = u32::try_from(v1).ok() else {
+            return ReqState::Unknown;
+        };
+        return if facts.completed.contains(&id) {
+            ReqState::Met
+        } else {
+            ReqState::Unmet
+        };
+    }
+    if req.kind_id == REQ_EXCEPT_COMPLETE_QUEST_CONTEXT || key == "exceptcompletequestcontext" {
+        let Some(id) = u32::try_from(v1).ok() else {
+            return ReqState::Unknown;
+        };
+        return if facts.completed.contains(&id) {
+            ReqState::Unmet
+        } else {
+            ReqState::Met
+        };
+    }
+    ReqState::Unknown
+}
+
+/// A stable key for `or_group`: absent / null / `false` = no group, any other JSON value groups
+/// by its text (so a boolean `true` or an integer both work).
+fn or_group_key(group: Option<&serde_json::Value>) -> Option<String> {
+    match group {
+        None | Some(serde_json::Value::Null) | Some(serde_json::Value::Bool(false)) => None,
+        Some(v) => Some(v.to_string()),
+    }
+}
+
+fn requirement_reason(req: &PlanRequirement) -> String {
+    let kind = if req.kind.is_empty() {
+        format!("kind_id {}", req.kind_id)
+    } else {
+        req.kind.clone()
+    };
+    format!(
+        "requirement {kind} (value1 {}, value2 {}) not met",
+        req.value1, req.value2
+    )
+}
+
+/// Checks every `unit_reqs` entry the runner can decide. Entries it cannot decide never block
+/// (the accept attempt then lets the server decide; an unanswerable requirement shows up as a
+/// `rejected` result with the silent-server reason). `or_group` entries only block when every
+/// alternative in the group is checkably unmet.
+pub fn requirement_gate(quest: &PlanQuest, facts: &KnownFacts<'_>) -> Option<String> {
+    let mut groups: BTreeMap<String, Vec<&PlanRequirement>> = BTreeMap::new();
+    for req in &quest.requires {
+        match or_group_key(req.or_group.as_ref()) {
+            None => {
+                if requirement_state(req, facts) == ReqState::Unmet {
+                    return Some(requirement_reason(req));
+                }
+            }
+            Some(key) => groups.entry(key).or_default().push(req),
+        }
+    }
+    for (key, reqs) in groups {
+        if reqs
+            .iter()
+            .all(|r| requirement_state(r, facts) == ReqState::Unmet)
+        {
+            let alternatives: Vec<String> = reqs.iter().map(|r| requirement_reason(r)).collect();
+            return Some(format!(
+                "or_group {key}: no alternative met ({})",
+                alternatives.join("; ")
+            ));
+        }
+    }
+    None
+}
+
+/// A stable topological order of the selected plan indices (`selection` in plan order):
+/// prerequisites first, ties by plan order. `cyclic` is the number of quests appended in plan
+/// order because prerequisite edges form a cycle.
+pub struct TopoOrder {
+    pub order: Vec<usize>,
+    pub cyclic: usize,
+}
+
+/// Stable topological order over the plan indices in `selection` (plan order).
+pub fn topological_order(plan: &[PlanQuest], selection: &[usize]) -> TopoOrder {
+    let position: BTreeMap<u32, usize> = selection
+        .iter()
+        .enumerate()
+        .map(|(pos, &i)| (plan[i].quest_id, pos))
+        .collect();
+    let mut in_degree = vec![0usize; selection.len()];
+    let mut dependents: Vec<Vec<usize>> = vec![Vec::new(); selection.len()];
+    for (pos, &i) in selection.iter().enumerate() {
+        for prereq in &plan[i].prereq_quests {
+            if let Some(&q) = position.get(prereq) {
+                if q != pos {
+                    in_degree[pos] += 1;
+                    dependents[q].push(pos);
+                }
+            }
+        }
+    }
+    let mut ready = BinaryHeap::new();
+    for (pos, &degree) in in_degree.iter().enumerate() {
+        if degree == 0 {
+            ready.push(Reverse(pos));
+        }
+    }
+    let mut order = Vec::with_capacity(selection.len());
+    while let Some(Reverse(pos)) = ready.pop() {
+        order.push(selection[pos]);
+        for &next in &dependents[pos] {
+            in_degree[next] -= 1;
+            if in_degree[next] == 0 {
+                ready.push(Reverse(next));
+            }
+        }
+    }
+    let mut cyclic = 0;
+    if order.len() < selection.len() {
+        // Cycle: append the remaining quests in plan order and note it.
+        let done: HashSet<usize> = order.iter().copied().collect();
+        for &i in selection {
+            if !done.contains(&i) {
+                order.push(i);
+                cyclic += 1;
+            }
+        }
+    }
+    TopoOrder { order, cyclic }
+}
+
+// ----- summary -----
+
+/// `--summary`: counts by result and the top failure reasons (digit runs collapsed).
+pub fn render_summary(report: &RunReport) -> String {
+    let mut out = String::from("[quest] results:");
+    for outcome in QuestOutcome::ALL {
+        let n = report
+            .results
+            .iter()
+            .filter(|r| r.result == outcome)
+            .count();
+        if n > 0 {
+            out.push_str(&format!(" {}={n}", outcome.name()));
+        }
+    }
+    let mut reasons: BTreeMap<String, usize> = BTreeMap::new();
+    for r in &report.results {
+        if r.result == QuestOutcome::Completed {
+            continue;
+        }
+        let reason = r
+            .failed_step
+            .as_ref()
+            .map_or_else(|| r.result.name().to_string(), |f| f.reason.clone());
+        *reasons.entry(reason_key(&reason)).or_default() += 1;
+    }
+    let mut top: Vec<(&String, &usize)> = reasons.iter().collect();
+    top.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
+    if !top.is_empty() {
+        out.push_str("\n[quest] top failure reasons:");
+        for (reason, n) in top.iter().take(5) {
+            out.push_str(&format!("\n  {n}x {reason}"));
+        }
+    }
+    if report.ordering_cyclic > 0 {
+        out.push_str(&format!(
+            "\n[quest] prerequisite cycles: kept plan order for {} quest(s)",
+            report.ordering_cyclic
+        ));
+    }
+    out
+}
+
+/// Collapses digit runs so per-quest reasons (`quest 63`, `quest 61`) count together.
+fn reason_key(reason: &str) -> String {
+    let mut out = String::with_capacity(reason.len());
+    let mut digit_run = false;
+    for c in reason.chars() {
+        if c.is_ascii_digit() {
+            if !digit_run {
+                out.push('#');
+            }
+            digit_run = true;
+        } else {
+            out.push(c);
+            digit_run = false;
+        }
+    }
+    out
 }
 
 /// `QuestActTemplate::counts_as_objective` (`systems/quests/templates.rs`): the acts that own
@@ -325,6 +691,7 @@ pub async fn run(
     out: Option<&Path>,
     step_timeout: Duration,
 ) -> anyhow::Result<RunReport> {
+    let mut ordering_cyclic = 0usize;
     let selected: Vec<Selected> = if !requested.is_empty() {
         let mut seen = HashSet::new();
         requested
@@ -337,13 +704,25 @@ pub async fn run(
             })
             .collect()
     } else if all_ok {
-        plan.iter()
-            .filter(|q| q.status == "ok")
-            .map(Selected::Plan)
+        // Prerequisites first: stable topological order over the plan order.
+        let selected_indices: Vec<usize> = plan
+            .iter()
+            .enumerate()
+            .filter(|(_, q)| q.status == "ok")
+            .map(|(i, _)| i)
+            .collect();
+        let topo = topological_order(plan, &selected_indices);
+        ordering_cyclic = topo.cyclic;
+        topo.order
+            .into_iter()
+            .map(|i| Selected::Plan(&plan[i]))
             .collect()
     } else {
         bail!("the quest command needs --quest <id> (repeatable) and/or --all-ok");
     };
+    if ordering_cyclic > 0 {
+        tracing::warn!("prerequisite cycles: kept plan order for {ordering_cyclic} quest(s)");
+    }
 
     let mut writer = match out {
         Some(path) => Some(BufWriter::new(
@@ -357,12 +736,15 @@ pub async fn run(
     };
 
     let rec = Recorder::new(false);
-    let mut game = setup_world(cfg, &rec).await?;
+    let (mut game, created) = setup_world(cfg, &rec).await?;
     // God mode keeps the bot alive while it stands in the spawns; `/level` is issued per quest.
     game.gm("godmode true", Duration::from_secs(1)).await.ok();
 
     let mut raised_level = 1u32;
-    let mut report = RunReport::default();
+    let mut report = RunReport {
+        ordering_cyclic,
+        ..RunReport::default()
+    };
     for target in selected {
         if game.state.disconnected {
             // The connection dropped between two quests: still write the error line.
@@ -377,7 +759,7 @@ pub async fn run(
         }
         let result = match target {
             Selected::Plan(quest) => {
-                run_quest(&mut game, quest, &mut raised_level, step_timeout).await
+                run_quest(&mut game, quest, &mut raised_level, created, step_timeout).await
             }
             Selected::Unknown(id) => missing_quest_result(id),
         };
@@ -431,9 +813,30 @@ fn disconnected_result(quest: &PlanQuest) -> QuestResult {
     }
 }
 
+/// The `failed_step` of a quest-level gate (`prereq_missing`, `requirement_unmet`): no act
+/// ran, so `act_id` / `act_type` stay empty and the reason carries the detail.
+fn gate_failed_step(reason: String) -> FailedStep {
+    FailedStep {
+        act_id: 0,
+        act_type: String::new(),
+        reason,
+    }
+}
+
+/// `ErrorMessageType` name of the errors the quest code can answer an accept with
+/// (`systems/quests/engine.rs` `send_error`), else the raw code.
+pub fn error_reason(code: i16) -> String {
+    match code {
+        315 => "BackpackOccupied".into(), // engine.rs `can_accept_supply_items`
+        621 => "QuestDailyLimit".into(),  // engine.rs already completed, not repeatable
+        c => format!("SCErrorMsg {c}"),
+    }
+}
+
 /// Character creation / selection like the `full` scenario: login, lobby burst, character
-/// (create the first time), select, spawn and notify.
-async fn setup_world(cfg: &BotConfig, rec: &Recorder) -> anyhow::Result<GameClient> {
+/// (create the first time), select, spawn and notify. The `bool` reports whether the bot
+/// created the character (its race / gender are then known).
+async fn setup_world(cfg: &BotConfig, rec: &Recorder) -> anyhow::Result<(GameClient, bool)> {
     let mut login = LoginClient::connect(&cfg.login, rec.clone()).await?;
     let account_id = login.auth_trion(&cfg.user, &cfg.password).await?;
     anyhow::ensure!(account_id != 0, "account id 0");
@@ -472,7 +875,8 @@ async fn setup_world(cfg: &BotConfig, rec: &Recorder) -> anyhow::Result<GameClie
     .await?;
     game.drain(Duration::from_millis(300), Duration::from_secs(2))
         .await?;
-    if game.state.characters.is_empty() {
+    let created = game.state.characters.is_empty();
+    if created {
         game.create_character(&cfg.character).await?;
         let p = game
             .wait_for("character creation result", |p| {
@@ -504,7 +908,7 @@ async fn setup_world(cfg: &BotConfig, rec: &Recorder) -> anyhow::Result<GameClie
     game.drain(Duration::from_millis(1500), Duration::from_secs(15))
         .await?;
     anyhow::ensure!(game.state.self_obj != 0, "own unit state not received");
-    Ok(game)
+    Ok((game, created))
 }
 
 /// Best-effort clean leave at the end of the run.
@@ -529,6 +933,7 @@ async fn run_quest(
     game: &mut GameClient,
     quest: &PlanQuest,
     raised_level: &mut u32,
+    created: bool,
     step_timeout: Duration,
 ) -> QuestResult {
     let start = Instant::now();
@@ -542,14 +947,60 @@ async fn run_quest(
         return result_line(game, quest, gate, None, steps, last_info, chat_start, start);
     }
 
-    // Meet the quest's level first; `/level` only adds the missing experience.
-    if let Some(level) = quest.level {
-        if level >= 2 && level > *raised_level {
-            game.gm(&format!("level {level}"), Duration::from_secs(2))
-                .await
-                .ok();
-            *raised_level = level;
-        }
+    // Prerequisites first: a quest whose prerequisite is neither in the select snapshot nor
+    // completed live is skipped without touching the server.
+    let missing = missing_prerequisites(&quest.prereq_quests, &game.state.completed_quests);
+    if !missing.is_empty() {
+        let reason = format!(
+            "prerequisite quests not completed: {}",
+            missing
+                .iter()
+                .map(u32::to_string)
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        return result_line(
+            game,
+            quest,
+            QuestOutcome::PrereqMissing,
+            Some(gate_failed_step(reason)),
+            steps,
+            last_info,
+            chat_start,
+            start,
+        );
+    }
+
+    // Meet the quest's level demand (`min_level` when present, else `level`; `Level`
+    // requirements included); `/level` only adds the missing experience, never lowers.
+    let demand = level_demand(quest);
+    if demand >= 2 && demand > *raised_level {
+        game.gm(&format!("level {demand}"), Duration::from_secs(2))
+            .await
+            .ok();
+        *raised_level = demand;
+    }
+
+    // `unit_reqs` the runner can decide (race / gender of a character it created, quest
+    // contexts, level caps). Unknown kinds do not block: the accept attempt lets the server
+    // decide and a silent rejection shows up as `rejected` / "no answer from server".
+    let facts = KnownFacts {
+        level: *raised_level,
+        race: created.then_some(CREATED_RACE),
+        gender: created.then_some(CREATED_GENDER),
+        completed: &game.state.completed_quests,
+    };
+    if let Some(reason) = requirement_gate(quest, &facts) {
+        return result_line(
+            game,
+            quest,
+            QuestOutcome::RequirementUnmet,
+            Some(gate_failed_step(reason)),
+            steps,
+            last_info,
+            chat_start,
+            start,
+        );
     }
 
     let indices = objective_indices(&quest.steps);
@@ -974,17 +1425,32 @@ async fn step_accept(
     game.start_quest(quest_id, npc.obj_id)
         .await
         .map_err(StepFailure::io)?;
-    let found = wait_for_packet(game, deadline, |p| {
+    // The `CSStartQuestContextPacket` handler answers synchronously, with `SCErrorMsgPacket`
+    // for an already-completed (non-repeatable) quest or a full backpack and *silence* for a
+    // duplicate / invalid id / failed start-component requirement (`engine.rs::add_quest`).
+    // `SCQuestUnitReqFailedPacket` exists in the 1.2 opcode table but no server sends it, so the
+    // only answers are started / SCErrorMsg / nothing.
+    let answer_deadline = (Instant::now() + ACCEPT_WAIT).min(deadline);
+    let found = wait_for_packet(game, answer_deadline, |p| {
         started_for(p, quest_id) || p.is_sc(sc::SCErrorMsgPacket)
     })
     .await
     .map_err(StepFailure::io)?;
     match found {
         Some(p) if started_for(&p, quest_id) => Ok(StepOutcomeKind::Ok),
-        Some(p) => Err(StepFailure::rejected(quest_id, "start", &p)),
-        None => Err(StepFailure::timeout(format!(
-            "no SCQuestContextStarted for quest {quest_id}"
-        ))),
+        Some(p) => {
+            let code = p.stream().read_i16().unwrap_or(0);
+            Err(StepFailure::plan(
+                QuestOutcome::Rejected,
+                StepOutcomeKind::Rejected,
+                format!("accept rejected: {}", error_reason(code)),
+            ))
+        }
+        None => Err(StepFailure::plan(
+            QuestOutcome::Rejected,
+            StepOutcomeKind::Rejected,
+            "no answer from server (accept silently ignored; see engine.rs::add_quest)",
+        )),
     }
 }
 
@@ -1200,9 +1666,53 @@ mod tests {
             name: format!("quest {id}"),
             category_id: 9,
             level: Some(2),
+            requires: Vec::new(),
+            min_level: None,
+            prereq_quests: Vec::new(),
             steps: Vec::new(),
             status: status.into(),
             blockers: Vec::new(),
+        }
+    }
+
+    fn requirement(kind_id: u32, kind: &str, value1: i64, value2: i64) -> PlanRequirement {
+        PlanRequirement {
+            kind_id,
+            kind: kind.into(),
+            value1,
+            value2,
+            or_group: None,
+        }
+    }
+
+    fn quest_with(
+        prereq_quests: &[u32],
+        requires: Vec<PlanRequirement>,
+        min_level: Option<u32>,
+    ) -> PlanQuest {
+        PlanQuest {
+            requires,
+            min_level,
+            prereq_quests: prereq_quests.to_vec(),
+            ..quest(10, "ok")
+        }
+    }
+
+    fn line(id: u32, result: QuestOutcome, reason: Option<&str>) -> QuestResult {
+        QuestResult {
+            quest_id: id,
+            name: format!("quest {id}"),
+            result,
+            failed_step: reason.map(|r| FailedStep {
+                act_id: 0,
+                act_type: String::new(),
+                reason: r.into(),
+            }),
+            steps: Vec::new(),
+            final_status: None,
+            final_objectives: None,
+            messages: Vec::new(),
+            elapsed_ms: 0,
         }
     }
 
@@ -1211,6 +1721,13 @@ mod tests {
         let json = r#"[
           {
             "quest_id": 10, "name": "Test quest", "category_id": 9, "level": 2,
+            "requires": [
+              {"kind_id": 1, "kind": "Level", "value1": 2, "value2": 0},
+              {"kind_id": 3, "kind": "Race", "value1": 1, "or_group": 1},
+              {"kind_id": 42, "value1": 7, "or_group": true}
+            ],
+            "min_level": 2,
+            "prereq_quests": [5, 6],
             "steps": [
               {"component_id": 54, "component_kind": "Start", "act_id": 68,
                "act_type": "QuestActConAcceptNpc",
@@ -1245,7 +1762,17 @@ mod tests {
         assert_eq!(q10.quest_id, 10);
         assert_eq!(q10.name, "Test quest");
         assert_eq!(q10.level, Some(2));
+        assert_eq!(q10.min_level, Some(2));
+        assert_eq!(q10.prereq_quests, [5, 6]);
         assert_eq!(q10.status, "ok");
+        assert_eq!(q10.requires.len(), 3);
+        assert_eq!(q10.requires[0], requirement(1, "Level", 2, 0));
+        assert_eq!(q10.requires[1].or_group, Some(serde_json::json!(1)));
+        // Missing kind / kind_id fall back to the defaults; a boolean group is kept.
+        assert_eq!(q10.requires[2].kind, "");
+        assert_eq!(q10.requires[2].kind_id, 42);
+        assert_eq!(q10.requires[2].value1, 7);
+        assert_eq!(q10.requires[2].or_group, Some(serde_json::json!(true)));
         assert_eq!(q10.steps.len(), 1);
         let s = &q10.steps[0];
         assert_eq!(s.component_kind, "Start");
@@ -1254,8 +1781,12 @@ mod tests {
         assert_eq!(s.locations[0].z, 357.6);
         assert!(s.sources.is_none());
 
+        // A plan without the new fields still loads (old plan files).
         let q11 = &plan[1];
         assert_eq!(q11.level, None);
+        assert!(q11.requires.is_empty());
+        assert_eq!(q11.min_level, None);
+        assert!(q11.prereq_quests.is_empty());
         let s = &q11.steps[0];
         assert_eq!(s.status, "dynamic_spawn");
         // Unknown target members (`emotion_id`) are ignored; `count` survives.
@@ -1354,6 +1885,211 @@ mod tests {
             step("Ready", "QuestActObjTalk"),
         ];
         assert_eq!(objective_indices(&steps), vec![Some(0), Some(0)]);
+    }
+
+    #[test]
+    fn topological_order_puts_prerequisites_first() {
+        let mut plan = vec![quest(10, "ok"), quest(11, "ok"), quest(12, "ok")];
+        plan[1].prereq_quests = vec![12]; // 11 requires 12
+        let topo = topological_order(&plan, &[0, 1, 2]);
+        assert_eq!(topo.order, vec![0, 2, 1]);
+        assert_eq!(topo.cyclic, 0);
+
+        // Prerequisites outside the selection are ignored; ties keep plan order.
+        let topo = topological_order(&plan, &[1]);
+        assert_eq!(topo.order, vec![1]);
+        assert_eq!(topo.cyclic, 0);
+    }
+
+    #[test]
+    fn topological_order_falls_back_on_cycles() {
+        let mut plan = vec![quest(10, "ok"), quest(11, "ok")];
+        plan[0].prereq_quests = vec![11];
+        plan[1].prereq_quests = vec![10];
+        let topo = topological_order(&plan, &[0, 1]);
+        // Cycle: plan order kept and noted.
+        assert_eq!(topo.order, vec![0, 1]);
+        assert_eq!(topo.cyclic, 2);
+
+        // Only the cycle members fall back; the acyclic part still sorts.
+        let mut plan = vec![quest(10, "ok"), quest(11, "ok"), quest(12, "ok")];
+        plan[0].prereq_quests = vec![11];
+        plan[1].prereq_quests = vec![10];
+        let topo = topological_order(&plan, &[0, 1, 2]);
+        assert_eq!(topo.order, vec![2, 0, 1]);
+        assert_eq!(topo.cyclic, 2);
+    }
+
+    #[test]
+    fn missing_prerequisites_check_snapshot_and_live_completions() {
+        let completed: BTreeSet<u32> = [61u32].into_iter().collect();
+        assert_eq!(missing_prerequisites(&[61], &completed), Vec::<u32>::new());
+        assert_eq!(missing_prerequisites(&[61, 62], &completed), vec![62]);
+        assert_eq!(missing_prerequisites(&[], &completed), Vec::<u32>::new());
+    }
+
+    #[test]
+    fn level_demand_prefers_min_level_and_counts_level_requirements() {
+        let mut quest = quest(10, "ok");
+        quest.level = Some(2);
+        assert_eq!(level_demand(&quest), 2);
+        quest.min_level = Some(14);
+        assert_eq!(level_demand(&quest), 14);
+        quest.requires.push(requirement(1, "Level", 20, 0));
+        assert_eq!(level_demand(&quest), 20);
+        // `MaxLevel` is a cap, not a demand.
+        quest.requires.push(requirement(0x45, "MaxLevel", 30, 0));
+        assert_eq!(level_demand(&quest), 20);
+    }
+
+    #[test]
+    fn requirement_gate_checks_known_kinds() {
+        let completed: BTreeSet<u32> = [61u32].into_iter().collect();
+        let facts = KnownFacts {
+            level: 14,
+            race: Some(1),
+            gender: Some(1),
+            completed: &completed,
+        };
+
+        // Race mismatch blocks; a match passes; an unknown race attempts anyway.
+        let q = quest_with(&[], vec![requirement(3, "Race", 2, 0)], None);
+        assert!(requirement_gate(&q, &facts).unwrap().contains("Race"));
+        let q = quest_with(&[], vec![requirement(3, "Race", 1, 0)], None);
+        assert!(requirement_gate(&q, &facts).is_none());
+        let unknown = KnownFacts {
+            race: None,
+            ..facts
+        };
+        let q = quest_with(&[], vec![requirement(3, "Race", 2, 0)], None);
+        assert!(requirement_gate(&q, &unknown).is_none());
+
+        // Completed quest contexts use the snapshot + live set.
+        let q = quest_with(
+            &[],
+            vec![requirement(0x1F, "CompleteQuestContext", 61, 0)],
+            None,
+        );
+        assert!(requirement_gate(&q, &facts).is_none());
+        let q = quest_with(
+            &[],
+            vec![requirement(0x1F, "CompleteQuestContext", 62, 0)],
+            None,
+        );
+        assert!(requirement_gate(&q, &facts)
+            .unwrap()
+            .contains("CompleteQuestContext"));
+
+        // Kinds the runner cannot decide never block.
+        let q = quest_with(&[], vec![requirement(2, "Ability", 1, 50)], None);
+        assert!(requirement_gate(&q, &facts).is_none());
+
+        // A level cap the ensured level is already above blocks; one above it stays unknown.
+        let q = quest_with(&[], vec![requirement(1, "Level", 1, 10)], None);
+        assert!(requirement_gate(&q, &facts).unwrap().contains("Level"));
+        let q = quest_with(&[], vec![requirement(1, "Level", 1, 20)], None);
+        assert!(requirement_gate(&q, &facts).is_none());
+    }
+
+    #[test]
+    fn or_group_only_blocks_when_every_alternative_is_unmet() {
+        let completed = BTreeSet::new();
+        let facts = KnownFacts {
+            level: 5,
+            race: Some(1),
+            gender: Some(1),
+            completed: &completed,
+        };
+        let mut unmet = requirement(3, "Race", 2, 0);
+        unmet.or_group = Some(serde_json::json!(1));
+        let mut unknown = requirement(2, "Ability", 1, 10);
+        unknown.or_group = Some(serde_json::json!(1));
+        let q = quest_with(&[], vec![unmet.clone(), unknown], None);
+        assert!(requirement_gate(&q, &facts).is_none());
+
+        let mut also_unmet = requirement(0x1F, "CompleteQuestContext", 62, 0);
+        also_unmet.or_group = Some(serde_json::json!(1));
+        let q = quest_with(&[], vec![unmet, also_unmet], None);
+        assert!(requirement_gate(&q, &facts).unwrap().contains("or_group"));
+
+        // `or_group` normalization: absent / null / false = no group.
+        assert_eq!(or_group_key(None), None);
+        assert_eq!(or_group_key(Some(&serde_json::Value::Null)), None);
+        assert_eq!(or_group_key(Some(&serde_json::json!(false))), None);
+        assert_eq!(
+            or_group_key(Some(&serde_json::json!(true))),
+            Some("true".into())
+        );
+        assert_eq!(or_group_key(Some(&serde_json::json!(3))), Some("3".into()));
+    }
+
+    #[test]
+    fn error_reason_names_the_known_accept_errors() {
+        assert_eq!(error_reason(621), "QuestDailyLimit");
+        assert_eq!(error_reason(315), "BackpackOccupied");
+        assert_eq!(error_reason(42), "SCErrorMsg 42");
+    }
+
+    #[test]
+    fn outcome_names_match_the_json_lines() {
+        for (outcome, name) in [
+            (QuestOutcome::Completed, "completed"),
+            (QuestOutcome::Failed, "failed"),
+            (QuestOutcome::Stuck, "stuck"),
+            (QuestOutcome::Rejected, "rejected"),
+            (QuestOutcome::PrereqMissing, "prereq_missing"),
+            (QuestOutcome::RequirementUnmet, "requirement_unmet"),
+            (QuestOutcome::BlockedPlan, "blocked_plan"),
+            (QuestOutcome::RunnerUnsupported, "runner_unsupported"),
+            (QuestOutcome::NeedsTrigger, "needs_trigger"),
+            (QuestOutcome::Error, "error"),
+        ] {
+            assert_eq!(outcome.name(), name);
+            assert_eq!(
+                serde_json::to_value(outcome).unwrap(),
+                serde_json::json!(name)
+            );
+        }
+        assert_eq!(
+            serde_json::to_value(StepOutcomeKind::Rejected).unwrap(),
+            serde_json::json!("rejected")
+        );
+    }
+
+    #[test]
+    fn summary_counts_results_and_top_failure_reasons() {
+        let report = RunReport {
+            results: vec![
+                line(10, QuestOutcome::Completed, None),
+                line(11, QuestOutcome::Rejected, Some("no answer from server")),
+                line(12, QuestOutcome::Rejected, Some("no answer from server")),
+                line(
+                    13,
+                    QuestOutcome::PrereqMissing,
+                    Some("prerequisite quests not completed: 61"),
+                ),
+                line(
+                    14,
+                    QuestOutcome::PrereqMissing,
+                    Some("prerequisite quests not completed: 62"),
+                ),
+            ],
+            aborted: false,
+            ordering_cyclic: 1,
+        };
+        let text = render_summary(&report);
+        assert!(text.contains("completed=1"), "{text}");
+        assert!(text.contains("rejected=2"), "{text}");
+        assert!(text.contains("prereq_missing=2"), "{text}");
+        assert!(
+            text.contains("2x prerequisite quests not completed: #"),
+            "{text}"
+        );
+        assert!(text.contains("2x no answer from server"), "{text}");
+        assert!(
+            text.contains("prerequisite cycles: kept plan order for 1 quest(s)"),
+            "{text}"
+        );
     }
 
     #[test]
