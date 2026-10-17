@@ -70,6 +70,22 @@ def database():
         CREATE TABLE effects (id INTEGER, actual_id INTEGER, actual_type TEXT);
         CREATE TABLE skill_effects (id INTEGER, skill_id INTEGER, effect_id INTEGER);
         CREATE TABLE skills (id INTEGER);
+        CREATE TABLE items (id INTEGER, loot_quest_id INTEGER);
+        CREATE TABLE loots (id INTEGER, item_id INTEGER, drop_rate INTEGER,
+            loot_pack_id INTEGER);
+        CREATE TABLE loot_pack_dropping_npcs (id INTEGER, npc_id INTEGER, loot_pack_id INTEGER);
+        CREATE TABLE doodad_func_groups (id INTEGER, doodad_almighty_id INTEGER);
+        CREATE TABLE doodad_funcs (id INTEGER, doodad_func_group_id INTEGER,
+            actual_func_id INTEGER, actual_func_type TEXT);
+        CREATE TABLE doodad_func_loot_items (id INTEGER, item_id INTEGER);
+        CREATE TABLE doodad_func_loot_packs (id INTEGER, loot_pack_id INTEGER);
+        CREATE TABLE doodad_func_purchases (id INTEGER, item_id INTEGER);
+        CREATE TABLE merchant_goods (id INTEGER, item_id INTEGER, merchant_pack_id INTEGER);
+        CREATE TABLE merchant_packs (id INTEGER, owner_npc_id INTEGER);
+        CREATE TABLE merchants (id INTEGER, npc_id INTEGER, merchant_pack_id INTEGER);
+        CREATE TABLE quest_act_supply_items (id INTEGER, item_id INTEGER, count INTEGER);
+        CREATE TABLE quest_act_supply_selective_items (id INTEGER, item_id INTEGER,
+            count INTEGER);
     """)
     return conn
 
@@ -130,17 +146,19 @@ class QuestPlanTests(unittest.TestCase):
     def test_missing_spawn_blocks_only_non_optional_steps(self):
         with database() as conn:
             quest(conn, 1)
-            component(conn, 10, 1, 4)
+            component(conn, 10, 1, 2)
+            component(conn, 11, 1, 4)
             conn.execute("INSERT INTO quest_act_obj_monster_hunts VALUES (1, 404, 1)")
-            act(conn, 1, 10, 1, "QuestActObjMonsterHunt")
+            act(conn, 1, 11, 1, "QuestActObjMonsterHunt")
             quest(conn, 2)
-            component(conn, 20, 2, 5)
+            component(conn, 20, 2, 2)
+            component(conn, 21, 2, 5)
             conn.execute("INSERT INTO quest_act_obj_monster_hunts VALUES (2, 404, 1)")
-            act(conn, 2, 20, 2, "QuestActObjMonsterHunt")
+            act(conn, 2, 21, 2, "QuestActObjMonsterHunt")
             result = plan(conn, {"npc": {}, "doodad": {}})
             self.assertEqual([q["status"] for q in result["quests"]], ["blocked", "ok"])
             self.assertEqual(result["quests"][0]["blockers"],
-                             ["no spawn for npc 404 (QuestActObjMonsterHunt, component 10)"])
+                             ["no spawn for npc 404 (QuestActObjMonsterHunt, component 11)"])
             self.assertEqual(result["quests"][0]["steps"][0]["status"], "no_spawn")
             self.assertEqual(result["summary"]["status"], {"blocked": 1, "ok": 1})
             self.assertEqual(result["summary"]["blocked_missing_npc_spawns"], 1)
@@ -148,18 +166,20 @@ class QuestPlanTests(unittest.TestCase):
     def test_dynamic_spawn_steps_are_not_blocked(self):
         with database() as conn:
             quest(conn, 1)
-            component(conn, 10, 1, 4)
+            component(conn, 10, 1, 2)
+            component(conn, 11, 1, 4)
             conn.execute("INSERT INTO quest_act_con_accept_npcs VALUES (1, 999)")
-            act(conn, 1, 10, 1, "QuestActConAcceptNpc")
+            act(conn, 1, 11, 1, "QuestActConAcceptNpc")
             conn.execute("INSERT INTO skills VALUES (77)")
             conn.execute("INSERT INTO effects VALUES (100, 55, 'SpawnEffect')")
             conn.execute("INSERT INTO skill_effects VALUES (1, 77, 100)")
             conn.execute("INSERT INTO spawn_effects VALUES (55, 1, 999)")
             # Control: npc 1000 has no world placement and no spawn effect.
             quest(conn, 2)
-            component(conn, 20, 2, 4)
+            component(conn, 20, 2, 2)
+            component(conn, 21, 2, 4)
             conn.execute("INSERT INTO quest_act_con_accept_npcs VALUES (2, 1000)")
-            act(conn, 2, 20, 2, "QuestActConAcceptNpc")
+            act(conn, 2, 21, 2, "QuestActConAcceptNpc")
             result = plan(conn, {"npc": {}, "doodad": {}})
             step = result["quests"][0]["steps"][0]
             self.assertEqual(step["status"], "dynamic_spawn")
@@ -175,23 +195,26 @@ class QuestPlanTests(unittest.TestCase):
     def test_craft_zone_quest_and_item_target_mappings(self):
         with database() as conn:
             quest(conn, 1)
-            component(conn, 10, 1, 4)
+            component(conn, 10, 1, 2)
+            component(conn, 11, 1, 4)
             conn.execute("INSERT INTO quest_act_con_accept_components VALUES (1, 42)")
             conn.execute("INSERT INTO quest_act_obj_complete_quests VALUES (2, 43)")
             conn.execute("INSERT INTO quest_act_obj_crafts VALUES (3, 500, 2)")
             conn.execute("INSERT INTO craft_products VALUES (1, 500, 60)")
             conn.execute("INSERT INTO craft_products VALUES (2, 500, 61)")
+            conn.execute("INSERT INTO craft_products VALUES (3, 501, 70)")
+            conn.execute("INSERT INTO craft_products VALUES (4, 502, 71)")
             conn.execute("INSERT INTO quest_act_obj_zone_kills VALUES (4, 0, 5, 12, 0, 0, 10, 20)")
             conn.execute("INSERT INTO quest_act_etc_item_obtains VALUES (5, 70, 3)")
             conn.execute("INSERT INTO quest_act_con_accept_item_gains VALUES (6, 71, 4)")
             conn.execute("INSERT INTO quest_act_con_report_journals VALUES (7)")
-            act(conn, 1, 10, 1, "QuestActConAcceptComponent")
-            act(conn, 2, 10, 2, "QuestActObjCompleteQuest")
-            act(conn, 3, 10, 3, "QuestActObjCraft")
-            act(conn, 4, 10, 4, "QuestActObjZoneKill")
-            act(conn, 5, 10, 5, "QuestActEtcItemObtain")
-            act(conn, 6, 10, 6, "QuestActConAcceptItemGain")
-            act(conn, 7, 10, 7, "QuestActConReportJournal")
+            act(conn, 1, 11, 1, "QuestActConAcceptComponent")
+            act(conn, 2, 11, 2, "QuestActObjCompleteQuest")
+            act(conn, 3, 11, 3, "QuestActObjCraft")
+            act(conn, 4, 11, 4, "QuestActObjZoneKill")
+            act(conn, 5, 11, 5, "QuestActEtcItemObtain")
+            act(conn, 6, 11, 6, "QuestActConAcceptItemGain")
+            act(conn, 7, 11, 7, "QuestActConReportJournal")
             result = plan(conn, {"npc": {}, "doodad": {}})
             quest_plan = result["quests"][0]
             self.assertEqual([s["target"] for s in quest_plan["steps"]], [
@@ -210,7 +233,8 @@ class QuestPlanTests(unittest.TestCase):
     def test_level_cinema_aggro_and_group_target_mappings(self):
         with database() as conn:
             quest(conn, 1)
-            component(conn, 10, 1, 4)
+            component(conn, 10, 1, 2)
+            component(conn, 11, 1, 4)
             conn.execute("INSERT INTO quest_act_obj_ability_levels VALUES (1, 2, 40)")
             conn.execute("INSERT INTO quest_act_obj_mate_levels VALUES (2, 72, 10)")
             conn.execute("INSERT INTO quest_act_obj_levels VALUES (3, 30)")
@@ -225,16 +249,18 @@ class QuestPlanTests(unittest.TestCase):
             conn.execute("INSERT INTO quest_monster_npcs VALUES (2, 8, 22)")
             conn.execute("INSERT INTO quest_item_group_items VALUES (1, 3, 51)")
             conn.execute("INSERT INTO quest_item_group_items VALUES (2, 3, 52)")
-            act(conn, 1, 10, 1, "QuestActObjAbilityLevel")
-            act(conn, 2, 10, 2, "QuestActObjMateLevel")
-            act(conn, 3, 10, 3, "QuestActObjLevel")
-            act(conn, 4, 10, 4, "QuestActConAcceptLevelUp")
-            act(conn, 5, 10, 5, "QuestActObjCinema")
-            act(conn, 6, 10, 6, "QuestActObjAggro")
-            act(conn, 7, 10, 7, "QuestActObjExpressFire")
-            act(conn, 8, 10, 8, "QuestActObjTalkNpcGroup")
-            act(conn, 9, 10, 9, "QuestActObjItemGroupGather")
-            act(conn, 10, 10, 10, "QuestActObjItemGroupUse")
+            conn.execute("INSERT INTO craft_products VALUES (3, 600, 51)")
+            conn.execute("INSERT INTO craft_products VALUES (4, 601, 52)")
+            act(conn, 1, 11, 1, "QuestActObjAbilityLevel")
+            act(conn, 2, 11, 2, "QuestActObjMateLevel")
+            act(conn, 3, 11, 3, "QuestActObjLevel")
+            act(conn, 4, 11, 4, "QuestActConAcceptLevelUp")
+            act(conn, 5, 11, 5, "QuestActObjCinema")
+            act(conn, 6, 11, 6, "QuestActObjAggro")
+            act(conn, 7, 11, 7, "QuestActObjExpressFire")
+            act(conn, 8, 11, 8, "QuestActObjTalkNpcGroup")
+            act(conn, 9, 11, 9, "QuestActObjItemGroupGather")
+            act(conn, 10, 11, 10, "QuestActObjItemGroupUse")
             spawns = {"npc": {21: [("main_world", 1.0, 2.0, 3.0)],
                               22: [("main_world", 4.0, 5.0, 6.0)]}, "doodad": {}}
             result = plan(conn, spawns)
@@ -257,9 +283,10 @@ class QuestPlanTests(unittest.TestCase):
     def test_unsupported_acts_flag_partial(self):
         with database() as conn:
             quest(conn, 1)
-            component(conn, 10, 1, 4)
-            act(conn, 1, 10, 1, "QuestActObjEffectFire")
-            act(conn, 2, 10, 2, "QuestActCheckTimer")
+            component(conn, 10, 1, 2)
+            component(conn, 11, 1, 4)
+            act(conn, 1, 11, 1, "QuestActObjEffectFire")
+            act(conn, 2, 11, 2, "QuestActCheckTimer")
             result = plan(conn, {"npc": {}, "doodad": {}})
             steps = result["quests"][0]["steps"]
             self.assertEqual([s["status"] for s in steps], ["unsupported", "ok"])
@@ -267,13 +294,14 @@ class QuestPlanTests(unittest.TestCase):
             self.assertEqual(steps[0]["target"], {"kind": "none", "ids": [], "count": 1})
             self.assertEqual(result["quests"][0]["status"], "partial")
             self.assertEqual(result["quests"][0]["blockers"],
-                             ["unsupported act QuestActObjEffectFire (act 1, component 10)"])
+                             ["unsupported act QuestActObjEffectFire (act 1, component 11)"])
             self.assertEqual(result["summary"]["unsupported_act_types"],
                              {"QuestActObjEffectFire": 1})
 
     def test_group_hunt_and_spawner_member_indirection(self):
         with database() as conn, tempfile.TemporaryDirectory() as tmp:
             quest(conn, 1)
+            component(conn, 9, 1, 2)
             component(conn, 10, 1, 4)
             conn.execute("INSERT INTO quest_act_obj_monster_group_hunts VALUES (1, 7, 2)")
             conn.execute("INSERT INTO quest_monster_npcs VALUES (1, 7, 12)")
@@ -319,10 +347,12 @@ class QuestPlanTests(unittest.TestCase):
     def test_item_sphere_and_doodad_targets(self):
         with database() as conn:
             quest(conn, 1)
+            component(conn, 9, 1, 2)
             component(conn, 10, 1, 4)
             conn.execute("INSERT INTO quest_act_obj_item_gathers VALUES (1, 100, 4)")
             conn.execute("INSERT INTO quest_act_con_accept_spheres VALUES (2, 9)")
             conn.execute("INSERT INTO quest_act_con_accept_doodads VALUES (3, 77)")
+            conn.execute("INSERT INTO craft_products VALUES (1, 500, 100)")
             act(conn, 1, 10, 1, "QuestActObjItemGather")
             act(conn, 2, 10, 2, "QuestActConAcceptSphere")
             act(conn, 3, 10, 3, "QuestActConAcceptDoodad")
@@ -330,10 +360,112 @@ class QuestPlanTests(unittest.TestCase):
             gather, sphere, doodad = plan(conn, spawns)["quests"][0]["steps"]
             self.assertEqual(gather["target"], {"kind": "item", "ids": [100], "count": 4})
             self.assertEqual((gather["status"], gather["locations"]), ("ok", []))
+            self.assertEqual(gather["item_sources"], [
+                {"item_id": 100, "sources": [{"type": "craft", "craft_ids": [500]}]}])
             self.assertEqual((sphere["target"]["kind"], sphere["status"], sphere["locations"]),
                              ("sphere", "ok", []))
             self.assertEqual((doodad["status"], doodad["locations"]),
                              ("ok", [{"world": "main_world", "x": 7.0, "y": 8.0, "z": 9.0}]))
+
+    def test_auxiliary_contexts_get_status_and_blocker(self):
+        with database() as conn:
+            quest(conn, 1)
+            component(conn, 10, 1, 8)  # Reward acts only, no Start component.
+            quest(conn, 2)
+            component(conn, 20, 2, 2)
+            result = plan(conn, {"npc": {}, "doodad": {}})
+            self.assertEqual([q["status"] for q in result["quests"]], ["auxiliary", "ok"])
+            self.assertEqual(result["quests"][0]["blockers"],
+                             ["auxiliary context: no Start component"])
+            self.assertEqual(result["summary"]["status"], {"auxiliary": 1, "ok": 1})
+
+    def test_npc_loot_item_source_with_quest_flag(self):
+        with database() as conn:
+            quest(conn, 1)
+            component(conn, 9, 1, 2)
+            component(conn, 10, 1, 4)
+            conn.execute("INSERT INTO quest_act_obj_item_gathers VALUES (1, 100, 2)")
+            act(conn, 1, 10, 1, "QuestActObjItemGather")
+            conn.execute("INSERT INTO items VALUES (100, 61)")
+            conn.execute("INSERT INTO loots VALUES (1, 100, 5000000, 30)")
+            conn.execute("INSERT INTO loot_pack_dropping_npcs VALUES (1, 500, 30)")
+            spawns = {"npc": {500: [("main_world", 1.0, 2.0, 3.0)]}, "doodad": {}}
+            result = plan(conn, spawns)
+            step = result["quests"][0]["steps"][0]
+            self.assertEqual(step["status"], "ok")
+            self.assertEqual(step["item_sources"], [{"item_id": 100, "sources": [
+                {"type": "npc_loot", "npc_ids": [500], "loot_pack_id": 30, "chance": 5000000,
+                 "locations": [{"world": "main_world", "x": 1.0, "y": 2.0, "z": 3.0}],
+                 "loot_quest_id": 61}]}])
+            self.assertEqual(result["summary"]["item_steps_with_npc_loot"], 1)
+
+    def test_doodad_craft_and_quest_supply_item_sources(self):
+        with database() as conn:
+            quest(conn, 1)
+            component(conn, 9, 1, 2)
+            component(conn, 10, 1, 4)
+            conn.execute("INSERT INTO quest_act_supply_items VALUES (9, 103, 1)")
+            act(conn, 9, 9, 9, "QuestActSupplyItem")
+            conn.execute("INSERT INTO quest_act_obj_item_gathers VALUES (1, 101, 1)")
+            conn.execute("INSERT INTO quest_act_obj_item_gathers VALUES (2, 102, 1)")
+            conn.execute("INSERT INTO quest_act_obj_item_gathers VALUES (3, 103, 1)")
+            act(conn, 1, 10, 1, "QuestActObjItemGather")
+            act(conn, 2, 10, 2, "QuestActObjItemGather")
+            act(conn, 3, 10, 3, "QuestActObjItemGather")
+            conn.execute("INSERT INTO doodad_func_groups VALUES (9, 300)")
+            conn.execute("INSERT INTO doodad_funcs VALUES (1, 9, 7, 'DoodadFuncLootItem')")
+            conn.execute("INSERT INTO doodad_func_loot_items VALUES (7, 101)")
+            conn.execute("INSERT INTO craft_products VALUES (1, 250, 102)")
+            spawns = {"npc": {}, "doodad": {300: [("main_world", 4.0, 5.0, 6.0)]}}
+            steps = plan(conn, spawns)["quests"][0]["steps"]
+            self.assertEqual([s["status"] for s in steps], ["ok", "ok", "ok", "ok"])
+            self.assertEqual(steps[1]["item_sources"], [{"item_id": 101, "sources": [
+                {"type": "doodad", "doodad_ids": [300], "func": "DoodadFuncLootItem",
+                 "locations": [{"world": "main_world", "x": 4.0, "y": 5.0, "z": 6.0}]}]}])
+            self.assertEqual(steps[2]["item_sources"],
+                             [{"item_id": 102, "sources": [{"type": "craft", "craft_ids": [250]}]}])
+            self.assertEqual(steps[3]["item_sources"],
+                             [{"item_id": 103, "sources": [{"type": "quest_supply", "act_id": 9}]}])
+
+    def test_store_item_source(self):
+        with database() as conn:
+            quest(conn, 1)
+            component(conn, 9, 1, 2)
+            component(conn, 10, 1, 4)
+            conn.execute("INSERT INTO quest_act_con_accept_items VALUES (1, 104)")
+            act(conn, 1, 10, 1, "QuestActConAcceptItem")
+            conn.execute("INSERT INTO merchant_goods VALUES (1, 104, 5)")
+            conn.execute("INSERT INTO merchant_packs VALUES (5, 600)")
+            conn.execute("INSERT INTO merchants VALUES (1, 601, 5)")
+            spawns = {"npc": {600: [("main_world", 7.0, 8.0, 9.0)]}, "doodad": {}}
+            step = plan(conn, spawns)["quests"][0]["steps"][0]
+            self.assertEqual(step["status"], "ok")
+            self.assertEqual(step["item_sources"], [{"item_id": 104, "sources": [
+                {"type": "store", "npc_ids": [600, 601], "pack_ids": [5],
+                 "locations": [{"world": "main_world", "x": 7.0, "y": 8.0, "z": 9.0}]}]}])
+
+    def test_unknown_item_source_is_reported_without_blocking(self):
+        with database() as conn:
+            quest(conn, 1)
+            component(conn, 9, 1, 2)
+            component(conn, 10, 1, 4)
+            conn.execute("INSERT INTO quest_act_obj_item_gathers VALUES (1, 999, 1)")
+            act(conn, 1, 10, 1, "QuestActObjItemGather")
+            quest(conn, 2)
+            component(conn, 19, 2, 2)
+            component(conn, 20, 2, 5)
+            conn.execute("INSERT INTO quest_act_obj_item_gathers VALUES (2, 999, 1)")
+            act(conn, 2, 20, 2, "QuestActObjItemGather")
+            result = plan(conn, {"npc": {}, "doodad": {}})
+            by_id = {q["quest_id"]: q for q in result["quests"]}
+            self.assertEqual(by_id[1]["steps"][0]["status"], "unknown_item_source")
+            self.assertEqual(by_id[1]["steps"][0]["item_sources"],
+                             [{"item_id": 999, "sources": []}])
+            self.assertEqual(by_id[1]["status"], "ok")
+            self.assertEqual(by_id[1]["blockers"], [])
+            self.assertEqual(by_id[2]["status"], "ok")
+            self.assertEqual(by_id[2]["steps"][0]["status"], "unknown_item_source")
+            self.assertEqual(result["summary"]["unknown_item_source_steps"], 2)
 
     def test_filter_selects_requested_quests_and_skips_tutorials(self):
         with database() as conn:
@@ -363,6 +495,7 @@ class QuestPlanTests(unittest.TestCase):
             conn.execute("INSERT INTO unit_reqs VALUES (3, 'QuestComponent', 20, 31, 1, 0)")
             # Quest 3 has no requirements; its context level is the fallback.
             quest(conn, 3)
+            component(conn, 30, 3, 2)
             conn.execute("UPDATE quest_contexts SET LEVEL = 18 WHERE id = 3")
             result = plan(conn, {"npc": {}, "doodad": {}})
             by_id = {q["quest_id"]: q for q in result["quests"]}

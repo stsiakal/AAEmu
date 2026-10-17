@@ -8,10 +8,14 @@ npc/doodad targets and a status. Quests whose non-optional npc/doodad targets ha
 no spawn anywhere in the world files are flagged; npc targets that are only summoned
 at runtime by `SpawnEffect` skills (`spawn_effects.owner_type_id == 1`) get
 "dynamic_spawn" with their sources instead; act types the plan cannot map are
-flagged "unsupported", never guessed. Each quest also carries the accept
-prerequisites (`unit_reqs` of its Start components, owner type "QuestComponent",
-the only quest owner type the accept path evaluates) plus `min_level` and
-`prereq_quests`. Run:
+flagged "unsupported", never guessed. Quests without a Start component (auxiliary
+records) get status "auxiliary". Item targets carry `item_sources` (npc loot,
+doodad funcs, earlier quest supplies, crafts, stores) and a target without any
+source gets "unknown_item_source": it is reported but does not block the quest,
+because items also come from paths the plan does not model (skill effects, mail,
+other quests); the live runner decides. Each quest also carries the accept prerequisites
+(`unit_reqs` of its Start components, owner type "QuestComponent", the only quest
+owner type the accept path evaluates) plus `min_level` and `prereq_quests`. Run:
 
     python plan.py --db compact.sqlite3 --worlds Data/Worlds --output plan.json
 """
@@ -35,6 +39,14 @@ OPTIONAL_KINDS = {5, 7}
 KIND_LEVEL = 1
 KIND_START = 2
 KIND_COMPLETE_QUEST_CONTEXT = 0x1F
+# Item-target act types that get `item_sources` (the runner needs to know where the
+# items come from). ObjCraft is excluded: its target is the craft recipe itself.
+ITEM_SOURCE_ACTS = {"QuestActObjItemGather", "QuestActObjItemUse", "QuestActConAcceptItem",
+                    "QuestActEtcItemObtain", "QuestActConAcceptItemGain",
+                    "QuestActObjItemGroupGather", "QuestActObjItemGroupUse"}
+# Act class -> supply detail table (the earlier-act `quest_supply` source).
+ITEM_SUPPLY_ACTS = {"QuestActSupplyItem": "quest_act_supply_items",
+                    "QuestActSupplySelectiveItem": "quest_act_supply_selective_items"}
 # `unit_reqs.kind_id` -> symbolic name. The names are the failure keys of
 # `systems/skills/unit_reqs.rs::validate` (`skill_urk_*` without the prefix); kinds whose
 # skill arm returns the generic "skill_failure" take the constant name of
@@ -90,6 +102,10 @@ ACT_TARGETS = {
 def rows(conn, table):
     # Identifiers come from the audited source, never CLI input.
     return [dict(row) for row in conn.execute('SELECT * FROM "' + table.replace('"', '""') + '"')]
+
+
+def query(conn, sql):
+    return [dict(row) for row in conn.execute(sql)]
 
 
 def truth(value):
@@ -271,6 +287,125 @@ def load_lookups(conn):
     return lookup
 
 
+def load_item_source_data(conn):
+    """Reverse lookup tables for the item sources (item id -> candidates).
+
+    Mirrors the loaders / handlers the server uses:
+    * `loots` / `loot_pack_dropping_npcs` (`economy/loot_data.rs`, `economy/item_effects.rs`
+      and `looting.rs::generate_loot`) for NPC drops;
+    * `doodad_func_loot_items` / `doodad_func_loot_packs` / `doodad_func_purchases` through
+      `doodad_funcs` -> `doodad_func_groups` (`npcs/doodad/funcs/items.rs`: `loot_item`,
+      `loot_pack`, `purchase`);
+    * `merchant_goods` -> `merchant_packs` / `merchants` for store vendors.
+    """
+    data = {"loot": defaultdict(list), "pack_npcs": defaultdict(list),
+            "item_doodads": defaultdict(list), "item_crafts": defaultdict(list),
+            "item_stores": defaultdict(list), "pack_vendors": defaultdict(list),
+            "item_quests": {row["id"]: row["loot_quest_id"]
+                            for row in query(conn, "SELECT id, loot_quest_id FROM items")
+                            if row["loot_quest_id"]}}
+    for row in rows(conn, "loots"):
+        data["loot"][row["item_id"]].append(row)
+    for row in rows(conn, "loot_pack_dropping_npcs"):
+        data["pack_npcs"][row["loot_pack_id"]].append(row["npc_id"])
+    groups = {row["id"]: row["doodad_almighty_id"]
+              for row in rows(conn, "doodad_func_groups")}
+    func_doodads = defaultdict(list)
+    for row in rows(conn, "doodad_funcs"):
+        if row["actual_func_type"] in ("DoodadFuncLootItem", "DoodadFuncLootPack",
+                                       "DoodadFuncPurchase"):
+            doodad = groups.get(row["doodad_func_group_id"])
+            if doodad:
+                func_doodads[(row["actual_func_type"], row["actual_func_id"])].append(doodad)
+    for row in rows(conn, "doodad_func_loot_items"):
+        for doodad in func_doodads.get(("DoodadFuncLootItem", row["id"]), []):
+            data["item_doodads"][row["item_id"]].append(("DoodadFuncLootItem", doodad))
+    for row in rows(conn, "doodad_func_purchases"):
+        for doodad in func_doodads.get(("DoodadFuncPurchase", row["id"]), []):
+            data["item_doodads"][row["item_id"]].append(("DoodadFuncPurchase", doodad))
+    pack_funcs = defaultdict(list)
+    for row in rows(conn, "doodad_func_loot_packs"):
+        pack_funcs[row["loot_pack_id"]].append(row["id"])
+    for item_id, loots in data["loot"].items():
+        for loot in loots:
+            for func_id in pack_funcs.get(loot["loot_pack_id"], []):
+                for doodad in func_doodads.get(("DoodadFuncLootPack", func_id), []):
+                    data["item_doodads"][item_id].append(("DoodadFuncLootPack", doodad))
+    for row in rows(conn, "craft_products"):
+        data["item_crafts"][row["item_id"]].append(row["craft_id"])
+    for row in rows(conn, "merchant_goods"):
+        data["item_stores"][row["item_id"]].append(row["merchant_pack_id"])
+    for row in rows(conn, "merchant_packs"):
+        data["pack_vendors"][row["id"]].append(row["owner_npc_id"])
+    for row in rows(conn, "merchants"):
+        data["pack_vendors"][row["merchant_pack_id"]].append(row["npc_id"])
+    return data
+
+
+def bounded(ids, spawn_index, limit=5):
+    """Up to `limit` unique ids, spawn-located ones (by id) first."""
+    unique = sorted(set(ids))
+    order = sorted(unique, key=lambda i: (i not in spawn_index, i))
+    return order[:limit]
+
+
+def item_sources(item_id, supplied, spawns, data):
+    """Bounded candidate sources of one item id, location-backed first.
+
+    `chance` is the raw `loots.drop_rate` (10,000,000 = 100%,
+    `economy/loot.rs` divides by 10,000,000); `loot_quest_id` mirrors the
+    `HasQuest` gate of `looting.rs::try_take_loot_locked` for quest-only drops.
+    """
+    def locations(ids):
+        found = [loc for i in ids for loc in spawns["npc"].get(i, [])]
+        return [{"world": w, "x": x, "y": y, "z": z} for w, x, y, z in closest(found)]
+
+    sources = []
+    seen_packs = set()
+    for loot in data["loot"].get(item_id, []):
+        pack = loot["loot_pack_id"]
+        if pack in seen_packs:
+            continue
+        seen_packs.add(pack)
+        npcs = bounded(data["pack_npcs"].get(pack, []), spawns["npc"])
+        entry = {"type": "npc_loot", "npc_ids": npcs, "loot_pack_id": pack,
+                 "chance": loot["drop_rate"], "locations": locations(npcs)}
+        if item_id in data["item_quests"]:
+            entry["loot_quest_id"] = data["item_quests"][item_id]
+        sources.append(entry)
+    doodads = defaultdict(list)
+    for func_type, doodad_id in data["item_doodads"].get(item_id, []):
+        doodads[func_type].append(doodad_id)
+    for func_type in ("DoodadFuncLootItem", "DoodadFuncLootPack", "DoodadFuncPurchase"):
+        if doodads.get(func_type):
+            ids = bounded(doodads[func_type], spawns["doodad"])
+            sources.append({"type": "doodad", "doodad_ids": ids, "func": func_type,
+                            "locations": [{"world": w, "x": x, "y": y, "z": z}
+                                          for w, x, y, z in closest(
+                                              [loc for i in ids
+                                               for loc in spawns["doodad"].get(i, [])])]})
+    for act_id in sorted(supplied.get(item_id, [])):
+        sources.append({"type": "quest_supply", "act_id": act_id})
+    crafts = bounded(data["item_crafts"].get(item_id, []), {})
+    if crafts:
+        sources.append({"type": "craft", "craft_ids": crafts})
+    packs = bounded(data["item_stores"].get(item_id, []), {})
+    if packs:
+        vendors = bounded([npc for p in packs for npc in data["pack_vendors"].get(p, [])],
+                          spawns["npc"])
+        sources.append({"type": "store", "npc_ids": vendors, "pack_ids": packs,
+                        "locations": locations(vendors)})
+    order = {"npc_loot": 0, "doodad": 1, "quest_supply": 2, "craft": 3, "store": 4}
+    by_type = Counter()
+    kept = []
+    for source in sorted(sources, key=lambda s: (order[s["type"]], not s.get("locations"),
+                                                 s.get("loot_pack_id", 0))):
+        if by_type[source["type"]] < 5:
+            by_type[source["type"]] += 1
+            kept.append(source)
+    return kept
+
+
 def dynamic_npc_sources(conn):
     """NPC template id -> spawn sources applied at runtime instead of the world files.
 
@@ -390,6 +525,7 @@ def plan(conn, spawns, quest_filter=None):
     acts = rows(conn, "quest_acts")
     lookups = load_lookups(conn)
     dynamic = dynamic_npc_sources(conn)
+    source_data = load_item_source_data(conn)
     # `CanComponentRun` reads owner type "QuestComponent" (the only quest owner type in the
     # table, engine.rs `starter_accepts` -> `can_component_run`).
     requirements = defaultdict(list)
@@ -429,10 +565,18 @@ def plan(conn, spawns, quest_filter=None):
         steps = []
         blockers = []
         blocked = partial = False
+        supplied = defaultdict(list)
         for component in ordered:
             kind_id = component["component_kind_id"]
             for act in sorted(by_component[component["id"]], key=lambda a: a["id"]):
                 act_class = act["act_detail_type"]
+                if act_class in ITEM_SUPPLY_ACTS:
+                    # Earlier same-quest supplies (START/SUPPLY components run before the
+                    # objective steps): the `quest_supply` item source.
+                    detail = detail_of(conn, details, ITEM_SUPPLY_ACTS[act_class],
+                                       act["act_detail_id"])
+                    if detail and detail.get("item_id"):
+                        supplied[detail["item_id"]].append(act["id"])
                 target = step_target(conn, details, lookups, act_class, act["act_detail_id"])
                 kind = target["kind"] if target else "none"
                 ids = target["ids"] if target else []
@@ -440,6 +584,7 @@ def plan(conn, spawns, quest_filter=None):
                 if kind in ("npc", "doodad"):
                     found = [loc for t in ids for loc in spawns[kind].get(t, [])]
                 sources = []
+                item_targets = None
                 if target is None:
                     status = "unsupported"
                 elif kind == "npc" and not found:
@@ -448,6 +593,10 @@ def plan(conn, spawns, quest_filter=None):
                     status = "dynamic_spawn" if sources else "no_spawn"
                 elif kind == "doodad" and not found:
                     status = "no_spawn"
+                elif kind == "item" and act_class in ITEM_SOURCE_ACTS:
+                    item_targets = [{"item_id": i, "sources": item_sources(
+                        i, supplied, spawns, source_data)} for i in ids]
+                    status = "ok" if any(e["sources"] for e in item_targets) else "unknown_item_source"
                 else:
                     status = "ok"
                 step = {"component_id": component["id"],
@@ -459,6 +608,8 @@ def plan(conn, spawns, quest_filter=None):
                         "status": status}
                 if status == "dynamic_spawn":
                     step["sources"] = sources
+                if item_targets is not None:
+                    step["item_sources"] = item_targets
                 steps.append(step)
                 optional = kind_id in OPTIONAL_KINDS
                 if status == "unsupported":
@@ -471,7 +622,13 @@ def plan(conn, spawns, quest_filter=None):
                     targets = " ".join(map(str, ids)) if ids else "unresolved"
                     blockers.append(f"no spawn for {kind} {targets} "
                                     f"({act_class}, component {component['id']})")
-        quest_status = "blocked" if blocked else ("partial" if partial else "ok")
+        if not any(c["component_kind_id"] == KIND_START for c in ordered):
+            # Auxiliary records (tutorial helpers, reserved tasks): no Start component, so
+            # they cannot be accepted in play (Quest-Audit wiki: 119 loaded records).
+            quest_status = "auxiliary"
+            blockers.insert(0, "auxiliary context: no Start component")
+        else:
+            quest_status = "blocked" if blocked else ("partial" if partial else "ok")
         quests.append({"quest_id": quest["id"], "name": quest["name"],
                        "category_id": quest["category_id"], "level": quest["LEVEL"],
                        "min_level": min_level, "requires": requires,
@@ -503,6 +660,14 @@ def plan(conn, spawns, quest_filter=None):
                    "doodad" in missing_by_quest[q["quest_id"]] for q in quests),
                "dynamic_spawn_steps": sum(
                    s["status"] == "dynamic_spawn" for q in quests for s in q["steps"]),
+               "unknown_item_source_steps": sum(
+                   s["status"] == "unknown_item_source" for q in quests for s in q["steps"]),
+               "item_steps_with_npc_loot": sum(
+                   any(so["type"] == "npc_loot" for e in s.get("item_sources", [])
+                       for so in e["sources"]) for q in quests for s in q["steps"]),
+               "item_steps_with_doodad_sources": sum(
+                   any(so["type"] == "doodad" for e in s.get("item_sources", [])
+                       for so in e["sources"]) for q in quests for s in q["steps"]),
                "requirement_kinds": dict(sorted(Counter(
                    r["kind"] for q in quests for r in q["requires"]).items())),
                "quests_with_requirements": sum(bool(q["requires"]) for q in quests)}
