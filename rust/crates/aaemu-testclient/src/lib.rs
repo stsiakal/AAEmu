@@ -7,6 +7,7 @@ pub mod game;
 pub mod load;
 pub mod login;
 pub mod quest;
+pub mod questrun;
 pub mod record;
 pub mod scenario;
 pub mod stream;

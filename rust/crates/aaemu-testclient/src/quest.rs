@@ -206,16 +206,23 @@ mod tests {
     fn sc_quests_snapshot_populates_the_active_quests() {
         let mut body = PacketStream::new();
         SCQuestsPacket {
-            quests: vec![quest(330, status::PROGRESS), quest(331, status::READY)],
+            quests: vec![
+                quest(330, status::PROGRESS),
+                quest(331, status::READY),
+                quest(332, status::FAILED),
+            ],
             now_ms: 0,
         }
         .write(&mut body);
         let mut st = GameState::default();
         observe_into(&mut st, &packet(sc::SCQuestsPacket, body.into_bytes())).unwrap();
-        assert_eq!(st.quests.len(), 2);
+        assert_eq!(st.quests.len(), 3);
         assert_eq!(st.quests[&330].status, status::PROGRESS);
         assert_eq!(st.quests[&330].objectives, [1, 0, 0, 0, 0]);
         assert_eq!(st.quests[&331].status, status::READY);
+        // The snapshot is not a live failure: only `SCQuestContext*` updates set `last_failed`.
+        assert!(st.failed_quests.contains(&332));
+        assert_eq!(st.last_failed, None);
     }
 
     #[test]
@@ -245,6 +252,7 @@ mod tests {
         .unwrap();
         assert_eq!(st.quests[&330].status, status::FAILED);
         assert!(st.failed_quests.contains(&330));
+        assert_eq!(st.last_failed, Some(330));
     }
 
     #[test]
@@ -267,6 +275,7 @@ mod tests {
         )
         .unwrap();
         assert!(st.completed_quests.contains(&330));
+        assert_eq!(st.last_completed, Some(330));
         assert!(!st.quests.contains_key(&330));
 
         let mut body = PacketStream::new();
@@ -295,6 +304,7 @@ mod tests {
         )
         .unwrap();
         assert!(st.failed_quests.contains(&332));
+        assert_eq!(st.last_failed, Some(332));
         assert!(!st.quests.contains_key(&332));
     }
 
@@ -313,6 +323,8 @@ mod tests {
         .unwrap();
         assert!(st.completed_quests.contains(&330));
         assert!(st.completed_quests.contains(&331));
+        // The snapshot does not count as a live completion of this session.
+        assert_eq!(st.last_completed, None);
     }
 
     #[test]
@@ -372,6 +384,7 @@ mod tests {
         assert_eq!(st.chat_log.len(), 64);
         assert_eq!(st.chat_log.front().unwrap(), "m6");
         assert_eq!(st.chat_log.back().unwrap(), "m69");
+        assert_eq!(st.chat_count, 70);
     }
 
     #[test]

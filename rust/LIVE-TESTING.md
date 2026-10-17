@@ -205,6 +205,23 @@ fox, which fights back; logout then takes the 5-minute in-combat timer), `load` 
 create, select, spawn, move, chat, leave). `parity` exits with 2 when there are findings,
 `load` when a bot failed.
 
+The `quest` subcommand audits the quest engine against a `rust/tools/quest_audit/plan.py` plan:
+it logs in with the GM account, creates/selects the character like `full`, enables god mode
+(`/godmode true`), raises the level per quest (`/level`, which only adds the missing
+experience) and runs the selected quests in order — accept at the giver NPC, talk / hunts,
+report — recording one JSON result line per quest (`completed`, `failed`, `stuck`,
+`blocked_plan`, `runner_unsupported`, `needs_trigger`, `error`) with the per-step outcomes, the
+final quest status/objectives and the chat messages seen. A target that only exists after a
+`SpawnEffect` skill cannot be driven by v1 (`needs_trigger`); hunts kill with `/kill`, which
+credits the bot as the killer through the normal death path
+(`systems/services/commands/scripts/kill.rs`). `--quest` selects single quest ids (repeatable),
+`--all-ok` every plan quest with status `ok`; the lines are printed and appended to `--out`:
+
+```sh
+$TC quest --config testclient.local.json --login 127.0.0.1:21237 \
+          --plan rust/tools/quest_audit/plan.json --quest 330 --quest 331 --out quest-audit.jsonl
+```
+
 The combat step selects its NPC through `CSChangeTargetPacket` and faces it in movement
 packets so auto attacks and angle restrictions use the intended target. It matches skill responses to the player's object and skill IDs and reads
 the 1.2 `SkillResult` extra field before optional integer data. Missing combat NPCs and

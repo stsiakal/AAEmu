@@ -106,11 +106,18 @@ pub struct GameState {
     pub completed_quests: BTreeSet<u32>,
     /// Quest template ids whose status went to `FAILED` (or an `SCQuestContextFailedPacket`).
     pub failed_quests: BTreeSet<u32>,
+    /// Live completion / failure notifications (never the character-select snapshot), so the
+    /// audit runner can tell a quest that finished during the session from one that was already
+    /// finished before it.
+    pub last_completed: Option<u32>,
+    pub last_failed: Option<u32>,
     /// Template id of the last `SCQuestContextResetPacket`.
     pub last_reset: Option<u32>,
     /// The last [`CHAT_LOG_LIMIT`] inbound `SCChatMessagePacket` texts (say, system and GM
     /// command replies).
     pub chat_log: VecDeque<String>,
+    /// Total chat messages captured (monotonic; lets callers window [`GameState::chat_log`]).
+    pub chat_count: u64,
     /// First item of the bag (`SCCharacterInvenContentsPacket`, slot type 2): `(item id, slot)`.
     pub bag_items: Vec<(u64, u8, u32)>,
     pub bag_slots: u8,
@@ -447,19 +454,20 @@ pub(crate) fn observe_into(st: &mut GameState, p: &Packet) -> anyhow::Result<()>
     } else if p.is_sc(sc::SCQuestsPacket) {
         // The select snapshot arrives in chunks of 20; upsert row by row.
         for q in quest::quest_rows(&p.body)? {
-            upsert_quest(st, q);
+            upsert_quest(st, q, false);
         }
     } else if p.is_sc(sc::SCCompletedQuestsPacket) {
         for id in quest::completed_quest_rows(&p.body)? {
             st.completed_quests.insert(id);
         }
     } else if p.is_sc(sc::SCQuestContextStartedPacket) || p.is_sc(sc::SCQuestContextUpdatedPacket) {
-        upsert_quest(st, quest::read_quest_row(&mut s)?);
+        upsert_quest(st, quest::read_quest_row(&mut s)?, true);
     } else if p.is_sc(sc::SCQuestContextCompletedPacket) {
         let quest_id = s.read_u32()?;
         s.read_u64()?; // body8
         s.read_u32()?; // component id
         st.completed_quests.insert(quest_id);
+        st.last_completed = Some(quest_id);
         st.quests.remove(&quest_id);
     } else if p.is_sc(sc::SCQuestContextFailedPacket) {
         // No Rust definition: the 1.2 table declares the opcode but neither server sends
@@ -468,6 +476,7 @@ pub(crate) fn observe_into(st: &mut GameState, p: &Packet) -> anyhow::Result<()>
         s.read_u64()?; // body8
         s.read_u32()?; // component id
         st.failed_quests.insert(quest_id);
+        st.last_failed = Some(quest_id);
         st.quests.remove(&quest_id);
     } else if p.is_sc(sc::SCQuestContextResetPacket) {
         let quest_id = s.read_u32()?;
@@ -480,6 +489,8 @@ pub(crate) fn observe_into(st: &mut GameState, p: &Packet) -> anyhow::Result<()>
         st.quests.clear();
         st.completed_quests.clear();
         st.failed_quests.clear();
+        st.last_completed = None;
+        st.last_failed = None;
         st.last_reset = None;
     } else if p.is_sc(sc::SCChatMessagePacket) {
         if let Some(text) = chat_text(p) {
@@ -487,6 +498,7 @@ pub(crate) fn observe_into(st: &mut GameState, p: &Packet) -> anyhow::Result<()>
                 st.chat_log.pop_front();
             }
             st.chat_log.push_back(text);
+            st.chat_count = st.chat_count.saturating_add(1);
         }
     } else if p.is_sc(sc::SCTeleportUnitPacket) {
         // Every teleport (GM `/move` included) confirms the own position with this packet;
@@ -506,10 +518,14 @@ pub(crate) fn observe_into(st: &mut GameState, p: &Packet) -> anyhow::Result<()>
 }
 
 /// Records `q` as an active quest; a `FAILED` status is also remembered in
-/// [`GameState::failed_quests`].
-fn upsert_quest(st: &mut GameState, q: QuestInfo) {
+/// [`GameState::failed_quests`]. `live` is set for the `SCQuestContext*` update packets (never
+/// for the character-select snapshot), so the audit runner can see session-only failures.
+fn upsert_quest(st: &mut GameState, q: QuestInfo, live: bool) {
     if q.status == quest_status::FAILED {
         st.failed_quests.insert(q.template_id);
+        if live {
+            st.last_failed = Some(q.template_id);
+        }
     }
     st.quests.insert(q.template_id, q);
 }

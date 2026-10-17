@@ -10,6 +10,9 @@
 //! aaemu-testclient diff   --a capA.jsonl --b capB.jsonl [--masks masks.json]
 //! aaemu-testclient load   [--config F] [--login H:P] --bots N [--prefix load] [--ramp-ms 20]
 //!                         [--scenario load]
+//! aaemu-testclient quest  [--config F] [--login H:P] --plan plan.json
+//!                         (--quest ID...|--all-ok) [--out results.jsonl]
+//!                         [--step-timeout-secs N]
 //! ```
 //!
 //! Settings come from `--config` (JSON, see `testclient.example.json`), then the flags. Keep
@@ -21,6 +24,7 @@ use std::time::Duration;
 
 use aaemu_testclient::diff::{self, DiffConfig};
 use aaemu_testclient::load;
+use aaemu_testclient::questrun::{self, QuestOutcome};
 use aaemu_testclient::record::{self, Recorder};
 use aaemu_testclient::scenario::{self, BotConfig, Kind, Outcome};
 use anyhow::{bail, Context};
@@ -28,25 +32,47 @@ use tracing_subscriber::EnvFilter;
 
 struct Args {
     cmd: String,
-    flags: HashMap<String, String>,
+    /// Every occurrence of a flag, in order (`--quest` is repeatable).
+    flags: HashMap<String, Vec<String>>,
 }
 
 impl Args {
     fn parse() -> anyhow::Result<Self> {
-        let mut it = std::env::args().skip(1);
-        let cmd = it.next().unwrap_or_else(|| "help".into());
-        let mut flags = HashMap::new();
-        while let Some(a) = it.next() {
+        let argv: Vec<String> = std::env::args().skip(1).collect();
+        let cmd = argv.first().cloned().unwrap_or_else(|| "help".into());
+        let mut flags: HashMap<String, Vec<String>> = HashMap::new();
+        let mut i = 1;
+        while i < argv.len() {
+            let a = &argv[i];
             let Some(k) = a.strip_prefix("--") else {
                 bail!("unexpected argument '{a}'");
             };
-            let v = it.next().with_context(|| format!("--{k} needs a value"))?;
-            flags.insert(k.to_string(), v);
+            i += 1;
+            // A flag followed by another flag (or the end) is a boolean switch (`--all-ok`).
+            let v = if i < argv.len() && !argv[i].starts_with("--") {
+                let v = argv[i].clone();
+                i += 1;
+                v
+            } else {
+                String::new()
+            };
+            flags.entry(k.to_string()).or_default().push(v);
         }
         Ok(Self { cmd, flags })
     }
     fn get(&self, k: &str) -> Option<&str> {
-        self.flags.get(k).map(String::as_str)
+        self.flags
+            .get(k)
+            .and_then(|v| v.first())
+            .map(String::as_str)
+    }
+    fn get_all(&self, k: &str) -> Vec<&str> {
+        self.flags
+            .get(k)
+            .map_or(Vec::new(), |v| v.iter().map(String::as_str).collect())
+    }
+    fn has(&self, k: &str) -> bool {
+        self.flags.contains_key(k)
     }
 }
 
@@ -231,8 +257,46 @@ async fn main() -> anyhow::Result<()> {
                 std::process::exit(2);
             }
         }
+        "quest" => {
+            let cfg = bot_config(&args)?;
+            let plan_path =
+                PathBuf::from(args.get("plan").context("--plan <plan.json> is required")?);
+            let plan = questrun::load_plan(&plan_path)?;
+            let requested: Vec<u32> = args
+                .get_all("quest")
+                .iter()
+                .map(|v| v.parse::<u32>().context("--quest needs a numeric quest id"))
+                .collect::<anyhow::Result<_>>()?;
+            let all_ok = args.has("all-ok");
+            let step_timeout =
+                Duration::from_secs(args.get("step-timeout-secs").unwrap_or("60").parse()?);
+            let out = args.get("out").map(PathBuf::from);
+            let report = questrun::run(
+                &cfg,
+                &plan,
+                &requested,
+                all_ok,
+                out.as_deref(),
+                step_timeout,
+            )
+            .await?;
+            let completed = report
+                .results
+                .iter()
+                .filter(|r| r.result == QuestOutcome::Completed)
+                .count();
+            println!(
+                "[quest] {} result line(s), {completed} completed",
+                report.results.len()
+            );
+            if report.aborted {
+                bail!("connection lost during the quest run");
+            }
+        }
         _ => {
-            println!("usage: aaemu-testclient run|parity|diff|load [--flags]; see the crate docs");
+            println!(
+                "usage: aaemu-testclient run|parity|diff|load|quest [--flags]; see the crate docs"
+            );
         }
     }
     Ok(())
