@@ -110,6 +110,21 @@ pub async fn handle_g2l(
             Ok(())
         }
         G2lPacket::PlayerReconnect(p) => {
+            // Deviation: the C# accepted tokens from any internal peer, so an unregistered
+            // connection could mint reconnect logins for any account. Only the registered game
+            // server (or one of its mirrors) may add tokens for its id.
+            let allowed = match conn.game_server() {
+                Some(gs) => gs == p.gs_id || server.games.try_get_parent_id(p.gs_id) == Some(gs),
+                None => false,
+            };
+            if !allowed {
+                tracing::warn!(
+                    "Connection {}: reconnect token for game server {} not sent by it, ignored",
+                    conn.ip,
+                    p.gs_id
+                );
+                return Ok(());
+            }
             server
                 .logins
                 .add_reconnection_token(conn, p.gs_id, p.account_id, p.token);

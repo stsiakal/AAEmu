@@ -73,6 +73,18 @@ async fn reconnect_list_world_and_enter_world() {
     let login_addr = login.local_addr().unwrap();
     tokio::spawn(network::login::run(server.clone(), login, shutdown.clone()));
 
+    // --- an unregistered internal peer cannot add reconnection tokens
+    let mut rogue = Framed::new(TcpStream::connect(internal_addr).await.unwrap(), FrameCodec);
+    send(
+        &mut rogue,
+        &GlPlayerReconnect {
+            gs_id: GameServerId(1),
+            account_id: AccountId(42),
+            token: 999,
+        },
+    )
+    .await;
+
     // --- game server registers
     let mut gs = Framed::new(TcpStream::connect(internal_addr).await.unwrap(), FrameCodec);
     send(
@@ -263,6 +275,22 @@ async fn reconnect_list_world_and_enter_world() {
     let (op, s) = recv(&mut client2).await;
     assert_eq!(op, l2c::opcodes::AC_LOGIN_DENIED);
     assert_eq!(s.as_bytes()[2], 2); // BadResponse
+
+    // --- the token sent by the unregistered peer was never accepted
+    let mut client3 = Framed::new(TcpStream::connect(login_addr).await.unwrap(), FrameCodec);
+    send_raw(&mut client3, 0x00e, |s| {
+        s.write_u32(0)
+            .write_u32(0)
+            .write_u32(42)
+            .write_u8(1)
+            .write_u32(999)
+            .write_u16(0);
+    })
+    .await;
+    let (op, s) = recv(&mut client3).await;
+    assert_eq!(op, l2c::opcodes::AC_LOGIN_DENIED);
+    assert_eq!(s.as_bytes()[2], 2); // BadResponse
+    drop(rogue);
 
     // --- game server disconnect unregisters it
     drop(gs);
