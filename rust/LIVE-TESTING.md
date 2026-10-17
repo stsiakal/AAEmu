@@ -215,27 +215,36 @@ to `min_level` (`/level`, which only adds the missing experience; a `Level` requ
 too) and runs the selected quests in prerequisite order — explicit `--quest` lists and
 `--all-ok` alike; `--with-prereqs` pulls the prerequisite chains of the requested quests into
 the run. Each quest records one JSON result line (`completed`, `failed`, `stuck`, `rejected`,
-`prereq_missing`, `requirement_unmet`, `blocked_plan`, `runner_unsupported`, `needs_trigger`,
-`error`) with the character name / race / gender / starting level (so lines of several bots
-can be merged), the per-step outcomes, the final quest status/objectives and the chat messages
-seen. An accept answers within 5 s (`SCErrorMsg` decoded, e.g. `QuestDailyLimit`) or the step
-ends as `rejected` / "no answer from server" — the server ignores duplicate ids, failed start
-requirements and wrong acceptors silently (`systems/quests/engine.rs::add_quest`).
-`prereq_quests` that are neither in the select snapshot nor completed during the run skip with
-`prereq_missing`. A target that only exists after a `SpawnEffect` skill cannot be driven for the
-accept / talk / report acts (`needs_trigger`), but hunts attempt it; hunts kill with `/kill`,
-which credits the bot as the killer through the normal death path
-(`systems/services/commands/scripts/kill.rs`). Item steps use the plan's `item_sources`: the
-bag is tracked from `SCCharacterInvenContentsPacket` + `SCItemTaskSuccessPacket`, loot drops
-from `/kill`ed NPCs are taken with `CSLootOpenBagPacket(lootAll)` / `CSLootCloseBagPacket`,
-loot doodads are used with an `InteractionEffect` skill (`CSStartSkillPacket`, doodad target),
-and item-use acts cast the item's `use_skill_id` with a `SkillItem` caster (the game data for
-both lookups comes from `--compact-db`, defaulting to the game's `compact.sqlite3`). A hunt or
-loot step whose targets never appear waits for respawns until the step timeout, then `/spawn`s
-the template next to the bot and reports `ok_gm_spawn` (never silently; every step note names
-the source/path that succeeded). `--quest` selects single quest ids (repeatable),
-`--all-ok` every plan quest with status `ok`, `--summary` prints the result counts and top
-failure reasons; the lines are printed and appended to `--out`:
+`prereq_missing`, `requirement_unmet`, `blocked_plan`, `auxiliary`, `runner_unsupported`,
+`needs_trigger`, `error`) with the character name / race / gender / starting level (so lines of
+several bots can be merged), the per-step outcomes, the final quest status/objectives and the
+chat messages seen. `auxiliary` plan records (no Start component) and `blocked` quests are
+recorded without running. An accept answers within 5 s (`SCErrorMsg` decoded, e.g.
+`QuestDailyLimit`) or the step ends as `rejected` / "no answer from server" — the server
+ignores duplicate ids, failed start requirements and wrong acceptors silently
+(`systems/quests/engine.rs::add_quest`). Quest-start acts: NPC / doodad acceptors and the
+starter item (`QuestActConAcceptItem`, the item's use skill carries the `AcceptQuestEffect`);
+`QuestActConAcceptComponent` is accepted without a world object (its condition is always true,
+`engine.rs::starter_accepts`); sphere acts record `runner_unsupported` ("sphere geometry not
+available") because the sign-sphere geometry lives in the client pak (`quest_sign_sphere.g`),
+not in the compact database. `prereq_quests` that are neither in the select snapshot nor
+completed during the run skip with `prereq_missing`. A target that only exists after a
+`SpawnEffect` skill cannot be driven for the accept / talk / report acts (`needs_trigger`), but
+hunts attempt it; hunts kill with `/kill`, which credits the bot as the killer through the
+normal death path (`systems/services/commands/scripts/kill.rs`). Item steps use the plan's
+`item_sources`: the bag is tracked from `SCCharacterInvenContentsPacket` +
+`SCItemTaskSuccessPacket` (`ItemCountUpdate` carries deltas: loot stacking counts the full
+amount), loot drops from `/kill`ed NPCs are taken with `CSLootOpenBagPacket(lootAll)` /
+`CSLootCloseBagPacket`, loot doodads are used with an `InteractionEffect` skill
+(`CSStartSkillPacket`, doodad target), and item-use acts cast the item's `use_skill_id` with a
+`SkillItem` caster (the game data for both lookups comes from `--compact-db`, defaulting to the
+game's `compact.sqlite3`). A gather step succeeds when the bag count *or* the quest objective
+counter reaches the target (both are in the step note). A hunt or loot step whose targets never
+appear waits for respawns until the step timeout, then `/spawn`s the template next to the bot
+and reports `ok_gm_spawn` (never silently; every step note names the source/path that
+succeeded). `--quest` selects single quest ids (repeatable), `--all-ok` every plan quest with
+status `ok`, `--summary` prints the result counts and top failure reasons; the lines are
+printed and appended to `--out`:
 
 ```sh
 $TC quest --config testclient.local.json --login 127.0.0.1:21237 \

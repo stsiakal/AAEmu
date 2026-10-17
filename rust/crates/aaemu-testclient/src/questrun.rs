@@ -22,7 +22,7 @@ use anyhow::{bail, Context};
 use serde::{Deserialize, Serialize};
 
 use crate::compactdb::CompactDb;
-use crate::game::{DoodadInfo, GameClient, Packet, UnitInfo, LEVEL_PROXY};
+use crate::game::{DoodadInfo, GameClient, GameState, Packet, UnitInfo, LEVEL_PROXY};
 use crate::login::LoginClient;
 use crate::quest::{self, QuestInfo};
 use crate::record::Recorder;
@@ -353,6 +353,8 @@ pub enum QuestOutcome {
     /// A `unit_reqs` requirement the runner can check is not met.
     RequirementUnmet,
     BlockedPlan,
+    /// A loaded quest record without a Start component: not acceptable in play.
+    Auxiliary,
     RunnerUnsupported,
     NeedsTrigger,
     Error,
@@ -360,7 +362,7 @@ pub enum QuestOutcome {
 
 impl QuestOutcome {
     /// Every variant, for stable summary counts.
-    pub const ALL: [QuestOutcome; 10] = [
+    pub const ALL: [QuestOutcome; 11] = [
         QuestOutcome::Completed,
         QuestOutcome::Failed,
         QuestOutcome::Stuck,
@@ -368,6 +370,7 @@ impl QuestOutcome {
         QuestOutcome::PrereqMissing,
         QuestOutcome::RequirementUnmet,
         QuestOutcome::BlockedPlan,
+        QuestOutcome::Auxiliary,
         QuestOutcome::RunnerUnsupported,
         QuestOutcome::NeedsTrigger,
         QuestOutcome::Error,
@@ -383,6 +386,7 @@ impl QuestOutcome {
             QuestOutcome::PrereqMissing => "prereq_missing",
             QuestOutcome::RequirementUnmet => "requirement_unmet",
             QuestOutcome::BlockedPlan => "blocked_plan",
+            QuestOutcome::Auxiliary => "auxiliary",
             QuestOutcome::RunnerUnsupported => "runner_unsupported",
             QuestOutcome::NeedsTrigger => "needs_trigger",
             QuestOutcome::Error => "error",
@@ -504,10 +508,16 @@ pub enum StepAction {
     ReportDoodad,
     /// `QuestActObjInteraction`: use the doodad with an interaction skill.
     DoodadInteraction,
+    /// `QuestActConAcceptItem`: start the quest by using the starter item.
+    AcceptItem,
+    /// `QuestActConAcceptComponent`: accept with no world object (the act is always satisfied).
+    AcceptComponent,
     /// `QuestActObjItemGather` / `QuestActEtcItemObtain` / `QuestActConAcceptItemGain`.
     Gather,
     /// `QuestActObjItemUse`: use a bag item with its use skill.
     UseItem,
+    /// `QuestActObjSphere` / `QuestActConAcceptSphere`: sphere geometry is client-pak data.
+    Sphere,
     /// `QuestActConAutoComplete` / `QuestActSupply*` / `QuestActCheck*`: nothing to send.
     Passive,
     /// A dynamic NPC target (summoned by a `SpawnEffect` skill) for an act the runner cannot
@@ -556,10 +566,13 @@ pub fn step_action(step: &PlanStep) -> StepAction {
         }
         "QuestActConReportDoodad" => StepAction::ReportDoodad,
         "QuestActObjInteraction" => StepAction::DoodadInteraction,
+        "QuestActConAcceptItem" => StepAction::AcceptItem,
+        "QuestActConAcceptComponent" => StepAction::AcceptComponent,
         "QuestActObjItemGather" | "QuestActEtcItemObtain" | "QuestActConAcceptItemGain" => {
             StepAction::Gather
         }
         "QuestActObjItemUse" => StepAction::UseItem,
+        "QuestActObjSphere" | "QuestActConAcceptSphere" => StepAction::Sphere,
         t if t == "QuestActConAutoComplete"
             || t.starts_with("QuestActSupply")
             || t.starts_with("QuestActCheck") =>
@@ -570,9 +583,15 @@ pub fn step_action(step: &PlanStep) -> StepAction {
     }
 }
 
-/// A blocked plan quest is recorded without running (`blocked_plan`).
+/// A blocked or auxiliary plan quest is recorded without running (`blocked_plan` /
+/// `auxiliary`). `auxiliary` quests have no Start component, so they cannot be accepted in
+/// play (`plan.py`, `engine.rs::starter_accepts`).
 fn plan_gate(quest: &PlanQuest) -> Option<QuestOutcome> {
-    (quest.status == "blocked").then_some(QuestOutcome::BlockedPlan)
+    match quest.status.as_str() {
+        "blocked" => Some(QuestOutcome::BlockedPlan),
+        "auxiliary" => Some(QuestOutcome::Auxiliary),
+        _ => None,
+    }
 }
 
 // ----- prerequisites and unit requirements -----
@@ -1450,9 +1469,16 @@ async fn run_quest(
             StepAction::Gather => {
                 step_gather(game, quest.quest_id, step, indices[i], compact_db, deadline).await
             }
+            StepAction::AcceptItem => {
+                step_accept_item(game, quest.quest_id, step, compact_db, deadline).await
+            }
+            StepAction::AcceptComponent => {
+                step_accept_component(game, quest.quest_id, deadline).await
+            }
             StepAction::UseItem => {
                 step_use_item(game, quest.quest_id, step, indices[i], compact_db, deadline).await
             }
+            StepAction::Sphere => step_sphere(step, deadline).await,
             StepAction::Unsupported => Err(StepFailure::unsupported(&step.act_type)),
             StepAction::NeedsTrigger => Err(StepFailure::plan(
                 QuestOutcome::NeedsTrigger,
@@ -1608,7 +1634,12 @@ fn quest_failed(game: &GameClient, quest_id: u32) -> bool {
 }
 
 fn objective_count(game: &GameClient, quest_id: u32, index: u8) -> i32 {
-    game.state
+    objective_count_of(&game.state, quest_id, index)
+}
+
+/// [`objective_count`] on a plain state (unit tests).
+fn objective_count_of(state: &GameState, quest_id: u32, index: u8) -> i32 {
+    state
         .quests
         .get(&quest_id)
         .and_then(|q| q.objectives.get(usize::from(index)))
@@ -2184,15 +2215,50 @@ fn source_positions(source: &PlanItemSource) -> Vec<(f32, f32, f32)> {
         .collect()
 }
 
-/// Pump until the bag holds `want` of `ids` or the deadline passes.
-async fn wait_for_bag(
-    game: &mut GameClient,
+/// A gather step is done when the bag holds `want` of `ids` *or* the act's quest objective
+/// counter reached `want` (whichever comes first), or the quest completed.
+fn gather_done(
+    state: &GameState,
     ids: &[u32],
     want: i32,
+    quest_id: u32,
+    objective: Option<u8>,
+) -> bool {
+    state.bag_count(ids) >= want
+        || objective.is_some_and(|index| objective_count_of(state, quest_id, index) >= want)
+        || state.last_completed == Some(quest_id)
+}
+
+/// The success note of a gather step: the path plus both counters.
+fn gather_note(
+    state: &GameState,
+    ids: &[u32],
+    want: i32,
+    quest_id: u32,
+    objective: Option<u8>,
+    path: &str,
+) -> String {
+    let bag = state.bag_count(ids);
+    match objective {
+        Some(index) => format!(
+            "{path} (bag {bag}/{want}, objective {}/{want})",
+            objective_count_of(state, quest_id, index)
+        ),
+        None => format!("{path} (bag {bag}/{want})"),
+    }
+}
+
+/// Pump until the gather goal is reached or the deadline passes.
+async fn wait_for_gather(
+    game: &mut GameClient,
+    quest_id: u32,
+    ids: &[u32],
+    want: i32,
+    objective: Option<u8>,
     deadline: Instant,
 ) -> anyhow::Result<bool> {
     loop {
-        if game.state.bag_count(ids) >= want {
+        if gather_done(&game.state, ids, want, quest_id, objective) {
             return Ok(true);
         }
         let left = deadline.saturating_duration_since(Instant::now());
@@ -2204,14 +2270,15 @@ async fn wait_for_bag(
 }
 
 /// `QuestActObjItemGather` / `QuestActEtcItemObtain` / `QuestActConAcceptItemGain`: ensure the
-/// item count in the bag. Sources are tried in plan order (`quest_supply` waits, `npc_loot`
-/// kills a dropper and loots the corpse with the real loot packets, `doodad` uses the loot
-/// doodad); after the deadline a dropper is `/spawn`ed (`ok_gm_spawn`, never silent).
+/// item count in the bag (or the act's quest objective counter; both are reported in the
+/// note). Sources are tried in plan order (`quest_supply` waits, `npc_loot` kills a dropper and
+/// loots the corpse with the real loot packets, `doodad` uses the loot doodad); after the
+/// deadline a dropper is `/spawn`ed (`ok_gm_spawn`, never silent).
 async fn step_gather(
     game: &mut GameClient,
     quest_id: u32,
     step: &PlanStep,
-    _objective: Option<u8>,
+    objective: Option<u8>,
     compact_db: Option<&CompactDb>,
     deadline: Instant,
 ) -> StepRun {
@@ -2220,8 +2287,18 @@ async fn step_gather(
     if ids.is_empty() {
         return Err(StepFailure::unsupported("item step without item ids"));
     }
-    if game.state.bag_count(ids) >= want {
-        return Ok((StepOutcomeKind::Ok, "already in bag".into()));
+    if gather_done(&game.state, ids, want, quest_id, objective) {
+        return Ok((
+            StepOutcomeKind::Ok,
+            gather_note(
+                &game.state,
+                ids,
+                want,
+                quest_id,
+                objective,
+                "already satisfied",
+            ),
+        ));
     }
     let sources = gather_sources(step);
     if sources.is_empty() {
@@ -2233,14 +2310,21 @@ async fn step_gather(
 
     let mut last_note = String::from("no source produced the item");
     for source in &sources {
-        if game.state.bag_count(ids) >= want || Instant::now() >= deadline {
+        if gather_done(&game.state, ids, want, quest_id, objective) || Instant::now() >= deadline {
             break;
         }
-        match gather_source(game, ids, want, source, compact_db, deadline).await {
+        match gather_source(
+            game, quest_id, ids, want, objective, source, compact_db, deadline,
+        )
+        .await
+        {
             Ok(Some(note)) => {
                 last_note = note;
-                if game.state.bag_count(ids) >= want {
-                    return Ok((StepOutcomeKind::Ok, last_note));
+                if gather_done(&game.state, ids, want, quest_id, objective) {
+                    return Ok((
+                        StepOutcomeKind::Ok,
+                        gather_note(&game.state, ids, want, quest_id, objective, &last_note),
+                    ));
                 }
             }
             Ok(None) => {}
@@ -2254,11 +2338,21 @@ async fn step_gather(
     }
 
     // Wait out the rest of the step: respawns / delayed supplies may still arrive.
-    let _ = wait_for_bag(game, ids, want, deadline)
+    let _ = wait_for_gather(game, quest_id, ids, want, objective, deadline)
         .await
         .map_err(StepFailure::io)?;
-    if game.state.bag_count(ids) >= want {
-        return Ok((StepOutcomeKind::Ok, format!("respawn: {last_note}")));
+    if gather_done(&game.state, ids, want, quest_id, objective) {
+        return Ok((
+            StepOutcomeKind::Ok,
+            gather_note(
+                &game.state,
+                ids,
+                want,
+                quest_id,
+                objective,
+                &format!("respawn: {last_note}"),
+            ),
+        ));
     }
     if quest_failed(game, quest_id) {
         return Err(StepFailure::quest_failed(quest_id));
@@ -2273,10 +2367,17 @@ async fn step_gather(
         let window = Instant::now() + GM_SPAWN_WINDOW;
         let mut avoid: HashSet<u32> = HashSet::new();
         loop {
-            if game.state.bag_count(ids) >= want {
+            if gather_done(&game.state, ids, want, quest_id, objective) {
                 return Ok((
                     StepOutcomeKind::OkGmSpawn,
-                    format!("gm_spawn {npc_id} -> npc_loot"),
+                    gather_note(
+                        &game.state,
+                        ids,
+                        want,
+                        quest_id,
+                        objective,
+                        &format!("gm_spawn {npc_id} -> npc_loot"),
+                    ),
                 ));
             }
             if quest_failed(game, quest_id) {
@@ -2297,7 +2398,7 @@ async fn step_gather(
                         .await
                         .map_err(StepFailure::io)?;
                     let until = (Instant::now() + LOOT_WAIT).min(window);
-                    let _ = wait_for_bag(game, ids, want, until)
+                    let _ = wait_for_gather(game, quest_id, ids, want, objective, until)
                         .await
                         .map_err(StepFailure::io)?;
                 }
@@ -2322,10 +2423,13 @@ async fn step_gather(
 }
 
 /// One attempt at one item source; `Ok(Some(note))` when it may have changed the bag.
+#[allow(clippy::too_many_arguments)]
 async fn gather_source(
     game: &mut GameClient,
+    quest_id: u32,
     ids: &[u32],
     want: i32,
+    objective: Option<u8>,
     source: &PlanItemSource,
     compact_db: Option<&CompactDb>,
     deadline: Instant,
@@ -2334,7 +2438,7 @@ async fn gather_source(
         "quest_supply" => {
             let note = format!("quest_supply act {}", source.act_id.unwrap_or(0));
             let until = (Instant::now() + SOURCE_WAIT).min(deadline);
-            let _ = wait_for_bag(game, ids, want, until)
+            let _ = wait_for_gather(game, quest_id, ids, want, objective, until)
                 .await
                 .map_err(StepFailure::io)?;
             Ok(Some(note))
@@ -2358,7 +2462,7 @@ async fn gather_source(
                 game.loot_all(corpse).await.map_err(StepFailure::io)?;
                 game.close_loot_bag(corpse).await.map_err(StepFailure::io)?;
                 let until = (Instant::now() + LOOT_WAIT).min(deadline);
-                let _ = wait_for_bag(game, ids, want, until)
+                let _ = wait_for_gather(game, quest_id, ids, want, objective, until)
                     .await
                     .map_err(StepFailure::io)?;
             }
@@ -2404,7 +2508,7 @@ async fn gather_source(
                 .await
                 .map_err(StepFailure::io)?;
             let until = (Instant::now() + USE_WAIT).min(deadline);
-            let _ = wait_for_bag(game, ids, want, until)
+            let _ = wait_for_gather(game, quest_id, ids, want, objective, until)
                 .await
                 .map_err(StepFailure::io)?;
             Ok(Some(note))
@@ -2437,6 +2541,139 @@ async fn wait_for_any_doodad(
         game.recv_within(left.min(PUMP))
             .await
             .map_err(StepFailure::io)?;
+    }
+}
+
+/// `QuestActObjSphere` / `QuestActConAcceptSphere`: the plan carries the sphere id but no
+/// coordinates. The geometry (centre and radius) lives in the client pak's
+/// `quest_sign_sphere.g` files (`sphere_quest.rs::load_quest_spheres`); the compact database
+/// only stores the sphere metadata, so the runner cannot reach the sphere.
+async fn step_sphere(step: &PlanStep, _deadline: Instant) -> StepRun {
+    Err(StepFailure::unsupported_reason(sphere_unsupported_reason(
+        step.target.ids.first().copied().unwrap_or(0),
+    )))
+}
+
+/// The `runner_unsupported` reason of a sphere step (kept pure for tests).
+pub fn sphere_unsupported_reason(sphere_id: u32) -> String {
+    format!(
+        "sphere geometry not available (sphere {sphere_id} is a client-pak \
+         quest_sign_sphere.g area, not in the compact database)"
+    )
+}
+
+/// `QuestActConAcceptComponent`: the act is always satisfied when the Start component runs
+/// (`engine.rs::starter_accepts`: `ConAutoComplete | ConAcceptComponent => true`), so a plain
+/// `CSStartQuestContextPacket` without an NPC / doodad / sphere is accepted.
+async fn step_accept_component(game: &mut GameClient, quest_id: u32, deadline: Instant) -> StepRun {
+    game.start_quest(quest_id, 0)
+        .await
+        .map_err(StepFailure::io)?;
+    let answer_deadline = (Instant::now() + ACCEPT_WAIT).min(deadline);
+    let found = wait_for_packet(game, answer_deadline, |p| {
+        started_for(p, quest_id) || p.is_sc(sc::SCErrorMsgPacket)
+    })
+    .await
+    .map_err(StepFailure::io)?;
+    match found {
+        Some(p) if started_for(&p, quest_id) => {
+            Ok((StepOutcomeKind::Ok, "component accept".into()))
+        }
+        Some(p) => {
+            let code = p.stream().read_i16().unwrap_or(0);
+            Err(StepFailure::plan(
+                QuestOutcome::Rejected,
+                StepOutcomeKind::Rejected,
+                format!("accept rejected: {}", error_reason(code)),
+            ))
+        }
+        None => Err(StepFailure::plan(
+            QuestOutcome::Rejected,
+            StepOutcomeKind::Rejected,
+            "no answer from server (accept silently ignored; see engine.rs::add_quest)",
+        )),
+    }
+}
+
+/// `QuestActConAcceptItem`: start the quest by using the starter item. The item's use skill
+/// carries the `AcceptQuestEffect` (`skills` -> `quests::bridges` -> `events::
+/// accept_quest_effect` -> `quest_id_from_starter_item`); the item is gathered through the
+/// step's `item_sources` when it is not in the bag.
+async fn step_accept_item(
+    game: &mut GameClient,
+    quest_id: u32,
+    step: &PlanStep,
+    compact_db: Option<&CompactDb>,
+    deadline: Instant,
+) -> StepRun {
+    let ids = &step.target.ids;
+    let want = step.target.count.max(1);
+    if ids.is_empty() {
+        return Err(StepFailure::unsupported(
+            "QuestActConAcceptItem without item ids",
+        ));
+    }
+    let mut gathered = None;
+    if game.state.bag_count(ids) < want {
+        let (kind, note) = step_gather(game, quest_id, step, None, compact_db, deadline).await?;
+        gathered = Some(kind);
+        if game.state.bag_count(ids) < want {
+            return Err(StepFailure::timeout(format!(
+                "starter item not in the bag after gathering ({note})"
+            )));
+        }
+    }
+    let Some(db) = compact_db else {
+        return Err(StepFailure::unsupported(
+            "starter item use skill lookup needs --compact-db (game data)",
+        ));
+    };
+    let Some(item) = game
+        .state
+        .bag
+        .values()
+        .find(|i| ids.contains(&i.template_id))
+        .copied()
+    else {
+        return Err(StepFailure::timeout(format!(
+            "starter item {ids:?} is not in the bag"
+        )));
+    };
+    let Some((skill, target_type)) = db
+        .item_use_skill(item.template_id)
+        .map_err(StepFailure::io)?
+    else {
+        return Err(StepFailure::unsupported_reason(format!(
+            "starter item {} has no use_skill_id",
+            item.template_id
+        )));
+    };
+    let target = use_item_target(game, target_type, step)?;
+    game.use_item(item.item_id, item.template_id, skill, target)
+        .await
+        .map_err(StepFailure::io)?;
+    let answer_deadline = (Instant::now() + ACCEPT_WAIT).min(deadline);
+    let found = wait_for_packet(game, answer_deadline, |p| {
+        started_for(p, quest_id) || p.is_sc(sc::SCErrorMsgPacket)
+    })
+    .await
+    .map_err(StepFailure::io)?;
+    let note = format!("item {} skill {skill}", item.template_id);
+    match found {
+        Some(p) if started_for(&p, quest_id) => Ok((gathered.unwrap_or(StepOutcomeKind::Ok), note)),
+        Some(p) => {
+            let code = p.stream().read_i16().unwrap_or(0);
+            Err(StepFailure::plan(
+                QuestOutcome::Rejected,
+                StepOutcomeKind::Rejected,
+                format!("item accept rejected: {}", error_reason(code)),
+            ))
+        }
+        None => Err(StepFailure::plan(
+            QuestOutcome::Rejected,
+            StepOutcomeKind::Rejected,
+            "no answer from server (using the starter item did not start the quest)",
+        )),
     }
 }
 
@@ -3055,10 +3292,18 @@ mod tests {
                 "QuestActObjInteraction",
                 StepAction::DoodadInteraction,
             ),
+            ("Start", "QuestActConAcceptItem", StepAction::AcceptItem),
+            (
+                "Start",
+                "QuestActConAcceptComponent",
+                StepAction::AcceptComponent,
+            ),
             ("Progress", "QuestActObjItemGather", StepAction::Gather),
             ("Progress", "QuestActEtcItemObtain", StepAction::Gather),
             ("Start", "QuestActConAcceptItemGain", StepAction::Gather),
             ("Progress", "QuestActObjItemUse", StepAction::UseItem),
+            ("Progress", "QuestActObjSphere", StepAction::Sphere),
+            ("Start", "QuestActConAcceptSphere", StepAction::Sphere),
             ("Ready", "QuestActConAutoComplete", StepAction::Passive),
             ("Reward", "QuestActSupplyItem", StepAction::Passive),
             ("Reward", "QuestActSupplyCopper", StepAction::Passive),
@@ -3154,6 +3399,62 @@ mod tests {
     }
 
     #[test]
+    fn gather_goal_uses_the_objective_counter_and_reports_both() {
+        use crate::inventory::ItemInfo;
+
+        let mut state = GameState::default();
+        state.bag.insert(
+            4,
+            ItemInfo {
+                item_id: 0x0102,
+                template_id: 14_635,
+                count: 2,
+                slot: 4,
+            },
+        );
+        state.quests.insert(
+            50,
+            QuestInfo {
+                template_id: 50,
+                status: aaemu_game::systems::quests::model::status::PROGRESS,
+                objectives: [0; 5],
+            },
+        );
+        assert!(!gather_done(&state, &[14_635], 6, 50, Some(0)));
+        assert_eq!(
+            gather_note(&state, &[14_635], 6, 50, Some(0), "npc_loot pack 353"),
+            "npc_loot pack 353 (bag 2/6, objective 0/6)"
+        );
+
+        // The objective counter alone satisfies the step (the server counted the loot even
+        // while the bag decode lagged, quest 50's live case).
+        state.quests.get_mut(&50).unwrap().objectives[0] = 6;
+        assert!(gather_done(&state, &[14_635], 6, 50, Some(0)));
+        assert_eq!(
+            gather_note(&state, &[14_635], 6, 50, Some(0), "npc_loot pack 353"),
+            "npc_loot pack 353 (bag 2/6, objective 6/6)"
+        );
+
+        // A live completion of the quest also ends a gather step.
+        state.last_completed = Some(51);
+        assert!(gather_done(&state, &[999], 1, 51, None));
+
+        // Without an objective (acts that do not count) only the bag counts.
+        assert!(!gather_done(&state, &[14_635], 6, 52, None));
+        assert_eq!(
+            gather_note(&state, &[14_635], 6, 52, None, "quest_supply act 42"),
+            "quest_supply act 42 (bag 2/6)"
+        );
+    }
+
+    #[test]
+    fn sphere_steps_report_the_missing_client_pak_geometry() {
+        let reason = sphere_unsupported_reason(1234);
+        assert!(reason.contains("sphere geometry not available"), "{reason}");
+        assert!(reason.contains("1234"), "{reason}");
+    }
+
+    #[test]
     fn item_use_target_kinds_follow_the_skill_target_type() {
         for target_type in [0, 1, 2, 3, 5, 10, 16, 17] {
             assert_eq!(use_target_kind(target_type), UseTargetKind::SelfUnit);
@@ -3169,10 +3470,14 @@ mod tests {
     }
 
     #[test]
-    fn blocked_plan_quests_are_gated_without_running() {
+    fn blocked_and_auxiliary_plan_quests_are_gated_without_running() {
         assert_eq!(
             plan_gate(&quest(10, "blocked")),
             Some(QuestOutcome::BlockedPlan)
+        );
+        assert_eq!(
+            plan_gate(&quest(10, "auxiliary")),
+            Some(QuestOutcome::Auxiliary)
         );
         assert_eq!(plan_gate(&quest(10, "ok")), None);
         assert_eq!(plan_gate(&quest(10, "partial")), None);
@@ -3354,6 +3659,7 @@ mod tests {
             (QuestOutcome::PrereqMissing, "prereq_missing"),
             (QuestOutcome::RequirementUnmet, "requirement_unmet"),
             (QuestOutcome::BlockedPlan, "blocked_plan"),
+            (QuestOutcome::Auxiliary, "auxiliary"),
             (QuestOutcome::RunnerUnsupported, "runner_unsupported"),
             (QuestOutcome::NeedsTrigger, "needs_trigger"),
             (QuestOutcome::Error, "error"),

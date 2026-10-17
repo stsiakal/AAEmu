@@ -139,18 +139,33 @@ fn apply_task(bag: &mut Bag, s: &mut PacketStream) -> anyhow::Result<()> {
             let slot_type = s.read_u8()?;
             let slot = s.read_u8()?;
             let item_id = s.read_u64()?;
-            let count = s.read_i32()?;
+            let delta = s.read_i32()?;
             let template_id = s.read_u32()?;
             if slot_type == SLOT_TYPE_INVENTORY {
-                bag.insert(
-                    slot,
-                    ItemInfo {
-                        item_id,
-                        template_id,
-                        count,
-                        slot,
-                    },
-                );
+                // `ItemCountUpdate(item, count)` is a **delta** (`ItemContainer.cs`
+                // `itemTasks.Add(new ItemCountUpdate(i, addAmount))`), positive for a stack
+                // increase and negative for a consumption.
+                match bag.get_mut(&slot) {
+                    Some(entry) if entry.item_id == item_id => {
+                        entry.count += delta;
+                        if entry.count <= 0 {
+                            bag.remove(&slot);
+                        }
+                    }
+                    _ if delta > 0 => {
+                        // No matching row yet (a missed snapshot): keep the delta.
+                        bag.insert(
+                            slot,
+                            ItemInfo {
+                                item_id,
+                                template_id,
+                                count: delta,
+                                slot,
+                            },
+                        );
+                    }
+                    _ => {}
+                }
             }
         }
         item_action::CREATE | item_action::TAKE | item_action::CHANGE_OWNER => {
@@ -371,6 +386,7 @@ mod tests {
             Some((1000, 2))
         );
 
+        // `ItemCountUpdate` carries a delta: 2 + 5 = 7.
         let count = ItemTask::count_update(&item(1000, 0x11, 5, 2), 5);
         let mut body = PacketStream::new();
         SCItemTaskSuccessPacket {
@@ -380,18 +396,65 @@ mod tests {
         }
         .write(&mut body);
         apply_item_task_success(&mut bag, body.as_bytes()).unwrap();
-        assert_eq!(bag.get(&5).map(|i| i.count), Some(5));
+        assert_eq!(bag.get(&5).map(|i| i.count), Some(7));
 
-        let remove = ItemTask::remove(&item(1000, 0x11, 5, 5));
+        // A negative delta consumes the stack; the row disappears at <= 0.
+        let count = ItemTask::count_update(&item(1000, 0x11, 5, 7), -7);
         let mut body = PacketStream::new();
         SCItemTaskSuccessPacket {
             action: 9,
-            tasks: vec![remove],
+            tasks: vec![count],
             force_remove: vec![],
         }
         .write(&mut body);
         apply_item_task_success(&mut bag, body.as_bytes()).unwrap();
         assert!(bag.is_empty());
+
+        // The explicit remove task drops the matching row.
+        let mut body = PacketStream::new();
+        SCItemTaskSuccessPacket {
+            action: 9,
+            tasks: vec![ItemTask::add(&item(1000, 0x11, 5, 2))],
+            force_remove: vec![],
+        }
+        .write(&mut body);
+        apply_item_task_success(&mut bag, body.as_bytes()).unwrap();
+        let mut body = PacketStream::new();
+        SCItemTaskSuccessPacket {
+            action: 9,
+            tasks: vec![ItemTask::remove(&item(1000, 0x11, 5, 2))],
+            force_remove: vec![],
+        }
+        .write(&mut body);
+        apply_item_task_success(&mut bag, body.as_bytes()).unwrap();
+        assert!(bag.is_empty());
+    }
+
+    #[test]
+    fn loot_stacking_counts_the_full_amount_like_the_server_client_flow() {
+        // The loot path (`looting.rs::try_distribute` -> `container.rs::acquire_default_item_ex`):
+        // the first take creates the item (`ItemTask::add`, full count), later takes stack with
+        // `ItemTask::count_update(item, add)` deltas (quest 50: 6x item 14635 in slot 4).
+        let mut bag = Bag::new();
+        for take in 0..6 {
+            let task = if take == 0 {
+                ItemTask::add(&item(14_635, 0x0102_0304, 4, 1))
+            } else {
+                ItemTask::count_update(&item(14_635, 0x0102_0304, 4, 1), 1)
+            };
+            let mut body = PacketStream::new();
+            SCItemTaskSuccessPacket {
+                action: 10, // loot all
+                tasks: vec![task],
+                force_remove: vec![],
+            }
+            .write(&mut body);
+            apply_item_task_success(&mut bag, body.as_bytes()).unwrap();
+        }
+        assert_eq!(bag.get(&4).map(|i| i.count), Some(6));
+        let info = bag.get(&4).copied().unwrap();
+        assert_eq!(info.template_id, 14_635);
+        assert_eq!(info.item_id, 0x0102_0304);
     }
 
     #[test]
