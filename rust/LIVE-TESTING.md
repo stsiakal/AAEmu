@@ -222,11 +222,20 @@ seen. An accept answers within 5 s (`SCErrorMsg` decoded, e.g. `QuestDailyLimit`
 ends as `rejected` / "no answer from server" — the server ignores duplicate ids, failed start
 requirements and wrong acceptors silently (`systems/quests/engine.rs::add_quest`).
 `prereq_quests` that are neither in the select snapshot nor completed during the run skip with
-`prereq_missing`. A target that only exists after a `SpawnEffect` skill cannot be driven
-(`needs_trigger`); hunts kill with `/kill`, which credits the bot as the killer through the
-normal death path (`systems/services/commands/scripts/kill.rs`). `--quest` selects single quest
-ids (repeatable), `--all-ok` every plan quest with status `ok`, `--summary` prints the result
-counts and top failure reasons; the lines are printed and appended to `--out`:
+`prereq_missing`. A target that only exists after a `SpawnEffect` skill cannot be driven for the
+accept / talk / report acts (`needs_trigger`), but hunts attempt it; hunts kill with `/kill`,
+which credits the bot as the killer through the normal death path
+(`systems/services/commands/scripts/kill.rs`). Item steps use the plan's `item_sources`: the
+bag is tracked from `SCCharacterInvenContentsPacket` + `SCItemTaskSuccessPacket`, loot drops
+from `/kill`ed NPCs are taken with `CSLootOpenBagPacket(lootAll)` / `CSLootCloseBagPacket`,
+loot doodads are used with an `InteractionEffect` skill (`CSStartSkillPacket`, doodad target),
+and item-use acts cast the item's `use_skill_id` with a `SkillItem` caster (the game data for
+both lookups comes from `--compact-db`, defaulting to the game's `compact.sqlite3`). A hunt or
+loot step whose targets never appear waits for respawns until the step timeout, then `/spawn`s
+the template next to the bot and reports `ok_gm_spawn` (never silently; every step note names
+the source/path that succeeded). `--quest` selects single quest ids (repeatable),
+`--all-ok` every plan quest with status `ok`, `--summary` prints the result counts and top
+failure reasons; the lines are printed and appended to `--out`:
 
 ```sh
 $TC quest --config testclient.local.json --login 127.0.0.1:21237 \

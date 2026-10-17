@@ -17,10 +17,12 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use aaemu_game::opcodes::{pp, sc};
+use aaemu_game::systems::skills::types::SkillCastTarget;
 use anyhow::{bail, Context};
 use serde::{Deserialize, Serialize};
 
-use crate::game::{GameClient, Packet, UnitInfo, LEVEL_PROXY};
+use crate::compactdb::CompactDb;
+use crate::game::{DoodadInfo, GameClient, Packet, UnitInfo, LEVEL_PROXY};
 use crate::login::LoginClient;
 use crate::quest::{self, QuestInfo};
 use crate::record::Recorder;
@@ -37,6 +39,15 @@ pub const DEFAULT_STEP_TIMEOUT: Duration = Duration::from_secs(60);
 const KILL_WAIT: Duration = Duration::from_millis(800);
 /// Packet-pump chunk used by every bounded wait.
 const PUMP: Duration = Duration::from_millis(250);
+/// One attempt at one item source (quest supply wait / loot run / doodad use).
+const SOURCE_WAIT: Duration = Duration::from_secs(10);
+const SOURCE_WINDOW: Duration = Duration::from_secs(20);
+/// After looting a corpse, how long to wait for the bag update.
+const LOOT_WAIT: Duration = Duration::from_secs(5);
+/// How long one item / doodad use gets to move the objective before it is retried.
+const USE_WAIT: Duration = Duration::from_secs(8);
+/// The `/spawn` fallback window after a hunt / loot step exhausted its deadline.
+const GM_SPAWN_WINDOW: Duration = Duration::from_secs(30);
 /// Quiet / max drain after a step or teleport, to process removals and replies.
 const SETTLE_QUIET: Duration = Duration::from_millis(200);
 const SETTLE_MAX: Duration = Duration::from_secs(1);
@@ -225,6 +236,54 @@ pub struct PlanStep {
     /// Present for `dynamic_spawn`: the skills whose `SpawnEffect` summons the target.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sources: Option<Vec<PlanSource>>,
+    /// Present on item steps: how each target item can be obtained (`plan.py::item_sources`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub item_sources: Option<Vec<PlanItemSources>>,
+}
+
+/// The sources of one target item of an item step.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub struct PlanItemSources {
+    #[serde(default)]
+    pub item_id: u32,
+    #[serde(default)]
+    pub sources: Vec<PlanItemSource>,
+}
+
+/// One candidate source of an item (`npc_loot`, `doodad`, `quest_supply`, `craft`, `store`).
+/// Only the fields of the source types the runner drives are named; everything is optional so
+/// plan growth cannot break loading.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Default)]
+pub struct PlanItemSource {
+    /// `"npc_loot"` / `"doodad"` / `"quest_supply"` / `"craft"` / `"store"`.
+    #[serde(rename = "type", default)]
+    pub kind: String,
+    #[serde(default)]
+    pub npc_ids: Vec<u32>,
+    #[serde(default)]
+    pub doodad_ids: Vec<u32>,
+    #[serde(default)]
+    pub locations: Vec<PlanLocation>,
+    /// `npc_loot`: the drop table (`loots.loot_pack_id`).
+    #[serde(default)]
+    pub loot_pack_id: u32,
+    /// `npc_loot`: raw `loots.drop_rate` (10_000_000 = 100%).
+    #[serde(default)]
+    pub chance: i64,
+    /// `npc_loot`: `loot_quest_id` when the drop is gated to a quest.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub loot_quest_id: Option<u32>,
+    /// `doodad`: the func type (`DoodadFuncLootItem` / `DoodadFuncLootPack` / `DoodadFuncPurchase`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub func: Option<String>,
+    /// `quest_supply`: the supplying act id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub act_id: Option<u32>,
+    /// `craft` / `store` candidates (not driven by runner v4).
+    #[serde(default)]
+    pub craft_ids: Vec<u32>,
+    #[serde(default)]
+    pub pack_ids: Vec<u32>,
 }
 
 /// The act's target ids (kind-specific extras are ignored).
@@ -336,6 +395,8 @@ impl QuestOutcome {
 #[serde(rename_all = "snake_case")]
 pub enum StepOutcomeKind {
     Ok,
+    /// The step only succeeded after the `/spawn` GM fallback (never silent).
+    OkGmSpawn,
     Passive,
     Skipped,
     Timeout,
@@ -347,12 +408,15 @@ pub enum StepOutcomeKind {
     Error,
 }
 
-/// One plan step's execution record.
+/// One plan step's execution record. `note` names the path that succeeded (e.g.
+/// `quest_supply`, `npc_loot pack 6396`, `doodad DoodadFuncLootItem`, `gm_spawn 721`).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct StepOutcome {
     pub act_id: u32,
     pub act_type: String,
     pub outcome: StepOutcomeKind,
+    #[serde(default)]
+    pub note: String,
     pub ms: u64,
 }
 
@@ -407,6 +471,8 @@ pub struct RunOptions {
     /// Gender for character creation (`parse_gender`); ignored for existing characters.
     pub gender: u8,
     pub step_timeout: Duration,
+    /// `--compact-db`: the game data for item-use / interaction skill lookups.
+    pub compact_db: Option<PathBuf>,
     pub out: Option<PathBuf>,
 }
 
@@ -429,36 +495,71 @@ pub enum StepAction {
     /// Fail / Drop branch: the completed quest never executes them.
     Skip,
     Accept,
+    /// Accept a quest from a doodad (`CSStartQuestContextPacket` doodad field).
+    AcceptDoodad,
     Talk,
     Kill,
     Report,
+    /// Report a quest at a doodad (`CSCompleteQuestContextPacket` doodad field).
+    ReportDoodad,
+    /// `QuestActObjInteraction`: use the doodad with an interaction skill.
+    DoodadInteraction,
+    /// `QuestActObjItemGather` / `QuestActEtcItemObtain` / `QuestActConAcceptItemGain`.
+    Gather,
+    /// `QuestActObjItemUse`: use a bag item with its use skill.
+    UseItem,
     /// `QuestActConAutoComplete` / `QuestActSupply*` / `QuestActCheck*`: nothing to send.
     Passive,
-    /// Dynamic spawn whose `SpawnEffect` skills v1 does not trigger.
+    /// A dynamic NPC target (summoned by a `SpawnEffect` skill) for an act the runner cannot
+    /// trigger itself; hunts attempt it instead (the item-use step spawns them).
     NeedsTrigger,
     /// Any other act type.
     Unsupported,
 }
 
-/// The dispatch decision. Dynamic sources win over the act type: a target that only exists
-/// after a `SpawnEffect` skill cannot be reached, whatever the act would do with it.
+/// The dispatch decision. Dynamic sources block the NPC acts the runner cannot trigger, but
+/// hunts run: their targets are expected to exist after the earlier item-use step, and the
+/// respawn / `/spawn` fallback covers the rest.
 pub fn step_action(step: &PlanStep) -> StepAction {
     if matches!(step.component_kind.as_str(), "Fail" | "Drop") {
         return StepAction::Skip;
     }
-    if let Some(sources) = &step.sources {
-        if sources.iter().any(|s| !s.skill_ids.is_empty()) {
-            return StepAction::NeedsTrigger;
-        }
-        return StepAction::Unsupported;
-    }
+    let dynamic = step
+        .sources
+        .as_ref()
+        .is_some_and(|sources| sources.iter().any(|s| !s.skill_ids.is_empty()));
     match step.act_type.as_str() {
-        "QuestActConAcceptNpc" => StepAction::Accept,
-        "QuestActObjTalk" => StepAction::Talk,
+        "QuestActConAcceptNpc" => {
+            if dynamic {
+                StepAction::NeedsTrigger
+            } else {
+                StepAction::Accept
+            }
+        }
+        "QuestActConAcceptDoodad" => StepAction::AcceptDoodad,
+        "QuestActObjTalk" => {
+            if dynamic {
+                StepAction::NeedsTrigger
+            } else {
+                StepAction::Talk
+            }
+        }
         "QuestActObjMonsterHunt" | "QuestActObjMonsterGroupHunt" | "QuestActConAcceptNpcKill" => {
             StepAction::Kill
         }
-        "QuestActConReportNpc" => StepAction::Report,
+        "QuestActConReportNpc" => {
+            if dynamic {
+                StepAction::NeedsTrigger
+            } else {
+                StepAction::Report
+            }
+        }
+        "QuestActConReportDoodad" => StepAction::ReportDoodad,
+        "QuestActObjInteraction" => StepAction::DoodadInteraction,
+        "QuestActObjItemGather" | "QuestActEtcItemObtain" | "QuestActConAcceptItemGain" => {
+            StepAction::Gather
+        }
+        "QuestActObjItemUse" => StepAction::UseItem,
         t if t == "QuestActConAutoComplete"
             || t.starts_with("QuestActSupply")
             || t.starts_with("QuestActCheck") =>
@@ -920,6 +1021,9 @@ pub async fn run(
     };
 
     let rec = Recorder::new(false);
+    // Validate / open the game data before the login handshake: a bad `--compact-db` path is an
+    // operator error, not a run failure.
+    let compact_db = open_compact_db(opts)?;
     let (mut game, character) = setup_world(cfg, &rec, opts).await?;
     // God mode keeps the bot alive while it stands in the spawns; `/level` is issued per quest.
     game.gm("godmode true", Duration::from_secs(1)).await.ok();
@@ -948,6 +1052,7 @@ pub async fn run(
                     quest,
                     &character,
                     &mut raised_level,
+                    compact_db.as_ref(),
                     opts.step_timeout,
                 )
                 .await
@@ -963,6 +1068,27 @@ pub async fn run(
     }
     leave(&mut game).await;
     Ok(report)
+}
+
+/// Opens `--compact-db` (or the default game-data path when it exists). Steps that need
+/// client-side data record `runner_unsupported` when it is missing.
+fn open_compact_db(opts: &RunOptions) -> anyhow::Result<Option<CompactDb>> {
+    if let Some(path) = &opts.compact_db {
+        if !path.exists() {
+            bail!("compact database {} not found", path.display());
+        }
+        return Ok(Some(CompactDb::open(path)?));
+    }
+    for candidate in [
+        crate::compactdb::DEFAULT_COMPACT_DB,
+        crate::compactdb::DEFAULT_COMPACT_DB_FROM_RUST,
+    ] {
+        let path = Path::new(candidate);
+        if path.exists() {
+            return Ok(Some(CompactDb::open(path)?));
+        }
+    }
+    Ok(None)
 }
 
 fn emit(out: &mut Option<BufWriter<File>>, result: &QuestResult) -> anyhow::Result<()> {
@@ -1219,6 +1345,7 @@ async fn run_quest(
     quest: &PlanQuest,
     character: &RunCharacter,
     raised_level: &mut u32,
+    compact_db: Option<&CompactDb>,
     step_timeout: Duration,
 ) -> QuestResult {
     let start = Instant::now();
@@ -1296,30 +1423,54 @@ async fn run_quest(
     for (i, step) in quest.steps.iter().enumerate() {
         let t0 = Instant::now();
         let deadline = t0 + step_timeout;
-        let res = match step_action(step) {
-            StepAction::Skip => Ok(StepOutcomeKind::Skipped),
-            StepAction::Passive => Ok(StepOutcomeKind::Passive),
+        let res: Result<(StepOutcomeKind, String), StepFailure> = match step_action(step) {
+            StepAction::Skip => Ok((StepOutcomeKind::Skipped, String::new())),
+            StepAction::Passive => Ok((StepOutcomeKind::Passive, String::new())),
             StepAction::Accept => step_accept(game, quest.quest_id, step, deadline).await,
+            StepAction::AcceptDoodad => {
+                step_accept_doodad(game, quest.quest_id, step, deadline).await
+            }
             StepAction::Talk => step_talk(game, quest.quest_id, step, indices[i], deadline).await,
             StepAction::Kill => step_kill(game, quest.quest_id, step, indices[i], deadline).await,
             StepAction::Report => step_report(game, quest.quest_id, step, deadline).await,
+            StepAction::ReportDoodad => {
+                step_report_doodad(game, quest.quest_id, step, deadline).await
+            }
+            StepAction::DoodadInteraction => {
+                step_doodad_interaction(
+                    game,
+                    quest.quest_id,
+                    step,
+                    indices[i],
+                    compact_db,
+                    deadline,
+                )
+                .await
+            }
+            StepAction::Gather => {
+                step_gather(game, quest.quest_id, step, indices[i], compact_db, deadline).await
+            }
+            StepAction::UseItem => {
+                step_use_item(game, quest.quest_id, step, indices[i], compact_db, deadline).await
+            }
             StepAction::Unsupported => Err(StepFailure::unsupported(&step.act_type)),
             StepAction::NeedsTrigger => Err(StepFailure::plan(
                 QuestOutcome::NeedsTrigger,
                 StepOutcomeKind::NeedsTrigger,
                 format!(
-                    "{} target is only spawned by a SpawnEffect skill (v1 does not trigger it)",
+                    "{} target is only spawned by a SpawnEffect skill the runner cannot trigger",
                     step.act_type
                 ),
             )),
         };
         let ms = t0.elapsed().as_millis() as u64;
         match res {
-            Ok(kind) => {
+            Ok((kind, note)) => {
                 steps.push(StepOutcome {
                     act_id: step.act_id,
                     act_type: step.act_type.clone(),
                     outcome: kind,
+                    note,
                     ms,
                 });
                 snapshot(game, quest.quest_id, &mut last_info);
@@ -1329,6 +1480,7 @@ async fn run_quest(
                     act_id: step.act_id,
                     act_type: step.act_type.clone(),
                     outcome: f.step,
+                    note: f.reason.clone(),
                     ms,
                 });
                 outcome = Some(f.quest);
@@ -1506,6 +1658,15 @@ impl StepFailure {
             QuestOutcome::RunnerUnsupported,
             StepOutcomeKind::Unsupported,
             format!("{act_type} is not handled by runner v1"),
+        )
+    }
+
+    /// `runner_unsupported` with a free-form reason (missing game data, unknown source, ...).
+    fn unsupported_reason(reason: impl Into<String>) -> Self {
+        Self::plan(
+            QuestOutcome::RunnerUnsupported,
+            StepOutcomeKind::Unsupported,
+            reason,
         )
     }
 
@@ -1702,12 +1863,38 @@ async fn wait_progress(
 
 // ----- step implementations -----
 
+/// `(kind, note)`: the note names the path that succeeded (source, `gm_spawn`, ...).
+type StepRun = Result<(StepOutcomeKind, String), StepFailure>;
+
+/// Waits (bounded by [`APPEAR_WAIT`]) for a doodad of `template_id` to become visible.
+async fn wait_for_doodad(
+    game: &mut GameClient,
+    template_id: u32,
+    deadline: Instant,
+) -> Result<DoodadInfo, StepFailure> {
+    let appear = (Instant::now() + APPEAR_WAIT).min(deadline);
+    loop {
+        if let Some(doodad) = game.state.find_doodad(template_id) {
+            return Ok(doodad);
+        }
+        let left = appear.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Err(StepFailure::timeout(format!(
+                "doodad {template_id} did not appear"
+            )));
+        }
+        game.recv_within(left.min(PUMP))
+            .await
+            .map_err(StepFailure::io)?;
+    }
+}
+
 async fn step_accept(
     game: &mut GameClient,
     quest_id: u32,
     step: &PlanStep,
     deadline: Instant,
-) -> Result<StepOutcomeKind, StepFailure> {
+) -> StepRun {
     let npc_template = *step
         .target
         .ids
@@ -1732,7 +1919,54 @@ async fn step_accept(
     .await
     .map_err(StepFailure::io)?;
     match found {
-        Some(p) if started_for(&p, quest_id) => Ok(StepOutcomeKind::Ok),
+        Some(p) if started_for(&p, quest_id) => {
+            Ok((StepOutcomeKind::Ok, format!("npc {npc_template}")))
+        }
+        Some(p) => {
+            let code = p.stream().read_i16().unwrap_or(0);
+            Err(StepFailure::plan(
+                QuestOutcome::Rejected,
+                StepOutcomeKind::Rejected,
+                format!("accept rejected: {}", error_reason(code)),
+            ))
+        }
+        None => Err(StepFailure::plan(
+            QuestOutcome::Rejected,
+            StepOutcomeKind::Rejected,
+            "no answer from server (accept silently ignored; see engine.rs::add_quest)",
+        )),
+    }
+}
+
+/// `CSStartQuestContextPacket` with the doodad field (`events::add_quest_from_doodad`).
+async fn step_accept_doodad(
+    game: &mut GameClient,
+    quest_id: u32,
+    step: &PlanStep,
+    deadline: Instant,
+) -> StepRun {
+    let doodad_template = *step
+        .target
+        .ids
+        .first()
+        .ok_or_else(|| StepFailure::unsupported("QuestActConAcceptDoodad without a target"))?;
+    let pos = step_location(step)?;
+    game.teleport(near(pos)).await.map_err(StepFailure::io)?;
+    settle(game, deadline).await;
+    let doodad = wait_for_doodad(game, doodad_template, deadline).await?;
+    game.start_quest_doodad(quest_id, doodad.obj_id)
+        .await
+        .map_err(StepFailure::io)?;
+    let answer_deadline = (Instant::now() + ACCEPT_WAIT).min(deadline);
+    let found = wait_for_packet(game, answer_deadline, |p| {
+        started_for(p, quest_id) || p.is_sc(sc::SCErrorMsgPacket)
+    })
+    .await
+    .map_err(StepFailure::io)?;
+    match found {
+        Some(p) if started_for(&p, quest_id) => {
+            Ok((StepOutcomeKind::Ok, format!("doodad {doodad_template}")))
+        }
         Some(p) => {
             let code = p.stream().read_i16().unwrap_or(0);
             Err(StepFailure::plan(
@@ -1755,7 +1989,7 @@ async fn step_talk(
     step: &PlanStep,
     objective: Option<u8>,
     deadline: Instant,
-) -> Result<StepOutcomeKind, StepFailure> {
+) -> StepRun {
     let npc_template = *step
         .target
         .ids
@@ -1773,7 +2007,7 @@ async fn step_talk(
         .await
         .map_err(StepFailure::io)?;
     if advanced || quest_completed(game, quest_id) {
-        return Ok(StepOutcomeKind::Ok);
+        return Ok((StepOutcomeKind::Ok, format!("npc {npc_template}")));
     }
     if quest_failed(game, quest_id) {
         return Err(StepFailure::quest_failed(quest_id));
@@ -1789,7 +2023,7 @@ async fn step_report(
     quest_id: u32,
     step: &PlanStep,
     deadline: Instant,
-) -> Result<StepOutcomeKind, StepFailure> {
+) -> StepRun {
     let npc_template = *step
         .target
         .ids
@@ -1808,9 +2042,13 @@ async fn step_report(
     .await
     .map_err(StepFailure::io)?;
     match found {
-        Some(p) if completed_for(&p, quest_id) => Ok(StepOutcomeKind::Ok),
+        Some(p) if completed_for(&p, quest_id) => {
+            Ok((StepOutcomeKind::Ok, format!("npc {npc_template}")))
+        }
         Some(p) => Err(StepFailure::rejected(quest_id, "report", &p)),
-        None if quest_completed(game, quest_id) => Ok(StepOutcomeKind::Ok),
+        None if quest_completed(game, quest_id) => {
+            Ok((StepOutcomeKind::Ok, format!("npc {npc_template}")))
+        }
         None if quest_failed(game, quest_id) => Err(StepFailure::quest_failed(quest_id)),
         None => Err(StepFailure::timeout(format!(
             "no SCQuestContextCompleted for quest {quest_id}"
@@ -1818,17 +2056,777 @@ async fn step_report(
     }
 }
 
-/// Kills the target NPCs with the `/kill` GM command: `kill.rs` credits the bot as the killer
-/// (`combat::reduce_current_hp(..., Some(&self_obj), KillReason::Gm)`), which reaches
-/// `combat::do_die` and the quest engine's `on_kill` with the victim, so the normal kill
-/// objectives count. The bot re-targets with `CSChangeTargetPacket` before every kill.
+/// `CSCompleteQuestContextPacket` with the doodad field (`events::on_report` doodad branch).
+async fn step_report_doodad(
+    game: &mut GameClient,
+    quest_id: u32,
+    step: &PlanStep,
+    deadline: Instant,
+) -> StepRun {
+    let doodad_template = *step
+        .target
+        .ids
+        .first()
+        .ok_or_else(|| StepFailure::unsupported("QuestActConReportDoodad without a target"))?;
+    let pos = step_location(step)?;
+    game.teleport(near(pos)).await.map_err(StepFailure::io)?;
+    settle(game, deadline).await;
+    let doodad = wait_for_doodad(game, doodad_template, deadline).await?;
+    game.complete_quest_doodad(quest_id, doodad.obj_id, 0)
+        .await
+        .map_err(StepFailure::io)?;
+    let found = wait_for_packet(game, deadline, |p| {
+        completed_for(p, quest_id) || p.is_sc(sc::SCErrorMsgPacket)
+    })
+    .await
+    .map_err(StepFailure::io)?;
+    match found {
+        Some(p) if completed_for(&p, quest_id) => {
+            Ok((StepOutcomeKind::Ok, format!("doodad {doodad_template}")))
+        }
+        Some(p) => Err(StepFailure::rejected(quest_id, "report", &p)),
+        None if quest_completed(game, quest_id) => {
+            Ok((StepOutcomeKind::Ok, format!("doodad {doodad_template}")))
+        }
+        None if quest_failed(game, quest_id) => Err(StepFailure::quest_failed(quest_id)),
+        None => Err(StepFailure::timeout(format!(
+            "no SCQuestContextCompleted for quest {quest_id}"
+        ))),
+    }
+}
+
+/// `QuestActObjInteraction`: use the doodad with an interaction skill. `InteractionEffect`
+/// (`systems/npcs/bridges.rs`) -> `doodad.Use` -> the phase funcs, plus the quest
+/// `on_doodad_interaction` event.
+async fn step_doodad_interaction(
+    game: &mut GameClient,
+    quest_id: u32,
+    step: &PlanStep,
+    objective: Option<u8>,
+    compact_db: Option<&CompactDb>,
+    deadline: Instant,
+) -> StepRun {
+    let doodad_template = *step
+        .target
+        .ids
+        .first()
+        .ok_or_else(|| StepFailure::unsupported("QuestActObjInteraction without a target"))?;
+    let pos = step_location(step)?;
+    game.teleport(near(pos)).await.map_err(StepFailure::io)?;
+    settle(game, deadline).await;
+    let doodad = wait_for_doodad(game, doodad_template, deadline).await?;
+    let Some(db) = compact_db else {
+        return Err(StepFailure::unsupported(
+            "interaction skill lookup needs --compact-db (game data)",
+        ));
+    };
+    let Some(skill) = db.interaction_use_skill().map_err(StepFailure::io)? else {
+        return Err(StepFailure::unsupported(
+            "the game data has no InteractionEffect Use skill",
+        ));
+    };
+    let want = step.target.count.max(1);
+    loop {
+        if quest_completed(game, quest_id) {
+            break;
+        }
+        if let Some(index) = objective {
+            if objective_count(game, quest_id, index) >= want {
+                break;
+            }
+        }
+        if quest_failed(game, quest_id) {
+            return Err(StepFailure::quest_failed(quest_id));
+        }
+        if Instant::now() >= deadline {
+            return Err(StepFailure::timeout(format!(
+                "doodad interaction did not update quest {quest_id}"
+            )));
+        }
+        game.use_doodad(skill, doodad.obj_id)
+            .await
+            .map_err(StepFailure::io)?;
+        let until = (Instant::now() + USE_WAIT).min(deadline);
+        let _ = wait_progress(game, quest_id, objective, want, until)
+            .await
+            .map_err(StepFailure::io)?;
+    }
+    Ok((
+        StepOutcomeKind::Ok,
+        format!("doodad {doodad_template} skill {skill}"),
+    ))
+}
+
+// ----- item steps -----
+
+/// Every item source of the step's target ids, in plan order.
+fn gather_sources(step: &PlanStep) -> Vec<&PlanItemSource> {
+    let Some(entries) = &step.item_sources else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for entry in entries {
+        if !step.target.ids.contains(&entry.item_id) {
+            continue;
+        }
+        out.extend(entry.sources.iter());
+    }
+    out
+}
+
+/// Main-world locations of a source entry.
+fn source_positions(source: &PlanItemSource) -> Vec<(f32, f32, f32)> {
+    source
+        .locations
+        .iter()
+        .filter(|l| l.world.eq_ignore_ascii_case(MAIN_WORLD))
+        .map(|l| (l.x, l.y, l.z))
+        .collect()
+}
+
+/// Pump until the bag holds `want` of `ids` or the deadline passes.
+async fn wait_for_bag(
+    game: &mut GameClient,
+    ids: &[u32],
+    want: i32,
+    deadline: Instant,
+) -> anyhow::Result<bool> {
+    loop {
+        if game.state.bag_count(ids) >= want {
+            return Ok(true);
+        }
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Ok(false);
+        }
+        game.recv_within(left.min(PUMP)).await?;
+    }
+}
+
+/// `QuestActObjItemGather` / `QuestActEtcItemObtain` / `QuestActConAcceptItemGain`: ensure the
+/// item count in the bag. Sources are tried in plan order (`quest_supply` waits, `npc_loot`
+/// kills a dropper and loots the corpse with the real loot packets, `doodad` uses the loot
+/// doodad); after the deadline a dropper is `/spawn`ed (`ok_gm_spawn`, never silent).
+async fn step_gather(
+    game: &mut GameClient,
+    quest_id: u32,
+    step: &PlanStep,
+    _objective: Option<u8>,
+    compact_db: Option<&CompactDb>,
+    deadline: Instant,
+) -> StepRun {
+    let ids = &step.target.ids;
+    let want = step.target.count.max(1);
+    if ids.is_empty() {
+        return Err(StepFailure::unsupported("item step without item ids"));
+    }
+    if game.state.bag_count(ids) >= want {
+        return Ok((StepOutcomeKind::Ok, "already in bag".into()));
+    }
+    let sources = gather_sources(step);
+    if sources.is_empty() {
+        return Err(StepFailure::unsupported_reason(format!(
+            "{} has no known item source in the plan",
+            step.act_type
+        )));
+    }
+
+    let mut last_note = String::from("no source produced the item");
+    for source in &sources {
+        if game.state.bag_count(ids) >= want || Instant::now() >= deadline {
+            break;
+        }
+        match gather_source(game, ids, want, source, compact_db, deadline).await {
+            Ok(Some(note)) => {
+                last_note = note;
+                if game.state.bag_count(ids) >= want {
+                    return Ok((StepOutcomeKind::Ok, last_note));
+                }
+            }
+            Ok(None) => {}
+            Err(f) => {
+                if f.quest != QuestOutcome::Stuck {
+                    return Err(f);
+                }
+                last_note = f.reason;
+            }
+        }
+    }
+
+    // Wait out the rest of the step: respawns / delayed supplies may still arrive.
+    let _ = wait_for_bag(game, ids, want, deadline)
+        .await
+        .map_err(StepFailure::io)?;
+    if game.state.bag_count(ids) >= want {
+        return Ok((StepOutcomeKind::Ok, format!("respawn: {last_note}")));
+    }
+    if quest_failed(game, quest_id) {
+        return Err(StepFailure::quest_failed(quest_id));
+    }
+
+    // `/spawn` fallback for a dropper of the item (never silent).
+    let spawned = sources
+        .iter()
+        .find(|s| s.kind == "npc_loot" && !s.npc_ids.is_empty())
+        .and_then(|s| s.npc_ids.first().copied());
+    if let Some(npc_id) = spawned {
+        let window = Instant::now() + GM_SPAWN_WINDOW;
+        let mut avoid: HashSet<u32> = HashSet::new();
+        loop {
+            if game.state.bag_count(ids) >= want {
+                return Ok((
+                    StepOutcomeKind::OkGmSpawn,
+                    format!("gm_spawn {npc_id} -> npc_loot"),
+                ));
+            }
+            if quest_failed(game, quest_id) {
+                return Err(StepFailure::quest_failed(quest_id));
+            }
+            if Instant::now() >= window {
+                break;
+            }
+            match nearest_target(game, &[npc_id], &avoid) {
+                Some(npc) => {
+                    game.change_target(npc.obj_id)
+                        .await
+                        .map_err(StepFailure::io)?;
+                    game.gm("kill", KILL_WAIT).await.map_err(StepFailure::io)?;
+                    avoid.insert(npc.obj_id);
+                    game.loot_all(npc.obj_id).await.map_err(StepFailure::io)?;
+                    game.close_loot_bag(npc.obj_id)
+                        .await
+                        .map_err(StepFailure::io)?;
+                    let until = (Instant::now() + LOOT_WAIT).min(window);
+                    let _ = wait_for_bag(game, ids, want, until)
+                        .await
+                        .map_err(StepFailure::io)?;
+                }
+                None => {
+                    spawn_npc(game, npc_id).await?;
+                    let appear = (Instant::now() + APPEAR_WAIT).min(window);
+                    if wait_for_target(game, &[npc_id], &avoid, appear)
+                        .await?
+                        .is_none()
+                    {
+                        return Err(StepFailure::timeout(format!(
+                            "spawned npc {npc_id} did not appear"
+                        )));
+                    }
+                }
+            }
+        }
+    }
+    Err(StepFailure::timeout(format!(
+        "item(s) {ids:?} not obtained: {last_note}"
+    )))
+}
+
+/// One attempt at one item source; `Ok(Some(note))` when it may have changed the bag.
+async fn gather_source(
+    game: &mut GameClient,
+    ids: &[u32],
+    want: i32,
+    source: &PlanItemSource,
+    compact_db: Option<&CompactDb>,
+    deadline: Instant,
+) -> Result<Option<String>, StepFailure> {
+    match source.kind.as_str() {
+        "quest_supply" => {
+            let note = format!("quest_supply act {}", source.act_id.unwrap_or(0));
+            let until = (Instant::now() + SOURCE_WAIT).min(deadline);
+            let _ = wait_for_bag(game, ids, want, until)
+                .await
+                .map_err(StepFailure::io)?;
+            Ok(Some(note))
+        }
+        "npc_loot" => {
+            if source.npc_ids.is_empty() {
+                return Ok(None);
+            }
+            let positions = source_positions(source);
+            let until = (Instant::now() + SOURCE_WINDOW).min(deadline);
+            let goal = KillGoal::Kills { want: 1 };
+            let Some((_note, killed)) =
+                hunt_until(game, &source.npc_ids, &positions, goal, until).await?
+            else {
+                return Ok(Some(format!(
+                    "npc_loot pack {} (no dropper found)",
+                    source.loot_pack_id
+                )));
+            };
+            if let Some(corpse) = killed.first().copied() {
+                game.loot_all(corpse).await.map_err(StepFailure::io)?;
+                game.close_loot_bag(corpse).await.map_err(StepFailure::io)?;
+                let until = (Instant::now() + LOOT_WAIT).min(deadline);
+                let _ = wait_for_bag(game, ids, want, until)
+                    .await
+                    .map_err(StepFailure::io)?;
+            }
+            Ok(Some(format!("npc_loot pack {}", source.loot_pack_id)))
+        }
+        "doodad" => {
+            // `DoodadFuncPurchase` opens a merchant (needs the store packets): skipped.
+            if source
+                .func
+                .as_deref()
+                .is_some_and(|f| f == "DoodadFuncPurchase")
+            {
+                return Ok(Some(format!(
+                    "doodad {} (purchase needs the store UI)",
+                    source.func.as_deref().unwrap_or("")
+                )));
+            }
+            if source.doodad_ids.is_empty() {
+                return Ok(None);
+            }
+            let Some(db) = compact_db else {
+                return Ok(Some("doodad (needs --compact-db)".into()));
+            };
+            let Some(skill) = db.interaction_use_skill().map_err(StepFailure::io)? else {
+                return Ok(Some("doodad (no interaction skill in the data)".into()));
+            };
+            let positions = source_positions(source);
+            if let Some(pos) = positions.first() {
+                game.teleport(near(*pos)).await.map_err(StepFailure::io)?;
+                settle(game, deadline).await;
+            }
+            let appear = (Instant::now() + APPEAR_WAIT).min(deadline);
+            let doodad = wait_for_any_doodad(game, &source.doodad_ids, appear).await?;
+            let note = format!(
+                "doodad {} ({})",
+                source.func.as_deref().unwrap_or(""),
+                doodad.as_ref().map_or(0, |d| d.template_id)
+            );
+            let Some(doodad) = doodad else {
+                return Ok(Some(format!("{note} not visible")));
+            };
+            game.use_doodad(skill, doodad.obj_id)
+                .await
+                .map_err(StepFailure::io)?;
+            let until = (Instant::now() + USE_WAIT).min(deadline);
+            let _ = wait_for_bag(game, ids, want, until)
+                .await
+                .map_err(StepFailure::io)?;
+            Ok(Some(note))
+        }
+        // `craft` and `store` need the crafting / store UI packet flows (later runner scope).
+        _ => Ok(Some(format!("{}(not driven)", source.kind))),
+    }
+}
+
+/// Waits for any doodad of the ids to become visible; `Ok(None)` on the deadline.
+async fn wait_for_any_doodad(
+    game: &mut GameClient,
+    ids: &[u32],
+    deadline: Instant,
+) -> Result<Option<DoodadInfo>, StepFailure> {
+    loop {
+        let found = ids
+            .iter()
+            .filter_map(|id| game.state.find_doodad(*id))
+            .min_by(|a, b| {
+                dist2(a.pos, game.state.self_pos).total_cmp(&dist2(b.pos, game.state.self_pos))
+            });
+        if found.is_some() {
+            return Ok(found);
+        }
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Ok(None);
+        }
+        game.recv_within(left.min(PUMP))
+            .await
+            .map_err(StepFailure::io)?;
+    }
+}
+
+/// `QuestActObjItemUse`: use the item with its `use_skill_id` (`CSStartSkillPacket` with a
+/// `SkillItem` caster); the target follows the skill's `target_type_id`. Missing items are
+/// gathered first from the step's item sources.
+async fn step_use_item(
+    game: &mut GameClient,
+    quest_id: u32,
+    step: &PlanStep,
+    objective: Option<u8>,
+    compact_db: Option<&CompactDb>,
+    deadline: Instant,
+) -> StepRun {
+    let ids = &step.target.ids;
+    let want = step.target.count.max(1);
+    if ids.is_empty() {
+        return Err(StepFailure::unsupported(
+            "QuestActObjItemUse without item ids",
+        ));
+    }
+    let mut gathered: Option<StepOutcomeKind> = None;
+    if game.state.bag_count(ids) < want {
+        let (kind, note) =
+            step_gather(game, quest_id, step, objective, compact_db, deadline).await?;
+        gathered = Some(kind);
+        if game.state.bag_count(ids) < want {
+            return Err(StepFailure::timeout(format!(
+                "item not in the bag after gathering ({note})"
+            )));
+        }
+    }
+    let Some(db) = compact_db else {
+        return Err(StepFailure::unsupported(
+            "item use skill lookup needs --compact-db (game data)",
+        ));
+    };
+    let mut used_note = String::new();
+    loop {
+        if quest_completed(game, quest_id) {
+            break;
+        }
+        if let Some(index) = objective {
+            if objective_count(game, quest_id, index) >= want {
+                break;
+            }
+        }
+        if quest_failed(game, quest_id) {
+            return Err(StepFailure::quest_failed(quest_id));
+        }
+        if Instant::now() >= deadline {
+            return Err(StepFailure::timeout(format!(
+                "using the item did not update quest {quest_id}"
+            )));
+        }
+        let Some(item) = game
+            .state
+            .bag
+            .values()
+            .find(|i| ids.contains(&i.template_id))
+            .copied()
+        else {
+            return Err(StepFailure::timeout(format!(
+                "item {ids:?} left the bag before the objective was reached"
+            )));
+        };
+        let Some((skill, target_type)) = db
+            .item_use_skill(item.template_id)
+            .map_err(StepFailure::io)?
+        else {
+            return Err(StepFailure::unsupported_reason(format!(
+                "item {} has no use_skill_id",
+                item.template_id
+            )));
+        };
+        let target = use_item_target(game, target_type, step)?;
+        game.use_item(item.item_id, item.template_id, skill, target)
+            .await
+            .map_err(StepFailure::io)?;
+        used_note = format!("item {} skill {skill}", item.template_id);
+        let until = (Instant::now() + USE_WAIT).min(deadline);
+        if wait_progress(game, quest_id, objective, want, until)
+            .await
+            .map_err(StepFailure::io)?
+        {
+            break;
+        }
+    }
+    let note = match gathered {
+        Some(StepOutcomeKind::OkGmSpawn) => format!("gather gm_spawn; {used_note}"),
+        Some(_) => format!("gather ok; {used_note}"),
+        None => used_note,
+    };
+    Ok((gathered.unwrap_or(StepOutcomeKind::Ok), note))
+}
+
+/// The wire target strategy of a `SkillTargetType` for item use.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UseTargetKind {
+    /// Self / friendly / party / raid / any-unit / pet: our own unit.
+    SelfUnit,
+    /// A hostile target: the nearest visible NPC.
+    NearestNpc,
+    /// A position skill: the step location or our current position.
+    Position,
+    /// A doodad skill: the nearest visible doodad.
+    Doodad,
+    /// Anything else (item targets, lines, ...): not driven.
+    Unsupported,
+}
+
+/// `SkillTargetType` (`systems/skills/types.rs`) -> the wire target the runner sends.
+pub fn use_target_kind(target_type: u8) -> UseTargetKind {
+    match target_type {
+        0 | 1 | 2 | 3 | 5 | 10 | 16 | 17 => UseTargetKind::SelfUnit,
+        4 => UseTargetKind::NearestNpc,
+        6 | 11 | 12 | 13 | 14 | 15 | 18 => UseTargetKind::Position,
+        8 => UseTargetKind::Doodad,
+        _ => UseTargetKind::Unsupported,
+    }
+}
+
+fn use_item_target(
+    game: &GameClient,
+    target_type: u8,
+    step: &PlanStep,
+) -> Result<SkillCastTarget, StepFailure> {
+    match use_target_kind(target_type) {
+        UseTargetKind::SelfUnit => Ok(SkillCastTarget::Unit(game.state.self_obj)),
+        UseTargetKind::NearestNpc => game
+            .nearest_unit(1)
+            .map(|npc| SkillCastTarget::Unit(npc.obj_id))
+            .ok_or_else(|| StepFailure::timeout("no npc in sight for the item's skill")),
+        UseTargetKind::Position => {
+            let pos = step
+                .locations
+                .iter()
+                .find(|l| l.world.eq_ignore_ascii_case(MAIN_WORLD))
+                .map_or(game.state.self_pos, |l| (l.x, l.y, l.z));
+            Ok(SkillCastTarget::Position {
+                obj_id: 0,
+                x: pos.0,
+                y: pos.1,
+                z: pos.2,
+                rot: 0.0,
+                obj_id1: 0,
+                obj_id2: 0,
+            })
+        }
+        UseTargetKind::Doodad => game
+            .state
+            .doodads
+            .values()
+            .min_by(|a, b| {
+                dist2(a.pos, game.state.self_pos).total_cmp(&dist2(b.pos, game.state.self_pos))
+            })
+            .map(|d| SkillCastTarget::Doodad(d.obj_id))
+            .ok_or_else(|| StepFailure::timeout("no doodad in sight for the item's skill")),
+        UseTargetKind::Unsupported => Err(StepFailure::unsupported_reason(format!(
+            "item skill target type {target_type} is not driven"
+        ))),
+    }
+}
+
+// ----- kills -----
+
+/// What a kill run works towards: an objective counter (or "the kill advances the quest" for
+/// `ConAcceptNpcKill`, which has no counter) or a fixed number of kills (item loot).
+#[derive(Debug, Clone, Copy)]
+enum KillGoal {
+    Objective {
+        quest_id: u32,
+        index: Option<u8>,
+        want: i32,
+    },
+    Kills {
+        want: i32,
+    },
+}
+
+fn goal_reached(game: &GameClient, goal: KillGoal, kills: i32) -> bool {
+    match goal {
+        KillGoal::Objective {
+            quest_id,
+            index,
+            want,
+        } => {
+            quest_completed(game, quest_id)
+                || index.is_some_and(|i| objective_count(game, quest_id, i) >= want)
+        }
+        KillGoal::Kills { want } => kills >= want,
+    }
+}
+
+/// After a kill, wait up to `until` for the goal (`index: None` also accepts a quest update).
+async fn wait_after_kill(
+    game: &mut GameClient,
+    goal: KillGoal,
+    kills: i32,
+    until: Instant,
+) -> anyhow::Result<bool> {
+    while Instant::now() < until {
+        if goal_reached(game, goal, kills) {
+            return Ok(true);
+        }
+        if let KillGoal::Objective { quest_id, .. } = goal {
+            if quest_failed(game, quest_id) {
+                return Ok(false);
+            }
+        }
+        let left = until.saturating_duration_since(Instant::now());
+        if let Some(p) = game.recv_within(left.min(PUMP)).await? {
+            if let KillGoal::Objective {
+                quest_id,
+                index: None,
+                ..
+            } = goal
+            {
+                if updated_for(&p, quest_id) {
+                    return Ok(true);
+                }
+            }
+        }
+    }
+    Ok(goal_reached(game, goal, kills))
+}
+
+/// `/kill` one visible target of `ids` (credits the bot; `kill.rs` ->
+/// `combat::reduce_current_hp(.., Some(self), Gm)` -> the quest `on_kill`). Returns the killed
+/// object id; `Ok(None)` on a rejected kill.
+async fn kill_visible(
+    game: &mut GameClient,
+    ids: &[u32],
+    avoid: &mut HashSet<u32>,
+) -> Result<Option<u32>, StepFailure> {
+    let Some(npc) = nearest_target(game, ids, avoid) else {
+        return Ok(None);
+    };
+    game.change_target(npc.obj_id)
+        .await
+        .map_err(StepFailure::io)?;
+    let messages = game.gm("kill", KILL_WAIT).await.map_err(StepFailure::io)?;
+    let rejected = messages
+        .iter()
+        .any(|m| m.contains("Cannot kill") || m.contains("already dead"));
+    avoid.insert(npc.obj_id);
+    Ok((!rejected).then_some(npc.obj_id))
+}
+
+/// Hunts `ids` until `goal` is reached or `deadline`; teleports through `positions` (may be
+/// empty for dynamic spawns) when no target is visible. `Ok(None)` when the deadline hit
+/// first; the note says `kill`, the kills are the corpse object ids.
+async fn hunt_until(
+    game: &mut GameClient,
+    ids: &[u32],
+    positions: &[(f32, f32, f32)],
+    goal: KillGoal,
+    deadline: Instant,
+) -> Result<Option<(String, Vec<u32>)>, StepFailure> {
+    let mut avoid: HashSet<u32> = HashSet::new();
+    let mut killed = Vec::new();
+    let mut next_location = 0usize;
+    loop {
+        if goal_reached(game, goal, killed.len() as i32) {
+            return Ok(Some(("kill".into(), killed)));
+        }
+        if let KillGoal::Objective { quest_id, .. } = goal {
+            if quest_failed(game, quest_id) {
+                return Err(StepFailure::quest_failed(quest_id));
+            }
+        }
+        if Instant::now() >= deadline {
+            return Ok(None);
+        }
+        if nearest_target(game, ids, &avoid).is_none() {
+            if !positions.is_empty() {
+                let pos = positions[next_location % positions.len()];
+                next_location += 1;
+                game.teleport(near(pos)).await.map_err(StepFailure::io)?;
+                settle(game, deadline).await;
+            }
+            let appear = (Instant::now() + APPEAR_WAIT).min(deadline);
+            let _ = wait_for_target(game, ids, &avoid, appear).await?;
+            continue;
+        }
+        match kill_visible(game, ids, &mut avoid).await? {
+            Some(obj_id) => {
+                killed.push(obj_id);
+                let until = (Instant::now() + Duration::from_secs(8)).min(deadline);
+                let _ = wait_after_kill(game, goal, killed.len() as i32, until)
+                    .await
+                    .map_err(StepFailure::io)?;
+            }
+            None => continue,
+        }
+    }
+}
+
+/// `/spawn npc <template>` in front of the bot (`commands/scripts/spawn.rs`); returns the note.
+async fn spawn_npc(game: &mut GameClient, template_id: u32) -> Result<String, StepFailure> {
+    let messages = game
+        .gm(
+            &format!("spawn npc {template_id}"),
+            Duration::from_millis(1500),
+        )
+        .await
+        .map_err(StepFailure::io)?;
+    if messages.iter().any(|m| {
+        m.contains("don't exist") || m.contains("parse error") || m.contains("can not be 0")
+    }) {
+        return Err(StepFailure::unsupported_reason(format!(
+            "cannot spawn npc {template_id}: {}",
+            messages.join("; ")
+        )));
+    }
+    Ok(format!("gm_spawn {template_id}"))
+}
+
+/// The GM fallback of a hunt: spawn the template next to the bot, kill (and optionally loot)
+/// until the goal is reached or the window closes. Always reported as `ok_gm_spawn`.
+async fn spawn_and_kill(
+    game: &mut GameClient,
+    template_id: u32,
+    goal: KillGoal,
+    window: Duration,
+    loot: bool,
+) -> Result<(String, Vec<u32>), StepFailure> {
+    let deadline = Instant::now() + window;
+    let mut killed = Vec::new();
+    let mut note = String::new();
+    let mut avoid: HashSet<u32> = HashSet::new();
+    loop {
+        if goal_reached(game, goal, killed.len() as i32) {
+            return Ok((note, killed));
+        }
+        if let KillGoal::Objective { quest_id, .. } = goal {
+            if quest_failed(game, quest_id) {
+                return Err(StepFailure::quest_failed(quest_id));
+            }
+        }
+        if Instant::now() >= deadline {
+            return Err(StepFailure::timeout(format!(
+                "gm spawn fallback did not reach the goal for npc {template_id}"
+            )));
+        }
+        match nearest_target(game, &[template_id], &avoid) {
+            Some(npc) => {
+                game.change_target(npc.obj_id)
+                    .await
+                    .map_err(StepFailure::io)?;
+                game.gm("kill", KILL_WAIT).await.map_err(StepFailure::io)?;
+                avoid.insert(npc.obj_id);
+                killed.push(npc.obj_id);
+                if loot {
+                    game.loot_all(npc.obj_id).await.map_err(StepFailure::io)?;
+                    game.close_loot_bag(npc.obj_id)
+                        .await
+                        .map_err(StepFailure::io)?;
+                }
+                let until = (Instant::now() + Duration::from_secs(8)).min(deadline);
+                let _ = wait_after_kill(game, goal, killed.len() as i32, until)
+                    .await
+                    .map_err(StepFailure::io)?;
+            }
+            None => {
+                note = spawn_npc(game, template_id).await?;
+                let appear = (Instant::now() + APPEAR_WAIT).min(deadline);
+                if wait_for_target(game, &[template_id], &avoid, appear)
+                    .await?
+                    .is_none()
+                {
+                    return Err(StepFailure::timeout(format!(
+                        "{note} but the spawned npc did not appear"
+                    )));
+                }
+            }
+        }
+    }
+}
+
+/// `QuestActObjMonsterHunt` / `QuestActObjMonsterGroupHunt` / `QuestActConAcceptNpcKill`:
+/// hunt normally, wait out respawns until the step deadline, then the `/spawn` fallback
+/// (`ok_gm_spawn`).
 async fn step_kill(
     game: &mut GameClient,
     quest_id: u32,
     step: &PlanStep,
     objective: Option<u8>,
     deadline: Instant,
-) -> Result<StepOutcomeKind, StepFailure> {
+) -> StepRun {
     if step.target.ids.is_empty() {
         return Err(StepFailure::unsupported("kill step without target ids"));
     }
@@ -1838,95 +2836,35 @@ async fn step_kill(
         .filter(|l| l.world.eq_ignore_ascii_case(MAIN_WORLD))
         .map(|l| (l.x, l.y, l.z))
         .collect();
-    if positions.is_empty() {
+    if positions.is_empty() && step.status != "dynamic_spawn" {
         // Reuse the "other world" / "no location" reason.
         return Err(step_location(step).err().unwrap_or_else(|| {
             StepFailure::unsupported("kill step without a main-world location")
         }));
     }
     let want = step.target.count.max(1);
-    let mut avoid: HashSet<u32> = HashSet::new();
-    let mut next_location = 0usize;
-    loop {
-        if quest_completed(game, quest_id) {
-            return Ok(StepOutcomeKind::Ok);
-        }
-        if let Some(index) = objective {
-            if objective_count(game, quest_id, index) >= want {
-                return Ok(StepOutcomeKind::Ok);
-            }
-        }
-        if quest_failed(game, quest_id) {
-            return Err(StepFailure::quest_failed(quest_id));
-        }
-        if Instant::now() >= deadline {
-            return Err(StepFailure::timeout(format!(
-                "objective of quest {quest_id} not reached"
-            )));
-        }
-        let npc = match nearest_target(game, &step.target.ids, &avoid) {
-            Some(npc) => npc,
-            None => {
-                let pos = positions[next_location % positions.len()];
-                next_location += 1;
-                game.teleport(near(pos)).await.map_err(StepFailure::io)?;
-                settle(game, deadline).await;
-                let appear = (Instant::now() + APPEAR_WAIT).min(deadline);
-                match wait_for_target(game, &step.target.ids, &avoid, appear).await? {
-                    Some(npc) => npc,
-                    None => continue,
-                }
-            }
-        };
-        game.change_target(npc.obj_id)
-            .await
-            .map_err(StepFailure::io)?;
-        let messages = game.gm("kill", KILL_WAIT).await.map_err(StepFailure::io)?;
-        let rejected = messages
-            .iter()
-            .any(|m| m.contains("Cannot kill") || m.contains("already dead"));
-        avoid.insert(npc.obj_id);
-        if rejected {
-            continue;
-        }
-        // Give the batched objective update a moment; the loop re-checks the counter.
-        let until = (Instant::now() + Duration::from_secs(8)).min(deadline);
-        let mut advanced = false;
-        while Instant::now() < until {
-            if quest_completed(game, quest_id) || quest_failed(game, quest_id) {
-                break;
-            }
-            if let Some(index) = objective {
-                if objective_count(game, quest_id, index) >= want {
-                    advanced = true;
-                    break;
-                }
-            }
-            let left = until.saturating_duration_since(Instant::now());
-            if let Some(p) = game
-                .recv_within(left.min(PUMP))
-                .await
-                .map_err(StepFailure::io)?
-            {
-                if objective.is_none() && updated_for(&p, quest_id) {
-                    advanced = true;
-                    break;
-                }
-            }
-        }
-        if advanced || quest_completed(game, quest_id) {
-            return Ok(StepOutcomeKind::Ok);
-        }
-        if quest_failed(game, quest_id) {
-            return Err(StepFailure::quest_failed(quest_id));
-        }
-        if objective.is_none() {
-            // A `QuestActConAcceptNpcKill` has no objective counter: the kill must advance the
-            // quest (step change / completion), otherwise retrying cannot help.
-            return Err(StepFailure::timeout(format!(
-                "kill did not advance quest {quest_id}"
-            )));
-        }
+    let goal = KillGoal::Objective {
+        quest_id,
+        index: objective,
+        want,
+    };
+    if let Some((_note, killed)) =
+        hunt_until(game, &step.target.ids, &positions, goal, deadline).await?
+    {
+        return Ok((StepOutcomeKind::Ok, kill_note(&killed)));
+    }
+    if quest_failed(game, quest_id) {
+        return Err(StepFailure::quest_failed(quest_id));
+    }
+    let template = step.target.ids[0];
+    let (note, _killed) = spawn_and_kill(game, template, goal, GM_SPAWN_WINDOW, false).await?;
+    Ok((StepOutcomeKind::OkGmSpawn, note))
+}
+
+fn kill_note(killed: &[u32]) -> String {
+    match killed.last() {
+        Some(last) => format!("kill x{} (last obj {last:#x})", killed.len()),
+        None => "kill".into(),
     }
 }
 
@@ -1952,6 +2890,7 @@ mod tests {
             locations: Vec::new(),
             status: "ok".into(),
             sources: None,
+            item_sources: None,
         }
     }
 
@@ -2101,19 +3040,29 @@ mod tests {
     }
 
     #[test]
-    fn step_dispatch_covers_every_v1_act_group() {
+    fn step_dispatch_covers_every_act_group() {
         let cases = [
             ("Start", "QuestActConAcceptNpc", StepAction::Accept),
+            ("Start", "QuestActConAcceptDoodad", StepAction::AcceptDoodad),
             ("Progress", "QuestActObjTalk", StepAction::Talk),
             ("Progress", "QuestActObjMonsterHunt", StepAction::Kill),
             ("Progress", "QuestActObjMonsterGroupHunt", StepAction::Kill),
             ("Start", "QuestActConAcceptNpcKill", StepAction::Kill),
             ("Ready", "QuestActConReportNpc", StepAction::Report),
+            ("Ready", "QuestActConReportDoodad", StepAction::ReportDoodad),
+            (
+                "Progress",
+                "QuestActObjInteraction",
+                StepAction::DoodadInteraction,
+            ),
+            ("Progress", "QuestActObjItemGather", StepAction::Gather),
+            ("Progress", "QuestActEtcItemObtain", StepAction::Gather),
+            ("Start", "QuestActConAcceptItemGain", StepAction::Gather),
+            ("Progress", "QuestActObjItemUse", StepAction::UseItem),
             ("Ready", "QuestActConAutoComplete", StepAction::Passive),
             ("Reward", "QuestActSupplyItem", StepAction::Passive),
             ("Reward", "QuestActSupplyCopper", StepAction::Passive),
             ("Progress", "QuestActCheckTimer", StepAction::Passive),
-            ("Progress", "QuestActObjItemGather", StepAction::Unsupported),
             ("Ready", "QuestActConReportJournal", StepAction::Unsupported),
             ("Fail", "QuestActConAcceptNpc", StepAction::Skip),
             ("Drop", "QuestActObjMonsterHunt", StepAction::Skip),
@@ -2128,8 +3077,8 @@ mod tests {
     }
 
     #[test]
-    fn dynamic_sources_win_over_the_act_type() {
-        let mut dynamic = step("Progress", "QuestActObjMonsterHunt");
+    fn dynamic_sources_only_block_the_npc_acts_the_runner_cannot_trigger() {
+        let mut dynamic = step("Start", "QuestActConAcceptNpc");
         dynamic.target = target("npc", &[721], 1);
         dynamic.sources = Some(vec![PlanSource {
             effect_id: 72,
@@ -2137,12 +3086,20 @@ mod tests {
         }]);
         assert_eq!(step_action(&dynamic), StepAction::NeedsTrigger);
 
-        // Without a skill to trigger, the target cannot be reached either.
-        dynamic.sources = Some(vec![PlanSource {
+        // Hunts attempt dynamic targets: the earlier item use is expected to spawn them, and
+        // the respawn / /spawn fallback covers the rest.
+        let mut hunt = step("Progress", "QuestActObjMonsterHunt");
+        hunt.target = target("npc", &[721], 1);
+        hunt.sources = Some(vec![PlanSource {
+            effect_id: 72,
+            skill_ids: vec![10732],
+        }]);
+        assert_eq!(step_action(&hunt), StepAction::Kill);
+        hunt.sources = Some(vec![PlanSource {
             effect_id: 569,
             skill_ids: Vec::new(),
         }]);
-        assert_eq!(step_action(&dynamic), StepAction::Unsupported);
+        assert_eq!(step_action(&hunt), StepAction::Kill);
 
         // A dynamic step in a Fail / Drop branch is still skipped.
         let mut skipped = step("Drop", "QuestActObjMonsterHunt");
@@ -2151,6 +3108,64 @@ mod tests {
             skill_ids: vec![10732],
         }]);
         assert_eq!(step_action(&skipped), StepAction::Skip);
+    }
+
+    #[test]
+    fn item_sources_deserialize_the_plan_shape_and_filter_to_the_targets() {
+        let plan_step: PlanStep = serde_json::from_str(
+            r#"{
+              "component_id": 1, "component_kind": "Progress", "act_id": 2,
+              "act_type": "QuestActObjItemGather",
+              "target": {"kind": "item", "ids": [8017], "count": 2},
+              "locations": [], "status": "ok",
+              "item_sources": [{
+                "item_id": 8017,
+                "sources": [
+                  {"type": "npc_loot", "npc_ids": [721], "loot_pack_id": 6396,
+                   "chance": 1, "locations": [{"world": "main_world", "x": 1.0, "y": 2.0, "z": 3.0}]},
+                  {"type": "doodad", "doodad_ids": [322], "func": "DoodadFuncLootItem",
+                   "locations": []},
+                  {"type": "quest_supply", "act_id": 42},
+                  {"type": "store", "npc_ids": [0], "pack_ids": [218], "locations": []}
+                ]
+              }, {
+                "item_id": 9999,
+                "sources": [{"type": "craft", "craft_ids": [7]}]
+              }]
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(plan_step.target, target("item", &[8017], 2));
+        let sources = gather_sources(&plan_step);
+        // The sources of another item id are ignored.
+        assert_eq!(sources.len(), 4);
+        assert_eq!(sources[0].kind, "npc_loot");
+        assert_eq!(sources[0].npc_ids, [721]);
+        assert_eq!(sources[0].loot_pack_id, 6396);
+        assert_eq!(source_positions(sources[0]).len(), 1);
+        assert_eq!(sources[1].kind, "doodad");
+        assert_eq!(sources[1].func.as_deref(), Some("DoodadFuncLootItem"));
+        assert_eq!(sources[2].kind, "quest_supply");
+        assert_eq!(sources[2].act_id, Some(42));
+        assert_eq!(sources[3].kind, "store");
+
+        // A step without `item_sources` has no sources (old plans).
+        assert!(gather_sources(&step("Progress", "QuestActObjItemGather")).is_empty());
+    }
+
+    #[test]
+    fn item_use_target_kinds_follow_the_skill_target_type() {
+        for target_type in [0, 1, 2, 3, 5, 10, 16, 17] {
+            assert_eq!(use_target_kind(target_type), UseTargetKind::SelfUnit);
+        }
+        assert_eq!(use_target_kind(4), UseTargetKind::NearestNpc);
+        for target_type in [6, 11, 12, 13, 14, 15, 18] {
+            assert_eq!(use_target_kind(target_type), UseTargetKind::Position);
+        }
+        assert_eq!(use_target_kind(8), UseTargetKind::Doodad);
+        for target_type in [7, 9, 19, 20] {
+            assert_eq!(use_target_kind(target_type), UseTargetKind::Unsupported);
+        }
     }
 
     #[test]
@@ -2353,6 +3368,10 @@ mod tests {
             serde_json::to_value(StepOutcomeKind::Rejected).unwrap(),
             serde_json::json!("rejected")
         );
+        assert_eq!(
+            serde_json::to_value(StepOutcomeKind::OkGmSpawn).unwrap(),
+            serde_json::json!("ok_gm_spawn")
+        );
     }
 
     #[test]
@@ -2411,12 +3430,14 @@ mod tests {
                     act_id: 68,
                     act_type: "QuestActConAcceptNpc".into(),
                     outcome: StepOutcomeKind::Ok,
+                    note: "npc 7708".into(),
                     ms: 12,
                 },
                 StepOutcome {
                     act_id: 13979,
                     act_type: "QuestActObjItemGather".into(),
                     outcome: StepOutcomeKind::Unsupported,
+                    note: "no known item source".into(),
                     ms: 3,
                 },
             ],
@@ -2441,9 +3462,10 @@ mod tests {
                     "reason": "QuestActObjItemGather is not handled by runner v1"
                 },
                 "steps": [
-                    {"act_id": 68, "act_type": "QuestActConAcceptNpc", "outcome": "ok", "ms": 12},
+                    {"act_id": 68, "act_type": "QuestActConAcceptNpc", "outcome": "ok",
+                     "note": "npc 7708", "ms": 12},
                     {"act_id": 13979, "act_type": "QuestActObjItemGather",
-                     "outcome": "unsupported", "ms": 3}
+                     "outcome": "unsupported", "note": "no known item source", "ms": 3}
                 ],
                 "final_status": 1,
                 "final_objectives": [0, 0, 0, 0, 0],

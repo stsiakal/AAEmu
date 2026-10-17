@@ -323,7 +323,7 @@ async fn run_inner(kind: Kind, cfg: &BotConfig, r: &mut Runner<'_>) -> anyhow::R
     game.select_character(ch.id).await?;
     game.wait_sc(sc::SCCharacterStatePacket).await?;
     game.drain(QUIET, Duration::from_secs(10)).await?;
-    r.end(s, format!("{} bag items seen", game.state.bag_items.len()));
+    r.end(s, format!("{} bag items seen", game.state.bag.len()));
 
     let s = r.begin("game.spawn");
     game.spawn_character().await?;
@@ -403,17 +403,20 @@ async fn run_inner(kind: Kind, cfg: &BotConfig, r: &mut Runner<'_>) -> anyhow::R
         r.end(s, note);
 
         let s = r.begin("game.inventory");
-        let note = match game.state.bag_items.first().copied() {
-            Some((item, slot, tpl)) => {
-                r.var("item_id", item);
-                game.swap_items(item, slot, 0, 49).await?;
+        let note = match game.state.first_bag_item() {
+            Some(item) => {
+                r.var("item_id", item.item_id);
+                game.swap_items(item.item_id, item.slot, 0, 49).await?;
                 game.wait_for("item task result", |p| {
                     p.is_sc(sc::SCItemTaskSuccessPacket) || p.is_sc(sc::SCErrorMsgPacket)
                 })
                 .await?;
                 game.drain(Duration::from_millis(500), Duration::from_secs(3))
                     .await?;
-                format!("moved item {item} (template {tpl}) from slot {slot} to 49")
+                format!(
+                    "moved item {} (template {}) from slot {} to 49",
+                    item.item_id, item.template_id, item.slot
+                )
             }
             None => "no bag item".into(),
         };

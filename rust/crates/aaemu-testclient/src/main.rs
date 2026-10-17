@@ -12,8 +12,8 @@
 //!                         [--scenario load]
 //! aaemu-testclient quest  [--config F] [--login H:P] --plan plan.json
 //!                         (--quest ID...|--all-ok) [--with-prereqs] [--new-character]
-//!                         [--race name|id] [--gender m|f] [--out results.jsonl]
-//!                         [--step-timeout-secs N] [--summary]
+//!                         [--race name|id] [--gender m|f] [--compact-db path]
+//!                         [--out results.jsonl] [--step-timeout-secs N] [--summary]
 //! ```
 //!
 //! Settings come from `--config` (JSON, see `testclient.example.json`), then the flags. Keep
@@ -285,6 +285,7 @@ async fn main() -> anyhow::Result<()> {
                 step_timeout: Duration::from_secs(
                     args.get("step-timeout-secs").unwrap_or("60").parse()?,
                 ),
+                compact_db: args.get("compact-db").map(PathBuf::from),
                 out: args.get("out").map(PathBuf::from),
             };
             let report = questrun::run(&cfg, &plan, &requested, &opts).await?;

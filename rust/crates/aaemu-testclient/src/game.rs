@@ -13,6 +13,7 @@ use aaemu_commons::PacketStream;
 use aaemu_game::opcodes::{cs, name_of, pp, sc};
 use aaemu_game::systems::quests::model::status as quest_status;
 use aaemu_game::systems::services::commands::COMMAND_PREFIX;
+use aaemu_game::systems::skills::types::{SkillCastTarget, SkillCaster};
 use aaemu_game::systems::social::chat::chat_type;
 use anyhow::{anyhow, bail, ensure, Context};
 use futures::{SinkExt, StreamExt};
@@ -21,6 +22,7 @@ use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 use tokio_util::codec::{FramedRead, FramedWrite};
 
+use crate::inventory::{self, Bag, ItemInfo};
 use crate::quest::{self, QuestInfo};
 use crate::record::{Channel, Dir, Recorder};
 
@@ -91,6 +93,14 @@ pub const CHAT_LOG_LIMIT: usize = 64;
 /// Move time reported by the landing `CSMoveUnitPacket` after a teleport.
 const TELEPORT_LAND_MS: u32 = 1000;
 
+/// A doodad seen in `SCDoodadCreatedPacket` / `SCDoodadsCreatedPacket`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DoodadInfo {
+    pub obj_id: u32,
+    pub template_id: u32,
+    pub pos: (f32, f32, f32),
+}
+
 /// What the bot learned from the server so far.
 #[derive(Debug, Default)]
 pub struct GameState {
@@ -109,6 +119,11 @@ pub struct GameState {
     pub self_obj: u32,
     pub self_pos: (f32, f32, f32),
     pub units: HashMap<u32, UnitInfo>,
+    /// Doodads in view (`SCDoodadCreatedPacket` / `SCDoodadsCreatedPacket` /
+    /// `SCDoodadsRemovedPacket`), by object id.
+    pub doodads: HashMap<u32, DoodadInfo>,
+    /// Bag contents by slot (`SCCharacterInvenContentsPacket` + `SCItemTaskSuccessPacket`).
+    pub bag: Bag,
     /// Active quests by template id (`SCQuestsPacket`, whose select snapshot is sent in chunks
     /// of 20, and the `SCQuestContext*` updates).
     pub quests: BTreeMap<u32, QuestInfo>,
@@ -129,10 +144,35 @@ pub struct GameState {
     pub chat_log: VecDeque<String>,
     /// Total chat messages captured (monotonic; lets callers window [`GameState::chat_log`]).
     pub chat_count: u64,
-    /// First item of the bag (`SCCharacterInvenContentsPacket`, slot type 2): `(item id, slot)`.
-    pub bag_items: Vec<(u64, u8, u32)>,
+    /// Bag slots the character-select snapshot announced (`SCCharacterInvenInitPacket`).
     pub bag_slots: u8,
     pub disconnected: bool,
+}
+
+impl GameState {
+    /// Total count of `template_ids` in the bag.
+    pub fn bag_count(&self, template_ids: &[u32]) -> i32 {
+        self.bag
+            .values()
+            .filter(|i| template_ids.contains(&i.template_id))
+            .map(|i| i.count)
+            .sum()
+    }
+
+    /// The first (lowest-slot) bag item; the scenarios use it for the inventory move step.
+    pub fn first_bag_item(&self) -> Option<ItemInfo> {
+        self.bag.values().next().copied()
+    }
+
+    /// The nearest doodad of `template_id` (by our own position).
+    pub fn find_doodad(&self, template_id: u32) -> Option<DoodadInfo> {
+        let me = self.self_pos;
+        self.doodads
+            .values()
+            .filter(|d| d.template_id == template_id)
+            .min_by(|a, b| dist2(a.pos, me).total_cmp(&dist2(b.pos, me)))
+            .cloned()
+    }
 }
 
 pub struct GameClient {
@@ -457,13 +497,41 @@ pub(crate) fn observe_into(st: &mut GameState, p: &Packet) -> anyhow::Result<()>
         let slot_type = s.read_u8()?;
         let _num_chunks = s.read_u8()?;
         let chunk = s.read_u8()?;
-        if slot_type == 2 {
-            // 10 items per chunk; only leading items can be located (variable layout).
-            let tpl = s.read_u32()?;
-            if tpl != 0 {
-                let id = s.read_u64()?;
-                st.bag_items.push((id, chunk * 10, tpl));
+        if slot_type == inventory::SLOT_TYPE_INVENTORY {
+            // Ten `Item.Write` rows per packet; parse until the body ends (empty slots are
+            // `i32 0`), so every row in the chunk is decoded.
+            let mut i = 0u8;
+            while s.remaining() > 0 && i < 10 {
+                if let Some(mut item) = inventory::read_item(&mut s)? {
+                    item.slot = chunk * 10 + i;
+                    st.bag.insert(item.slot, item);
+                }
+                i += 1;
             }
+        }
+    } else if p.is_sc(sc::SCItemTaskSuccessPacket) {
+        inventory::apply_item_task_success(&mut st.bag, &p.body)?;
+    } else if p.is_sc(sc::SCDoodadCreatedPacket) {
+        let doodad = read_doodad(&mut s)?;
+        st.doodads.insert(doodad.obj_id, doodad);
+    } else if p.is_sc(sc::SCDoodadsCreatedPacket) {
+        let n = s.read_u8()?;
+        for _ in 0..n {
+            let doodad = read_doodad(&mut s)?;
+            st.doodads.insert(doodad.obj_id, doodad);
+        }
+    } else if p.is_sc(sc::SCDoodadRemovedPacket) {
+        let obj_id = s.read_bc()?;
+        s.read_bool()?; // e: true = despawned, false = deleted
+        st.doodads.remove(&obj_id);
+    } else if p.is_sc(sc::SCDoodadsRemovedPacket) {
+        // `SCDoodadsRemovedPacket`: u16 count, `last`, then `(bc id, bool e)` per id.
+        let n = s.read_u16()?;
+        let _last = s.read_bool()?;
+        for _ in 0..n {
+            let obj_id = s.read_bc()?;
+            s.read_bool()?;
+            st.doodads.remove(&obj_id);
         }
     } else if p.is_sc(sc::SCQuestsPacket) {
         // The select snapshot arrives in chunks of 20; upsert row by row.
@@ -584,6 +652,40 @@ fn read_character_head(s: &mut PacketStream) -> anyhow::Result<CharInfo> {
         race,
         gender,
         level,
+    })
+}
+
+/// `Doodad.Write` (`models/doodad.rs`): the object id, template id and world position are the
+/// fields the runner needs; the rest of the fixed-size body is read and discarded.
+fn read_doodad(s: &mut PacketStream) -> anyhow::Result<DoodadInfo> {
+    let obj_id = s.read_bc()?;
+    let template_id = s.read_u32()?;
+    s.read_bc()?; // owner object id
+    s.read_bc()?; // parent object id
+    s.read_u8()?; // attach point
+    let pos = s.read_position()?;
+    s.read_i16()?; // roll
+    s.read_i16()?; // pitch
+    s.read_i16()?; // yaw
+    s.read_f32()?; // scale
+    s.read_bool()?; // hasLootItem
+    s.read_u32()?; // func group id
+    s.read_u32()?; // owner id
+    s.read_u64()?; // ucc id
+    s.read_u32()?; // item template id
+    s.read_u32()?; // type2
+    s.read_u32()?; // time left
+    s.read_i64()?; // plant time
+    s.read_u32()?; // quest glow
+    s.read_i32()?; // family
+    s.read_i32()?; // puzzle group
+    s.read_u8()?; // owner type
+    s.read_u32()?; // owner db id
+    s.read_i32()?; // data
+    Ok(DoodadInfo {
+        obj_id,
+        template_id,
+        pos,
     })
 }
 
@@ -773,14 +875,75 @@ impl GameClient {
 
     /// `CSStartSkillPacket`: unit caster (us) on a unit target.
     pub async fn start_skill(&mut self, skill_id: u32, target_obj: u32) -> anyhow::Result<()> {
+        self.start_skill_as(
+            skill_id,
+            SkillCaster::Unit(self.state.self_obj),
+            SkillCastTarget::Unit(target_obj),
+        )
+        .await
+    }
+
+    /// `CSStartSkillPacket` with an explicit caster / target (`start_skill_body`).
+    pub async fn start_skill_as(
+        &mut self,
+        skill_id: u32,
+        caster: SkillCaster,
+        target: SkillCastTarget,
+    ) -> anyhow::Result<()> {
+        let body = start_skill_body(skill_id, &caster, &target);
+        self.send_cs(cs::CSStartSkillPacket, &body).await
+    }
+
+    /// Uses a doodad with an interaction skill: `CSStartSkillPacket` with our unit as the caster
+    /// and the doodad as the target (the server's `InteractionEffect` -> `doodad.Use`).
+    pub async fn use_doodad(&mut self, skill_id: u32, doodad_obj: u32) -> anyhow::Result<()> {
+        self.start_skill_as(
+            skill_id,
+            SkillCaster::Unit(self.state.self_obj),
+            SkillCastTarget::Doodad(doodad_obj),
+        )
+        .await
+    }
+
+    /// Uses a bag item with its `use_skill_id`: `CSStartSkillPacket` with a `SkillItem` caster
+    /// (the server checks `item_use_skill` and consumes / applies the item).
+    pub async fn use_item(
+        &mut self,
+        item_id: u64,
+        item_template_id: u32,
+        skill_id: u32,
+        target: SkillCastTarget,
+    ) -> anyhow::Result<()> {
+        self.start_skill_as(
+            skill_id,
+            SkillCaster::Item {
+                obj_id: item_id as u32,
+                item_id,
+                item_template_id,
+                type1: 0,
+                type2: 0,
+            },
+            target,
+        )
+        .await
+    }
+
+    /// `CSLootOpenBagPacket` with `lootAll`: the server `OpenBag(.., true)` auto-takes every
+    /// loot entry into the bag (`systems/economy/looting.rs`).
+    pub async fn loot_all(&mut self, owner_obj: u32) -> anyhow::Result<()> {
         let mut s = PacketStream::new();
-        s.write_u32(skill_id)
-            .write_u8(0)
-            .write_bc(self.state.self_obj)
-            .write_u8(0)
-            .write_bc(target_obj)
-            .write_u8(0); // flag: no skill object
-        self.send_cs(cs::CSStartSkillPacket, s.as_bytes()).await
+        s.write_bc(owner_obj).write_bc(0).write_bool(true);
+        self.send_cs(cs::CSLootOpenBagPacket, s.as_bytes()).await
+    }
+
+    /// `CSLootCloseBagPacket`: releases the loot container of `owner_obj`.
+    pub async fn close_loot_bag(&mut self, owner_obj: u32) -> anyhow::Result<()> {
+        let mut s = PacketStream::new();
+        s.write_u16(0) // item index
+            .write_u16(0) // owner type
+            .write_bc(owner_obj)
+            .write_u8(0);
+        self.send_cs(cs::CSLootCloseBagPacket, s.as_bytes()).await
     }
 
     /// Select the unit used by auto attacks, as the real client does before attacking.
@@ -820,6 +983,22 @@ impl GameClient {
             .await
     }
 
+    /// `CSStartQuestContextPacket` with the doodad acceptor
+    /// (`systems::quests::events::add_quest_from_doodad`).
+    pub async fn start_quest_doodad(
+        &mut self,
+        quest_id: u32,
+        doodad_obj: u32,
+    ) -> anyhow::Result<()> {
+        let mut s = PacketStream::new();
+        s.write_u32(quest_id)
+            .write_bc(0)
+            .write_bc(doodad_obj)
+            .write_u32(0);
+        self.send_cs(cs::CSStartQuestContextPacket, s.as_bytes())
+            .await
+    }
+
     /// `CSCompleteQuestContextPacket`: turn in / report a quest at an object (`obj_id == 0`
     /// reports without one). The server resolves the NPC field first and the doodad field
     /// second (`systems::quests::events::on_report`), so a tracked NPC unit goes into the NPC
@@ -837,6 +1016,17 @@ impl GameClient {
             .is_some_and(|u| u.unit_type == 1);
         let (npc_obj, doodad_obj) = if is_npc { (obj_id, 0) } else { (0, obj_id) };
         let body = quest::complete_quest_body(quest_id, npc_obj, doodad_obj, selected_reward);
+        self.send_cs(cs::CSCompleteQuestContextPacket, &body).await
+    }
+
+    /// `CSCompleteQuestContextPacket` with the doodad field explicitly set (report at a doodad).
+    pub async fn complete_quest_doodad(
+        &mut self,
+        quest_id: u32,
+        doodad_obj: u32,
+        selected_reward: i32,
+    ) -> anyhow::Result<()> {
+        let body = quest::complete_quest_body(quest_id, 0, doodad_obj, selected_reward);
         self.send_cs(cs::CSCompleteQuestContextPacket, &body).await
     }
 
@@ -944,6 +1134,17 @@ fn create_character_body(name: &str, race: u8, gender: u8) -> Vec<u8> {
     s.into_bytes()
 }
 
+/// `CSStartSkillPacket` body: skill id, caster and target (their own `write` methods emit the
+/// type bytes the reader consumes) and the "no skill object" flag.
+fn start_skill_body(skill_id: u32, caster: &SkillCaster, target: &SkillCastTarget) -> Vec<u8> {
+    let mut s = PacketStream::new();
+    s.write_u32(skill_id);
+    caster.write(&mut s);
+    target.write(&mut s);
+    s.write_u8(0); // flag: no skill object
+    s.into_bytes()
+}
+
 /// `CSTeleportEndedPacket` body (`systems/npcs/portal/packets.rs` `read`): the fixed point x/y,
 /// z and 16 orientation bytes.
 fn teleport_ended_body(pos: (f32, f32, f32)) -> Vec<u8> {
@@ -1014,6 +1215,7 @@ mod facing_tests {
 #[cfg(test)]
 mod body_tests {
     use super::*;
+    use aaemu_commons::Marshal;
     use aaemu_game::net::registry::ClientPacket;
 
     fn packet(opcode: u16, body: Vec<u8>) -> Packet {
@@ -1170,5 +1372,89 @@ mod body_tests {
                 level: 14,
             })
         );
+    }
+
+    #[test]
+    fn doodad_visibility_packets_track_templates_and_positions() {
+        use aaemu_game::models::doodad::Doodad;
+        use aaemu_game::models::transform::PositionAndRotation;
+        use aaemu_game::packets::world_objects::{
+            SCDoodadRemovedPacket, SCDoodadsCreatedPacket, SCDoodadsRemovedPacket,
+        };
+
+        // `world::visibility::doodad_body` writes `Doodad.Write` (`models/doodad.rs`); with the
+        // default System attach point the local transform is written.
+        let mut one = Doodad::new(1000);
+        one.func_group_id = 5;
+        one.transform.x = 10.0;
+        one.transform.y = 20.0;
+        one.transform.z = 30.0;
+        let mut body = PacketStream::new();
+        one.write(
+            0x1234,
+            &PositionAndRotation::new(0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+            0,
+            &mut body,
+        );
+        let mut st = GameState::default();
+        observe_into(
+            &mut st,
+            &packet(sc::SCDoodadCreatedPacket, body.into_bytes()),
+        )
+        .unwrap();
+        let doodad = st.doodads[&0x1234].clone();
+        assert_eq!(doodad.template_id, 1000);
+        assert!((doodad.pos.0 - 10.0).abs() < 0.01);
+        assert!((doodad.pos.1 - 20.0).abs() < 0.01);
+        assert!((doodad.pos.2 - 30.0).abs() < 0.01);
+
+        // `SCDoodadsCreatedPacket`: u8 count + N bodies.
+        let mut second = Doodad::new(2000);
+        second.transform.x = 1.0;
+        second.transform.y = 2.0;
+        second.transform.z = 3.0;
+        let mut body2 = PacketStream::new();
+        second.write(
+            0x2222,
+            &PositionAndRotation::new(0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+            0,
+            &mut body2,
+        );
+        let mut batch = PacketStream::new();
+        SCDoodadsCreatedPacket {
+            bodies: vec![body2.into_bytes()],
+        }
+        .write(&mut batch);
+        observe_into(
+            &mut st,
+            &packet(sc::SCDoodadsCreatedPacket, batch.into_bytes()),
+        )
+        .unwrap();
+        assert_eq!(st.doodads[&0x2222].template_id, 2000);
+        assert!(st.find_doodad(2000).is_some());
+        assert_eq!(st.find_doodad(3000), None);
+
+        // Removals by batch and by single id.
+        let mut remove = PacketStream::new();
+        SCDoodadsRemovedPacket {
+            last: true,
+            ids: vec![0x2222],
+        }
+        .write(&mut remove);
+        observe_into(
+            &mut st,
+            &packet(sc::SCDoodadsRemovedPacket, remove.into_bytes()),
+        )
+        .unwrap();
+        assert!(!st.doodads.contains_key(&0x2222));
+
+        let mut remove = PacketStream::new();
+        SCDoodadRemovedPacket { obj_id: 0x1234 }.write(&mut remove);
+        observe_into(
+            &mut st,
+            &packet(sc::SCDoodadRemovedPacket, remove.into_bytes()),
+        )
+        .unwrap();
+        assert!(st.doodads.is_empty());
     }
 }

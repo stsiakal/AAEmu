@@ -27,3 +27,5 @@ serde_json.workspace = true
 sha2.workspace = true
 hex.workspace = true
 miniz_oxide.workspace = true
+# Read-only client data lookups (item use skills, interaction skills) for the quest runner.
+rusqlite.workspace = true
