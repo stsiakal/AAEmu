@@ -467,6 +467,97 @@ class QuestPlanTests(unittest.TestCase):
             self.assertEqual(by_id[2]["steps"][0]["status"], "unknown_item_source")
             self.assertEqual(result["summary"]["unknown_item_source_steps"], 2)
 
+    def test_schedule_gated_npc_gets_scheduled_spawn(self):
+        with database() as conn, tempfile.TemporaryDirectory() as tmp:
+            quest(conn, 1)
+            component(conn, 9, 1, 2)
+            component(conn, 10, 1, 4)
+            conn.execute("INSERT INTO quest_act_con_accept_npcs VALUES (1, 500)")
+            act(conn, 1, 10, 1, "QuestActConAcceptNpc")
+            write_spawns(tmp, "npc_spawns.json", [entry(500, 10.0, 20.0, 30.0)])
+            spawns = load_spawns(Path(tmp), {"npc": {500}, "doodad": {}},
+                                 [(15059, 500)],
+                                 schedule_spawners={15059: [6, 7, 8, 9, 10, 11]})
+            result = plan(conn, spawns)
+            step = result["quests"][0]["steps"][0]
+            self.assertEqual(step["status"], "scheduled_spawn")
+            self.assertEqual(step["locations"], [{
+                "world": "main_world", "x": 10.0, "y": 20.0, "z": 30.0,
+                "schedule": {"spawner_id": 15059, "schedule_ids": [6, 7, 8, 9, 10, 11]}}])
+            self.assertEqual((result["quests"][0]["status"], result["quests"][0]["blockers"]),
+                             ("ok", []))
+            self.assertEqual(result["summary"]["scheduled_spawn_steps"], 1)
+
+    def test_ungated_path_wins_over_gated_one(self):
+        with database() as conn, tempfile.TemporaryDirectory() as tmp:
+            quest(conn, 1)
+            component(conn, 9, 1, 2)
+            component(conn, 10, 1, 4)
+            conn.execute("INSERT INTO quest_act_con_accept_npcs VALUES (1, 500)")
+            act(conn, 1, 10, 1, "QuestActConAcceptNpc")
+            write_spawns(tmp, "npc_spawns.json", [entry(500, 10.0, 20.0, 30.0)])
+            spawns = load_spawns(Path(tmp), {"npc": {500}, "doodad": {}},
+                                 [(15059, 500), (16000, 500)],
+                                 schedule_spawners={15059: [6]})
+            step = plan(conn, spawns)["quests"][0]["steps"][0]
+            self.assertEqual(step["status"], "ok")
+            self.assertNotIn("schedule", step["locations"][0])
+
+    def test_spawner_time_window_gates_location(self):
+        with database() as conn, tempfile.TemporaryDirectory() as tmp:
+            quest(conn, 1)
+            component(conn, 9, 1, 2)
+            component(conn, 10, 1, 4)
+            conn.execute("INSERT INTO quest_act_con_accept_npcs VALUES (1, 500)")
+            act(conn, 1, 10, 1, "QuestActConAcceptNpc")
+            write_spawns(tmp, "npc_spawns.json", [entry(500, 10.0, 20.0, 30.0)])
+            spawns = load_spawns(Path(tmp), {"npc": {500}, "doodad": {}},
+                                 [(15060, 500)], spawner_windows={15060: (6.0, 18.0)})
+            step = plan(conn, spawns)["quests"][0]["steps"][0]
+            self.assertEqual(step["status"], "scheduled_spawn")
+            self.assertEqual(step["locations"][0]["schedule"],
+                             {"spawner_id": 15060, "schedule_ids": [],
+                              "start_time": 6.0, "end_time": 18.0})
+
+    def test_doodad_schedule_gating(self):
+        with database() as conn, tempfile.TemporaryDirectory() as tmp:
+            quest(conn, 1)
+            component(conn, 9, 1, 2)
+            component(conn, 10, 1, 4)
+            conn.execute("INSERT INTO quest_act_con_accept_doodads VALUES (1, 77)")
+            act(conn, 1, 10, 1, "QuestActConAcceptDoodad")
+            write_spawns(tmp, "doodad_spawns.json", [entry(77, 1.0, 2.0, 3.0)])
+            gated = load_spawns(Path(tmp), {"npc": set(), "doodad": {77}}, (),
+                                schedule_doodads={77: [5]}, known_schedules={5})
+            step = plan(conn, gated)["quests"][0]["steps"][0]
+            self.assertEqual(step["status"], "scheduled_spawn")
+            self.assertEqual(step["locations"][0]["schedule"],
+                             {"spawner_id": 77, "schedule_ids": [5]})
+            # Dangling schedule ids do not gate a doodad (do_spawn requires an existing one).
+            dangling = load_spawns(Path(tmp), {"npc": set(), "doodad": {77}}, (),
+                                   schedule_doodads={77: [99]}, known_schedules={5})
+            step = plan(conn, dangling)["quests"][0]["steps"][0]
+            self.assertEqual(step["status"], "ok")
+            self.assertNotIn("schedule", step["locations"][0])
+
+    def test_item_source_locations_carry_schedule(self):
+        with database() as conn, tempfile.TemporaryDirectory() as tmp:
+            quest(conn, 1)
+            component(conn, 9, 1, 2)
+            component(conn, 10, 1, 4)
+            conn.execute("INSERT INTO quest_act_obj_item_gathers VALUES (1, 100, 1)")
+            act(conn, 1, 10, 1, "QuestActObjItemGather")
+            conn.execute("INSERT INTO loots VALUES (1, 100, 5000000, 30)")
+            conn.execute("INSERT INTO loot_pack_dropping_npcs VALUES (1, 500, 30)")
+            write_spawns(tmp, "npc_spawns.json", [entry(500, 1.0, 2.0, 3.0)])
+            spawns = load_spawns(Path(tmp), {"npc": {500}, "doodad": {}},
+                                 [(15059, 500)], schedule_spawners={15059: [7]})
+            step = plan(conn, spawns)["quests"][0]["steps"][0]
+            source = step["item_sources"][0]["sources"][0]
+            self.assertEqual(source["locations"], [{
+                "world": "main_world", "x": 1.0, "y": 2.0, "z": 3.0,
+                "schedule": {"spawner_id": 15059, "schedule_ids": [7]}}])
+
     def test_filter_selects_requested_quests_and_skips_tutorials(self):
         with database() as conn:
             quest(conn, 1)

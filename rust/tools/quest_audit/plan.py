@@ -7,7 +7,9 @@ act id) and each act carries its target ids, up to five spawn locations for
 npc/doodad targets and a status. Quests whose non-optional npc/doodad targets have
 no spawn anywhere in the world files are flagged; npc targets that are only summoned
 at runtime by `SpawnEffect` skills (`spawn_effects.owner_type_id == 1`) get
-"dynamic_spawn" with their sources instead; act types the plan cannot map are
+"dynamic_spawn" with their sources instead, and steps whose every location is
+gated on a game schedule / spawn-time window get "scheduled_spawn" (locations
+carry a `schedule` annotation); act types the plan cannot map are
 flagged "unsupported", never guessed. Quests without a Start component (auxiliary
 records) get status "auxiliary". Item targets carry `item_sources` (npc loot,
 doodad funcs, earlier quest supplies, crafts, stores) and a target without any
@@ -176,8 +178,9 @@ def clean_json(text):
     return "".join(out)
 
 
-def load_spawns(worlds, ids_by_kind, npc_spawner_npcs=()):
-    """Spawn locations by template id: ``{kind: {id: [(world, x, y, z), ...]}}``.
+def load_spawns(worlds, ids_by_kind, npc_spawner_npcs=(), schedule_spawners=None,
+                schedule_doodads=None, spawner_windows=None, known_schedules=()):
+    """Spawn locations by template id: ``{kind: {id: [(world, x, y, z), ...]}, "gates": ...}``.
 
     Mirrors `SpawnManager::load_npc_spawns` / `load_doodad_spawns`: `UnitId` is the
     *template* id (NPC: `npcs.id`, doodad: `doodad_almighties.id`) checked with
@@ -189,13 +192,49 @@ def load_spawns(worlds, ids_by_kind, npc_spawner_npcs=()):
     entries have no such indirection. Files are read in the load order
     (`spawn_files` name sort, then `files.reverse()`), with the same per-UnitId
     near-duplicate filter (2.0 for NPCs, 0.01 for doodads).
+
+    `gates` maps a placement ``(kind, target, world, x, y, z)`` to every spawner
+    template that can place the target there: ``{template_id: gate or None}``
+    (``0`` = a clone without a compact template). A gate is a dict when that path
+    is gated: `spawner.rs::is_spawning_schedule_enabled` checks the clone's game
+    schedules (`period_status_npc`; the schedule map alone gates, even with
+    dangling schedule ids) and the compact template's daily window
+    (`is_within_spawn_time`); `doodad/spawner.rs::do_spawn` gates on
+    `game_schedule_doodads` when one of its schedule ids exists. `activation_state`
+    is not a spawn gate (only `NpcSpawnerSpawnEffect`, bridges.rs). A placement is
+    schedule-gated when every path to it is gated.
     """
+    schedule_spawners = schedule_spawners or {}
+    doodad_schedules = schedule_doodads or {}
+    windows = spawner_windows or {}
+    known = set(known_schedules)
+
+    def npc_gate(template_id, window):
+        info = None
+        if template_id in schedule_spawners:
+            info = {"spawner_id": template_id,
+                    "schedule_ids": list(schedule_spawners[template_id])}
+        if window and template_id in windows:
+            start, end = windows[template_id]
+            if info is None:
+                info = {"spawner_id": template_id, "schedule_ids": []}
+            info["start_time"] = start
+            info["end_time"] = end
+        return info
+
+    def doodad_gate(template_id):
+        ids = doodad_schedules.get(template_id, [])
+        if ids and any(schedule_id in known for schedule_id in ids):
+            return {"spawner_id": template_id, "schedule_ids": list(ids)}
+        return None
+
     spawner_members = defaultdict(list)
     member_spawners = defaultdict(list)
     for spawner_id, member_id in npc_spawner_npcs:
         spawner_members[spawner_id].append(member_id)
         member_spawners[member_id].append(spawner_id)
     spawns = {"npc": defaultdict(list), "doodad": defaultdict(list)}
+    gates = defaultdict(dict)
     for world_dir in sorted(path for path in worlds.iterdir() if path.is_dir()):
         for kind, prefix, tolerance in (("npc", "npc_spawns", 2.0),
                                         ("doodad", "doodad_spawns", 0.01)):
@@ -224,17 +263,71 @@ def load_spawns(worlds, ids_by_kind, npc_spawner_npcs=()):
                            and abs(sz - z) < tolerance for sx, sy, sz in stored[unit_id]):
                         continue
                     stored[unit_id].append((x, y, z))
-                    location = (world_dir.name, float(x), float(y), float(z))
-                    event_ids = prop(entry, "NpcSpawnerIds")
-                    event = isinstance(event_ids, list) and event_ids and event_ids != [0]
-                    members = {unit_id}
-                    if kind == "npc" and not event:
-                        for spawner_id in member_spawners.get(unit_id, []):
-                            members.update(spawner_members[spawner_id])
-                    for member in members:
-                        if member in ids_by_kind[kind]:
-                            spawns[kind][member].append(location)
-    return {kind: dict(by_id) for kind, by_id in spawns.items()}
+                    placement = (world_dir.name, float(x), float(y), float(z))
+                    if kind == "doodad":
+                        placed = [(unit_id, 0, doodad_gate(unit_id))]
+                    else:
+                        event_ids = prop(entry, "NpcSpawnerIds")
+                        event = isinstance(event_ids, list) and event_ids and event_ids != [0]
+                        if event:
+                            side = prop(entry, "SpawnerId")
+                            side = side if isinstance(side, int) else 0
+                            placed = [(unit_id, side, npc_gate(side, window=False))]
+                        else:
+                            templates = list(dict.fromkeys(member_spawners.get(unit_id, [])))
+                            if templates:
+                                placed = [(member, template_id, npc_gate(template_id, True))
+                                          for template_id in templates
+                                          for member in spawner_members[template_id]]
+                            else:
+                                # Generated fake spawner (template 1 clone): no schedule.
+                                placed = [(unit_id, 0, None)]
+                    for member, spawner_id, gate in placed:
+                        if member not in ids_by_kind[kind]:
+                            continue
+                        if placement not in spawns[kind][member]:
+                            spawns[kind][member].append(placement)
+                        gates[(kind, member) + placement][spawner_id] = gate
+    result = {kind: dict(by_id) for kind, by_id in spawns.items()}
+    result["gates"] = dict(gates)
+    return result
+
+
+def merge_locations(kind, ids, spawns):
+    """``{placement: merged gate map}`` over the target ids (insertion order)."""
+    merged = {}
+    gate_data = spawns.get("gates", {})
+    for target in ids:
+        for placement in spawns[kind].get(target, []):
+            entry = merged.setdefault(placement, {})
+            gates = gate_data.get((kind, target) + placement)
+            if gates:
+                entry.update(gates)
+            else:
+                entry.setdefault(0, None)
+    return merged
+
+
+def gated_info(gates):
+    """The `schedule` annotation of a placement gated on every path, else None."""
+    if gates and all(info is not None for info in gates.values()):
+        return min((info for info in gates.values()), key=lambda g: g["spawner_id"])
+    return None
+
+
+def location_dict(placement, gates):
+    location = {"world": placement[0], "x": placement[1], "y": placement[2], "z": placement[3]}
+    info = gated_info(gates)
+    if info:
+        location["schedule"] = info
+    return location
+
+
+def location_dicts(kind, ids, spawns):
+    """Up to five nearest locations of the ids, with `schedule` where gated."""
+    merged = merge_locations(kind, ids, spawns)
+    return [location_dict(placement, merged[placement])
+            for placement in closest(list(merged))]
 
 
 def closest(locations, limit=5):
@@ -354,12 +447,9 @@ def item_sources(item_id, supplied, spawns, data):
 
     `chance` is the raw `loots.drop_rate` (10,000,000 = 100%,
     `economy/loot.rs` divides by 10,000,000); `loot_quest_id` mirrors the
-    `HasQuest` gate of `looting.rs::try_take_loot_locked` for quest-only drops.
+    `HasQuest` gate of `looting.rs::try_take_loot_locked` for quest-only drops;
+    `locations` carry the `schedule` annotation of `load_spawns`.
     """
-    def locations(ids):
-        found = [loc for i in ids for loc in spawns["npc"].get(i, [])]
-        return [{"world": w, "x": x, "y": y, "z": z} for w, x, y, z in closest(found)]
-
     sources = []
     seen_packs = set()
     for loot in data["loot"].get(item_id, []):
@@ -369,7 +459,8 @@ def item_sources(item_id, supplied, spawns, data):
         seen_packs.add(pack)
         npcs = bounded(data["pack_npcs"].get(pack, []), spawns["npc"])
         entry = {"type": "npc_loot", "npc_ids": npcs, "loot_pack_id": pack,
-                 "chance": loot["drop_rate"], "locations": locations(npcs)}
+                 "chance": loot["drop_rate"],
+                 "locations": location_dicts("npc", npcs, spawns)}
         if item_id in data["item_quests"]:
             entry["loot_quest_id"] = data["item_quests"][item_id]
         sources.append(entry)
@@ -380,10 +471,7 @@ def item_sources(item_id, supplied, spawns, data):
         if doodads.get(func_type):
             ids = bounded(doodads[func_type], spawns["doodad"])
             sources.append({"type": "doodad", "doodad_ids": ids, "func": func_type,
-                            "locations": [{"world": w, "x": x, "y": y, "z": z}
-                                          for w, x, y, z in closest(
-                                              [loc for i in ids
-                                               for loc in spawns["doodad"].get(i, [])])]})
+                            "locations": location_dicts("doodad", ids, spawns)})
     for act_id in sorted(supplied.get(item_id, [])):
         sources.append({"type": "quest_supply", "act_id": act_id})
     crafts = bounded(data["item_crafts"].get(item_id, []), {})
@@ -394,7 +482,7 @@ def item_sources(item_id, supplied, spawns, data):
         vendors = bounded([npc for p in packs for npc in data["pack_vendors"].get(p, [])],
                           spawns["npc"])
         sources.append({"type": "store", "npc_ids": vendors, "pack_ids": packs,
-                        "locations": locations(vendors)})
+                        "locations": location_dicts("npc", vendors, spawns)})
     order = {"npc_loot": 0, "doodad": 1, "quest_supply": 2, "craft": 3, "store": 4}
     by_type = Counter()
     kept = []
@@ -580,9 +668,12 @@ def plan(conn, spawns, quest_filter=None):
                 target = step_target(conn, details, lookups, act_class, act["act_detail_id"])
                 kind = target["kind"] if target else "none"
                 ids = target["ids"] if target else []
-                found = []
+                merged = {}
+                gated = False
                 if kind in ("npc", "doodad"):
-                    found = [loc for t in ids for loc in spawns[kind].get(t, [])]
+                    merged = merge_locations(kind, ids, spawns)
+                    gated = bool(merged) and all(gated_info(g) for g in merged.values())
+                found = list(merged)
                 sources = []
                 item_targets = None
                 if target is None:
@@ -593,6 +684,9 @@ def plan(conn, spawns, quest_filter=None):
                     status = "dynamic_spawn" if sources else "no_spawn"
                 elif kind == "doodad" and not found:
                     status = "no_spawn"
+                elif gated:
+                    # Every placement is inside a game-schedule window (or spawn-time window).
+                    status = "scheduled_spawn"
                 elif kind == "item" and act_class in ITEM_SOURCE_ACTS:
                     item_targets = [{"item_id": i, "sources": item_sources(
                         i, supplied, spawns, source_data)} for i in ids]
@@ -603,8 +697,8 @@ def plan(conn, spawns, quest_filter=None):
                         "component_kind": COMPONENT_KINDS.get(kind_id, str(kind_id)),
                         "act_id": act["id"], "act_type": act_class,
                         "target": target or {"kind": "none", "ids": [], "count": 1},
-                        "locations": [{"world": w, "x": x, "y": y, "z": z}
-                                      for w, x, y, z in closest(found)],
+                        "locations": [location_dict(placement, merged[placement])
+                                      for placement in closest(found)],
                         "status": status}
                 if status == "dynamic_spawn":
                     step["sources"] = sources
@@ -660,6 +754,8 @@ def plan(conn, spawns, quest_filter=None):
                    "doodad" in missing_by_quest[q["quest_id"]] for q in quests),
                "dynamic_spawn_steps": sum(
                    s["status"] == "dynamic_spawn" for q in quests for s in q["steps"]),
+               "scheduled_spawn_steps": sum(
+                   s["status"] == "scheduled_spawn" for q in quests for s in q["steps"]),
                "unknown_item_source_steps": sum(
                    s["status"] == "unknown_item_source" for q in quests for s in q["steps"]),
                "item_steps_with_npc_loot": sum(
@@ -692,7 +788,18 @@ def main():
                "doodad": {row["id"] for row in rows(conn, "doodad_almighties")}}
         spawner_npcs = [(row["npc_spawner_id"], row["member_id"])
                         for row in rows(conn, "npc_spawner_npcs")]
-        spawns = load_spawns(worlds, ids, spawner_npcs)
+        schedule_spawners = defaultdict(list)
+        for row in rows(conn, "game_schedule_spawners"):
+            schedule_spawners[row["spawner_id"]].append(row["game_schedule_id"])
+        schedule_doodads = defaultdict(list)
+        for row in rows(conn, "game_schedule_doodads"):
+            schedule_doodads[row["doodad_id"]].append(row["game_schedule_id"])
+        windows = {row["id"]: (row["startTime"], row["endTime"])
+                   for row in rows(conn, "npc_spawners")
+                   if row["startTime"] > 0 or row["endTime"] > 0}
+        known_schedules = {row["id"] for row in rows(conn, "game_schedules")}
+        spawns = load_spawns(worlds, ids, spawner_npcs, schedule_spawners,
+                             schedule_doodads, windows, known_schedules)
         result = plan(conn, spawns, set(args.quests) if args.quests else None)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(result["quests"], ensure_ascii=False, indent=2) + "\n",
