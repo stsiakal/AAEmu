@@ -8,7 +8,10 @@ npc/doodad targets and a status. Quests whose non-optional npc/doodad targets ha
 no spawn anywhere in the world files are flagged; npc targets that are only summoned
 at runtime by `SpawnEffect` skills (`spawn_effects.owner_type_id == 1`) get
 "dynamic_spawn" with their sources instead; act types the plan cannot map are
-flagged "unsupported", never guessed. Run:
+flagged "unsupported", never guessed. Each quest also carries the accept
+prerequisites (`unit_reqs` of its Start components, owner type "QuestComponent",
+the only quest owner type the accept path evaluates) plus `min_level` and
+`prereq_quests`. Run:
 
     python plan.py --db compact.sqlite3 --worlds Data/Worlds --output plan.json
 """
@@ -29,6 +32,32 @@ COMPONENT_KINDS = {0: "Invalid", 1: "None", 2: "Start", 3: "Supply", 4: "Progres
 # bot completing the quest never needs their spawns, so missing targets there do not
 # block the plan.
 OPTIONAL_KINDS = {5, 7}
+KIND_LEVEL = 1
+KIND_START = 2
+KIND_COMPLETE_QUEST_CONTEXT = 0x1F
+# `unit_reqs.kind_id` -> symbolic name. The names are the failure keys of
+# `systems/skills/unit_reqs.rs::validate` (`skill_urk_*` without the prefix); kinds whose
+# skill arm returns the generic "skill_failure" take the constant name of
+# `systems/quests/unit_reqs.rs::req_kind` lowercased instead.
+REQ_KINDS = {
+    0x01: "level", 0x02: "ability", 0x03: "race", 0x04: "gender",
+    0x08: "equip_slot", 0x09: "equip_item", 0x0A: "own_item", 0x0B: "trained_skill",
+    0x0C: "combat", 0x0F: "buff", 0x10: "target_buff", 0x11: "target_combat",
+    0x14: "doodad_range", 0x15: "equip_shield", 0x16: "nobuff", 0x17: "target_buff_tag",
+    0x1A: "target_health_less_than", 0x1B: "target_npc", 0x1C: "target_doodad",
+    0x1D: "equip_ranged", 0x1E: "no_buff_tag", 0x1F: "complete_quest_context",
+    0x20: "progress_quest_context", 0x21: "ready_quest_context", 0x22: "target_npc_group",
+    0x23: "area_sphere", 0x24: "except_complete_quest_context", 0x25: "pre_complete_quest_context",
+    0x26: "target_owner_type", 0x27: "not_under_water", 0x28: "faction_match", 0x29: "tod",
+    0x2A: "mother_faction", 0x2B: "act_ability_point", 0x2C: "crime_point", 0x2D: "honor_point",
+    0x2E: "crime_record", 0x2F: "jury_point", 0x30: "source_owner_type", 0x31: "appellation",
+    0x32: "living_point", 0x33: "in_zone", 0x34: "out_zone", 0x36: "verdict_only",
+    0x37: "faction_match_only", 0x38: "mother_faction_only", 0x3A: "faction_match_only_not",
+    0x3B: "mother_faction_only_not", 0x43: "labor_power_margin",
+    0x44: "not_on_moving_physical_vehicle", 0x45: "max_level", 0x46: "expedition_owner",
+    0x47: "expedition_member", 0x48: "except_progress_quest_context",
+    0x49: "except_ready_quest_context",
+}
 # act class -> (target kind, detail table, target id column, count column or None).
 # Tables and columns verified against compact.sqlite3 and `data.rs::load_detail_acts`;
 # the cited handler is the `acts.rs` arm that consumes the detail row.
@@ -61,6 +90,10 @@ ACT_TARGETS = {
 def rows(conn, table):
     # Identifiers come from the audited source, never CLI input.
     return [dict(row) for row in conn.execute('SELECT * FROM "' + table.replace('"', '""') + '"')]
+
+
+def truth(value):
+    return value in ("t", "true", 1, True)
 
 
 def prop(obj, name):
@@ -357,6 +390,12 @@ def plan(conn, spawns, quest_filter=None):
     acts = rows(conn, "quest_acts")
     lookups = load_lookups(conn)
     dynamic = dynamic_npc_sources(conn)
+    # `CanComponentRun` reads owner type "QuestComponent" (the only quest owner type in the
+    # table, engine.rs `starter_accepts` -> `can_component_run`).
+    requirements = defaultdict(list)
+    for row in rows(conn, "unit_reqs"):
+        if row["owner_type"] == "QuestComponent":
+            requirements[row["owner_id"]].append(row)
     by_quest = defaultdict(list)
     for component in components:
         by_quest[component["quest_context_id"]].append(component)
@@ -365,19 +404,31 @@ def plan(conn, spawns, quest_filter=None):
         by_component[act["quest_component_id"]].append(act)
     details = {}
     quests = []
-    status_counts = Counter()
-    unsupported_acts = Counter()
-    missing_spawns = {"npc": set(), "doodad": set()}
-    dynamic_steps = 0
+    missing_by_quest = defaultdict(set)
     for quest in sorted(contexts, key=lambda q: q["id"]):
         if quest["category_id"] == TUTORIAL:
             continue
-        if quest_filter and quest["id"] not in quest_filter:
-            continue
+        ordered = sorted(by_quest[quest["id"]], key=lambda c: (c["component_kind_id"], c["id"]))
+        requires = []
+        for component in ordered:
+            if component["component_kind_id"] != KIND_START:
+                continue
+            # `check_all` (unit_reqs.rs): `or_unit_reqs` turns the component's requirements
+            # into an OR group, otherwise they must all pass.
+            or_group = truth(component["or_unit_reqs"])
+            for req in requirements[component["id"]]:
+                entry = {"kind_id": req["kind_id"],
+                         "kind": REQ_KINDS.get(req["kind_id"], f"unknown_{req['kind_id']}"),
+                         "value1": req["value1"], "value2": req["value2"]}
+                if or_group:
+                    entry["or_group"] = True
+                requires.append(entry)
+        level = quest["LEVEL"] if isinstance(quest["LEVEL"], int) else 0
+        min_level = max((r["value1"] for r in requires if r["kind_id"] == KIND_LEVEL),
+                        default=level)
         steps = []
         blockers = []
         blocked = partial = False
-        ordered = sorted(by_quest[quest["id"]], key=lambda c: (c["component_kind_id"], c["id"]))
         for component in ordered:
             kind_id = component["component_kind_id"]
             for act in sorted(by_component[component["id"]], key=lambda a: a["id"]):
@@ -407,31 +458,54 @@ def plan(conn, spawns, quest_filter=None):
                                       for w, x, y, z in closest(found)],
                         "status": status}
                 if status == "dynamic_spawn":
-                    dynamic_steps += 1
                     step["sources"] = sources
                 steps.append(step)
                 optional = kind_id in OPTIONAL_KINDS
                 if status == "unsupported":
                     partial = True
-                    unsupported_acts[act_class] += 1
                     blockers.append(f"unsupported act {act_class} "
                                     f"(act {act['id']}, component {component['id']})")
                 elif status == "no_spawn" and not optional:
                     blocked = True
-                    missing_spawns[kind].add(quest["id"])
+                    missing_by_quest[quest["id"]].add(kind)
                     targets = " ".join(map(str, ids)) if ids else "unresolved"
                     blockers.append(f"no spawn for {kind} {targets} "
                                     f"({act_class}, component {component['id']})")
         quest_status = "blocked" if blocked else ("partial" if partial else "ok")
-        status_counts[quest_status] += 1
         quests.append({"quest_id": quest["id"], "name": quest["name"],
                        "category_id": quest["category_id"], "level": quest["LEVEL"],
+                       "min_level": min_level, "requires": requires,
+                       "prereq_quests": sorted({r["value1"] for r in requires
+                                                if r["kind_id"] == KIND_COMPLETE_QUEST_CONTEXT
+                                                and r["value1"]}),
                        "steps": steps, "status": quest_status, "blockers": blockers})
-    summary = {"quests": len(quests), "status": dict(sorted(status_counts.items())),
-               "unsupported_act_types": dict(unsupported_acts.most_common(20)),
-               "blocked_missing_npc_spawns": len(missing_spawns["npc"]),
-               "blocked_missing_doodad_spawns": len(missing_spawns["doodad"]),
-               "dynamic_spawn_steps": dynamic_steps}
+    by_id = {q["quest_id"]: q for q in quests}
+    for quest in quests:
+        notes = []
+        for prereq in quest["prereq_quests"]:
+            prerequisite = by_id.get(prereq)
+            if prerequisite is None:
+                notes.append(f"prerequisite quest {prereq} is not in the plan")
+            elif prerequisite["status"] != "ok":
+                notes.append(f"prerequisite quest {prereq} is {prerequisite['status']}")
+        if notes:
+            quest["prereq_notes"] = notes
+    if quest_filter:
+        quests = [q for q in quests if q["quest_id"] in quest_filter]
+    summary = {"quests": len(quests),
+               "status": dict(sorted(Counter(q["status"] for q in quests).items())),
+               "unsupported_act_types": dict(Counter(
+                   s["act_type"] for q in quests for s in q["steps"]
+                   if s["status"] == "unsupported").most_common(20)),
+               "blocked_missing_npc_spawns": sum(
+                   "npc" in missing_by_quest[q["quest_id"]] for q in quests),
+               "blocked_missing_doodad_spawns": sum(
+                   "doodad" in missing_by_quest[q["quest_id"]] for q in quests),
+               "dynamic_spawn_steps": sum(
+                   s["status"] == "dynamic_spawn" for q in quests for s in q["steps"]),
+               "requirement_kinds": dict(sorted(Counter(
+                   r["kind"] for q in quests for r in q["requires"]).items())),
+               "quests_with_requirements": sum(bool(q["requires"]) for q in quests)}
     return {"quests": quests, "summary": summary}
 
 

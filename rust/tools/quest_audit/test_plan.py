@@ -15,7 +15,10 @@ def database():
     conn.executescript("""
         CREATE TABLE quest_contexts (id INTEGER, name TEXT, category_id INTEGER, LEVEL INTEGER);
         CREATE TABLE quest_components (id INTEGER, quest_context_id INTEGER,
-            component_kind_id INTEGER, npc_id INTEGER, npc_spawner_id INTEGER);
+            component_kind_id INTEGER, npc_id INTEGER, npc_spawner_id INTEGER,
+            or_unit_reqs TEXT);
+        CREATE TABLE unit_reqs (id INTEGER, owner_type TEXT, owner_id INTEGER,
+            kind_id INTEGER, value1 INTEGER, value2 INTEGER);
         CREATE TABLE quest_acts (id INTEGER, quest_component_id INTEGER,
             act_detail_id INTEGER, act_detail_type TEXT);
         CREATE TABLE quest_monster_npcs (id INTEGER, quest_monster_group_id INTEGER,
@@ -76,7 +79,7 @@ def quest(conn, qid, category=1):
 
 
 def component(conn, cid, qid, step):
-    conn.execute("INSERT INTO quest_components VALUES (?, ?, ?, 0, 0)", (cid, qid, step))
+    conn.execute("INSERT INTO quest_components VALUES (?, ?, ?, 0, 0, 'f')", (cid, qid, step))
 
 
 def act(conn, aid, cid, detail_id, cls):
@@ -342,6 +345,69 @@ class QuestPlanTests(unittest.TestCase):
                               plan(conn, spawns, quest_filter={2})["quests"]],
                              [2])
             self.assertEqual([q["quest_id"] for q in plan(conn, spawns)["quests"]], [1, 2])
+
+    def test_start_requirements_min_level_and_prerequisites(self):
+        with database() as conn:
+            # The live-run case (quest 63): level 14 and quest 61 completed, plus a
+            # missing-spawn progress step so the quest is blocked.
+            quest(conn, 1)
+            component(conn, 10, 1, 2)
+            component(conn, 11, 1, 4)
+            conn.execute("INSERT INTO unit_reqs VALUES (1, 'QuestComponent', 10, 1, 14, 0)")
+            conn.execute("INSERT INTO unit_reqs VALUES (2, 'QuestComponent', 10, 31, 61, 0)")
+            conn.execute("INSERT INTO quest_act_obj_monster_hunts VALUES (1, 404, 1)")
+            act(conn, 1, 11, 1, "QuestActObjMonsterHunt")
+            # Quest 2 requires the blocked quest 1; no level requirement.
+            quest(conn, 2)
+            component(conn, 20, 2, 2)
+            conn.execute("INSERT INTO unit_reqs VALUES (3, 'QuestComponent', 20, 31, 1, 0)")
+            # Quest 3 has no requirements; its context level is the fallback.
+            quest(conn, 3)
+            conn.execute("UPDATE quest_contexts SET LEVEL = 18 WHERE id = 3")
+            result = plan(conn, {"npc": {}, "doodad": {}})
+            by_id = {q["quest_id"]: q for q in result["quests"]}
+            self.assertEqual(by_id[1]["requires"], [
+                {"kind_id": 1, "kind": "level", "value1": 14, "value2": 0},
+                {"kind_id": 31, "kind": "complete_quest_context", "value1": 61, "value2": 0}])
+            self.assertEqual((by_id[1]["min_level"], by_id[1]["prereq_quests"]), (14, [61]))
+            self.assertEqual(by_id[1]["prereq_notes"],
+                             ["prerequisite quest 61 is not in the plan"])
+            self.assertEqual(by_id[2]["prereq_notes"], ["prerequisite quest 1 is blocked"])
+            self.assertEqual((by_id[3]["requires"], by_id[3]["min_level"],
+                              by_id[3]["prereq_quests"]), ([], 18, []))
+            self.assertEqual(result["summary"]["requirement_kinds"],
+                             {"complete_quest_context": 2, "level": 1})
+            self.assertEqual(result["summary"]["quests_with_requirements"], 2)
+            # The prerequisite notes survive the --quest filter (all plans are built).
+            filtered = plan(conn, {"npc": {}, "doodad": {}}, quest_filter={2})
+            self.assertEqual(filtered["quests"][0]["prereq_notes"],
+                             ["prerequisite quest 1 is blocked"])
+
+    def test_or_unit_reqs_marks_the_group_and_unknown_kinds_keep_ids(self):
+        with database() as conn:
+            quest(conn, 1)
+            component(conn, 10, 1, 2)
+            conn.execute("UPDATE quest_components SET or_unit_reqs = 't' WHERE id = 10")
+            conn.execute("INSERT INTO unit_reqs VALUES (1, 'QuestComponent', 10, 3, 2, 0)")
+            conn.execute("INSERT INTO unit_reqs VALUES (2, 'QuestComponent', 10, 53, 7, 9)")
+            result = plan(conn, {"npc": {}, "doodad": {}})
+            self.assertEqual(result["quests"][0]["requires"], [
+                {"kind_id": 3, "kind": "race", "value1": 2, "value2": 0, "or_group": True},
+                {"kind_id": 53, "kind": "unknown_53", "value1": 7, "value2": 9,
+                 "or_group": True}])
+            self.assertEqual(result["summary"]["requirement_kinds"],
+                             {"race": 1, "unknown_53": 1})
+            self.assertEqual(result["summary"]["quests_with_requirements"], 1)
+
+    def test_requirements_ignore_non_start_components(self):
+        with database() as conn:
+            quest(conn, 1)
+            component(conn, 10, 1, 2)
+            component(conn, 11, 1, 4)
+            conn.execute("INSERT INTO unit_reqs VALUES (1, 'QuestComponent', 11, 1, 50, 0)")
+            result = plan(conn, {"npc": {}, "doodad": {}})
+            self.assertEqual(result["quests"][0]["requires"], [])
+            self.assertEqual(result["quests"][0]["min_level"], 1)
 
     def test_closest_dedupes_and_keeps_the_anchor(self):
         locations = [("main_world", 0.0, 0.0, 0.0), ("main_world", 5.0, 0.0, 0.0),
