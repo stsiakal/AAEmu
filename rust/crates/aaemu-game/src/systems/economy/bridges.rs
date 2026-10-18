@@ -27,6 +27,8 @@ use crate::systems::skills::ext::{
     GearStats, GradeEnchantRequest, HoldableInfo, ItemActionResult, ItemSkillHooks,
 };
 use crate::systems::skills::types::{SkillCastTarget, SkillCaster, SkillObject};
+use crate::systems::social::achievement::char_record_kind;
+use crate::systems::social::achievement_hooks::{AchievementInput, RecordMatch};
 use crate::world::{DoodadRef, NpcRef, PlayerRef, WorldObject};
 
 use super::error_message;
@@ -35,6 +37,10 @@ use super::item_effects::{self, Outcome, SkillItem};
 use super::item_packets::SCItemTaskSuccessPacket;
 use super::loot::SharedRandom;
 
+/// Locks a container. In a function that owns an [`ItemTxn`], never leave the guard as a
+/// temporary of the tail expression: it would be dropped after the transaction, whose drop runs
+/// the quest hooks that lock the same container again (self-deadlock). Bind the result to a local
+/// first (`let result = lock(..).consume_item(.., &mut txn.env); result`).
 fn lock(c: &ContainerRef) -> std::sync::MutexGuard<'_, ItemContainer> {
     c.lock().expect("container poisoned")
 }
@@ -676,7 +682,7 @@ impl EconomyForSkills {
             }
         }
         // Use labor and recover exp (not ChangeLabor: no labor exp)
-        player.data().labor_power -= needed as i16;
+        player.data().change_labor_power(-(needed as i16));
         player.send(
             crate::systems::skills::progress::SCCharacterLaborPowerChangedPacket {
                 amount: -needed,
@@ -937,17 +943,17 @@ impl ItemSkillHooks for EconomyForSkills {
         );
     }
 
-    fn unlock_item(&self, server: &GameServer, player: &PlayerRef, item_id: u64) {
-        // SCItemTaskSuccessPacket(ItemUnlock, ItemUpdate(skillItem.SkillSourceItem))
-        match server.items.item_by_id(item_id) {
-            Some(item) => player.send(task_packet(
-                task_type::ITEM_UNLOCK,
-                vec![ItemTask::update(&item)],
-            )),
-            None => tracing::error!(
-                "Plot: SkillSourceItem {item_id} no longer exists (NullReferenceException)"
-            ),
-        }
+    fn unlock_item(&self, server: &GameServer, player: &PlayerRef, item_id: u64) -> bool {
+        // SCItemTaskSuccessPacket(ItemUnlock, ItemUpdate(skillItem.SkillSourceItem)). The C#
+        // keeps the item object of the cast; here a source item the plot consumed is gone.
+        let Some(item) = server.items.item_by_id(item_id) else {
+            return false;
+        };
+        player.send(task_packet(
+            task_type::ITEM_UNLOCK,
+            vec![ItemTask::update(&item)],
+        ));
+        true
     }
 
     fn apply_gear_buffs(
@@ -1105,14 +1111,15 @@ impl ItemSkillHooks for EconomyForSkills {
         amount: i32,
     ) -> bool {
         let mut txn = ItemTxn::begin(server);
-        lock(&Inv::of(player).bag()).acquire_default_item(
+        let result = lock(&Inv::of(player).bag()).acquire_default_item(
             task_type,
             template_id,
             amount,
             -1,
             0,
             &mut txn.env,
-        )
+        );
+        result
     }
 
     fn consume_bag_item(
@@ -1124,13 +1131,14 @@ impl ItemSkillHooks for EconomyForSkills {
         amount: i32,
     ) -> i32 {
         let mut txn = ItemTxn::begin(server);
-        lock(&Inv::of(player).bag()).consume_item(
+        let result = lock(&Inv::of(player).bag()).consume_item(
             task_type,
             template_id,
             amount,
             None,
             &mut txn.env,
-        )
+        );
+        result
     }
 
     fn ucc_create_stamp(&self, server: &GameServer, player: &PlayerRef, source_item_id: u64) {
@@ -1459,13 +1467,14 @@ impl crate::systems::services::music::SheetMusicInventory for EconomySheetMusic<
 
     fn consume_source(&self, player: &PlayerRef, item_id: u64, template_id: u32) -> i32 {
         let mut txn = ItemTxn::begin(self.server);
-        lock(&Inv::of(player).bag()).consume_item(
+        let result = lock(&Inv::of(player).bag()).consume_item(
             task_type::SAVE_MUSIC_NOTES,
             template_id,
             1,
             Some(item_id),
             &mut txn.env,
-        )
+        );
+        result
     }
 }
 
@@ -1486,7 +1495,9 @@ impl crate::systems::services::item_ops::CharacterItemOps for EconomyForServices
         count: i32,
     ) -> i32 {
         let mut txn = ItemTxn::begin(server);
-        lock(&Inv::of(player).bag()).consume_item(task, template_id, count, None, &mut txn.env)
+        let result =
+            lock(&Inv::of(player).bag()).consume_item(task, template_id, count, None, &mut txn.env);
+        result
     }
 
     fn replace_hair(&self, server: &GameServer, player: &PlayerRef, hair_model: u32) -> bool {
@@ -1759,6 +1770,10 @@ impl crate::systems::npcs::hooks::EconomyBridge for EconomyForNpcs {
         server.systems.economy.loot.item_count(npc.obj_id) > 0
     }
 
+    fn forget_loot(&self, server: &GameServer, obj_id: u32) {
+        server.systems.economy.loot.forget(obj_id);
+    }
+
     fn item_template_and_ucc(&self, server: &GameServer, item_id: u64) -> Option<(u32, u64)> {
         server
             .items
@@ -1886,13 +1901,14 @@ impl crate::systems::npcs::hooks::EconomyBridge for EconomyForNpcs {
         preferred_item_id: u64,
     ) -> i32 {
         let mut txn = ItemTxn::begin(server);
-        lock(&Inv::of(player).equipment()).consume_item(
+        let result = lock(&Inv::of(player).equipment()).consume_item(
             task,
             template_id,
             count,
             (preferred_item_id != 0).then_some(preferred_item_id),
             &mut txn.env,
-        )
+        );
+        result
     }
 
     fn is_auto_equip_trade_pack(&self, server: &GameServer, template_id: u32) -> bool {
@@ -1991,9 +2007,10 @@ impl crate::systems::npcs::hooks::EconomyBridge for EconomyForNpcs {
         item_id: u64,
     ) -> bool {
         let mut txn = ItemTxn::begin(server);
-        lock(&Inv::of(player).equipment())
+        let result = lock(&Inv::of(player).equipment())
             .remove_item_task(task, item_id, true, &mut txn.env)
-            .is_some()
+            .is_some();
+        result
     }
 
     fn bag_space_left_for_item(
@@ -2019,7 +2036,9 @@ impl crate::systems::npcs::hooks::EconomyBridge for EconomyForNpcs {
         count: i32,
     ) -> i32 {
         let mut txn = ItemTxn::begin(server);
-        lock(&Inv::of(player).bag()).consume_item(task, template_id, count, None, &mut txn.env)
+        let result =
+            lock(&Inv::of(player).bag()).consume_item(task, template_id, count, None, &mut txn.env);
+        result
     }
 
     fn try_equip_new_backpack(
@@ -2066,7 +2085,7 @@ impl crate::systems::npcs::hooks::EconomyBridge for EconomyForNpcs {
             return Some(false);
         }
         let mut txn = ItemTxn::begin(server);
-        super::loot::give_loot_pack(
+        let given = super::loot::give_loot_pack(
             &mut txn,
             player,
             pack,
@@ -2076,6 +2095,18 @@ impl crate::systems::npcs::hooks::EconomyBridge for EconomyForNpcs {
             None,
             &mut rng,
         );
+        if given {
+            // GET_LOOTPACK (deferred until the item transaction is released).
+            crate::systems::report_achievement(
+                server,
+                player,
+                AchievementInput::Increment {
+                    kind_id: char_record_kind::GET_LOOTPACK,
+                    amount: 1,
+                    matcher: RecordMatch::Value1(loot_pack_id),
+                },
+            );
+        }
         Some(true)
     }
 
@@ -2146,11 +2177,13 @@ impl crate::systems::npcs::hooks::EconomyBridge for EconomyForNpcs {
             );
             return;
         };
+        let caught = (fish.details.fish_length, fish.details.fish_weight);
         let data = txn.data();
         let res = lock(&Inv::of(player).bag()).add_item(task, fish, -1, data, &mut txn.env.fx);
         if let Err(item) = res {
             server.items.add_loose(item);
         }
+        super::fishing::record_catch(server, player, caught.0, caught.1);
     }
 
     fn coffer_chest_type(&self, server: &GameServer, container_id: u64) -> u8 {
@@ -2271,8 +2304,13 @@ impl crate::systems::npcs::hooks::EconomyBridge for EconomyForNpcs {
         let bag = inv.bag();
         let mut bag = lock(&bag);
         let Some(item) = bag.get_item_by_id(item_id).cloned() else {
+            tracing::warn!(
+                "doodad {doodad_template_id}: source item {item_id} is not in the bag of character {}",
+                player.character_id
+            );
             return false;
         };
+        let labor_power = player.data().labor_power;
         if item.count < 1
             || labor_cost < 0
             || !server
@@ -2280,8 +2318,13 @@ impl crate::systems::npcs::hooks::EconomyBridge for EconomyForNpcs {
                 .items
                 .item_ids_from_doodad(doodad_template_id)
                 .contains(&item.template_id)
-            || player.data().labor_power < labor_cost
+            || labor_power < labor_cost
         {
+            tracing::warn!(
+                "doodad {doodad_template_id}: source item {item_id} (template {}, count {}) rejected: labor cost {labor_cost}, labor power {labor_power}",
+                item.template_id,
+                item.count
+            );
             return false;
         }
         let preserve = server
@@ -2291,10 +2334,18 @@ impl crate::systems::npcs::hooks::EconomyBridge for EconomyForNpcs {
             .is_some_and(|t| t.max_count == 1);
         if preserve {
             if item.count != 1 {
+                tracing::warn!(
+                    "doodad {doodad_template_id}: unique source item {item_id} has count {}",
+                    item.count
+                );
                 return false;
             }
             drop(bag);
             let Some(system) = inv.get(slot_type::SYSTEM) else {
+                tracing::warn!(
+                    "doodad {doodad_template_id}: character {} has no system container",
+                    player.character_id
+                );
                 return false;
             };
             if !super::mail::add_or_move_existing_item(
@@ -2304,6 +2355,9 @@ impl crate::systems::npcs::hooks::EconomyBridge for EconomyForNpcs {
                 item_id,
                 -1,
             ) {
+                tracing::warn!(
+                    "doodad {doodad_template_id}: could not move source item {item_id} to the system container"
+                );
                 return false;
             }
         } else {
@@ -2315,6 +2369,10 @@ impl crate::systems::npcs::hooks::EconomyBridge for EconomyForNpcs {
                 &mut txn.env,
             ) != 1
             {
+                tracing::warn!(
+                    "doodad {doodad_template_id}: could not consume source item {item_id} (template {})",
+                    item.template_id
+                );
                 return false;
             }
             drop(bag);
@@ -2788,13 +2846,14 @@ impl crate::systems::housing::hooks::HousingEconomyHooks for EconomyForHousing {
         preferred_item_id: Option<u64>,
     ) -> i32 {
         let mut txn = ItemTxn::begin(server);
-        lock(&Inv::of(player).bag()).consume_item(
+        let result = lock(&Inv::of(player).bag()).consume_item(
             task,
             template_id,
             count,
             preferred_item_id,
             &mut txn.env,
-        )
+        );
+        result
     }
 
     fn subtract_money(
@@ -3416,6 +3475,7 @@ impl item_effects::ItemEffectHooks for EconomyComposite {
 /// hooks of its own slots.
 pub fn install(server: &GameServer) {
     let s = &server.systems;
+    s.economy.loot.install_release_hook(&server.ids.object);
     s.skills.ext.items.install(Arc::new(EconomyForSkills));
     s.npcs.hooks.economy.install(Arc::new(EconomyForNpcs));
     s.quests.economy_hooks.install(Arc::new(EconomyForQuests));

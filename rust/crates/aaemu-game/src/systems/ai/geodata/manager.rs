@@ -61,6 +61,31 @@ pub trait TerrainHeights: Send + Sync {
 /// A loaded bai set shared by a zone or a path block.
 pub type BaiRef = Arc<BaseBaiLoader>;
 
+/// Logs how long a lazy cell load took when it is dropped (`min_ms` = quiet below that); one
+/// shared shape for the navmesh, heightmap and collision cell loads that happen on first contact
+/// inside the AI tick (a slow one stalls the whole sequential pass).
+pub struct LoadTimer<'a> {
+    pub what: &'static str,
+    pub world: &'a str,
+    pub cell: (i32, i32),
+    pub started: std::time::Instant,
+    pub min_ms: u128,
+}
+
+impl Drop for LoadTimer<'_> {
+    fn drop(&mut self) {
+        let ms = self.started.elapsed().as_millis();
+        if ms >= self.min_ms {
+            tracing::info!(
+                "lazy cell load: {} {:?} of {} took {ms} ms",
+                self.what,
+                self.cell,
+                self.world
+            );
+        }
+    }
+}
+
 /// `AiGeoDataManager` + the bai data of its `WorldTemplate`.
 pub struct AiGeoData {
     pub template_id: u32,
@@ -194,6 +219,15 @@ impl AiGeoData {
             if !self.enabled {
                 return grid;
             }
+            // Lazy first-contact load on whichever thread asks first (usually the AI tick):
+            // logged once per cell so a stall can be matched to its cause.
+            let _log_load = LoadTimer {
+                what: "navmesh (bai) cell",
+                world: &self.world_name,
+                cell: (cell_x, cell_y),
+                started: std::time::Instant::now(),
+                min_ms: 0,
+            };
             let zones = self.zone_bai();
             if !zones.is_empty() {
                 let zone_key = self.cell_zone_keys[idx];
@@ -489,7 +523,11 @@ impl AiGeoData {
 
     /// `LinePassesThroughForbiddenArea(start, end)` (the start node's bai; `Err` = the C#
     /// `NullReferenceException` when there is none).
-    fn line_passes_through_forbidden_area(&self, start: Vec3, end: Vec3) -> Result<bool, GeoError> {
+    pub(super) fn line_passes_through_forbidden_area(
+        &self,
+        start: Vec3,
+        end: Vec3,
+    ) -> Result<bool, GeoError> {
         let bai = self.bai_by_pos(start)?.ok_or(GeoError)?;
         for area in &bai.areas_mission_readers {
             for shape in area
@@ -504,6 +542,39 @@ impl AiGeoData {
             }
         }
         Ok(false)
+    }
+
+    /// Sets the heights of the way points between the first and the last one: the terrain's raw
+    /// heightmap height when there is one, else interpolated along the route between the two
+    /// end points. (The navmesh z of a large triangle can be off by tens of metres, so neither
+    /// the triangle plane nor the node z is used.)
+    pub fn set_corner_heights(&self, points: &mut [Vec3]) {
+        let n = points.len();
+        if n < 3 {
+            return;
+        }
+        let (first, last) = (points[0], points[n - 1]);
+        let total: f32 = points
+            .windows(2)
+            .map(|w| ((w[1].x - w[0].x).powi(2) + (w[1].y - w[0].y).powi(2)).sqrt())
+            .sum();
+        let mut walked = 0.0f32;
+        for i in 1..n - 1 {
+            walked += ((points[i].x - points[i - 1].x).powi(2)
+                + (points[i].y - points[i - 1].y).powi(2))
+            .sqrt();
+            let t = if total > 0.0 { walked / total } else { 0.0 };
+            let terrain = self.terrain.as_ref().and_then(|t| {
+                t.raw_height(
+                    points[i].x.round_ties_even() as i32,
+                    points[i].y.round_ties_even() as i32,
+                )
+                .ok()
+            });
+            points[i].z = terrain
+                .filter(|z| *z != 0.0)
+                .unwrap_or(first.z + (last.z - first.z) * t);
+        }
     }
 
     /// `StickToFloor(point)`.

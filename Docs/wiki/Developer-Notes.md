@@ -161,6 +161,15 @@ active (`SCQuests` status 3) before a clean logout. The natural cave `load` scen
 template-4227 Mistfiends at their authored positions with 2381 HP and 17 nearby NPCs, with no
 force-spawned or manually placed NPCs.
 
+Scheduled event NPCs follow their event schedule through the whole ordinary spawn lifecycle.
+A fallback spawner generated for an unscheduled clone stays inactive when any candidate
+spawner of the same placement has schedule rows, so it cannot spawn the event NPC outside the
+event. An in-progress event keeps its NPCs; an ended or not-yet-started event removes them
+through the ordinary despawn and respawn cleanup instead of being torn down while active.
+Dated event rows do not become recurring: the shipped Vile Gourdhead Halloween window
+(October 16-30 2013; NPC 14312, schedules 53/54/55) is expired and is not retargeted into a
+yearly event.
+
 ## Housing behavior
 
 Housing uses the original 1.2 placement polygons and database category rules. Plot ownership is
@@ -215,6 +224,12 @@ Property, treasury, mail, certificates and wallets share a prepared save snapsho
 transaction. Logout writes the same financial state, and failed departures remain available for
 retry before character selection. Shutdown waits for ongoing saves before its final flush.
 
+`/scripts shutdown [minutes|now|cancel]` counts down with on-screen notices. At zero the server
+tells the players it is going down for maintenance, refuses new world entries, returns every
+connected client to the world (server) list instead of dropping the socket (players are saved and
+leave the world first), kicks whoever is still connected after about 10 seconds, then saves and
+exits. `cancel` only works before the countdown ends; `/scripts forcedshutdown` still exits at once.
+
 ## Architecture note: the Rust port
 
 The login server, game server and tools were ported from C# (.NET) to Rust,
@@ -230,7 +245,7 @@ the git history). All code lives in the Cargo workspace in `rust/`:
 | `aaemu-launcher` | Starts the 1.2 client with a login ticket (replaces the public AAEmu Launcher) |
 | `aaemu-clientdriver` | Lua driver for the real client (injected DLL + CLI), see `rust/docs/client/LUA-DRIVER.md` |
 | `aaemu-testclient` | Headless 1.2 client bot for live tests, parity checks and load tests |
-| `aaemu-tool-worldconverter`, `aaemu-tool-updatesfortransform` | Offline tools |
+| `aaemu-tool-worldconverter`, `aaemu-tool-updatesfortransform`, `aaemu-tool-aipaths` | Offline tools (`aaemu-aipaths` generates `Data/Path` routes from the 10.x client) |
 | `xtask` | `cargo xtask ci`, `dev` and `publish` |
 
 What this means for contributors:

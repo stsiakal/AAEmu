@@ -8,7 +8,7 @@
 //! the next-free cursor.
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use sqlx::mysql::MySqlPool;
 use sqlx::Row;
@@ -119,6 +119,20 @@ pub struct IdManagerSpec {
     pub obj_tables: &'static [(&'static str, &'static str)],
     /// `distinct` (only `FamilyIdManager`): `SELECT DISTINCT`, duplicates allowed.
     pub distinct: bool,
+    /// `exclude`: ids in the DB that never count as used (`_exclude`). `FamilyIdManager` lists
+    /// 0, the `characters.family` value of a character without a family.
+    pub exclude: &'static [u32],
+}
+
+/// Observer called with every id [`IdManager::release_id`] gives back (Rust-only: per-id state
+/// that lives outside the object, e.g. loot containers, must not outlive the id).
+#[derive(Clone)]
+pub struct ReleaseHook(pub Arc<dyn Fn(u32) + Send + Sync>);
+
+impl std::fmt::Debug for ReleaseHook {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ReleaseHook")
+    }
 }
 
 /// `IdManager`.
@@ -129,9 +143,12 @@ pub struct IdManager {
     free_id_size: usize,
     obj_tables: &'static [(&'static str, &'static str)],
     distinct: bool,
+    exclude: &'static [u32],
     state: Mutex<State>,
     /// `_initialized`.
     initialized: AtomicBool,
+    /// Observer of released ids, installed once by the subsystem that owns per-id state.
+    release_hook: OnceLock<ReleaseHook>,
 }
 
 impl IdManager {
@@ -143,12 +160,14 @@ impl IdManager {
             free_id_size,
             obj_tables: spec.obj_tables,
             distinct: spec.distinct,
+            exclude: spec.exclude,
             state: Mutex::new(State {
                 free_ids: BitSet::new(0),
                 free_id_count: 0,
                 next_free_id: 0,
             }),
             initialized: AtomicBool::new(false),
+            release_hook: OnceLock::new(),
         };
         // Usable before the DB-backed Initialize (tests, managers without tables); this does
         // not count as `_initialized`.
@@ -160,8 +179,13 @@ impl IdManager {
         self.name
     }
 
+    /// Installs the observer of released ids (first installation wins; later ones are ignored).
+    pub fn install_release_hook(&self, hook: impl Fn(u32) + Send + Sync + 'static) {
+        let _ = self.release_hook.set(ReleaseHook(Arc::new(hook)));
+    }
+
     /// `Initialize()` with the used ids already extracted (`ExtractUsedObjectIdTable`).
-    /// Exclusion lists are empty for every manager of this phase.
+    /// Ids in the manager's exclusion list are skipped (C# `_exclude`).
     pub fn initialize_with(&self, used: &[u32]) {
         self.reset(used);
         self.initialized.store(true, Ordering::Release);
@@ -184,6 +208,9 @@ impl IdManager {
         st.free_ids = BitSet::new(next_prime(100_000) as usize);
         st.free_id_count = self.free_id_size as i64;
         for &used_id in used {
+            if self.exclude.contains(&used_id) {
+                continue;
+            }
             if used_id < self.first_id {
                 tracing::warn!(
                     "{}: Object ID {used_id} in DB is less than {}",
@@ -271,19 +298,26 @@ impl IdManager {
     /// `ReleaseId`. The offset is `(int)(usedObjectId - _firstId)` as in the C#: ids below the
     /// first id, or more than `int.MaxValue` above it, are rejected.
     pub fn release_id(&self, used_id: u32) {
-        let mut st = self.state.lock().expect("id manager poisoned");
-        let object_id = used_id.wrapping_sub(self.first_id) as i32;
-        if object_id > -1 {
-            let object_id = object_id as usize;
-            if object_id < st.free_ids.count {
-                st.free_ids.clear(object_id);
+        {
+            let mut st = self.state.lock().expect("id manager poisoned");
+            let object_id = used_id.wrapping_sub(self.first_id) as i32;
+            if object_id > -1 {
+                let object_id = object_id as usize;
+                if object_id < st.free_ids.count {
+                    st.free_ids.clear(object_id);
+                }
+                if st.next_free_id > object_id {
+                    st.next_free_id = object_id;
+                }
+                st.free_id_count += 1;
+            } else {
+                tracing::error!("{}: release objectId {used_id} failed", self.name);
+                return;
             }
-            if st.next_free_id > object_id {
-                st.next_free_id = object_id;
-            }
-            st.free_id_count += 1;
-        } else {
-            tracing::error!("{}: release objectId {used_id} failed", self.name);
+        }
+        // Outside the state lock: the observer takes its own locks.
+        if let Some(hook) = self.release_hook.get() {
+            (hook.0)(used_id);
         }
     }
 
@@ -334,6 +368,7 @@ pub const OBJECT_ID: IdManagerSpec = IdManagerSpec {
     last_id: 0x00FF_FFFE,
     obj_tables: &[],
     distinct: false,
+    exclude: &[],
 };
 /// `CharacterIdManager`.
 pub const CHARACTER_ID: IdManagerSpec = IdManagerSpec {
@@ -342,6 +377,7 @@ pub const CHARACTER_ID: IdManagerSpec = IdManagerSpec {
     last_id: 0x00FF_FFFF,
     obj_tables: &[("characters", "id"), ("slaves", "id")],
     distinct: false,
+    exclude: &[],
 };
 /// `ItemIdManager`.
 pub const ITEM_ID: IdManagerSpec = IdManagerSpec {
@@ -350,6 +386,7 @@ pub const ITEM_ID: IdManagerSpec = IdManagerSpec {
     last_id: 0xFFFF_FFFF,
     obj_tables: &[("items", "id")],
     distinct: false,
+    exclude: &[],
 };
 /// `ContainerIdManager`.
 pub const CONTAINER_ID: IdManagerSpec = IdManagerSpec {
@@ -358,6 +395,7 @@ pub const CONTAINER_ID: IdManagerSpec = IdManagerSpec {
     last_id: 0xFFFF_FFFF,
     obj_tables: &[("item_containers", "container_id")],
     distinct: false,
+    exclude: &[],
 };
 /// `ChatIdManager`.
 pub const CHAT_ID: IdManagerSpec = IdManagerSpec {
@@ -366,6 +404,7 @@ pub const CHAT_ID: IdManagerSpec = IdManagerSpec {
     last_id: 0x0000_FFFE,
     obj_tables: &[],
     distinct: false,
+    exclude: &[],
 };
 /// `VisitedSubZoneIdManager`.
 pub const VISITED_SUB_ZONE_ID: IdManagerSpec = IdManagerSpec {
@@ -374,6 +413,7 @@ pub const VISITED_SUB_ZONE_ID: IdManagerSpec = IdManagerSpec {
     last_id: 0x00FF_FFFF,
     obj_tables: &[("portal_visited_district", "id")],
     distinct: false,
+    exclude: &[],
 };
 /// `PrivateBookIdManager`.
 pub const PRIVATE_BOOK_ID: IdManagerSpec = IdManagerSpec {
@@ -382,6 +422,7 @@ pub const PRIVATE_BOOK_ID: IdManagerSpec = IdManagerSpec {
     last_id: 0x00FF_FFFF,
     obj_tables: &[("portal_book_coords", "id")],
     distinct: false,
+    exclude: &[],
 };
 
 /// `AuctionIdManager`.
@@ -391,6 +432,7 @@ pub const AUCTION_ID: IdManagerSpec = IdManagerSpec {
     last_id: 0xFFFF_FFFF,
     obj_tables: &[("auction_house", "id")],
     distinct: false,
+    exclude: &[],
 };
 /// `CrimeIdManager`.
 pub const CRIME_ID: IdManagerSpec = IdManagerSpec {
@@ -399,6 +441,7 @@ pub const CRIME_ID: IdManagerSpec = IdManagerSpec {
     last_id: 0xFFFF_FFFF,
     obj_tables: &[("crime", "id")],
     distinct: false,
+    exclude: &[],
 };
 /// `DoodadIdManager`.
 pub const DOODAD_ID: IdManagerSpec = IdManagerSpec {
@@ -407,6 +450,7 @@ pub const DOODAD_ID: IdManagerSpec = IdManagerSpec {
     last_id: 0xFFFF_FFFF,
     obj_tables: &[("doodads", "id")],
     distinct: false,
+    exclude: &[],
 };
 /// `ExpeditionIdManager`.
 pub const EXPEDITION_ID: IdManagerSpec = IdManagerSpec {
@@ -415,6 +459,7 @@ pub const EXPEDITION_ID: IdManagerSpec = IdManagerSpec {
     last_id: 0xFFFF_FFFF,
     obj_tables: &[("expeditions", "id")],
     distinct: false,
+    exclude: &[],
 };
 /// `FamilyIdManager`.
 pub const FAMILY_ID: IdManagerSpec = IdManagerSpec {
@@ -423,6 +468,7 @@ pub const FAMILY_ID: IdManagerSpec = IdManagerSpec {
     last_id: 0x00FF_FFFF,
     obj_tables: &[("characters", "family")],
     distinct: true,
+    exclude: &[0],
 };
 /// `FriendIdManager`.
 pub const FRIEND_ID: IdManagerSpec = IdManagerSpec {
@@ -431,6 +477,7 @@ pub const FRIEND_ID: IdManagerSpec = IdManagerSpec {
     last_id: 0x00FF_FFFF,
     obj_tables: &[("friends", "id")],
     distinct: false,
+    exclude: &[],
 };
 /// `GimmickIdManager`.
 pub const GIMMICK_ID: IdManagerSpec = IdManagerSpec {
@@ -439,6 +486,7 @@ pub const GIMMICK_ID: IdManagerSpec = IdManagerSpec {
     last_id: 0x0000_FFFE,
     obj_tables: &[],
     distinct: false,
+    exclude: &[],
 };
 /// `HousingIdManager`.
 pub const HOUSING_ID: IdManagerSpec = IdManagerSpec {
@@ -447,6 +495,7 @@ pub const HOUSING_ID: IdManagerSpec = IdManagerSpec {
     last_id: 0x00FF_FFFF,
     obj_tables: &[("housings", "id")],
     distinct: false,
+    exclude: &[],
 };
 /// `HousingTldManager`.
 pub const HOUSING_TL_ID: IdManagerSpec = IdManagerSpec {
@@ -455,6 +504,7 @@ pub const HOUSING_TL_ID: IdManagerSpec = IdManagerSpec {
     last_id: 0x0000_FFFE,
     obj_tables: &[],
     distinct: false,
+    exclude: &[],
 };
 /// `MailIdManager`.
 pub const MAIL_ID: IdManagerSpec = IdManagerSpec {
@@ -463,6 +513,7 @@ pub const MAIL_ID: IdManagerSpec = IdManagerSpec {
     last_id: 0xFFFF_FFFF,
     obj_tables: &[("mails", "id")],
     distinct: false,
+    exclude: &[],
 };
 /// `MateIdManager`.
 pub const MATE_ID: IdManagerSpec = IdManagerSpec {
@@ -471,6 +522,7 @@ pub const MATE_ID: IdManagerSpec = IdManagerSpec {
     last_id: 0x00FF_FFFF,
     obj_tables: &[("mates", "id")],
     distinct: false,
+    exclude: &[],
 };
 /// `MusicIdManager`.
 pub const MUSIC_ID: IdManagerSpec = IdManagerSpec {
@@ -479,6 +531,7 @@ pub const MUSIC_ID: IdManagerSpec = IdManagerSpec {
     last_id: 0x00FF_FFFF,
     obj_tables: &[("music", "id")],
     distinct: false,
+    exclude: &[],
 };
 /// `QuestIdManager`.
 pub const QUEST_ID: IdManagerSpec = IdManagerSpec {
@@ -487,6 +540,7 @@ pub const QUEST_ID: IdManagerSpec = IdManagerSpec {
     last_id: 0x00FF_FFFF,
     obj_tables: &[("quests", "id")],
     distinct: false,
+    exclude: &[],
 };
 /// `ShipyardIdManager`.
 pub const SHIPYARD_ID: IdManagerSpec = IdManagerSpec {
@@ -495,6 +549,7 @@ pub const SHIPYARD_ID: IdManagerSpec = IdManagerSpec {
     last_id: 0xFFFF_FFFF,
     obj_tables: &[],
     distinct: false,
+    exclude: &[],
 };
 /// `TaskIdManager`.
 pub const TASK_ID: IdManagerSpec = IdManagerSpec {
@@ -503,6 +558,7 @@ pub const TASK_ID: IdManagerSpec = IdManagerSpec {
     last_id: 0x7FFF_FFFF,
     obj_tables: &[],
     distinct: false,
+    exclude: &[],
 };
 /// `TeamIdManager`.
 pub const TEAM_ID: IdManagerSpec = IdManagerSpec {
@@ -511,6 +567,7 @@ pub const TEAM_ID: IdManagerSpec = IdManagerSpec {
     last_id: 0x00FF_FFFF,
     obj_tables: &[],
     distinct: false,
+    exclude: &[],
 };
 /// `TlIdManager`.
 pub const TL_ID: IdManagerSpec = IdManagerSpec {
@@ -519,6 +576,7 @@ pub const TL_ID: IdManagerSpec = IdManagerSpec {
     last_id: 0x0000_FFFE,
     obj_tables: &[],
     distinct: false,
+    exclude: &[],
 };
 /// `TradeIdManager`.
 pub const TRADE_ID: IdManagerSpec = IdManagerSpec {
@@ -527,6 +585,7 @@ pub const TRADE_ID: IdManagerSpec = IdManagerSpec {
     last_id: 0x00FF_FFFF,
     obj_tables: &[],
     distinct: false,
+    exclude: &[],
 };
 /// `TrialIdManager`.
 pub const TRIAL_ID: IdManagerSpec = IdManagerSpec {
@@ -535,6 +594,7 @@ pub const TRIAL_ID: IdManagerSpec = IdManagerSpec {
     last_id: 0xFFFF_FFFF,
     obj_tables: &[],
     distinct: false,
+    exclude: &[],
 };
 /// `WorldIdManager`.
 pub const WORLD_ID: IdManagerSpec = IdManagerSpec {
@@ -543,6 +603,7 @@ pub const WORLD_ID: IdManagerSpec = IdManagerSpec {
     last_id: 0xFFFF_FFFE,
     obj_tables: &[],
     distinct: false,
+    exclude: &[],
 };
 
 /// Every `Core/Managers/Id` singleton (`UccIdManager` lives in `stream::ucc`, the static
@@ -681,6 +742,36 @@ mod tests {
         let m = IdManager::new(ITEM_ID);
         m.initialize_with(&[0x0100_0000, 0x0100_0000 + 200_000]);
         assert_eq!(m.get_next_id().unwrap(), 0x0100_0001);
+    }
+
+    /// `characters.family` is 0 for a character without a family: `FamilyIdManager` excludes it
+    /// instead of reporting "Object ID 0 in DB is less than 1".
+    #[test]
+    fn family_id_manager_excludes_zero_and_exclusion_list_is_honoured() {
+        let family = IdManager::new(FAMILY_ID);
+        family.initialize_with(&[0, 3]);
+        assert_eq!(
+            family.state.lock().unwrap().free_id_count,
+            0x00FF_FFFF - 1 - 1
+        );
+        assert_eq!(family.get_next_id().unwrap(), 1);
+        assert_eq!(family.get_next_id().unwrap(), 2);
+        assert_eq!(family.get_next_id().unwrap(), 4);
+
+        // An excluded id never counts as used (id 2 stays allocatable); a manager without an
+        // exclusion list marks it used.
+        let excluding = IdManager::new(IdManagerSpec {
+            exclude: &[2],
+            ..CHARACTER_ID
+        });
+        excluding.initialize_with(&[2, 3]);
+        assert_eq!(excluding.get_next_id().unwrap(), 1);
+        assert_eq!(excluding.get_next_id().unwrap(), 2);
+        assert_eq!(excluding.get_next_id().unwrap(), 4);
+        let plain = IdManager::new(CHARACTER_ID);
+        plain.initialize_with(&[2, 3]);
+        assert_eq!(plain.get_next_id().unwrap(), 1);
+        assert_eq!(plain.get_next_id().unwrap(), 4);
     }
 }
 

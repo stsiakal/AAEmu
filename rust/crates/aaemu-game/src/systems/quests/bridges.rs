@@ -88,6 +88,10 @@ impl QuestSkillHooks for QuestsForSkills {
         item_use(server, player, item_id);
     }
 
+    fn item_use_template(&self, server: &GameServer, player: &PlayerRef, template_id: u32) {
+        super::events::on_item_use(server, player, template_id);
+    }
+
     fn on_aggro(&self, server: &GameServer, player: &PlayerRef, npc: &NpcRef) {
         super::events::on_aggro(server, player, npc);
     }
@@ -415,15 +419,19 @@ impl QuestHooks for GameQuestHooks {
 
     fn change_game_points(
         &self,
-        _server: &GameServer,
+        server: &GameServer,
         player: Option<&PlayerRef>,
         c: &mut Character,
         kind: u8,
         amount: i32,
     ) {
-        let packet = crate::systems::skills::progress::change_game_points_locked(c, kind, amount);
+        use crate::systems::skills::progress;
+        let packet = progress::change_game_points_locked(c, kind, amount);
         if let (Some(p), Some(packet)) = (player, packet) {
+            let gained = packet.amount;
             p.send(packet);
+            // Deferred by the achievement hooks until the quest operation's locks are released.
+            progress::report_life_points_gained(server, p, kind, gained);
         }
     }
 
@@ -451,6 +459,7 @@ impl QuestHooks for GameQuestHooks {
             });
         }
         p.send(packet);
+        progress::report_labor_spent(server, p, amount);
     }
 
     fn add_crime(
@@ -695,6 +704,7 @@ pub(crate) fn run_npc_component(
     };
     let kind = component.npc_ai_id;
     let path = component.ai_path_name.clone();
+    let npc_template_id = component.npc_id;
     let commands = server
         .game_data
         .systems
@@ -712,7 +722,16 @@ pub(crate) fn run_npc_component(
             if ctx.load_ai_path_points(&path, false) {
                 ctx.go_to_follow_path();
             } else {
-                tracing::error!("Quest NPC path unavailable: {path}");
+                // Only part of the retail quest routes is shipped (generated from the 10.x client
+                // into `Data/Path`; the C# never used `AiPathName`), so for the others the NPC
+                // just does not start the path; report each name once.
+                if ctx.server.systems.ai.first_missing_path(&path) {
+                    tracing::warn!("Quest NPC path unavailable: {path} for npc template {npc_template_id}, no route file Data/Path/{path}.path (or {path}@<zone>.path variant); the NPC does not start the path (reported once per file name)");
+                } else {
+                    tracing::debug!(
+                        "Quest NPC path unavailable: {path} for npc template {npc_template_id}"
+                    );
+                }
             }
         }
         npc_ai::GO_AWAY => ctx.go_to_despawn(),

@@ -544,6 +544,78 @@ fn cs_quest_packets_decode() {
 // ----- state machine -----
 
 #[tokio::test]
+async fn completing_a_quest_credits_the_quest_achievements() {
+    use crate::systems::social::achievement::char_record_kind;
+    use crate::systems::social::achievement_flow_tests::{
+        achievement_ops, one_achievement, player_of,
+    };
+    let mut d = QuestData::default();
+    main_quest(&mut d);
+    d.finish();
+    let mut data = GameData::empty();
+    data.systems.quests = d;
+    // Quest 100 completed once completes achievement 1 (COMPLETE_QUEST_TYPE, value1 = quest id).
+    data.systems.social.achievements =
+        one_achievement(1, 1, 0, 10, char_record_kind::COMPLETE_QUEST_TYPE, 100, 0);
+    let server = Arc::new(test_server_with(data));
+    server.set_self();
+    let rec = Arc::new(Rec::default());
+    server.systems.quests.hooks.install(rec.clone());
+    crate::systems::social::install_hooks(&server);
+    let (mut client, player) = player_of(&server);
+    let env = || QuestEnv {
+        target: Some(UnitSnapshot {
+            obj_id: 0x200,
+            npc_template_id: Some(500),
+            is_unit: true,
+            base_unit_type: 1,
+            ..UnitSnapshot::default()
+        }),
+        ..QuestEnv::default()
+    };
+    player.data().unit.current_target = 0x200;
+    let quests = &server.systems.quests;
+
+    // With a player the evaluations go through the manager's queue.
+    events::with_quests(&server, &player, Some(env()), |ctx| {
+        assert!(ctx.add_quest(100, false, acceptor::NPC, 500));
+    })
+    .expect("not nested");
+    quests.run_queued_evaluations(&server);
+    events::with_quests(&server, &player, Some(env()), |ctx| {
+        for npc_id in [600, 601, 600] {
+            ctx.dispatch(&QuestEvent::MonsterHunt { npc_id, count: 1 })
+                .unwrap();
+        }
+    })
+    .expect("not nested");
+    quests.run_queued_evaluations(&server);
+    // Nothing is credited before the quest is turned in.
+    assert!(achievement_ops(client.drain_ops()).is_empty());
+
+    events::with_quests(&server, &player, Some(env()), |ctx| {
+        ctx.dispatch(&QuestEvent::ReportNpc {
+            quest_id: 100,
+            npc_id: 500,
+            selected: 1,
+        })
+        .unwrap();
+    })
+    .expect("not nested");
+    quests.run_queued_evaluations(&server);
+    assert!(player.data().quests.completed.iter().any(|c| c.id == 1));
+
+    assert_eq!(
+        achievement_ops(client.drain_ops()),
+        [
+            sc::SCAchievementChangedPacket,
+            sc::SCAchievementCompletedPacket
+        ]
+    );
+    assert!(player.data().achievement_state.is_complete(1));
+}
+
+#[tokio::test]
 async fn full_quest_lifecycle_on_data() {
     let (server, rec) = server_with(main_quest);
     let mut c = character();
@@ -2387,6 +2459,91 @@ async fn select_hook_loads_rows_and_sends() {
     super::on_leave_world(&server, 1);
 }
 
+/// Waits for the 1 ms `QuestManagerRunQueueTask` (and anything it spawned) to run.
+async fn let_queue_run() {
+    tokio::time::sleep(std::time::Duration::from_millis(60)).await;
+}
+
+#[tokio::test]
+async fn select_evaluations_wait_for_notify_in_game_completed() {
+    let (server, _rec) = server_with(main_quest);
+    // The quest system must be able to schedule `QuestManagerRunQueueTask` (set by `start`).
+    let server = Arc::new(server);
+    let _ = server.systems.quests.server.set(Arc::downgrade(&server));
+    let mut client = TestClient::new(&server, 1, 1001);
+    let mut c = character();
+    let mut r = row();
+    r.time_ms = 0;
+    c.quests.active = vec![r];
+    let player = spawn_player(&server, &client, c, 0x100);
+    client.conn.active_char = Some(player.clone());
+    client.drain();
+
+    // CSSelectCharacter -> Quests.Load requests the evaluation of the progress quest.
+    super::on_character_selected(&server, &player);
+    assert_eq!(server.systems.quests.deferred_count(), 1);
+    let_queue_run().await;
+    // Nothing reaches the client before it is in the world.
+    assert_eq!(server.systems.quests.deferred_count(), 1);
+    assert!(
+        !client
+            .drain_ops()
+            .contains(&sc::SCQuestContextUpdatedPacket),
+        "SCQuestContextUpdated sent before CSNotifyInGameCompleted"
+    );
+    // A second request for the same quest does not duplicate the parked entry.
+    server
+        .systems
+        .quests
+        .enqueue_evaluation(&player, server.systems.quests.queued_handles(1)[0]);
+    assert_eq!(server.systems.quests.deferred_count(), 1);
+
+    // CSNotifyInGameCompleted releases it.
+    crate::world::session::notify_in_game_completed(&server, &mut client.conn);
+    assert_eq!(server.systems.quests.deferred_count(), 0);
+    let_queue_run().await;
+    assert_eq!(server.systems.quests.queued_count(), 0);
+    assert!(
+        client
+            .drain_ops()
+            .contains(&sc::SCQuestContextUpdatedPacket),
+        "the deferred evaluation must run after CSNotifyInGameCompleted"
+    );
+
+    // A later NotifyInGameCompleted (world switch) neither re-parks nor loses evaluations.
+    let h = server.systems.quests.queued_handles(1);
+    assert!(h.is_empty());
+    let h = events::with_quests(&server, &player, None, |ctx| ctx.new_quest(100, 1)).unwrap();
+    server.systems.quests.enqueue_evaluation(&player, h);
+    assert_eq!(server.systems.quests.deferred_count(), 0);
+    crate::world::session::notify_in_game_completed(&server, &mut client.conn);
+    let_queue_run().await;
+    assert_eq!(server.systems.quests.queued_count(), 0);
+    super::on_leave_world(&server, 1);
+}
+
+#[tokio::test]
+async fn leaving_before_in_game_drops_deferred_evaluations() {
+    let (server, _rec) = server_with(main_quest);
+    let mut client = TestClient::new(&server, 1, 1001);
+    let mut c = character();
+    let mut r = row();
+    r.time_ms = 0;
+    c.quests.active = vec![r];
+    let player = spawn_player(&server, &client, c, 0x100);
+    client.drain();
+    super::on_character_selected(&server, &player);
+    assert_eq!(server.systems.quests.deferred_count(), 1);
+    super::on_leave_world(&server, 1);
+    assert_eq!(server.systems.quests.queued_count(), 0);
+    // A completion that arrives afterwards has nothing to run.
+    super::on_in_game_completed(&server, 1);
+    let_queue_run().await;
+    assert!(!client
+        .drain_ops()
+        .contains(&sc::SCQuestContextUpdatedPacket));
+}
+
 // ----- real compact.sqlite3 -----
 
 fn real_db() -> Option<rusqlite::Connection> {
@@ -3094,4 +3251,643 @@ async fn escort_failure_only_follows_the_guarded_npc_death() {
             .subscribers(super::state::EventKind::GuardNpcDied)
             .is_empty());
     });
+}
+
+/// Quest engine fixes of the October 2026 audit (early completion, cleanup, selective rewards,
+/// saved-state healing, data robustness, completed block ids).
+mod engine_fixes {
+    use super::*;
+    use crate::systems::quests::engine::{has_quest_completed, set_completed_quest_flag};
+
+    fn craft(craft_id: u32) -> ActKind {
+        ActKind::ObjCraft {
+            craft_id,
+            use_alias: false,
+            alias_id: 0,
+            highlight_doodad_id: 0,
+            highlight_doodad_phase: -1,
+        }
+    }
+
+    fn supply_item(item_id: u32, cleanup: bool) -> ActKind {
+        ActKind::SupplyItem {
+            item_id,
+            grade_id: 0,
+            show_action_bar: false,
+            cleanup,
+            drop_when_destroy: false,
+            destroy_when_drop: false,
+        }
+    }
+
+    fn report(npc_id: u32) -> ActKind {
+        ActKind::ConReportNpc {
+            npc_id,
+            use_alias: false,
+            alias_id: 0,
+        }
+    }
+
+    /// `id`: Start (auto) -> Supply (item 7000, cleaned up) -> Progress (craft x4) and the
+    /// optional Ready (report NPC 1 + copper 50) / Reward (exp 10) steps.
+    fn early_quest(d: &mut QuestData, id: u32, ready: bool, reward: bool, let_it_done: bool) {
+        d.add_template(QuestTemplate {
+            let_it_done,
+            ..quest(id)
+        });
+        let c = id * 10;
+        d.add_component(component(c + 1, id, kind::START));
+        d.add_act(c + 1, c + 1, c + 1, 0, ActKind::ConAutoComplete);
+        d.add_component(component(c + 2, id, kind::SUPPLY));
+        d.add_act(c + 2, c + 2, c + 2, 1, supply_item(7000, true));
+        d.add_component(component(c + 3, id, kind::PROGRESS));
+        d.add_act(c + 3, c + 3, c + 3, 4, craft(id));
+        if ready {
+            d.add_component(component(c + 4, id, kind::READY));
+            d.add_act(c + 4, c + 4, c + 4, 0, report(1));
+            d.add_act(c + 4, c + 5, c + 5, 0, ActKind::SupplyCopper { amount: 50 });
+        }
+        if reward {
+            d.add_component(component(c + 6, id, kind::REWARD));
+            d.add_act(c + 6, c + 6, c + 6, 0, ActKind::SupplyExp { exp: 10 });
+        }
+    }
+
+    fn progress_to_early(ctx: &mut Ctx<'_>, id: u32) -> QuestHandle {
+        let h = start(ctx, id);
+        for _ in 0..2 {
+            ctx.dispatch(&QuestEvent::Craft { craft_id: id }).unwrap();
+        }
+        drain(ctx);
+        assert_eq!(ctx.objective_status(h), ObjectiveStatus::CanEarlyComplete);
+        h
+    }
+
+    #[tokio::test]
+    async fn let_it_done_without_reward_step_completes() {
+        let (server, rec) = server_with(|d| {
+            // 301: Ready step (copper) but no Reward step; 302: neither; 303: Reward step
+            early_quest(d, 301, true, false, true);
+            early_quest(d, 302, false, false, true);
+            early_quest(d, 303, false, true, true);
+        });
+        let mut c = character();
+        with_ctx(&server, &mut c, QuestEnv::default(), |ctx| {
+            for id in [301u32, 302, 303] {
+                let h = progress_to_early(ctx, id);
+                assert!(ctx.st.quest(h).is_some());
+                rec.take();
+                ctx.try_complete_quest_as_let_it_done(id, 0);
+                drain(ctx);
+                assert!(!ctx.has_quest(id), "quest {id} completed");
+                assert!(ctx.has_quest_completed(id), "quest {id} flagged completed");
+                let calls = rec.take();
+                // The completion cleanup ran (it did not for a quest that never got the
+                // Completed status) and took the supply item back.
+                assert!(
+                    calls
+                        .iter()
+                        .any(|l| l.starts_with("consume") && l.ends_with("7000 1")),
+                    "quest {id}: cleanup missing in {calls:?}"
+                );
+                match id {
+                    301 => assert!(calls.contains(&"money 50".to_string()), "{calls:?}"),
+                    303 => assert!(calls.contains(&"exp 10 true".to_string()), "{calls:?}"),
+                    _ => {}
+                }
+            }
+        });
+    }
+
+    #[tokio::test]
+    async fn refused_early_completion_is_logged_once_per_reason() {
+        let (server, _rec) = server_with(|d| early_quest(d, 304, false, true, true));
+        let mut c = character();
+        with_ctx(&server, &mut c, QuestEnv::default(), |ctx| {
+            let h = start(ctx, 304);
+            ctx.try_complete_quest_as_let_it_done(304, 0);
+            ctx.try_complete_quest_as_let_it_done(304, 0);
+            ctx.try_complete_quest_as_let_it_done(999, 0);
+            assert_eq!(step_of(ctx, h), kind::PROGRESS);
+            // Two distinct refusals were recorded once each.
+            assert_eq!(ctx.st.refusal_log.len(), 2);
+        });
+    }
+
+    /// Quest with two selective reward items in the Reward step; `report_npc` adds a Ready step.
+    fn selective_quest(d: &mut QuestData, id: u32, report_npc: Option<u32>) {
+        d.add_template(quest(id));
+        let c = id * 10;
+        d.add_component(component(c + 1, id, kind::START));
+        d.add_act(c + 1, c + 1, c + 1, 0, ActKind::ConAutoComplete);
+        d.add_component(component(c + 2, id, kind::PROGRESS));
+        d.add_act(c + 2, c + 2, c + 2, 1, craft(id));
+        if let Some(npc) = report_npc {
+            d.add_component(component(c + 3, id, kind::READY));
+            d.add_act(c + 3, c + 3, c + 3, 0, report(npc));
+        }
+        d.add_component(component(c + 4, id, kind::REWARD));
+        for (i, item) in [9001u32, 9002].into_iter().enumerate() {
+            let i = i as u32;
+            d.add_act(
+                c + 4,
+                c + 5 + i,
+                c + 5 + i,
+                1,
+                ActKind::SupplySelectiveItem {
+                    item_id: item,
+                    grade_id: 0,
+                },
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn selective_reward_defaults_to_first_item_and_honours_the_choice() {
+        let (server, rec) = server_with(|d| {
+            selective_quest(d, 310, None);
+            selective_quest(d, 311, Some(7));
+            selective_quest(d, 312, Some(7));
+        });
+        let mut c = character();
+        with_ctx(&server, &mut c, QuestEnv::default(), |ctx| {
+            // No report act: the selected index stays 0, the first item is delivered.
+            start(ctx, 310);
+            rec.take();
+            ctx.dispatch(&QuestEvent::Craft { craft_id: 310 }).unwrap();
+            drain(ctx);
+            assert!(!ctx.has_quest(310));
+            let calls = rec.take();
+            assert_eq!(calls.iter().filter(|l| l.starts_with("item")).count(), 1);
+            assert!(calls.iter().any(|l| l.contains(" 9001 ")), "{calls:?}");
+
+            // The client sends the 1-based index of the chosen item.
+            for (id, selected, item) in [(311u32, 2, "9002"), (312, 1, "9001")] {
+                start(ctx, id);
+                ctx.dispatch(&QuestEvent::Craft { craft_id: id }).unwrap();
+                drain(ctx);
+                rec.take();
+                ctx.dispatch(&QuestEvent::ReportNpc {
+                    quest_id: id,
+                    npc_id: 7,
+                    selected,
+                })
+                .unwrap();
+                drain(ctx);
+                assert!(!ctx.has_quest(id));
+                let calls = rec.take();
+                assert_eq!(calls.iter().filter(|l| l.starts_with("item")).count(), 1);
+                assert!(
+                    calls.iter().any(|l| l.contains(&format!(" {item} "))),
+                    "quest {id}: {calls:?}"
+                );
+            }
+        });
+    }
+
+    #[tokio::test]
+    async fn out_of_range_selective_index_gives_the_first_item() {
+        let (server, rec) = server_with(|d| selective_quest(d, 313, Some(7)));
+        let mut c = character();
+        with_ctx(&server, &mut c, QuestEnv::default(), |ctx| {
+            start(ctx, 313);
+            ctx.dispatch(&QuestEvent::Craft { craft_id: 313 }).unwrap();
+            drain(ctx);
+            rec.take();
+            ctx.dispatch(&QuestEvent::ReportNpc {
+                quest_id: 313,
+                npc_id: 7,
+                selected: 9,
+            })
+            .unwrap();
+            drain(ctx);
+            let calls = rec.take();
+            assert!(calls.iter().any(|l| l.contains(" 9001 ")), "{calls:?}");
+        });
+    }
+
+    fn saved(template_id: u32, step: u8, status: u8, objectives: [i32; 5]) -> ActiveQuest {
+        ActiveQuest {
+            id: 0x21,
+            template_id,
+            status,
+            objectives,
+            step,
+            acceptor_type: acceptor::NPC,
+            component_id: 0,
+            acceptor_id: 500,
+            time_ms: 0,
+        }
+    }
+
+    /// Live character Shael: quest 87 (LetItDone) saved with status Ready on its Progress step
+    /// and 5/5 objectives. That combination is how a LetItDone quest shows "ready to turn in";
+    /// it loads unchanged and can be reported.
+    #[tokio::test]
+    async fn let_it_done_ready_status_on_progress_step_loads_and_reports() {
+        let (server, rec) = server_with(|d| {
+            d.add_template(QuestTemplate {
+                let_it_done: true,
+                ..quest(87)
+            });
+            d.add_component(component(871, 87, kind::START));
+            d.add_act(871, 871, 871, 0, ActKind::ConAutoComplete);
+            d.add_component(component(872, 87, kind::PROGRESS));
+            d.add_act(872, 872, 872, 5, craft(87));
+            d.add_component(component(873, 87, kind::READY));
+            d.add_act(873, 873, 873, 0, report(210));
+            d.add_component(component(874, 87, kind::REWARD));
+            d.add_act(874, 874, 874, 1, supply_item(4093, false));
+        });
+        let mut c = character();
+        c.quests.active = vec![saved(87, kind::PROGRESS, status::READY, [5, 0, 0, 0, 0])];
+        with_ctx(&server, &mut c, QuestEnv::default(), |ctx| {
+            ctx.load_from_rows();
+            drain(ctx);
+            let h = active(ctx, 87);
+            assert_eq!(step_of(ctx, h), kind::PROGRESS);
+            assert_eq!(ctx.st.quest(h).unwrap().status, status::READY);
+            rec.take();
+            ctx.dispatch(&QuestEvent::ReportNpc {
+                quest_id: 87,
+                npc_id: 210,
+                selected: 0,
+            })
+            .unwrap();
+            drain(ctx);
+            assert!(!ctx.has_quest(87));
+            assert!(ctx.has_quest_completed(87));
+            assert!(rec.take().iter().any(|l| l.contains(" 4093 ")));
+        });
+    }
+
+    /// A non LetItDone quest saved with the same stale combination heals itself on load.
+    #[tokio::test]
+    async fn stale_ready_status_on_progress_step_heals_on_load() {
+        let (server, _rec) = server_with(main_quest);
+        for objectives in [[0, 0, 0, 0, 0], [2, 0, 0, 0, 0]] {
+            let mut c = character();
+            c.quests.active = vec![saved(100, kind::PROGRESS, status::READY, objectives)];
+            with_ctx(&server, &mut c, QuestEnv::default(), |ctx| {
+                ctx.load_from_rows();
+                let h = active(ctx, 100);
+                assert_eq!(ctx.st.quest(h).unwrap().status, status::PROGRESS);
+                drain(ctx);
+                if objectives[0] == 2 {
+                    assert_eq!(step_of(ctx, h), kind::READY);
+                    assert_eq!(ctx.st.quest(h).unwrap().status, status::READY);
+                } else {
+                    assert_eq!(step_of(ctx, h), kind::PROGRESS);
+                    assert_eq!(ctx.st.quest(h).unwrap().status, status::PROGRESS);
+                }
+            });
+        }
+    }
+
+    #[tokio::test]
+    async fn score_quest_without_score_acts_completes() {
+        let (server, _rec) = server_with(|d| {
+            d.add_template(QuestTemplate {
+                score: 100,
+                ..quest(5641)
+            });
+            d.add_component(component(56411, 5641, kind::START));
+            d.add_act(56411, 56411, 56411, 0, ActKind::ConAutoComplete);
+            d.add_component(component(56412, 5641, kind::PROGRESS));
+        });
+        let mut c = character();
+        with_ctx(&server, &mut c, QuestEnv::default(), |ctx| {
+            assert!(ctx.add_quest(5641, false, 0, 0));
+            drain(ctx);
+            assert!(!ctx.has_quest(5641));
+            assert!(ctx.has_quest_completed(5641));
+        });
+    }
+
+    #[test]
+    fn self_referencing_completion_requirement_is_dropped() {
+        use crate::systems::quests::unit_reqs::{req_kind, UnitReq};
+        let mut d = QuestData::default();
+        d.add_template(quest(6596));
+        d.add_component(component(28139, 6596, kind::START));
+        let req = |id: u32, kind: u32, value1: u32| UnitReq {
+            id,
+            owner_id: 28139,
+            owner_type: "QuestComponent".into(),
+            kind,
+            value1,
+            value2: 0,
+        };
+        let reqs = [
+            req(1, req_kind::LEVEL, 50),
+            req(2, req_kind::COMPLETE_QUEST_CONTEXT, 6596),
+            req(3, req_kind::COMPLETE_QUEST_CONTEXT, 6000),
+        ];
+        for r in reqs {
+            d.unit_reqs.by_id.insert(r.id, r.clone());
+            d.unit_reqs
+                .by_owner
+                .entry("QuestComponent".into())
+                .or_default()
+                .entry(28139)
+                .or_default()
+                .push(r);
+        }
+        d.drop_self_referencing_requirements();
+        let left: Vec<u32> = d
+            .unit_reqs
+            .requirements("QuestComponent", 28139)
+            .iter()
+            .map(|r| r.id)
+            .collect();
+        assert_eq!(left, vec![1, 3]);
+    }
+
+    #[test]
+    fn completed_flags_of_event_quests_keep_their_full_block() {
+        let mut blocks = Vec::new();
+        // 8000001 / 64 = 125000 does not fit the 16 bit block id (wrapped to 59464 before).
+        let block = set_completed_quest_flag(&mut blocks, 8_000_001, true);
+        assert_eq!(block.id, 125_000);
+        assert!(has_quest_completed(&blocks, 8_000_001));
+        assert!(!has_quest_completed(&blocks, 3_805_697));
+        assert!(!has_quest_completed(&blocks, 8_000_002));
+        // The client wire cannot show the block: it is left out of SCCompletedQuests.
+        set_completed_quest_flag(&mut blocks, 100, true);
+        let p = crate::packets::world::SCCompletedQuestsPacket { quests: blocks };
+        let mut s = PacketStream::new();
+        aaemu_commons::Marshal::write(&p, &mut s);
+        let bytes = s.into_bytes();
+        assert_eq!(i32::from_le_bytes(bytes[..4].try_into().unwrap()), 1);
+        assert_eq!(bytes.len(), 4 + 2 + 8);
+        assert_eq!(u16::from_le_bytes(bytes[4..6].try_into().unwrap()), 1);
+    }
+}
+
+fn zone_kill_act(
+    count_player_kill: i32,
+    count_npc: i32,
+    team_share: bool,
+    levels: (i32, i32, i32, i32),
+) -> ActKind {
+    ActKind::ObjZoneKill {
+        count_player_kill,
+        count_npc,
+        zone_id: 0,
+        team_share,
+        use_alias: false,
+        alias_id: 0,
+        lvl_min: levels.0,
+        lvl_max: levels.1,
+        is_party: team_share,
+        lvl_min_npc: levels.2,
+        lvl_max_npc: levels.3,
+        pc_faction_id: 0,
+        pc_faction_exclusive: false,
+        npc_faction_id: 0,
+        npc_faction_exclusive: false,
+    }
+}
+
+#[test]
+fn zone_kill_level_bounds_of_zero_are_unset() {
+    assert!(super::acts::level_in_range(60, 0, 0));
+    assert!(super::acts::level_in_range(1, 0, 0));
+    assert!(super::acts::level_in_range(60, 10, 0));
+    assert!(!super::acts::level_in_range(9, 10, 0));
+    assert!(super::acts::level_in_range(5, 0, 5));
+    assert!(!super::acts::level_in_range(6, 0, 5));
+    assert!(super::acts::level_in_range(7, 5, 10));
+    assert!(!super::acts::level_in_range(11, 5, 10));
+}
+
+#[tokio::test]
+async fn zone_kill_with_unset_level_range_accepts_any_victim() {
+    let (server, _rec) = server_with(|d| {
+        // The 1.2 data shape: lv_min/lv_max set (the questor), lv_min_npc/lv_max_npc = 0/0.
+        single_act_quest(d, 14, 1, zone_kill_act(0, 1, false, (1, 50, 0, 0)));
+        // Only a lower NPC bound.
+        single_act_quest(d, 15, 1, zone_kill_act(0, 1, false, (1, 50, 10, 0)));
+        // Player kills with an unset window.
+        single_act_quest(d, 16, 1, zone_kill_act(1, 0, false, (0, 0, 0, 0)));
+    });
+    let mut c = character();
+    with_ctx(&server, &mut c, QuestEnv::default(), |ctx| {
+        let me = super::engine::KillUnitInfo {
+            obj_id: 1,
+            character_id: Some(1),
+            ..Default::default()
+        };
+        let npc = |level| super::engine::KillUnitInfo {
+            obj_id: 50,
+            npc_template_id: Some(600),
+            level,
+            ..Default::default()
+        };
+        let pc = |level| super::engine::KillUnitInfo {
+            obj_id: 51,
+            character_id: Some(9),
+            level,
+            ..Default::default()
+        };
+        let kill = |ctx: &mut Ctx<'_>, victim| {
+            ctx.dispatch(&QuestEvent::ZoneKill {
+                zone_group_id: 1,
+                killer: me.clone(),
+                victim,
+            })
+            .unwrap();
+        };
+        let (a, b, p) = (start(ctx, 14), start(ctx, 15), start(ctx, 16));
+        // A level-1 victim is below the lower bound of 15 but passes the 0/0 quest.
+        kill(ctx, npc(9));
+        assert_eq!(ctx.st.quest(a).unwrap().objectives[0], 1, "0/0 npc range");
+        assert_eq!(ctx.st.quest(b).unwrap().objectives[0], 0, "below min 10");
+        assert_eq!(ctx.st.quest(p).unwrap().objectives[0], 0, "not a player");
+        kill(ctx, npc(60));
+        assert_eq!(ctx.st.quest(b).unwrap().objectives[0], 1, "no upper bound");
+        kill(ctx, pc(70));
+        assert_eq!(ctx.st.quest(p).unwrap().objectives[0], 1, "0/0 pc range");
+    });
+}
+
+#[tokio::test]
+async fn zone_kill_team_share_is_not_reshared_by_the_receiver() {
+    let (server, _rec) = server_with(|d| {
+        single_act_quest(d, 17, 5, zone_kill_act(0, 5, true, (1, 50, 0, 0)));
+    });
+    let mut c = character();
+    with_ctx(&server, &mut c, QuestEnv::default(), |ctx| {
+        let h = start(ctx, 17);
+        let victim = super::engine::KillUnitInfo {
+            obj_id: 50,
+            npc_template_id: Some(600),
+            level: 20,
+            ..Default::default()
+        };
+        let own = |id| super::engine::KillUnitInfo {
+            obj_id: id,
+            character_id: Some(id),
+            ..Default::default()
+        };
+        // Own kill: shared with the team.
+        ctx.dispatch(&QuestEvent::ZoneKill {
+            zone_group_id: 1,
+            killer: own(1),
+            victim: victim.clone(),
+        })
+        .unwrap();
+        assert!(matches!(
+            ctx.deferred.last(),
+            Some(super::engine::Deferred::TeamEvent { .. })
+        ));
+        ctx.deferred.clear();
+        // A team mate's kill arrives: it counts, but is not shared again.
+        ctx.dispatch(&QuestEvent::ZoneKill {
+            zone_group_id: 1,
+            killer: own(2),
+            victim,
+        })
+        .unwrap();
+        assert!(ctx.deferred.is_empty());
+        assert_eq!(ctx.st.quest(h).unwrap().objectives[0], 2);
+    });
+}
+
+#[tokio::test]
+async fn zone_kill_team_share_credits_each_member_once() {
+    let (server, rec) = server_with(|d| {
+        single_act_quest(d, 17, 5, zone_kill_act(0, 5, true, (1, 50, 0, 0)));
+    });
+    let a_client = TestClient::new(&server, 1, 1001);
+    let b_client = TestClient::new(&server, 2, 1002);
+    let a = spawn_player(&server, &a_client, character(), 0x100);
+    let b = spawn_player(
+        &server,
+        &b_client,
+        test_character(2, "Mate", 100.0, 100.0),
+        0x101,
+    );
+    *rec.team.lock().unwrap() = vec![a.clone(), b.clone()];
+    events::add_quest(&server, &a, 17, false);
+    events::add_quest(&server, &b, 17, false);
+    server.systems.quests.run_queued_evaluations(&server);
+
+    let world = server.world.world(0).unwrap();
+    let mut wolf = crate::models::npc::Npc::new(600);
+    wolf.unit.transform.set_xyz(110.0, 110.0, 100.0);
+    wolf.unit.level = 20;
+    let wolf = Entity::new(0x201, wolf);
+    world.spawn(&wolf, &server.view_ctx());
+
+    // Before the guard the shared event bounced between the members without end.
+    events::on_npc_killed(&server, &a, &wolf);
+    server.systems.quests.run_queued_evaluations(&server);
+    assert_eq!(a.data().quests.active[0].objectives[0], 1);
+    assert_eq!(b.data().quests.active[0].objectives[0], 1);
+}
+
+#[tokio::test]
+async fn aggro_quest_started_by_engaging_the_npc_counts_its_kill() {
+    // The 30 `QuestActObjAggro` quests of the 1.2 data start through
+    // `NpcTemplate.EngageCombatGiveQuestId` (`AddQuestFromNpc`), so the acceptor is the NPC.
+    let (server, _rec) = server_with(|d| {
+        single_act_quest(
+            d,
+            18,
+            3,
+            ActKind::ObjAggro {
+                range: 0,
+                rank1: 10,
+                rank1_ratio: 100,
+                rank1_item: true,
+                rank2: 50,
+                rank2_ratio: 50,
+                rank2_item: false,
+                rank3: 100,
+                rank3_ratio: 10,
+                rank3_item: false,
+                use_alias: false,
+                alias_id: 0,
+            },
+        );
+    });
+    let client = TestClient::new(&server, 1, 1001);
+    let player = spawn_player(&server, &client, character(), 0x100);
+    let world = server.world.world(0).unwrap();
+    let mut boss = crate::models::npc::Npc::new(600);
+    boss.unit.transform.set_xyz(110.0, 110.0, 100.0);
+    let boss = Entity::new(0x201, boss);
+    world.spawn(&boss, &server.view_ctx());
+    let mut other = crate::models::npc::Npc::new(601);
+    other.unit.transform.set_xyz(111.0, 110.0, 100.0);
+    let other = Entity::new(0x202, other);
+    world.spawn(&other, &server.view_ctx());
+
+    events::add_quest_from_npc(&server, &player, 18, boss.obj_id);
+    server.systems.quests.run_queued_evaluations(&server);
+    assert_eq!(player.data().quests.active[0].acceptor_id, 600);
+    events::on_npc_killed(&server, &player, &other);
+    server.systems.quests.run_queued_evaluations(&server);
+    assert_eq!(player.data().quests.active[0].objectives[0], 0);
+    events::on_npc_killed(&server, &player, &boss);
+    server.systems.quests.run_queued_evaluations(&server);
+    assert_eq!(player.data().quests.active[0].objectives[0], 3);
+}
+
+#[tokio::test]
+async fn sphere_trigger_uses_the_world_position_of_an_attached_player() {
+    let (server, _rec) = server_with(|d| {
+        single_act_quest(
+            d,
+            20,
+            1,
+            ActKind::ObjSphere {
+                sphere_id: 0,
+                npc_id: 0,
+                highlight_doodad_id: 0,
+                highlight_doodad_phase: -1,
+                use_alias: false,
+                alias_id: 0,
+            },
+        );
+    });
+    server.systems.quests.spheres.load(
+        &server.game_data.systems.quests,
+        &[super::data::RawSignSphere {
+            zone_id: 1,
+            quest_id: 20,
+            component_id: 202,
+            local: [125.0, 120.0, 100.0],
+            radius: 3.0,
+        }],
+        "main_world",
+        |_| (0, 0),
+    );
+    let client = TestClient::new(&server, 1, 1001);
+    let player = spawn_player(&server, &client, character(), 0x100);
+    // A mounted rider / ship passenger: the transform is relative to the parent (the
+    // vehicle), the sphere is in world coordinates.
+    let world = server.world.world(0).unwrap();
+    let mut ship = crate::models::npc::Npc::new(700);
+    ship.unit.transform.set_xyz(120.0, 120.0, 100.0);
+    let ship = Entity::new(0x300, ship);
+    world.spawn(&ship, &server.view_ctx());
+    {
+        let mut c = player.data();
+        c.unit.transform.parent_obj_id = ship.obj_id;
+        c.unit.transform.set_xyz(5.0, 0.0, 0.0);
+    }
+    let pos = events::world_position(&server, &WorldObject::from(player.clone()));
+    assert!(
+        (pos.0 - 125.0).abs() < 0.01 && (pos.1 - 120.0).abs() < 0.01,
+        "{pos:?}"
+    );
+    assert_eq!(events::capture_env(&server, &player).position, pos);
+
+    events::add_quest(&server, &player, 20, false);
+    server.systems.quests.run_queued_evaluations(&server);
+    assert_eq!(player.data().quests.active[0].objectives[0], 0);
+    server.systems.quests.spheres.tick(&server);
+    assert_eq!(player.data().quests.active[0].objectives[0], 1);
 }

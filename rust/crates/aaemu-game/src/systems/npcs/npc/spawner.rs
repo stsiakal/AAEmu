@@ -629,7 +629,11 @@ impl NpcSpawner {
             .is_some_and(|t| t.start_time > 0.0 || t.end_time > 0.0)
     }
 
-    /// `HasScheduledSpawner()`.
+    /// `HasScheduledSpawner()`: whether any candidate spawner of the shared placement has game
+    /// schedule rows (any status) or a defined time window. The schedule is looked up by each
+    /// candidate's own template id — not through this clone's template — so an AUTOCREATED
+    /// fallback next to a scheduled NORMAL sibling is suppressed before, during and after its
+    /// event: an unscheduled automatic clone must never spawn year-round in its place.
     fn has_scheduled_spawner(&self, server: &GameServer) -> bool {
         if self.npc_spawner_ids.is_empty() {
             return true;
@@ -644,8 +648,7 @@ impl NpcSpawner {
                 continue;
             };
             let has_window = t.start_time > 0.0 && t.end_time > 0.0;
-            // C#: the schedule check uses this spawner's own Template.Id for every entry.
-            if has_window || self.check_game_schedule_status(server) {
+            if has_window || period_status_npc(server, spawner_id) != PeriodStatus::NotFound {
                 if self.spawner_id != spawner_id {
                     result = true;
                 } else {
@@ -654,14 +657,6 @@ impl NpcSpawner {
             }
         }
         result
-    }
-
-    /// `CheckGameScheduleStatus()`.
-    fn check_game_schedule_status(&self, server: &GameServer) -> bool {
-        let Some(t) = self.template() else {
-            return false;
-        };
-        period_status_npc(server, t.id) != PeriodStatus::NotFound
     }
 
     /// The population this spawner keeps alive: at least the authored `Count` and
@@ -981,6 +976,17 @@ impl NpcSpawner {
     /// `Despawn(npc)`: removes the NPC from `SpawnedNpcs` and deletes it.
     pub fn despawn(&self, server: &GameServer, npc: &NpcRef) {
         let _lock = server.systems.npcs.spawns.spawn_lock();
+        if npc_superseded(server, npc) {
+            // Stale handle (e.g. a corpse timer that outlived a `despawn` GM command): its
+            // object id belongs to another live NPC now, whose spawner link, membership entry
+            // and world object are not this handle's to remove or delete.
+            tracing::debug!(
+                "Skipped despawn of stale NPC {}: its object id is reused by another NPC.",
+                npc.obj_id
+            );
+            self.st().is_despawn_scheduled = false;
+            return;
+        }
         self.remove_npc_from_spawned_list(server, npc);
         // npc.UnregisterNpcEvents(): `Npc.Delete` drops the AI with its registrations.
         spawn_manager::delete_object(server, &WorldObject::from(npc), self.parent_world());
@@ -997,10 +1003,21 @@ impl NpcSpawner {
         };
         let id = spawner.spawner_id;
         if !self.remove_spawned_npc_exact(id, npc) {
-            tracing::warn!(
-                "NPC {} not found in SpawnedNpcs for SpawnerId={id}.",
-                npc.obj_id
-            );
+            if server.world.object(npc.obj_id).is_none() {
+                // Deviation from the C# (which never removes on a direct `Npc.Delete`): the
+                // object left the world before this despawn (a corpse deleted by a script / GM
+                // command while its corpse timer was pending), and `reconcile_deleted_npc`
+                // already dropped its entry. Nothing is inconsistent.
+                tracing::debug!(
+                    "NPC {} already removed from SpawnedNpcs for SpawnerId={id}.",
+                    npc.obj_id
+                );
+            } else {
+                tracing::warn!(
+                    "NPC {} not found in SpawnedNpcs for SpawnerId={id}.",
+                    npc.obj_id
+                );
+            }
         }
     }
 
@@ -1418,7 +1435,11 @@ impl NpcSpawner {
     }
 
     /// `IsDespawningScheduleEnabled(spawnerId)`: true when an NPC of the spawner is outside its
-    /// time window or its schedule is in progress.
+    /// authored game-clock window or its event schedule is not active (`NotStarted` / `Ended`),
+    /// so the ordinary tick removes it. An `InProgress` event keeps its NPCs, and ordinary NPCs
+    /// without schedule rows (`NotFound`) are only governed by their time window. This corrects
+    /// the mirrored C# check, which treated `InProgress` as despawnable and tore down live event
+    /// NPCs on every tick.
     fn is_despawning_schedule_enabled(&self, server: &GameServer, spawner_id: u32) -> bool {
         let Some(npcs) = self.spawned_of(spawner_id) else {
             return false;
@@ -1430,7 +1451,10 @@ impl NpcSpawner {
                 return true;
             }
             if let Some(t) = template {
-                if period_status_npc(server, t.id) == PeriodStatus::InProgress {
+                if matches!(
+                    period_status_npc(server, t.id),
+                    PeriodStatus::NotStarted | PeriodStatus::Ended
+                ) {
                     return true;
                 }
             }
@@ -1659,6 +1683,15 @@ impl NpcSpawner {
         // The first-NPC anchor of `_playerCountCache` can change with every add.
         self.invalidate_membership_caches();
     }
+}
+
+/// Whether `npc`'s object id now belongs to a different live object (the handle is stale: the id
+/// was released and reused). Mirrors the identity guard of `npc::manager::delete`.
+pub(crate) fn npc_superseded(server: &GameServer, npc: &NpcRef) -> bool {
+    server
+        .world
+        .object(npc.obj_id)
+        .is_some_and(|o| !o.as_npc().is_some_and(|n| Arc::ptr_eq(n, npc)))
 }
 
 /// `IsWithinDespawnTime(npc)` on the NPC's spawner template: outside its time window.
@@ -2014,3 +2047,7 @@ mod tests {
 #[cfg(test)]
 #[path = "spawner_population_tests.rs"]
 mod spawner_population_tests;
+
+#[cfg(test)]
+#[path = "spawner_schedule_tests.rs"]
+mod spawner_schedule_tests;

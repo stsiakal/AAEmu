@@ -175,6 +175,13 @@ pub fn use_phase_func(t: &FuncTemplate, ctx: &DoodadCtx<'_>, caster: Option<&Wor
             false
         }
         FuncTemplate::Tod(f) => {
+            // Deviation from the C#: a `DoodadFuncRatioRespawn` replacement was created at this
+            // time of day, so its Tod refers to the next occurrence, which the time-of-day watcher
+            // fires on crossing. The `curTime >= Tod` catch-up would send day/night board pairs
+            // (Tod 20:00 / 06:00) straight back and forth for the whole evening.
+            if ctx.doodad.data().phase.suppress_tod_catch_up {
+                return false;
+            }
             let cur_time = server.time.get_time();
             if cur_time >= f.tod_as_hours {
                 tracing::trace!(
@@ -218,10 +225,12 @@ pub fn use_phase_func(t: &FuncTemplate, ctx: &DoodadCtx<'_>, caster: Option<&Wor
                     (d.template_id, d.func_group_id)
                 };
                 // The replacement re-enters its phase funcs synchronously inside `spawn`; the
-                // guard rejects a source/group already active in this spawner's chain (or an
-                // over-deep chain) before the current doodad is despawned. It is dropped when
-                // the nested call has finished, also on early return or unwind.
-                let _chain = match spawner.enter_ratio_respawn(template_id, func_group_id) {
+                // guard rejects an unconditional cycle through a source/group already active in
+                // this spawner's chain (or an over-deep chain) before the current doodad is
+                // despawned. It is dropped when the nested call has finished, also on early
+                // return or unwind.
+                let _chain = match spawner.enter_ratio_respawn(template_id, func_group_id, f.ratio)
+                {
                     Ok(guard) => guard,
                     Err(reject) => {
                         tracing::warn!(
@@ -512,12 +521,15 @@ fn use_clout(ctx: &DoodadCtx<'_>, caster: Option<&WorldObject>, f: &DoodadFuncCl
     let trigger = Arc::new(trigger);
     area_trigger::add_area_trigger(server, trigger.clone());
     if f.duration > 0 {
-        // C#: `owner.FuncTask = new DoodadFuncCloutTask(areaTrigger.Caster, areaTrigger.Owner,
-        // ...)`: the task is this doodad's FuncTask but acts on the trigger owner.
-        tasks::start_func_task_for(
+        // Deviation: the C# task (`new DoodadFuncCloutTask(areaTrigger.Caster,
+        // areaTrigger.Owner, ...)`) acts on the trigger owner, which with UseOriginSource is any
+        // doodad near the caster. `NextPhase` is a func group of this doodad's template, so the
+        // borrowed doodad was moved into a foreign phase (and deleted by its Final): e.g. the
+        // summoned doodad 5007 of NPC 10119 took the Amber Boulder (4252, quest 3447) with it.
+        // The borrowed doodad stays the area origin; the phase change is this doodad's.
+        tasks::start_func_task(
             server,
             &ctx.doodad,
-            &owner,
             Some(&trigger_caster),
             FuncTaskKind::Clout {
                 next_phase: f.next_phase,

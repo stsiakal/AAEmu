@@ -102,7 +102,7 @@ pub fn set_func_group_id(server: &GameServer, doodad: &DoodadRef, value: u32) {
         d.func_group_id = value;
         d.phase.interaction_counts.clear();
         d.phase_time_ms = now_ms(); // Save PhaseTime at start of new phase (group)
-        let persistent = d.is_persistent;
+        let persistent = d.is_persistent || d.natural_key.is_some();
         refresh_phase_caches(&server.game_data.systems.npcs.doodad, &mut d);
         persistent
     };
@@ -119,7 +119,7 @@ pub fn set_data(server: &GameServer, doodad: &DoodadRef, value: i32) {
             return;
         }
         d.data = value;
-        d.is_persistent
+        d.is_persistent || d.natural_key.is_some()
     };
     if save {
         db::save(server, doodad);
@@ -605,6 +605,8 @@ pub fn init_doodad(ctx: &DoodadCtx<'_>) {
     let unit = ctx.world.unit(owner_obj_id);
     let fg = ctx.doodad.data().func_group_id;
     do_change_phase(ctx, unit.as_ref(), fg as i32);
+    // A ratio-respawn replacement's Tod catch-up suppression only covers its entry phase.
+    ctx.doodad.data().phase.suppress_tod_catch_up = false;
 }
 
 #[cfg(test)]

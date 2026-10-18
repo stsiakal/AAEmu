@@ -2,28 +2,130 @@
 
 Guidance for coding agents working in this repository.
 
-## Coding workflow: Codex orchestrates, DeepSeek implements
+## Git remotes: push only to the fork
 
-- For coding work in this repository, Codex scopes and orchestrates the work, and uses the **OpenCode CLI** for implementation with the human's **OpenCode Go subscription**: provider `opencode-go` (the Go subscription, not the paid standalone `opencode` provider), model `deepseek-v4.1-flash`, variant `max` (**DeepSeek V4.1 Flash, MAX reasoning**).
-- Run **one small coding task per worker at a time**. Codex may launch as many **OpenCode workers in parallel** as useful for independent work; there is no user-imposed worker limit. Give each worker one independently reviewable objective with the relevant files, repository constraints, and acceptance checks. Scale concurrency to task independence, machine resources, and Codex's ability to review and validate the results.
-- Give parallel workers non-overlapping file ownership. Serialize tasks that edit the same files or depend on each other's changes, or use isolated worktrees and integrate them under Codex's supervision. Codex owns task assignment, coordination, and integration.
-- **Reuse the same OpenCode session (`--session <id>`) for sequential small tasks within one subject** to preserve context and improve cache reuse. Assign only one task per worker at a time and validate it before giving that worker the next task. Start a fresh session with a concise handoff when the subject changes or the accumulated context/corrections become lengthy. Do not accumulate unrelated tasks in one chat.
-- Keep follow-up prompts and worker completion summaries brief. Send the validation outcome and the next bounded objective; reuse already inspected context and read only the relevant sections. Worker summaries should report the actual changes, commands run, and unresolved issues without repeating code or the full task checklist.
-- The OpenCode worker implements only its assigned task, follows the repository guidance below, and does not spawn additional agents or choose further tasks. These orchestration rules apply to Codex; the worker should implement directly rather than recursively delegate.
-- Codex independently reviews each diff, checks scope and correctness, and runs focused validation before assigning that worker its next task. Run required workspace checks after the related batch is integrated and its workers have finished editing, and repeat them when new changes or failures justify it. Required repository checks must pass before claiming the overall coding change is complete.
-- Verify the actual OpenCode assistant message/session records show providerID `opencode-go`, modelID `deepseek-v4.1-flash`, and variant `max`; do not silently substitute another provider, model, or variant.
+- In this checkout **`origin` is the user's fork** (`git@github.com:stsiakal/AAEmu.git`); push only
+  there: `git push -u origin <branch>`. Open pull requests from the fork.
+- **Never push to the upstream project** (`https://github.com/AAEmu/AAEmu.git`) or to any other
+  fork (e.g. `NickMesser/AAEmu`, whose work arrives through the fork's synced `rust-rewrite`). This
+  covers every branch and tag, including branch deletions. If such a remote is added for fetching,
+  disable its push URL (`git remote set-url --push <name> no_push`).
+- **Do not modify `rust-rewrite`**: it mirrors the synced upstream work. Bring it into
+  `rust-rewrite-bots` with a merge.
 
-On this Windows machine, `opencode` is installed on PATH (`C:\Users\messe\AppData\Roaming\npm\opencode.ps1`; from PowerShell use `opencode.cmd`). Invoke it from the repository with `opencode run --dir <repository> --model opencode-go/deepseek-v4.1-flash --variant max --format json --auto`, supplying the bounded task on stdin — verified PowerShell form:
+## Sessions work in lanes (mandatory, every session)
 
-```powershell
-Get-Content -Raw <task.txt> | opencode run --dir <repository> --model opencode-go/deepseek-v4.1-flash --variant max --format json --auto
+Several agent sessions run on this machine at once. Each one works in its own **lane** — a git
+worktree + branch, its own cargo target dir, live-stack runtime dir, MySQL databases and port
+block — created and removed by [`Scripts/lane.sh`](Scripts/lane.sh). Lanes never share files, build
+locks, ports or processes, so sessions cannot collide.
+
+On this machine the lane base is **`rust-rewrite-bots`** and MySQL is 8.4: both are set in the
+untracked `D:/aaemu-lanes/machine.env` (`AAEMU_LANE_BASE`, `AAEMU_MYSQL_BIN`), which `lane.sh`
+reads first.
+
+```sh
+Scripts/lane.sh gc                          # first: report leftovers of finished sessions
+Scripts/lane.sh new <name> --type fix       # D:/aaemu-wt/<name> on fix/<name>, from the base branch
+cd D:/aaemu-wt/<name>                       # edit, build, test and run servers ONLY here
+#   ...focused checks while working, commit (Conventional Commits)...
+Scripts/lane.sh sync                        # merge the latest base branch into the lane
+Scripts/lane.sh check                       # cargo xtask ci, once, in the lane's warm target dir
+Scripts/lane.sh land                        # merge into the base branch, then delete the whole lane
 ```
 
-For the next related task in the same subject, add `--session <id>` and keep the same working directory. If the provider returns privacy/global region or subscription errors, report them without changing account privacy or credentials.
+- **Never work in the integration checkout** (`C:\Users\stsiakal\AAEmu`, branch
+  `rust-rewrite-bots`): no edits, builds, tests or servers there. It only receives `lane.sh land`
+  merges, which refuse a dirty checkout.
+- **One lane = one worktree = one target dir.** Never point two worktrees at the same target dir:
+  identical artifact names make cargo's mtime fingerprints miss edits and tests silently run the
+  other worktree's code. Parallel implementation workers each get their own lane; sequential
+  workers may take turns in the session's lane.
+- **Focused checks while working**: `cargo clippy -p <crate> --all-targets -- -D warnings` and
+  `cargo test -p <crate> <filter>`. Do not run `cargo xtask ci` per edit or per worker. The full CI
+  runs once per lane in `lane.sh check`; `land` refuses a HEAD that was not checked or does not
+  contain the current base branch, so the merged tree is exactly the tested tree and the base
+  needs no re-run.
+- **Cleanup is part of done — the bloat is real** (target dirs reach 10–90 GB each). Work is not
+  finished until `lane.sh land` or `lane.sh done` has run and `Scripts/lane.sh list` no longer
+  shows the lane:
+  - landed → `land` already removed it; abandoned → `lane.sh done --force`;
+  - branch must survive (pushed for review) → `lane.sh done --keep-branch` (deletes everything else);
+  - anything else you created outside a lane (scratch dirs, extra databases, dumps, copied
+    binaries) is deleted before you report the task complete.
+  Start each session with `Scripts/lane.sh gc` and include its candidates in your first report;
+  `gc --apply` deletes only unreferenced, idle, day-old leftovers. Never delete another lane or a
+  directory a running process uses.
+- **Live stack per lane**: run from inside the lane, `Scripts/live-stack.sh` uses the lane's ports
+  (`<prefix>xxx`, see `lane.sh info`), runtime dir `D:/aaemu-live-<name>` and databases; `stop`
+  stops only that stack. Never kill `aaemu-*.exe` / `archeage.exe` by image name
+  (`taskkill /IM`) and never shut down the shared MySQL: other sessions' stacks run beside yours.
+- Lane builds use `jobs = 4` and line-tables-only debug info (written by `lane.sh new` into the
+  untracked `rust/.cargo/config.toml`). Memory, not CPU, is the limit with several sessions; stop
+  stacks and clients you no longer need.
+
+## Workflow: the orchestrator reviews, DeepSeek workers and Sonnet subagents run the tasks
+
+The orchestrating session (Codex or Claude) scopes, coordinates and verifies the work. It hands
+tasks to two kinds of workers, both under the same rules (one task at a time, own lane, review
+before acceptance):
+
+- **OpenCode / DeepSeek workers — the default for implementation.** They run on the human's
+  **OpenCode Go subscription**: provider `opencode-go` (the Go subscription, not the paid
+  standalone `opencode` provider), model `deepseek-v4.1-flash`, variant `max` (**DeepSeek V4.1
+  Flash, MAX reasoning**). Run them with `--dir` set to the worker's lane worktree.
+- **Claude Sonnet subagents** (the `Agent` tool with `model: sonnet`) — for research and
+  inspection, routine command/validation runs, live verification, and implementation when that
+  suits the task better.
+
+Rules for both:
+
+- Make prompts actionable: the concrete question or objective, the relevant files/data with
+  `file:line` pointers, constraints (read-only for research), the citations required in the report,
+  known uncertainty, the acceptance checks, and the expected concise report. The orchestrator
+  reviews research results before delegating the implementation that depends on them. It may keep
+  lightweight orientation, coordination, diff/evidence review and the checks needed to verify a
+  worker for itself.
+- Run **one small task per worker at a time**; launch as many workers in parallel as the work's
+  independence and the machine allow. Give each worker one independently reviewable objective.
+- Give parallel workers non-overlapping file ownership. Each parallel implementation worker gets
+  its **own lane** (`Scripts/lane.sh new <task>`, see above) and works only in it. Never edit files
+  another session has uncommitted changes in. The orchestrator reviews each worker's lane, runs
+  `lane.sh sync` / `check` / `land` (which merges into the base branch and removes the lane), and
+  confirms with `lane.sh list` that nothing is left behind.
+- Sequential small tasks in one subject continue the same worker (OpenCode `--session <id>`,
+  Sonnet `SendMessage`), which keeps its context and cache; start a fresh worker with a concise
+  handoff when the subject changes or the accumulated corrections become lengthy. Keep follow-ups
+  and reports brief: changes or findings, commands run with results, citations, commit SHA, open
+  issues — no repeated code or task checklists.
+- Workers do only their assigned task: no sub-agents, no choosing further tasks, no pushing;
+  research workers stay read-only. Implementation workers commit to their own lane branch
+  (Conventional Commits).
+- **Verify in game when possible.** Before landing, a single worker builds and starts the lane's
+  own live stack (see [`AGENT-QUICKSTART.md`](AGENT-QUICKSTART.md)) and reproduces the scenario
+  with headless clients (`aaemu-testclient`, [`rust/LIVE-TESTING.md`](rust/LIVE-TESTING.md)),
+  checking the server logs for the original error/warning and for regressions. If a scenario can't
+  be driven headlessly, say so and rely on the flow tests.
+- The orchestrator independently reviews each diff, checks scope and correctness, and runs focused
+  validation before accepting it. `lane.sh check` (`cargo xtask ci` in the lane) must pass before
+  `lane.sh land`; the change is complete only once it has landed and the lane is gone.
+- For OpenCode workers, verify that the session records (`opencode export <session>`) show
+  providerID `opencode-go`, modelID `deepseek-v4.1-flash` and variant `max`; do not silently
+  substitute another provider, model or variant. If the provider returns privacy/global region or
+  subscription errors, report them without changing account privacy or credentials.
+
+`opencode` is on PATH (from PowerShell use `opencode.cmd`); the bounded task goes on stdin:
+
+```powershell
+Get-Content -Raw <task.txt> | opencode run --dir <lane worktree> --model opencode-go/deepseek-v4.1-flash --variant max --format json --auto
+```
+
+For the next task in the same subject add `--session <id>` and keep the same `--dir`.
 
 > **Starting the servers or the real client?** Read [`AGENT-QUICKSTART.md`](AGENT-QUICKSTART.md)
-> first: `Scripts/live-stack.sh build|sync|start|client|status|shot|stop`, machine paths, ports and
-> the rules that bite (C: is full, MySQL 3306 is off-limits, client folders are read-only).
+> first: lanes, `Scripts/live-stack.sh build|sync|start|client|status|shot|stop`, machine paths,
+> ports and the rules that bite (D: is nearly full, MySQL 3306 is off-limits, client folders are
+> read-only, other sessions' stacks run beside yours).
 > **Porting zone features / using the 10.x client as reference?** Read [`REVERSING.md`](REVERSING.md):
 > where both clients and the zone binaries are, IDA databases, decompiles and RE notes, and the workflow.
 
@@ -350,6 +452,9 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo xtask ci            # fmt --check + clippy -D warnings + test, exactly as CI
 ```
 
+On this machine run these inside your lane (see "Sessions work in lanes"): focused `-p <crate>`
+checks while working, the full `cargo xtask ci` once through `Scripts/lane.sh check`.
+
 - Toolchain: stable Rust via rustup.
 - Filter example: `cargo test -p aaemu-game unit_state` (substring of the test path).
 - Unit tests live in `#[cfg(test)]` modules / `*_tests.rs` next to the code; integration tests in each crate's `tests/`.
@@ -407,7 +512,8 @@ When asked to modify, fix, or improve code, **do not invent conventions**. Inspe
 3. **Wire-up** — new game packet: struct + `register` in the subsystem; new state/startup work: `systems::X::System` / `start`; new login handler: packet + handler.
 4. **SQL** — if schema changes, add `SQL/updates/…` **and** update base `SQL/aaemu_*.sql`.
 5. **Test** — add or extend tests when changing behavior; reuse existing patterns.
-6. **Verify** — `cargo xtask ci` (or fmt + clippy + test) must pass before claiming done.
+6. **Verify** — `cargo xtask ci` must pass before claiming done (`Scripts/lane.sh check` runs it
+   in the lane), then `lane.sh land` merges it and removes the lane.
 7. **Document** — update `Docs/wiki/` only when user-facing setup, config, or behavior changes; follow `Documentation-Maintenance.md`. Record deviations from the C# behavior in `PORTING.md`. Do not add unsolicited markdown elsewhere.
 
 **Avoid:** drive-by refactors, new frameworks or crates without need, reformatting unrelated files, renaming domain terms away from wiki vocabulary, and broad style “cleanup” outside the requested change.

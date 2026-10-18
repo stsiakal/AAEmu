@@ -8,6 +8,8 @@ use crate::models::buff::Buff;
 use crate::packets::world::SCUnitPointsPacket;
 use crate::packets::world_objects::SCTargetChangedPacket;
 use crate::server::GameServer;
+use crate::systems::social::achievement::char_record_kind;
+use crate::systems::social::achievement_hooks::{AchievementInput, RecordMatch};
 use crate::world::{now_ms, PlayerRef, WorldObject};
 
 use super::buffs;
@@ -536,6 +538,36 @@ fn do_die_base(
     }
 }
 
+/// The quest `OnZoneKill` of a player killed by another player's hand (the
+/// `QuestActObjZoneKill` PvP quests, `count_player_kill > 0`). The C# only raised it for NPC
+/// deaths (`DoOnMonsterHuntEvents`), so those quests could not progress. Only the killer gets
+/// the direct event; `team_share` acts hand it on to the killer's team.
+fn raise_pvp_zone_kill(
+    server: &GameServer,
+    killer: &PlayerRef,
+    victim: &WorldObject,
+    zone_group_id: u32,
+) {
+    use crate::systems::quests::events::{kill_unit, with_quests, QuestEvent};
+    let event = QuestEvent::ZoneKill {
+        zone_group_id,
+        killer: kill_unit(server, &WorldObject::from(killer.clone()), None),
+        victim: kill_unit(server, victim, None),
+    };
+    let raised = with_quests(server, killer, None, |ctx| {
+        if let Err(e) = ctx.dispatch(&event) {
+            tracing::error!("Quest event ZoneKill threw: {}", e.0);
+        }
+    });
+    if raised.is_none() {
+        tracing::warn!(
+            "PvP zone kill of {} not credited to {}: a quest operation is in progress",
+            victim.obj_id(),
+            killer.obj_id
+        );
+    }
+}
+
 /// `Character.DoDie` after `base.DoDie` (and the durability loss): PvP kill bookkeeping
 /// (`HostileFactionKills`, `AwardPvpHonor`, the `DiedInPvp` / `DiedInPvpWarZone` flags,
 /// `SCUnitPvPPointsChangedPacket`s, the War-zone honor loss of the victim) or crime evidence
@@ -587,6 +619,19 @@ fn character_death_tail(
                     c.died_in_pvp_war_zone = true;
                 }
             }
+            raise_pvp_zone_kill(server, enemy, victim, victim_zone_group.unwrap_or(0));
+            // DEAD_BY_PVP (value1: the zone group the victim died in, 0 = any zone).
+            crate::systems::report_achievement(
+                server,
+                victim_p,
+                AchievementInput::Increment {
+                    kind_id: char_record_kind::DEAD_BY_PVP,
+                    amount: 1,
+                    matcher: RecordMatch::ZoneGroup {
+                        zone_group: victim_zone_group.unwrap_or(0),
+                    },
+                },
+            );
             // Broadcast PvP stats: kind=0 → HonorGainedInCombat, kind=1 → HostileFactionKills
             let (honor, kills) = {
                 let c = enemy.data();
@@ -656,6 +701,16 @@ fn character_death_tail(
     if !buffs::check_buff_tag(server, victim, tags::WANTED) {
         return;
     }
+    // KILL_WANTED: the killer of a wanted victim, whether or not the arrest goes through.
+    crate::systems::report_achievement(
+        server,
+        &arrestor,
+        AchievementInput::Increment {
+            kind_id: char_record_kind::KILL_WANTED,
+            amount: 1,
+            matcher: RecordMatch::Any,
+        },
+    );
     let contemptuous =
         victim.with_base_unit(|b| b.buffs().check_buff(buff_constants::CONTEMPTUOUS));
     let arrest = if !contemptuous {
@@ -777,9 +832,25 @@ fn award_pvp_honor(
     let round = |share: i32| (f64::from(share) * rate).round_ties_even() as i32;
     let gain = |p: &PlayerRef, honor: i32| {
         super::progress::change_game_points(server, p, super::progress::GAME_POINT_HONOR, honor);
-        let mut c = p.data();
-        c.honor_gained_in_combat = c.honor_gained_in_combat.wrapping_add(honor as u32);
-        c.honor_gained_in_combat
+        let total = {
+            let mut c = p.data();
+            c.honor_gained_in_combat = c.honor_gained_in_combat.wrapping_add(honor as u32);
+            c.honor_gained_in_combat
+        };
+        // GET_HONOR_POINT (zone-conflict honor: value1 0, value2 the zone group or 0 = any).
+        crate::systems::report_achievement(
+            server,
+            p,
+            AchievementInput::Increment {
+                kind_id: char_record_kind::GET_HONOR_POINT,
+                amount: i64::from(honor),
+                matcher: RecordMatch::Value1OrZeroValue2 {
+                    value1: 0,
+                    value2: victim_zone_group.unwrap_or(0),
+                },
+            },
+        );
+        total
     };
     if !online.is_empty() {
         let killer_honor = round(killer_share);
@@ -906,13 +977,13 @@ pub fn add_unit_aggro(
     if buffs::check_buff_tag(server, owner, tags::NO_FIGHT)
         || buffs::check_buff_tag(server, owner, tags::RETURNING)
     {
-        clear_aggro_of_unit(server, owner, unit);
+        clear_aggro_of_unit_quiet(server, owner, unit);
         return false;
     }
     if buffs::check_buff_tag(server, unit, tags::NO_FIGHT)
         || buffs::check_buff_tag(server, unit, tags::RETURNING)
     {
-        clear_aggro_of_unit(server, owner, unit);
+        clear_aggro_of_unit_quiet(server, owner, unit);
         return false;
     }
     if kind == AggroKind::Damage {
@@ -1014,6 +1085,23 @@ pub fn add_unit_aggro(
 
 /// `Unit.ClearAggroOfUnit(unit)` on `owner`.
 pub fn clear_aggro_of_unit(server: &GameServer, owner: &WorldObject, unit: &WorldObject) {
+    clear_aggro_of_unit_inner(server, owner, unit, true);
+}
+
+/// `ClearAggroOfUnit` for callers that legitimately reach it for a unit that is not in the
+/// owner's table (the `AddUnitAggro` NoFight / Returning guards, the death fan-out of
+/// `clear_incoming_aggro`): the C# logged "Failed to remove ..." for these as well, here the
+/// absent entry is only a debug line.
+fn clear_aggro_of_unit_quiet(server: &GameServer, owner: &WorldObject, unit: &WorldObject) {
+    clear_aggro_of_unit_inner(server, owner, unit, false);
+}
+
+fn clear_aggro_of_unit_inner(
+    server: &GameServer,
+    owner: &WorldObject,
+    unit: &WorldObject,
+    warn_if_absent: bool,
+) {
     if let Some(tp) = unit.as_player() {
         tp.data()
             .skill_char
@@ -1051,9 +1139,14 @@ pub fn clear_aggro_of_unit(server: &GameServer, owner: &WorldObject, unit: &Worl
         {
             set.remove(&owner.obj_id());
         }
-    } else {
+    } else if warn_if_absent {
         tracing::warn!(
             "Failed to remove unit[{unit_id}] aggro from NPC[{}]",
+            owner.obj_id()
+        );
+    } else {
+        tracing::debug!(
+            "Unit[{unit_id}] was not in the aggro table of NPC[{}]",
             owner.obj_id()
         );
     }
@@ -1166,7 +1259,40 @@ pub(crate) fn clear_incoming_aggro(server: &GameServer, victim: &WorldObject) {
         .unwrap_or_default();
     for h in holders {
         if let Some(holder) = server.world.object(h) {
-            clear_aggro_of_unit(server, &holder, victim);
+            clear_aggro_of_unit_quiet(server, &holder, victim);
+        }
+    }
+}
+
+/// Empties `owner`'s aggro table and unregisters it from the `aggro_watch` reverse index of
+/// every unit that was in it, so a later death of such a unit does not fan out to an owner
+/// that no longer holds it. (Characters' lists and the NPC combat state are the caller's.)
+pub fn drop_aggro_table(server: &GameServer, owner: &WorldObject) {
+    let ids: Vec<u32> = owner
+        .with_unit(|u| {
+            let t = &mut u.unit_mut().skill_state.aggro_table;
+            let ids = t.keys().copied().collect();
+            t.clear();
+            ids
+        })
+        .unwrap_or_default();
+    unwatch_aggro(server, owner.obj_id(), &ids);
+}
+
+/// Removes `owner_id` from the `aggro_watch` sets of `abusers`.
+pub(crate) fn unwatch_aggro(server: &GameServer, owner_id: u32, abusers: &[u32]) {
+    let mut watch = server
+        .systems
+        .skills
+        .aggro_watch
+        .lock()
+        .expect("aggro watch poisoned");
+    for id in abusers {
+        if let Some(set) = watch.get_mut(id) {
+            set.remove(&owner_id);
+            if set.is_empty() {
+                watch.remove(id);
+            }
         }
     }
 }

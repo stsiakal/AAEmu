@@ -341,6 +341,7 @@ mod tests {
                 unit_type: 0,
                 id: 7,
                 pos: (1.0, 2.0, 3.0),
+                tl_id: 0,
             },
         );
         let mut body = PacketStream::new();

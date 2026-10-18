@@ -219,6 +219,19 @@ pub enum NpcIntervalSite {
     AlmightyAttackBehavior,
 }
 
+/// Bookkeeping of the last chase route (`behaviors::move_in_range` / `update_target`); the C#
+/// code only compared the victim position with `PathNode.EndPointPos`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ChasePath {
+    /// Object id of the victim the route was computed for.
+    pub target: u32,
+    /// Unix ms the route was computed.
+    pub at_ms: i64,
+    /// The search produced waypoints (an exhausted route is only re-planned in that case, so a
+    /// failing lookup does not retry every throttle period).
+    pub had_route: bool,
+}
+
 /// `NpcAi` (one per NPC with an `AiFileId` the factory knows).
 #[derive(Debug)]
 pub struct NpcAi {
@@ -235,6 +248,8 @@ pub struct NpcAi {
     pub param: Option<Arc<AiParams>>,
     /// `PathNode` (A* state for the geodata chase).
     pub path_node: PathNode,
+    /// The last chase route (`None` = no route yet / reset on entering or leaving combat).
+    pub chase_path: Option<ChasePath>,
     behaviors: BTreeMap<BehaviorKind, BehaviorSlot>,
     transitions: BTreeMap<BehaviorKind, Vec<(TransitionEvent, BehaviorKind)>>,
     current: Option<BehaviorKind>,
@@ -288,6 +303,7 @@ impl NpcAi {
             home_position: Vec3::default(),
             param: None,
             path_node: PathNode::default(),
+            chase_path: None,
             behaviors: BTreeMap::new(),
             transitions: BTreeMap::new(),
             current: None,
@@ -647,7 +663,14 @@ impl<'a> AiCtx<'a> {
 
     /// `LoadAiPathPoints(aiPathFileName, addToQueueOnly)`.
     pub fn load_ai_path_points(&mut self, name: &str, add_to_queue_only: bool) -> bool {
-        let points = self.server.systems.ai.paths.load_ai_path_points(name);
+        // Routes shared by several zones are picked by the NPC's position (see `AiPathsManager`).
+        let near = Some(super::npc::world_pos(self.server, &self.obj));
+        let points = self
+            .server
+            .systems
+            .ai
+            .paths
+            .load_ai_path_points_near(name, near);
         if points.is_empty() {
             return false;
         }

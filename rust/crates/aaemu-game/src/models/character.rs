@@ -181,6 +181,9 @@ pub struct Character {
     /// `InitializeLaborCache(accountDetails.Labor, accountDetails.LastUpdated)`.
     pub labor_power: i16,
     pub labor_power_modified: UnixTime,
+    /// Labor change applied to [`Self::labor_power`] but not yet added to `accounts.labor`;
+    /// flushed by `db_character::save_character` (never marshalled).
+    pub labor_power_unsaved: i32,
     pub slots: Vec<ActionSlot>,
     /// `_options` (UI data).
     pub options: BTreeMap<u16, String>,
@@ -204,7 +207,12 @@ pub struct Character {
     pub is_online: bool,
     /// `FinishedLoading` (`SetPlayerMoved`).
     pub finished_loading: bool,
+    /// `GameObject.DisabledSetPosition`; write it through [`Character::set_disabled_set_position`].
     pub disabled_set_position: bool,
+    /// Bumped by every `set_disabled_set_position(true)`: the C# setter's
+    /// `SusManager.ResetAnalyze*DeltaMovement` side effect, as a counter the movement analysis
+    /// compares against its baseline.
+    pub teleport_seq: u32,
     pub breath: u32,
     /// `SubZoneId` (last `CSNotifySubZonePacket`, for the Memory Tome recall points).
     pub sub_zone_id: u32,
@@ -253,6 +261,15 @@ pub fn new_guid() -> [u8; 16] {
 }
 
 impl Character {
+    /// `GameObject.DisabledSetPosition` setter: setting it to `true` (a teleport / instance
+    /// move) invalidates the speed-analysis baseline (`ResetAnalyzePlayerDeltaMovement`).
+    pub fn set_disabled_set_position(&mut self, value: bool) {
+        self.disabled_set_position = value;
+        if value {
+            self.teleport_seq = self.teleport_seq.wrapping_add(1);
+        }
+    }
+
     /// `new Character(modelParams)` with an empty, unregistered inventory.
     pub fn new(id: u32, account_id: u32, model_params: UnitCustomModelParams) -> Self {
         Self {
@@ -321,6 +338,7 @@ impl Character {
             offline_guilty_region: 0,
             labor_power: 0,
             labor_power_modified: 0,
+            labor_power_unsaved: 0,
             slots: vec![ActionSlot::default(); MAX_ACTION_SLOTS],
             options: BTreeMap::new(),
             inventory: Inventory::standalone(id, 0, 0),
@@ -341,6 +359,7 @@ impl Character {
             is_online: false,
             finished_loading: false,
             disabled_set_position: false,
+            teleport_seq: 0,
             breath: 60_000,
             sub_zone_id: 0,
             // ---- phase 3 / skills ----
@@ -367,6 +386,15 @@ impl Character {
     /// `RaceGender` (`16 * Gender + Race`).
     pub fn race_gender(&self) -> u8 {
         16u8.wrapping_mul(self.gender).wrapping_add(self.race)
+    }
+
+    /// `Character.ChangeLabor` labor part: applies `change` to the cached `labor_power` and
+    /// remembers it as not yet added to `accounts.labor` (the accounts row is flushed by
+    /// `db_character::save_character` in the character's save transaction).
+    pub fn change_labor_power(&mut self, change: i16) {
+        self.labor_power = self.labor_power.wrapping_add(change);
+        self.labor_power_unsaved += i32::from(change);
+        self.labor_power_modified = chrono::Utc::now().timestamp();
     }
 
     /// `SetAction(slot, type, id)` (C# indexes the array: out of range throws).

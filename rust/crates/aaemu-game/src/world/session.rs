@@ -273,6 +273,10 @@ pub async fn select_character(
     conn: &mut GameConnection,
     character_id: u32,
 ) -> Result<()> {
+    if server.is_shutting_down() {
+        refuse_during_shutdown(conn);
+        return Ok(());
+    }
     let Some(idx) = conn.characters.iter().position(|c| c.id == character_id) else {
         tracing::error!(
             "Character {character_id} not found in list of loaded characters of this account {}",
@@ -289,6 +293,17 @@ pub async fn select_character(
                 "Previous character save is pending".into(),
             ));
         }
+    }
+    // A sibling character's departure may still hold unflushed labor (`accounts.labor` is
+    // account-level): save it too, or the character being selected would load a stale labor.
+    if !server
+        .save
+        .flush_account_labor_locked(server, conn.account_id())
+        .await
+    {
+        return Err(crate::GameError::Protocol(
+            "Previous character save is pending".into(),
+        ));
     }
     // Character selection may follow a logout that committed after the lobby list loaded.
     // Read its current wallet/core row inside the same save transaction ordering barrier.
@@ -588,6 +603,10 @@ pub fn select_loaded(
 
 /// `CSSpawnCharacterPacket.Read`.
 pub fn spawn_character(server: &GameServer, conn: &mut GameConnection, visual: VisualOptions) {
+    if server.is_shutting_down() {
+        refuse_during_shutdown(conn);
+        return;
+    }
     let Some(player) = conn.active_char.clone() else {
         tracing::error!(
             "CSSpawnCharacterPacket: ActiveChar is null for account {} — no character was selected. Disconnecting.",
@@ -688,6 +707,8 @@ pub fn notify_in_game(server: &GameServer, conn: &mut GameConnection) {
     crate::systems::skills::stats::update_gear_bonuses(server, &p, None, None);
     crate::systems::dispatch_buff_events(server, &WorldObject::from(&p));
     crate::systems::social::session::on_notify_in_game_trial(server, &p);
+    crate::systems::social::session::on_notify_in_game_achievements(server, &p);
+    crate::systems::npcs::schedule_item_session::on_enter(server, &p);
     tracing::info!("NotifyInGame: {name} ({id})");
 }
 
@@ -705,6 +726,8 @@ pub fn notify_in_game_completed(server: &GameServer, conn: &mut GameConnection) 
     });
     // Family stuff
     crate::systems::social::session::on_player_join(server, &p);
+    // Quest evaluations parked since the select (the client can handle them now).
+    crate::systems::quests::on_in_game_completed(server, p.character_id);
     let c = p.data();
     tracing::info!(
         "NotifyInGameCompleted SubZoneId {}, {} ({})",
@@ -727,6 +750,12 @@ pub async fn move_unit(server: &GameServer, conn: &mut GameConnection, obj_id: u
     {
         let c = me.data();
         if c.disabled_set_position {
+            // No movement is analysed meanwhile: the speed baseline would go stale.
+            server
+                .systems
+                .services
+                .sus
+                .reset_analyze_player_delta_movement(c.id);
             return;
         }
     }
@@ -740,7 +769,9 @@ pub async fn move_unit(server: &GameServer, conn: &mut GameConnection, obj_id: u
         world.object(obj_id)
     };
     let Some(target) = target else {
-        tracing::warn!("Invalid target {obj_id} from {}", me.data().unit.name);
+        // Benign: the client keeps sending a few moves for an object (typically its mount) the
+        // server just despawned (summon toggle, dungeon entry, death).
+        tracing::debug!("Invalid target {obj_id} from {}", me.data().unit.name);
         return;
     };
     match &mt.kind {
@@ -771,6 +802,14 @@ pub async fn move_unit(server: &GameServer, conn: &mut GameConnection, obj_id: u
                 if crate::systems::vehicles::movement::player_riding(server, &me, player)
                     || crate::systems::vehicles::movement::player_bound_to_slave(&world, player)
                 {
+                    // The C# finalized the rider's child transform with the mount / slave, which
+                    // kept its speed baseline fresh; reseed it on the next own movement instead.
+                    let id = player.data().id;
+                    server
+                        .systems
+                        .services
+                        .sus
+                        .reset_analyze_player_delta_movement(id);
                     return;
                 }
                 // SetPlayerMoved: MOTD on the first movement after loading.
@@ -801,14 +840,15 @@ pub async fn move_unit(server: &GameServer, conn: &mut GameConnection, obj_id: u
                 let t = target.transform();
                 (t.x, t.y, t.z)
             };
-            // A 1.2 gcFlags=1 actor sends its primary position in the supporting
-            // object's frame and the auxiliary position in world coordinates. If
-            // the parent has disappeared, use the world backup rather than placing
-            // the character's small deck offset at the world origin.
+            // An actor standing on an object sends its primary position in the
+            // supporting object's frame and the auxiliary position in world
+            // coordinates, whatever the object kind (gcFlags 1 unit, 2 gimmick,
+            // 4 doodad). If that object is unknown or has disappeared, use the
+            // world backup rather than placing the character's small offset at
+            // the world origin (under the sea).
             let missing_parent = target.transform().parent_obj_id == 0
                 && u.actor_flags
-                    .contains(MoveTypeActorFlags::STANDING_ON_OBJECT)
-                && u.gc_flags & 1 != 0;
+                    .contains(MoveTypeActorFlags::STANDING_ON_OBJECT);
             let (x, y, z, rx, ry, rz) = if missing_parent {
                 (
                     u.x2,
@@ -1091,7 +1131,7 @@ pub async fn leave_world_task(
     if let Some(p) = &active {
         {
             let mut c = p.data();
-            c.disabled_set_position = true;
+            c.set_disabled_set_position(true);
         }
         set_online(server, p, false);
         p.data().leave_time = Utc::now().timestamp();
@@ -1156,12 +1196,79 @@ pub async fn leave_world_task(
     }
 }
 
+/// Graceful server shutdown, on the connection's own task. The shutdown sends this command to
+/// every connection, and again every few seconds to those still connected:
+///
+/// * In the world: the in-world leave without the logout timer (`LeaveWorldTask` to character
+///   select: save, `SCLeaveWorldGranted(1)` + `ChangeState(0)`, the connection becomes Lobby).
+///   The world list request is NOT sent yet: the client is busy switching to character select
+///   (it drops its stream connection and reopens it, then loads the lobby on this same game
+///   connection), and an `SCReconnectAuth` in that window did not take the live client to the
+///   world list.
+/// * In the lobby (already there, or left on an earlier round): the `CSLeaveWorld(ServerSelect)`
+///   path: `GLPlayerReconnect` to the login server, which answers `LGPlayerReconnect`; the game
+///   then sends `SCReconnectAuth`. Repeated rounds repeat the request.
+///
+/// Returns whether the character was in the world. A connection that never authenticated (no
+/// account id) only has its pending logout cancelled; the shutdown kicks and closes it if it is
+/// still connected at the end.
+pub async fn return_to_world_list(server: &GameServer, conn: &mut GameConnection) -> bool {
+    if let Some(task) = conn.leave_task.take() {
+        task.abort();
+    }
+    let active = conn.active_char.clone();
+    // After a leave the connection keeps `active_char` (as in C#), so only a character that is
+    // still the live world entry counts as in the world.
+    let in_world = active.as_ref().is_some_and(|p| {
+        server
+            .world
+            .character_by_obj_id(p.obj_id)
+            .is_some_and(|live| Arc::ptr_eq(&live, p))
+    });
+    if in_world {
+        leave_world_task(
+            server,
+            Some(&mut *conn),
+            leave_target::CHARACTER_SELECT,
+            active,
+        )
+        .await;
+        return true;
+    }
+    if conn.account_id() != 0 {
+        tracing::info!("Shutdown: session {} is asked for the world list", conn.id);
+        server
+            .login
+            .send(&crate::login::packets::GLPlayerReconnectPacket {
+                gs_id: server.config.id,
+                account_id: conn.account_id(),
+                connection_id: conn.id,
+            });
+    }
+    false
+}
+
+/// Refuses entering the world while the server shuts down: the localized "server maintenance"
+/// kick (`SCKicked`, `KickedReason.KickByMaintenance`), then the connection closes.
+pub fn refuse_during_shutdown(conn: &mut GameConnection) {
+    tracing::info!(
+        "Session {}: entering the world refused, the server is shutting down",
+        conn.id
+    );
+    conn.send(&crate::packets::g2c_misc::SCKickedPacket {
+        reason: crate::packets::g2c_misc::kicked_reason::KICK_BY_MAINTENANCE,
+        msg: crate::systems::services::shutdown::KICK_MESSAGE.into(),
+    });
+    conn.shutdown();
+}
+
 /// `GameConnection.SaveAndRemoveFromWorld(activeChar)`.
 pub async fn save_and_remove_from_world(server: &GameServer, active: Option<&PlayerRef>) {
     let Some(p) = active else {
         return;
     };
     server.save.remember_departing(p);
+    crate::systems::npcs::schedule_item_session::on_leave(server, p);
     let _transaction = server.save.transaction_lock().await;
     // Remove Radars (buff effect tasks: skills subsystem).
     server.systems.services.radar.unregister(p.character_id);

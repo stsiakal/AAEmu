@@ -23,6 +23,8 @@
 //! Object ids are reused after `ObjectIdManager.ReleaseId`, so the links / fields of an id are
 //! dropped when this module releases it ([`forget_object`]) and when a spawner creates a new
 //! object with it. Other modules that release spawned objects' ids call [`forget_object`].
+//! (Loot containers are dropped by the object id manager's release observer, see
+//! `LootManager::install_release_hook`, so no release path can miss them.)
 //!
 //! Times use `tokio::time::Instant` (`DateTime.UtcNow` in C#) so tests can drive them.
 
@@ -419,11 +421,15 @@ pub fn forget_object(server: &GameServer, obj_id: u32) {
     server.systems.npcs.spawns.forget_object(obj_id);
 }
 
-/// Resets the `Respawn` / `Despawn` fields of a freshly created object (its id may be reused).
+/// Resets the `Respawn` / `Despawn` fields (and any stale looting container) of a freshly
+/// created object (its id may be reused).
 pub fn forget_object_fields(server: &GameServer, obj_id: u32) {
     let s = &server.systems.npcs.spawns;
     s.respawn_fields.remove(&obj_id);
     s.despawn_fields.remove(&obj_id);
+    if let Some(h) = server.systems.npcs.hooks.economy.get() {
+        h.forget_loot(server, obj_id);
+    }
 }
 
 /// `obj.ParentWorld.SpawnManager` (by the object's world, else `fallback_world`).
@@ -919,6 +925,18 @@ impl SpawnManager {
                     .await?;
             }
             tracing::info!("{spawned} doodads loaded in {}.", self.world.template.name);
+            // Saved growth state of the world-spawned doodads, consumed by the initial spawn.
+            let natural = &server.systems.npcs.doodads.persistence.natural;
+            match natural.load(&server.db, self.world.id).await {
+                Ok(n) => tracing::info!(
+                    "Loaded {n} natural doodad growth states for {}",
+                    self.world.template.name
+                ),
+                Err(e) => tracing::warn!(
+                    "Natural doodad growth states of {} are not persisted: {e}",
+                    self.world.template.name
+                ),
+            }
         }
 
         self.start_respawn_tick(server);
@@ -1523,6 +1541,13 @@ impl SpawnManager {
             self.world.template.name,
             start.elapsed()
         );
+        server
+            .systems
+            .npcs
+            .doodads
+            .persistence
+            .natural
+            .finish_initial_spawn(server, self.world.id, &self.world.template.name);
         // You have to wait for all the doodads to spawn before trying to initialize the fish
         // schools (FishSchoolManager.Load(World)).
         crate::systems::npcs::fish_school::load_world(server, &self.world);
@@ -1814,16 +1839,24 @@ impl SpawnManager {
                     }
                 }
             }
+            // A stale corpse handle must not release the id (or drop the spawner link) of the
+            // live NPC that reused it.
+            let superseded = e
+                .obj
+                .as_npc()
+                .is_some_and(|n| super::npc::spawner::npc_superseded(server, n));
             // DoodadSpawner owns its ID release and may retain it for a pending respawn.
-            if !matches!(
-                (&e.link, &e.obj),
-                (SpawnerLink::Doodad(_), WorldObject::Doodad(_))
-            ) && !self
-                .respawns
-                .lock()
-                .expect("poisoned")
-                .get(&e.obj.obj_id())
-                .is_some_and(|r| matches!(r.link, SpawnerLink::Npc(_)) && r.obj.same(&e.obj))
+            if !superseded
+                && !matches!(
+                    (&e.link, &e.obj),
+                    (SpawnerLink::Doodad(_), WorldObject::Doodad(_))
+                )
+                && !self
+                    .respawns
+                    .lock()
+                    .expect("poisoned")
+                    .get(&e.obj.obj_id())
+                    .is_some_and(|r| matches!(r.link, SpawnerLink::Npc(_)) && r.obj.same(&e.obj))
             {
                 server.ids.object.release_id(e.obj.obj_id());
                 forget_object(server, e.obj.obj_id());

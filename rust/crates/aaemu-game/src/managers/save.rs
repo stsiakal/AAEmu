@@ -22,6 +22,8 @@ pub(crate) struct FinancialSnapshot {
     pub(crate) mails: crate::systems::economy::mail::MailSaveBatch,
     pub(crate) auctions: crate::systems::economy::auction::AuctionSaveBatch,
     pub(crate) items: super::item::ItemSaveBatch,
+    pub(crate) schedule_items:
+        crate::systems::npcs::schedule_item_persistence::PreparedScheduleSave,
     pub(crate) characters: Vec<(PlayerRef, Character)>,
 }
 
@@ -59,13 +61,107 @@ pub(crate) fn capture_financial_snapshot(server: &GameServer) -> FinancialSnapsh
         mails: server.systems.economy.mail.prepare_save(),
         auctions: server.systems.economy.auction.prepare_save(server),
         items: server.items.prepare_save(),
+        // Captured under the same `ops_lock` as the granted items / mails of a take.
+        schedule_items: server.systems.npcs.schedule_items.prepare_save(),
         characters: players
             .into_iter()
             .map(|p| {
-                let character = p.data().clone();
+                // Resolved before locking the character: `world_pos_rot` locks transforms.
+                let world = save_world_position(server, &p);
+                let mut character = p.data().clone();
+                if let Some(world) = world {
+                    let t = &mut character.unit.transform;
+                    t.set_position(
+                        world.x,
+                        world.y,
+                        world.z,
+                        world.rot_x,
+                        world.rot_y,
+                        world.rot_z,
+                    );
+                    t.parent_obj_id = 0;
+                }
                 (p, character)
             })
             .collect(),
+    }
+}
+
+/// The world position of a character attached to a parent (ship, mate, transfer): its
+/// transform is then relative to the parent, but the row must hold world coordinates
+/// (`Character.Save` writes `Transform.World.Position` / `Rotation`). `None` when the
+/// character has no parent, or the parent is gone (the local values are kept, with a warning).
+fn save_world_position(
+    server: &GameServer,
+    player: &PlayerRef,
+) -> Option<crate::models::transform::PositionAndRotation> {
+    let obj = crate::world::WorldObject::from(player);
+    let parent_id = obj.transform().parent_obj_id;
+    if parent_id == 0 {
+        return None;
+    }
+    let Some(world) = server.world.world_of(&obj) else {
+        tracing::warn!(
+            "Saving character {}: no world instance for its parent {parent_id}; \
+             saving the parent-relative position",
+            player.character_id
+        );
+        return None;
+    };
+    if world.object(parent_id).is_none() {
+        tracing::warn!(
+            "Saving character {}: parent object {parent_id} not found; \
+             saving the parent-relative position",
+            player.character_id
+        );
+        return None;
+    }
+    Some(world.world_pos_rot(&obj))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::slave::Slave;
+    use crate::test_support::{spawn_player, test_character, test_server, TestClient};
+    use crate::world::{Entity, WorldObject};
+
+    #[tokio::test]
+    async fn snapshot_saves_world_position_of_attached_character() {
+        let s = test_server();
+        let client = TestClient::new(&s, 1, 1);
+        let player = spawn_player(
+            &s,
+            &client,
+            test_character(1, "Deck", 1003.0, 1002.0),
+            0x100,
+        );
+        let world = s.world.world(0).unwrap();
+        let obj = WorldObject::from(&player);
+        let mut hull = Slave::new(1, 1);
+        hull.unit
+            .transform
+            .set_position(1000.0, 2000.0, 305.0, 0.0, 0.0, 0.0);
+        let slave = Entity::new(0x300, hull);
+        world.spawn(&slave, &s.view_ctx());
+        world.attach_child(&WorldObject::from(&slave), &obj);
+        player.data().unit.transform.set_xyz(2.0, -3.0, 4.0);
+
+        let snapshot = capture_financial_snapshot(&s);
+        let (_, saved) = snapshot
+            .characters
+            .iter()
+            .find(|(p, _)| p.character_id == player.character_id)
+            .expect("character in snapshot");
+        let t = &saved.unit.transform;
+        assert_eq!(t.parent_obj_id, 0);
+        assert!((t.x - 1002.0).abs() < 1e-3, "x = {}", t.x);
+        assert!((t.y - 1997.0).abs() < 1e-3, "y = {}", t.y);
+        assert!((t.z - 309.0).abs() < 1e-3, "z = {}", t.z);
+
+        let live = player.data().unit.transform;
+        assert_eq!(live.parent_obj_id, slave.obj_id);
+        assert_eq!((live.x, live.y, live.z), (2.0, -3.0, 4.0));
     }
 }
 
@@ -74,10 +170,14 @@ struct CharacterSaveAck {
     updated: i64,
     removed: [Vec<u32>; 4],
     money: (i64, i64),
+    /// The captured clone's `labor_power_unsaved` when `save_character` ran (flushed into
+    /// `accounts.labor` by it).
+    labor: i32,
 }
 
 pub(crate) struct FinancialSaveReceipt {
     counts: (usize, usize, usize, usize, usize),
+    schedule_items: crate::systems::npcs::schedule_item_manager::ScheduleSaveToken,
     characters: Vec<CharacterSaveAck>,
 }
 
@@ -112,6 +212,13 @@ pub(crate) async fn write_financial_snapshot(
         .write_prepared(tx, snapshot.auctions)
         .await?;
     systems += auction_updated + auction_deleted;
+    let schedule_items =
+        crate::systems::npcs::schedule_item_manager::ScheduleItemManager::write_prepared(
+            tx,
+            snapshot.schedule_items,
+        )
+        .await?;
+    systems += schedule_items.written();
     systems +=
         crate::systems::save_prepared_financial_stage(server, tx, SaveStage::AfterItems).await?;
     let mut characters = Vec::new();
@@ -122,6 +229,9 @@ pub(crate) async fn write_financial_snapshot(
             character.skills.removed.clone(),
             character.quests.removed.clone(),
         ];
+        // Captured before the save: `save_character` flushes this delta into `accounts.labor`
+        // and clears it on the clone.
+        let labor = character.labor_power_unsaved;
         if let Err(error) = save_character(tx, &mut character, Utc::now().timestamp()).await {
             tracing::error!(
                 "Failed to save character {} - {}: {error}",
@@ -135,11 +245,13 @@ pub(crate) async fn write_financial_snapshot(
             updated: character.updated,
             removed,
             money: (character.money, character.money2),
+            labor,
         });
     }
     systems += save_stage(server, tx, SaveStage::AfterCharacters).await?;
     Ok(FinancialSaveReceipt {
         counts: (items, deleted, containers, characters.len(), systems),
+        schedule_items,
         characters,
     })
 }
@@ -150,6 +262,11 @@ pub(crate) fn commit_financial_snapshot(server: &GameServer, receipt: FinancialS
     server.systems.economy.mail.commit_save();
     server.systems.economy.auction.commit_save();
     server.items.commit_save();
+    server
+        .systems
+        .npcs
+        .schedule_items
+        .commit_save(receipt.schedule_items);
     for ack in receipt.characters {
         let mut live = ack.player.data();
         let unchanged_money = (live.money, live.money2) == ack.money;
@@ -159,8 +276,12 @@ pub(crate) fn commit_financial_snapshot(server: &GameServer, receipt: FinancialS
         live.removed_blocked.retain(|id| !blocked.contains(id));
         live.skills.removed.retain(|id| !skills.contains(id));
         live.quests.removed.retain(|id| !quests.contains(id));
+        // The saved snapshot flushed `ack.labor` into `accounts.labor`; whatever the live
+        // character spent since the capture stays pending for the next save.
+        live.labor_power_unsaved -= ack.labor;
+        let labor_pending = live.labor_power_unsaved != 0;
         drop(live);
-        if unchanged_money {
+        if unchanged_money && !labor_pending {
             let mut departing = server
                 .save
                 .departing
@@ -205,6 +326,22 @@ impl SaveManager {
             .cloned()
     }
 
+    /// Every departing player of `account_id` (a sibling character loading must flush their
+    /// pending labor first). The departing map lock is released before any player data lock.
+    pub(crate) fn pending_departures_of_account(&self, account_id: u32) -> Vec<PlayerRef> {
+        let candidates: Vec<PlayerRef> = self
+            .departing
+            .lock()
+            .expect("departure saves poisoned")
+            .values()
+            .cloned()
+            .collect();
+        candidates
+            .into_iter()
+            .filter(|p| p.data().account_id == account_id)
+            .collect()
+    }
+
     pub(crate) fn remember_departing(&self, player: &PlayerRef) {
         self.departing
             .lock()
@@ -239,6 +376,30 @@ impl SaveManager {
                 player.character_id
             );
             return false;
+        }
+        true
+    }
+
+    /// Caller owns `transaction_lock`. Saves every departing player of `account_id` that still
+    /// holds unflushed labor (`labor_power_unsaved != 0`), because `accounts.labor` is
+    /// account-level and a sibling character loading must not read it stale. Returns `false`
+    /// when a save fails or leaves labor pending.
+    pub(crate) async fn flush_account_labor_locked(
+        &self,
+        server: &GameServer,
+        account_id: u32,
+    ) -> bool {
+        for departing in self.pending_departures_of_account(account_id) {
+            // Read the pending delta into a local: no data lock is held across the await below.
+            let pending = departing.data().labor_power_unsaved != 0;
+            if !pending {
+                continue;
+            }
+            if !self.save_departing_locked(server, &departing).await
+                || departing.data().labor_power_unsaved != 0
+            {
+                return false;
+            }
         }
         true
     }

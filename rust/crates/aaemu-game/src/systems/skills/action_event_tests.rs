@@ -142,7 +142,7 @@ async fn delayed_disturbance_does_not_interrupt_a_removed_or_recycled_target() {
         let (server, _client, player, npc) = fixture(GameData::empty());
         let owner = WorldObject::from(&npc);
         let skill = SkillRun::new(Arc::new(super::tests::skill_template(1)), 1);
-        skill.state().tl_id = server.systems.skills.tl_ids.next_id();
+        skill.state().tl_id = server.systems.skills.tl_ids.next_id(0, 0);
         npc.data().unit.skill_state.skill_task = Some(super::state::SkillTaskSlot {
             kind: super::state::SkillTaskKind::Cast,
             skill: skill.clone(),
@@ -509,6 +509,7 @@ async fn an_equip_item_requirement_cannot_be_satisfied_by_an_item_in_the_bag() {
 async fn requirements_check_the_packet_doodad_and_resource_boundaries() {
     let mut data = GameData::empty();
     data.systems.quests.group_npcs.add(55, 1);
+    data.systems.quests.group_npcs.add(57, 2);
     let (server, _client, player, npc) = fixture(data);
     let owner = WorldObject::from(&player);
     let doodad = Entity::new(0x500, crate::models::doodad::Doodad::new(55));
@@ -546,6 +547,21 @@ async fn requirements_check_the_packet_doodad_and_resource_boundaries() {
         Some(&WorldObject::from(&npc))
     )
     .is_ok());
+    // value2 != 0: the target must NOT be in the (existing) group (Detection Orb, skill 16881).
+    requirement.value2 = 1;
+    for (group, accepted) in [(55, false), (57, true), (56, false)] {
+        requirement.value1 = group;
+        assert_eq!(
+            super::unit_reqs::validate(
+                &server,
+                &requirement,
+                &owner,
+                Some(&WorldObject::from(&npc))
+            )
+            .is_ok(),
+            accepted
+        );
+    }
     requirement.kind = 0x29;
     requirement.value1 = 2000;
     requirement.value2 = 600;
@@ -1053,7 +1069,7 @@ async fn disturb_casting_cancels_direct_casts_and_honors_zero_probability() {
     let (server, _client, player, npc) = fixture(GameData::empty());
     let owner = WorldObject::from(&npc);
     let skill = SkillRun::new(Arc::new(super::tests::skill_template(1)), 1);
-    skill.state().tl_id = server.systems.skills.tl_ids.next_id();
+    skill.state().tl_id = server.systems.skills.tl_ids.next_id(0, 0);
     npc.data().unit.skill_state.skill_task = Some(super::state::SkillTaskSlot {
         kind: super::state::SkillTaskKind::Cast,
         skill: skill.clone(),
@@ -1121,4 +1137,98 @@ async fn song_healing_and_mana_restoration_use_per_thousand_maximums() {
         &args,
     );
     assert_eq!(npc.data().unit.mp, 4000);
+}
+
+/// Captures `tracing` output of `f` (current thread only).
+fn capture_logs(f: impl FnOnce()) -> String {
+    use std::io::Write;
+    #[derive(Clone)]
+    struct Sink(Arc<std::sync::Mutex<Vec<u8>>>);
+    impl Write for Sink {
+        fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(b);
+            Ok(b.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let buf = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let sink = Sink(buf.clone());
+    let subscriber = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::DEBUG)
+        .with_ansi(false)
+        .with_writer(move || sink.clone())
+        .finish();
+    tracing::subscriber::with_default(subscriber, f);
+    let out = buf.lock().unwrap().clone();
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+fn watchers_of(server: &crate::GameServer, unit_id: u32) -> Vec<u32> {
+    server
+        .systems
+        .skills
+        .aggro_watch
+        .lock()
+        .unwrap()
+        .get(&unit_id)
+        .map(|s| s.iter().copied().collect())
+        .unwrap_or_default()
+}
+
+#[tokio::test]
+async fn dropping_an_aggro_table_unregisters_the_owner_from_the_abuser_watch() {
+    let (server, _client, player, npc) = fixture(GameData::empty());
+    let target = WorldObject::from(&player);
+    let holder = WorldObject::from(&npc);
+    super::combat::add_unit_aggro(&server, &holder, AggroKind::Damage, &target, 100);
+    assert_eq!(watchers_of(&server, player.obj_id), vec![npc.obj_id]);
+    // Npc.DoDie / ClearAllAggroTargetsAndCheckCombatState empty the whole table.
+    super::combat::drop_aggro_table(&server, &holder);
+    assert!(npc.data().unit.skill_state.aggro_table.is_empty());
+    assert!(watchers_of(&server, player.obj_id).is_empty());
+    // The abuser's death no longer fans out to the old holder: no warning, no entry.
+    let logs = capture_logs(|| super::combat::clear_incoming_aggro(&server, &target));
+    assert!(!logs.contains("Failed to remove"), "{logs}");
+}
+
+#[tokio::test]
+async fn no_fight_guard_in_add_unit_aggro_does_not_warn_for_absent_entries() {
+    const NO_FIGHT_BUFF: u32 = 4_500;
+    let mut data = GameData::empty();
+    data.systems.skills.add_buff(buff(NO_FIGHT_BUFF));
+    data.systems
+        .skills
+        .tagged_buffs
+        .insert(super::types::tags::NO_FIGHT, vec![NO_FIGHT_BUFF]);
+    let (server, _client, player, npc) = fixture(data);
+    let target = WorldObject::from(&player);
+    let holder = WorldObject::from(&npc);
+    super::buffs::add_buff_by_id(&server, &holder, NO_FIGHT_BUFF, &holder, 0);
+    assert!(super::buffs::check_buff_tag(
+        &server,
+        &holder,
+        super::types::tags::NO_FIGHT
+    ));
+    // A non-empty table that lacks the unit being added (the "Failed to remove" shape).
+    npc.data().unit.skill_state.aggro_table.insert(
+        0x999,
+        Aggro {
+            damage_aggro: 10,
+            ..Default::default()
+        },
+    );
+    let logs = capture_logs(|| {
+        assert!(!super::combat::add_unit_aggro(
+            &server,
+            &holder,
+            AggroKind::Damage,
+            &target,
+            10
+        ));
+    });
+    assert!(!logs.contains("Failed to remove"), "{logs}");
+    assert!(logs.contains("was not in the aggro table"), "{logs}");
+    assert!(npc.data().unit.skill_state.aggro_table.contains_key(&0x999));
 }

@@ -158,14 +158,15 @@ Each subsystem records its status here, in its own section only (see `CONTRIBUTI
 | Area (C#) | Rust | Status | Notes |
 |---|---|---|---|
 | `SkillManager` (+ `Sqlite*` effect / buff / plot loaders), `PlotManager`, `FormulaManager` remainder, `AnimationManager`, `AreaTriggers` shapes, `ModelManager` radii, `UnitRequirementsManager`, `TagsManager` (skills / buffs) | `systems/skills/data/` | done | Every skill / buff / effect / plot / tag / modifier / trigger / reagent / product / linear func / tolerance / anim / aoe shape table, incl. all 30+ effect types. Gated real-DB test `skills_real_compact_db` checks row counts. |
-| `Models/Game/Skills/{Skill,SkillCaster,SkillCastTarget,SkillObject,CastAction,SkillController*}`, `Core/Packets/{C2G,G2C}` skill / buff packets | `systems/skills/{types,packets,skill,handlers}.rs` | done | Byte-exact wire types (tested), `Skill.Use` / `Cast` / `Channeling` / `Apply` / `EndSkill` / `Stop`, GCD + cooldowns, mana, labor / vocation, reagents via `ItemSkillHooks`, auto attack loop, `CompressedGamePackets`. |
-| `Models/Game/Skills/Plots/*` | `systems/skills/plots.rs` | done | Plot tree execution (async), conditions 1..17, target info updates (area / random unit / random area), channeling finish, `SCPlotEvent` / `SCPlotEnded`. |
+| `Models/Game/Skills/{Skill,SkillCaster,SkillCastTarget,SkillObject,CastAction,SkillController*}`, `Core/Packets/{C2G,G2C}` skill / buff packets | `systems/skills/{types,packets,skill,handlers}.rs` | done | Byte-exact wire types (tested), `Skill.Use` / `Cast` / `Channeling` / `Apply` / `EndSkill` / `Stop`, GCD + cooldowns, mana, labor / vocation, reagents via `ItemSkillHooks`, auto attack loop, `CompressedGamePackets`. Data gap: 6 `quest_components.skill_id` values (20315, 11212, 17708, 13737, 11981, 13590) have no `skills` row. The C# `Unit.UseSkill` threw a NullReferenceException there; Rust skips the cast (the quest continues) and `unit_use_skill` warns once per skill id (`missing_skill_warned`), repeats go to debug. |
+| `Models/Game/Skills/Plots/*` | `systems/skills/plots.rs` | done | Plot tree execution (async), conditions 1..17, target info updates (area / random unit / random area), channeling finish, `SCPlotEvent` / `SCPlotEnded`. Deviation: the timeline-id release in plot end, `end_skill` and `stop_skill` is take-and-clear under the skill state lock (`SkillRun::take_tl_id`); C# did an unsynchronised `ReleaseId(TlId); TlId = 0`, so an interrupted plot skill could release the same id twice. The `Tried to release unused Id` warning names the last owner (caster obj id, skill id), like C# `AssignedUnit`. |
 | `Models/Game/Units/Buffs` behaviour, `Skills/Buff`, `Skills/Effects/{Buff,Damage,Heal,Dispel,RestoreMana,ManaBurn,Aggro,FlyingStateChange,SkillController,...}`, `CombatBuffs`, `BuffTriggers` | `systems/skills/{buffs,effects/*}.rs` | done | Start / dispel / tick tasks, tolerance, stack rules, charges, `TriggerRemoveOn`, tag removal, absorption, triggers, area ticks. Explicit dispel emits Dispelled without Timeout; natural expiry retains Timeout. This corrects the mirrored C# removal path, which invoked the FISH escape trigger when catch plot 792 dispelled FISH before lethal damage. Queued CREATED handling and existing removal packet order are retained. Refreshing permanent non-ticking buffs invalidates old timers without treating GetTimeLeft=-1 as expiry; finite expiration and permanent tick cadence remain scheduled. This corrects the mirrored C# refresh timer path. Special effects routed through `ExtHooks::route_special` where they belong to another subsystem. |
 | `Units/Unit` combat (`ReduceCurrentHp`, `DoDie`, aggro / tagging, `SetInBattle`, criminal / force attack, invisibility, `DoFallDamage`), `BaseUnit.CanAttack` / relations, regen, `UpdateGearBonuses`, all `Character` stat getters | `systems/skills/{combat,relation,stats,regen}.rs` | done | MaxHp / MaxMp etc. with buffs, passives and gear (`GearStats` hook). NPC death side effects through `NpcSkillHooks`. |
 | Learning / progression (`LearnSkill`, `LearnBuff`, `ResetSkills`, `SwapAbility`, `AddExp`, labor, game points) | `systems/skills/progress.rs` | done | Labor accrual uses zero-based actability steps into ordered `expert_limits`, matching inventory / regrade; step 4 caps at 50,000 (row id 5), avoiding the former row-id lookup that reduced it to 40,000. Capped gains and packet deltas have regression coverage. |
 | `Skills/Effects/SpecialEffects/*` (141 named `SpecialType` actions), `BubbleEffect`, `ImpulseEffect`, `PhysicalExplosionEffect` | `systems/skills/effects/{special/*,unit_fx}.rs`, `packets_special.rs` | partial | Ported actions and subsystem hooks are present, but historical logging placeholders do not establish gameplay completeness. Buff stealing, component-selective aggro copy/reset, target loss, NPC despawn, ongoing-buff cancellation and pet recovery now execute. RedeemBuff and ExplodeBuff still need verified formulas. Client visuals use the existing skill/plot notifications. 13 extra S->C packets, byte-exact tests. |
 | `Skills/SkillControllers/{Floating,Wandering,Leap,Dash,Rotate}` | `systems/skills/controllers.rs` | partial | Rotate uses native constructor/tick timing (`0x3924E1D0` / `0x392315C0`) with 1.2 controller7678 regression coverage. Generic Anchor and Flowgraph remain unverified; native 10.x Anchor parameter kinds1001..1039 differ from the 1.2 data kinds1..3. Harpoon ropes have a separate vehicles implementation. |
 | Movement hooks (`CSMoveUnit.RemoveEffects`, `Character.SetPosition` Move removal, fall damage) | `systems/skills/mod.rs` (`on_move_request`, `on_moved`) | done | Called from `world::session::move_unit`. |
+| `Skill.EndChanneling` target buff (`ChannelingTargetBuffId`) | `systems/skills/{skill,buffs}.rs` (`end_channeling`, `finish_effect_by_skill`) | deviation | **Deviation:** the C# `Buffs.RemoveEffect(templateId, skillId)` raised the buff's `OnTimeout` triggers on every removal; the Rust removal skips them for explicit removals (dispels, a stopped channel; see the FISH escape in `buff_removal_tests.rs`). Quest item grants hang on that trigger (GainItem on buff 3896 of skill 18449 'Extract Earth Crystal', 4 s channel under a 6 s buff, and the other channeling-target-buff quest skills of the item triage), so a channel that **runs to its end** now fires the target buff's Timeout triggers before removing it. A stopped / cancelled channel fires nothing (the C# granted the item then too). The caster-side `ChannelingBuffId` and buffs applied by skill effects (buff 1963 of 'Capture Crayfish') are unchanged: the latter expire on their own timer and fire Timeout already. |
 
 ### systems::npcs
 
@@ -182,6 +183,7 @@ Each subsystem records its status here, in its own section only (see `CONTRIBUTI
 | `Doodad` phase machine (`Use`, `DoFunc`, `DoPhaseFuncs`, `DoChangePhase`, `InitDoodad`, `OnSkillHit`, `FuncGroupId` setter, ToD triggers), 42 phase funcs, func tasks, `DoodadManager` runtime (Create, CreatePlayerDoodad, ChangeDoodadData, coffers), persistence (`doodads` table) | `doodad/{phase,phase_funcs,tasks,manager,db,logic}.rs` | partial | Serialized interactions, per-object counters, generation and handle guards for timers, ToD transitions, ordered MySQL persistence. Authored immediate logic/family pulses, spawn management groups and moving gimmicks are implemented. FlowGraph runs in the client. Logic delay descriptors 2/3 lack timing semantics; spawn groups 73–76 lack authored membership in shipped data. |
 | 79 non-phase funcs, 41 world interactions (`execute_interaction` for the skills InteractionEffect), coffers, bond / seats | `doodad/funcs/`, `doodad/interactions.rs`, `doodad/coffer.rs` | done | Items, loot, coffers through the economy `EconomyBridge`; skills, quests, housing through the bridges; instance funcs (`systems::instances`), `BindSlave` (`systems::vehicles`). Sticky parents are not modelled. |
 | SCDoodad* packets, doodad C->S packets (CSChangeDoodadData/Phase, CSCreateDoodad, CSSetLogicDoodad, CSSaveDoodadUccString, CSUnbondDoodad, CSCofferInteraction) | `doodad/packets.rs`, `doodad/coffer.rs` | done | Byte-exact tests. |
+| `CSCreateDoodadPacket` placement checks | `doodad/manager.rs` (`handle_create_doodad`, `PLACE_RANGE_SANITY`) | deviation | **Deviation:** the C# checked only the source item, public farm (`CanPlace`), house permission and labor. The Rust adds three checks: (1) the item template must be one of `item_ids_from_doodad` of the doodad (an unrelated item could place any doodad), (2) the doodad's `restrict_zone_id` must match the zone at the target, and (3) a placement range check. The range is horizontal (x / y only) with a 30 m sanity bound (`max(skill.max_range, 30)`): the planting skills (10953 sapling / animal, 25536 seeds) have `max_range` 2, but the 1.2 client does not enforce it (live placements arrive 10.5 m and 15.6 m away) and the server position of a walking player lags, so the earlier 3D `max(max_range, 10)` limit refused ordinary planting silently. A refusal now sends `TOO_FAR_AWAY` (154) to the client. `public_farm::can_place` logs the real reason (count limit / doodad not allowed in the farm kind) at warn. |
 | Heightmaps (`WorldCell` heightmap.dat, `GetHeight`, `GetReferenceHeight`), NPC reference height in `SCUnitStatePacket` | `heightmap.rs`, `world/unit_state.rs` | done | Lazy per cell (`PreLoadTerrain`); with `GeoDataMode` the navmesh height of `systems::ai::geodata` comes first. Median error 0.098 m vs 4 002 real spawn Z values. Used by the skill controllers / displacements, plots and NPC spawns. |
 | `GimmickManager`, `GimmickGameData`, `GimmickSpawner`, movement handlers | `gimmick/` | done | |
 | `AreaTriggerManager` (+ aoe_shapes, wi_group_wis), `SubZoneManager`, `SphereQuestManager` (world side) | `area_trigger.rs`, `subzone.rs`, `sphere_quest.rs` | done | Quest effects via `QuestsBridge`. Area membership compares entity identity, so reconnecting with a reused object ID leaves the retained old session and enters the new one; this corrects the mirrored C# ID-only comparison and restores active school auras. Unchanged entities and overlapping aura counts are retained. Sub-zone index scan of the pak is slow in debug (~25 s). |
@@ -227,10 +229,11 @@ connected by `systems::economy::wiring`).
 | `FriendMananger`, `CharacterFriends`, `CharacterBlocked` | `systems/social/friend.rs`, `packets/friend.rs` (`managers::friend` re-exports) | done | Add / remove friends (online or by DB name lookup), block / unblock (online only), status changes incl. `InParty`. |
 | `ChatManager`, `Models/Game/Chat` | `systems/social/chat.rs`, `session.rs` (`managers::chat` re-exports) | done | All channel kinds incl. party / raid / court, CleanUpChannels, party / raid / raid-leader / judge routing. User channels (`CSJoinUserChatChannel`) are log-only as in C#. |
 | `FactionManager` relations, `SystemFaction.GetRelationState`, `Unit/Character.SetFaction` | `systems/social/faction.rs`, `packets/faction.rs` | done | Relation table validated against compact.sqlite3 (gated test). Faction CS packets are log-only as in C#; every SCFaction* struct ported. |
-| `GameData/AchievementGameData` (`achievements`, `achievement_objectives`, `pre_completed_achievements`, `char_records`), `Models/Game/Achievement` | `systems/social/achievement.rs` (`server.game_data.systems.social.achievements`) | done | Loader + port of `AchievementGameDataTests`; gated real-DB test `achievement_game_data_real_compact_db`. The C# has no accessors / manager, so nothing reads the tables yet. |
+| `GameData/AchievementGameData` (`achievements`, `achievement_objectives`, `pre_completed_achievements`, `char_records`), `Models/Game/Achievement` | `systems/social/achievement.rs` (`server.game_data.systems.social.achievements`) | done | Loader + port of `AchievementGameDataTests`; gated real-DB test `achievement_game_data_real_compact_db`. The C# 1.2 tree has no manager; the Rust achievement manager / runtime / hooks / rewards (`achievement_*.rs`) read them (see "Achievement producers" below). |
 | `DuelManager`, `Models/Game/Duels`, duel tasks | `systems/social/duel.rs`, `packets/duel.rs` | done | Request / accept (flag via hook) / start / stop / cancel, distance + HP checks, end timer (tokio tasks; `set_delays` test hook). |
 | `CrimeManager`, `TrialManager`, `Models/Game/Crime`, `TrialUpdateTask` | `systems/social/{crime,trial}.rs`, `packets/trial.rs` | done | Crime table load / save (`AfterItems`), report / evidence (hooks), bot reports, trial / jury flow with 5 s tick, audience, bounty board (empty list as C#). Arrests, authenticated jury choices, guilty pleas, acquittals, court cleanup and reconnect jail enforcement have packet-flow regressions; prisoner buffs persist remaining online time. |
 | `DominionData`, `Models/Game/Achievement`, rename / chat bubble / NPC chat / spam packets | `systems/social/{dominion,achievement}.rs`, `packets/misc.rs` | done (data + packets) | No C# manager drives them in 1.2. |
+| `RankingGameData` (later C# history), 1.2 ranking packets | `systems/social/ranking_{data,packets,runtime,manager,persistence}.rs` | done (arena + fishing boards) | Not in the 1.2 C#; Rust only. Request path, MySQL persistence (`character_rank_scores`, `rank_period_payouts`), score hooks and period-close reward letters: see "Ranking boards" under Known deviations. |
 | `RadarManager` | – | not social | Telescope / fish school registration from buff templates: skills / npcs. |
 
 Cross-subsystem calls: wired in phase 3b (see "Phase 3b wiring": trial court doodads / NPCs after the spawns, `SocialHooks` by social itself, crime evidence / arrests / team and duel queries from skills, loot rules from economy, court checks in portals and instances, `force_dismount` through vehicles). Still open: teleports -> `session::on_moved` (C# `Character.SetPosition` -> `TeamManager.UpdatePosition`; plain movement does not call it in C# either).
@@ -259,6 +262,14 @@ Economy hooks (`server.systems.housing.hooks`): installed by `economy::bridges::
 | `QuestManager` evaluation queue / timers / daily reset task | `mod.rs` | done | `QuestManagerRunQueueTask` as a 1 ms tokio task; timers as tokio tasks; daily reset at 00:00 UTC. |
 | `UnitRequirementsGameData` (`CanComponentRun`, `CanTriggerSphere`) + `UnitReqs.Validate` | `unit_reqs.rs` | done | `ReqSubject` / `ReqEnv` traits (owner = locked character, target = snapshot). `CanUseSkill` is the skills subsystem's (can reuse `validate`). |
 | `SphereQuestManager`, `SphereQuest*`, `SphereGameData` (spheres, sphere_quests, `IsInsideAreaSphere`, `GetSphereIdFromQuest`) | `spheres.rs`, `data.rs` | done | `quest_sign_sphere.g` of `main_world`; one manager per server (500 ms tick). Other `sphere_*` tables not loaded (unused by quests). |
+| `QuestActObjZoneKill.OnZoneKill` level window | `systems/quests/acts.rs` (`level_in_range`) | deviation | **Deviation:** a level bound of 0 is "unset". The 1.2 data has `lv_min_npc` / `lv_max_npc` = 0 / 0 on 103 of the 110 NPC-kill acts (`lv_min` / `lv_max` are the questor's window and differ from the NPC bounds on the 7 acts that set both), and the C# rejected every real victim against the raw 0..0 range, so those quests could never complete. The player-kill window uses the same rule. |
+| `QuestActObjZoneKill` team share | `systems/quests/acts.rs`, `events.rs` (`run_deferred`) | deviation | **Deviation:** only the original killer shares the kill (the `ObjTalk` / `ObjInteraction` guard). The C# re-delegated `OnZoneKill` from every receiver ("to avoid loops") and bounced between members holding the same quest without end. NPC deaths raise the event for each eligible party member, who all share it again, so in the C# a member counted the kill once directly and once per sharing member. **Deviation:** each member now counts a kill once per act. `Npc.DoDie` (`npcs/npc/death.rs`) notes the victim in the `direct_kill_credits` of everyone it hands a direct event (eligible players, the fallback killer, Tag Share contributors) before the first event is raised, and a team-shared `ObjZoneKill` ignores a victim in that list and counts a shared victim once per (quest, act) (`CharacterSkillState::claim_shared_kill_credit`, 30 s memory because object ids are reused). Team members out of range, who get no direct event, still receive the share (once). |
+| `QuestActObjZoneKill` PvP kills | `systems/skills/combat.rs` (`raise_pvp_zone_kill`, from `character_death_tail`) | deviation | **Deviation:** the C# only raised `OnZoneKill` from `Npc.DoDie` (`DoOnMonsterHuntEvents`), so the 16 `count_player_kill > 0` acts (e.g. quests 5982-5991) never progressed. A player killed by another player's hand (hostile relation, the same branch that awards PvP honor) now raises `ZoneKill` (zone group of the victim, killer and victim as `KillUnit`s) for the killer only; `team_share` acts hand it to the killer's team through the usual `TeamEvent`. Friendly-fire kills and mate / slave kills raise nothing. |
+| `QuestActObjAggro` acceptor | `systems/quests/acts.rs` | done | Mirrors the C#: the victim must be the quest's acceptor NPC. All 30 aggro quests are started by `NpcTemplate.EngageCombatGiveQuestId` (`AddQuestFromNpc`), which sets that acceptor; a quest added by another path (GM command) cannot count aggro. |
+| `Transform.World` for quest positions | `systems/quests/events.rs` (`world_position`), `spheres.rs` | deviation | **Deviation:** quest environment / target / nearby-NPC / sphere-starter positions are world positions (composed through the parent chain). The raw local transform of a mounted rider or ship passenger is parent-relative and never entered a sphere. |
+| `QuestActConAcceptItemGain` start | `systems/quests/events.rs` (`on_items_acquired`), `engine.rs` (`start_quests_from_item_gain`), `data.rs` (`item_gain_starters`) | deviation | **Deviation:** gaining an item starts every quest with a `ConAcceptItemGain` on its Start component (not active, not completed unless repeatable, count in the bag reached, unit requirements met) with the item as acceptor. The C# never did: `Inventory.cs` has the `OnItemGather` call commented out and `RunAct` only compared the acceptor, so the Blue Salt Brotherhood letters (4881-4888), 5450, 6160 and the level 1 "Today's To-do" quests (1955-1961, 2140-2146) could not be started. Inferred from the data (those items have no `item_accept_quests` row); the retail trigger is not verified. The 15 "starter item without `starter_quests` entry" simulator notes were all of this kind: the quests have no `item_accept_quests` binding at all, so there was no mapping to fix. |
+| Sphere state across logout | `systems/quests/spheres.rs` (`forget_character`), `mod.rs` (`on_leave_world`) | deviation | **Deviation:** leaving the world drops the character's sphere triggers and its last starter-sphere position. The C# kept both, so a re-login inside a quest sphere compared against the position from the previous session and never raised the enter event (stuck sphere quests). The tick also prunes positions of characters that are no longer in the world. |
+| `with_quests` panic safety | `systems/quests/events.rs` | deviation | **Deviation:** a panic in a quest operation (or a queued one) is caught around the locked section, the quest state is put back, the thread-local active entry removed and the panic resumed. Without it the character's later quest events on that thread were queued forever. |
 | Quest packets (CS: StartQuestContext, CompleteQuestContext, DropQuestContext, QuestTalkMade, QuestStartWith, TryQuestCompleteAsLetItDone, RestartMainQuest, SaveTutorial, StartedCinema, CompletedCinema; SC: QuestContextStarted/Updated/Completed/Reset, QuestRewardedByMail, DoodadQuestAccept, TutorialSaved, AppellationGained) | `packets.rs` | done | Byte-exact tests. `SCQuestsPacket` now writes `Quest.Id` as `long`. |
 | `QuestCommandUtil` / `QuestCmd` (GM) | `systems/services/commands/scripts/quest_cmd.rs` | done | `quests::events::send_quests` / `send_completed_quests` added. |
 
@@ -314,7 +325,7 @@ Cross-subsystem: mates are despawned on dungeon entry and `PlayerCanEnter` check
 | `ModelManager`, `Models/Game/Models/*` | `systems/services/models.rs` | done | Counts checked against compact.sqlite3 (gated test). |
 | `MusicManager`, `SongData`, music packets (`CSSaveUserMusicNotesPacket`, `CSSendUserMusicPacket`, `CSRequestMusicNotesPacket`, `CSEndMusicPacket`, `SCUserNoteLoadedPacket`) | `systems/services/music.rs` | done | `CreateSheetMusic` item work through `SheetMusicInventory` (economy; its `ItemSkillHooks::midi_cache` / `create_sheet_music` call this manager). |
 | `RadarManager`, `TelescopeRegistrationEntry`, telescope / fish finder packets | `systems/services/radar.rs` | done | Registered from `BuffTemplate.Start` / `Dispel` (skills), unregistered on leave. Ship lists through `RadarShipHooks` (vehicles). |
-| `Models/Tasks/ShutdownTask`, `SCNoticeMessagePacket` | `systems/services/shutdown.rs` | done | Count-down notices, final save, process exit; held in `server.systems.services.shutdown_task` (`SaveManager.ShutdownTask`). Buy-back wipe through `BUYBACK_WIPE` (economy). |
+| `Models/Tasks/ShutdownTask`, `SCNoticeMessagePacket` | `systems/services/shutdown.rs` | done | Count-down notices, final save, process exit; held in `server.systems.services.shutdown_task` (`SaveManager.ShutdownTask`). Buy-back wipe through `BUYBACK_WIPE` (economy). **Deviation:** the C# saved and exited without telling the clients (every client showed a disconnect error and quit). At T-0 the Rust task first broadcasts "The server is shutting down for maintenance.", refuses world entries (`GameServer::is_shutting_down`: `X2EnterWorld` / `CSSelectCharacter` / `CSSpawnCharacter` get `SCKicked(2)` + close), sends every connection `ConnCommand::ReturnToWorldList` (in-world: `LeaveWorldTask` to character select with no timer, i.e. save + `SCLeaveWorldGranted(1)` + `ChangeState(0)`; the client stays on its game connection and loads the lobby, so the world list request follows 2 s later: `GLPlayerReconnect` -> `LGPlayerReconnect` -> `SCReconnectAuth`, the `CSLeaveWorld(ServerSelect)` path, re-sent every 2 s to every connection still there, new ones included), waits up to 10 s for the clients to disconnect, kicks the rest with `SCKicked(2, "Server maintenance")`, then does the final save (3 tries), `shutdown::stop_server` (shared with the Ctrl+C path in `main.rs`) and the exit. A failed final save aborts the shutdown (as before: no exit) and reopens world entry; `/scripts shutdown cancel` is refused once T-0 passed. `/scripts forcedshutdown` still exits at once. |
 | `SusManager` | `systems/services/sus.rs` | done | `audit_char_sus` log + speed analysis; the 5 s `FinalizeTransform` caller and the social / npcs log calls are not wired yet (see deviations). |
 | `GameData/Framework` (`GameDataManager`, `IGameDataLoader`, `GameDataAttribute`) | `data/mod.rs`, `systems::SystemsData::load` | done (by design) | The reflection-driven loader list is the explicit `GameData::load` + per-subsystem `Data::load`; `Load` / `PostLoad` order is the call order there. |
 | `Models/Tasks/SaveTask/SaveTickStartTask` | `managers/save.rs` | done (by design) | The periodic save is a Tokio interval instead of a `TaskManager` task (not counted in `GetQueueCount`). |
@@ -328,7 +339,7 @@ Cross-subsystem: mates are despawned on dungeon entry and `PlayerCanEnter` check
 | `NpcAi` framework, `AiUtils.GetAiByType`, all `AiCharacters/**`, every `Behavior` (incl. Archer / BigMonster / Flytrap / WildBoar / AlmightyAttack / Talk / FollowPath / Return / Dead / Despawning / Spawning / Hold / Idle / Roaming / Alert / RunCommandSet / DoNothing) | `systems/ai/{framework,behaviors}.rs` | done | State machine, GoTo overrides, transitions, check intervals, skill queue / selection, aggression / alert / help, return, follow path, greetings (`SCNpcChatMessage` + `SCPlaySound`). |
 | `AIManager` (100 ms tick, `AddAi`, region activity) | `systems/ai/manager.rs` | done | Per-AI mutex + queued calls; activity-based candidate selection and bounded `World.AiWorkerThreads` chunk batches (see deviations). |
 | AI members of `Npc` / `Unit` (`MoveTowards`, `LookTowards`, `StopMovement`, `SetTarget`, `CurrentAggroTarget`, `CurrentGameStance`, `BaseMoveSpeed`, `OnDamageReceived`, `CheckIfEmptyAggroToReturn`, `ClearAllAggro`, `FindPath`), `NpcEvents` | `systems/ai/{npc,combat,skills,npc_events}.rs` | done | `SCOneUnitMovementPacket` movement, aggro tables through the skills API. |
-| `AiPathsManager` (`Data/Path`), `AiPathHandler`, `Units/Route/Simulation` | `systems/ai/{path_handler,simulation}.rs` | done | Every `Data/Path/*.path` file loads (test). |
+| `AiPathsManager` (`Data/Path`), `AiPathHandler`, `Units/Route/Simulation` | `systems/ai/{path_handler,simulation}.rs` | done | Every `Data/Path/*.path` file loads (test). Routes are generated from the 10.x client, see the 2026-10-16 note. |
 | `AiGeoDataManager`, CryEngine `.bai` readers (net / areas / verts missions), A* `PathNode`, `GetHeight`, `ReducePath` | `systems/ai/geodata/` | done | `GeoDataMode` only. Engine-faithful readers and a merged cross-sector graph (see "geodata deviations" below). 1.2 pak: 9 447 net (2 299 of them v54) + 9 447 verts (2 299 v1) + 3 265 areas files parse with 0 trailing bytes; 279 path areas files below v21 are rejected by version like the engine (they do not fit the v21 layout either), the 7 399 `hidemission` files are not read. The areas reader matched the C# reader on every dumped file (differential harness; path areas < v21 now excluded on purpose). Gated tests: `real_ai_*`, `real_nav_*` (`AAEMU_GAME_PAK`, `AAEMU_BAI_SAMPLES=D:\aa-re\zone\agent_geom\data`). |
 | `Gimmick.MoveTowards`, flytrap gimmick | `systems/ai/gimmick.rs` | done | |
 | Hooks for npcs / skills (create AI by `ai_file_id`, spawn / engage / death / delete / faction, NPC control effect, spyglass), AStar GM commands | `systems/ai/hooks.rs` | done | `AiHooks` in `server.systems.hooks.ai`; the npcs `NpcSkills` calls the AI parts of `NpcSkillHooks` directly (no decorator); `AiAStarHooks` installed into the services `ASTAR_HOOKS`. |
@@ -359,9 +370,13 @@ checks both placements, settled draft and driven motion at two headings.
 The server's ship transform now uses the same visual quaternion as its movement packet. This
 fixes the mirrored C# yaw-in-pitch bug for attached passengers and parts without changing the
 wire order; a placement test compares the transform and quantized packet quaternion.
-Standing-on-object movement preserves the current parent for `GcId == 1`. Captured 1.2
-`gcFlags=1` packets carry a primary local position and an auxiliary world position; a late
-packet whose supporting object has disappeared uses the world backup. A packet-flow test
+Standing-on-object movement preserves the current parent for `GcId == 1`. Every packet with
+actor flag 0x20 carries a primary position local to the supporting object and an auxiliary world
+position; `gcFlags` only selects the id space of `GcId` (1 unit, 2 gimmick, 4 doodad — 10.x
+`x2game-dev_dedicate` writer/readers, matching captured 1.2 ship and seat-doodad packets). A
+packet whose supporting object is unknown or has disappeared uses the world backup for any
+`gcFlags`; only the unit case did before, so standing on an unresolved doodad placed the
+character at the world origin, under the sea (false `SCUnderWaterPacket` on dry land). A packet-flow test
 checks a rotated ship, the current-parent sentinel, walking off with a stale header flag and
 the missing-parent backup. This fixes false origin jumps when leaving a ship.
 Seated slave passengers ignore late unit walking updates until the ordinary discard clears
@@ -487,6 +502,20 @@ blobs, 1.0 GB heap of which about 600 MB are the heightmap cells, 8 s; 1.0 µs p
   `cryaisystem_dedicate` direct route `0x31062728`, `COPStick::RegeneratePath` `0x310F18E8`
   and target-movement regeneration in `COPStick::Execute` `0x310F24D8`. These are adaptations
   of the existing 1.2 chase and wire format, not a complete native goal-pipe implementation.
+* **Combat chase follow-up (2026-10-16)**: (1) flyers (`ActorModel.MovementId == 2`) and
+  underwater creatures never plan or follow a navmesh route: the graph is a walking surface,
+  its ground-level, detouring waypoints dragged them off the straight 3D line to the victim
+  (`behaviors::find_path` / `moves_freely`; any leftover `found_path` is dropped). (2) Replan
+  hysteresis: a route is replanned when the victim has moved more than
+  max(2 m, 20 % of the NPC-to-victim distance) from the route end and at least 500 ms have
+  passed since the last plan, immediately for a new victim, and when a successfully planned
+  route is exhausted while the victim is still out of range (same 500 ms limit). The 0.5 m
+  model-size threshold replanned on position wobble and flipped the route around obstacles.
+  (3) `found_path`, the cached end point and the plan bookkeeping (`NpcAi.chase_path`) are
+  cleared on entering any combat behavior, `ReturnState` or `Dead` and by `SetTarget(null)`,
+  so a re-aggro against a victim standing in the same spot plans from the NPC's new position.
+  Each replan logs at `debug` with its reason (`new target` / `target moved` /
+  `path exhausted`).
 
 Reference: the 10.0.2.13 `cryaisystem_dedicate.dll` (image base 0x31000000), notes in
 `D:\aa-re\zone\agent_geom\sub_navmesh.md` (§2 formats, §5 gaps) and
@@ -549,8 +578,27 @@ Reference: the 10.0.2.13 `cryaisystem_dedicate.dll` (image base 0x31000000), not
   only through blocked links
   (raw-file BFS agrees); the old "routes" were presumably the C# position-based neighbour lookup jumping
   between unconnected nodes and the iteration cut-off.
-* Kept on purpose: the A* step cost `G` is the distance from the link's source to the goal
-  (C# quirk, `sub_navmesh.md` §5.11), the linear open-set scan and the iteration limit;
+* **A* cost** (`astar.rs`; replaces the C# quirk `sub_navmesh.md` §5.11): `G` is the accumulated
+  2D route length (node position to the middle of the shared edge to the next node), `H` the 2D
+  distance from the node to the goal node (admissible), the open set is a binary heap with
+  re-opening on a cheaper `G`, and the iteration limit is `ceil(2D distance * 20) + 500`. The C#
+  used `G` = distance from the link's source node to the goal, 3D, i.e. a greedy search on node
+  heights. Node z values of huge navmesh triangles are unreliable (a centroid can sit 100 m
+  below the ground its triangle covers), which sent chasing NPCs on ~100 m detours around a
+  12 m gap (Solzreed Peninsula harpies: triangles 7349 and 7263 fanned around one apex, the
+  3-hop corridor through two z~11 centroids lost against an eastern chain at the goal's z).
+* **Smooth routes** (`funnel.rs`, `PathNode::find_smooth_path`, used by `npc_find_path`): a
+  straight segment that only crosses linked, passable triangles (a triangle walk over the
+  shared edges) and no forbidden area is the route without a search; otherwise the A* corridor
+  is pulled tight with the funnel algorithm through the shared edges (corners moved
+  `DEFAULT_AGENT_RADIUS` inward), rejected when a leg crosses a forbidden area. The way points
+  are the NPC, the corners and the target (as the native direct path does, actor positions
+  instead of graph centroids); corner heights come from the raw heightmap, else are
+  interpolated, since the triangle plane and node z are unreliable on large triangles. When the
+  navmesh cannot give such a route (waypoint nodes, unknown edges, iteration limit, forbidden
+  area) `npc_find_path` keeps the C# pipeline: node positions, `ReducePath`. The `AStar`
+  command and `Ai.FindPath` hook still use that pipeline (on the new search).
+* Kept on purpose: the iteration limit (larger), the 2 m Douglas-Peucker of `FindPath`,
   `FindClosestToTheCurrent`, `ReducePath`, `CheckImpossibleWalk` are unchanged. Not done: link
   exposure costs, node flags, nav modifiers in the search, physics walkability
   (`CheckWalkability` 0x3100B214), the engine's 3x3 streaming window.
@@ -609,8 +657,9 @@ Deviations of the wiring:
   the character through a weak reference held by its time observer.
 
 C# bugs mirrored by the wiring: a fall death generates crime evidence against the victim
-itself (the faller is its own "killer"); the killing blow's aggro / tagger is added to the dead
-NPC after `DoDie` cleared them (`OnDamageReceived` runs after `ReduceCurrentHp`).
+itself (the faller is its own "killer"). The killing blow's aggro / tagger used to be added to
+the dead NPC after `DoDie` cleared them (`OnDamageReceived` runs after `ReduceCurrentHp`); that
+is no longer mirrored (see "Known deviations", dead NPC returned and healed).
 
 ## Known deviations from the C#
 
@@ -626,9 +675,27 @@ NPC after `DoDie` cleared them (`OnDamageReceived` runs after `ReduceCurrentHp`)
   the per-packet `Debug` / `Trace` lines dominated the send path with many players in view
   (`RUST_LOG=info,aaemu_game::net=trace` restores the packet log); the log files are written by
   a background thread.
+* systems::skills (item-cast plot end): `Plot.RunAsync` holds the `SkillSourceItem` object resolved
+  when the cast started and sends `ItemUnlock` for it even when the plot consumed it. Here the
+  item is looked up again at the plot end (`plots::finish_item_plot`,
+  `ItemSkillHooks::unlock_item`); a source item that is gone (the last stone of a stack of the
+  stone-throwing plot 349, skill 11268, a `use_skill_as_reagent` item the effects consume) has
+  nothing left to unlock, so the packet is skipped with a `debug!` (plot / skill / item id)
+  instead of the former `ERROR` ("SkillSourceItem ... no longer exists").
+  `Character.ItemUse(item)` of the plot end takes the template id captured at cast start
+  (`QuestSkillHooks::item_use_template`) instead of looking the item up by id, so the quest
+  item-use event still fires for a consumed source item (quests 1315, 3541), as in the C#.
 * net (game connections): sending never blocks and C# had no limit; here a client with more than
   16 MiB queued, or one that accepts no data for 20 s, is disconnected (`net::outbox`,
   `net::listener`). Broadcasts encode a packet once for all recipients.
+* stream (`:1250`, public): a stream connection that has not completed `CTJoin` and sends an
+  unknown opcode (or a frame shorter than an opcode) is closed, logged at `warn`; C#
+  `HandleUnknownPacket` logged at error and kept the connection. A connection that does not join
+  within 30 s of connecting (`stream::listener::JOIN_TIMEOUT`, also covers a stuck partial frame)
+  is closed. Joined connections keep the C# behaviour (log and ignore). Unknown-packet dumps
+  (stream, game, login, login<->game link) are capped to 64 bytes plus the total length
+  (`aaemu_commons::net::hex_dump`) so a peer cannot flood the log; a malformed stream packet body
+  logs at `warn`, and an unjoined connection's read failure no longer logs at `error`.
 * systems::skills (character creation): the chosen ability's first starting spell occupies
   hotbar slot 1. The shared action originally assigned there moves to the starter's free slot,
   retaining the other authored utility and supply shortcuts. Further starting spells skip
@@ -637,6 +704,13 @@ NPC after `DoDie` cleared them (`OnDamageReceived` runs after `ReduceCurrentHp`)
 * `LGPlayerEnter` for an already registered connection id: C# `Dictionary.Add` throws inside the
   login handler, which has no catch (the exception escapes into the network client, the world is
   shown inactive afterwards). Rust replaces the stale entry and replies 0 (see "Live testing").
+* systems::skills / systems::ai (dead NPC returned and healed): the `DamageEffect` tail
+  (`SCAiAggroPacket`, `AddUnitAggro`, `Npc.OnDamageReceived`) is skipped when the hit killed the
+  NPC, and `CheckIfEmptyAggroToReturn` never sends a dead NPC to `ReturnState`. In the C# order the
+  killer was re-added to the corpse's aggro table; when the NPC's `GoToDead` ran after that tail
+  (its AI busy on another thread), `DeadBehavior`'s `ClearAllAggro` sent the corpse home and
+  `ReturnState` restored its hp, so town guards kept fighting the mob they had killed (gray hp
+  bar in the client). Test: `ai::flow_tests::guard_kill_while_the_mob_ai_is_busy_keeps_the_mob_dead`.
 * `Character.Load` for a character with InfamyPoint >= 3000: the Wanted / Contemptuous buffs are
   added and the faction becomes Pirate as in C#; `SetFaction`'s side effects (house factions,
   `ExpeditionManager.Kick(this.Connection, ...)` — which throws on the null lobby connection and
@@ -694,6 +768,8 @@ NPC after `DoDie` cleared them (`OnDamageReceived` runs after `ReduceCurrentHp`)
   item; an item in a third container is treated as a phantom item). Where the C# throws
   (`KeyNotFoundException`, `NullReferenceException`, `AcquireDefaultItem` failure), the port logs
   and aborts the operation; `Wipe` drops an item `CanDestroy` refuses instead of looping forever.
+  The "no longer exists, possibly a phantom item" case (client request naming an item the player no longer holds) is
+  looked up in the player's containers only and logged at `warn` with the full request, not at the C#'s `Logger.Error`.
 * systems::economy: trade items are kept by id (an item no longer in the giver's containers or put
   up twice is an error); a missing trade partner is ignored instead of half-applying the change.
   Leave-world and hard disconnect cancel the departing actor's trade and prune its invitations
@@ -755,6 +831,37 @@ NPC after `DoDie` cleared them (`OnDamageReceived` runs after `ReduceCurrentHp`)
   reporting, per-quest NPC/doodad reporting, doodad reward selection/finalization, and OR
   requirement evaluation. Timed saved deadlines, aggro credit, CheckSphere, and authored
   content gaps remain tracked in `Docs/wiki/Quest-Audit.md`.
+* systems::quests (engine fixes, quest-audit 2026-10-17):
+  - `TryCompleteQuestAsLetItDone` (C# only set `Step = Reward`): the quest also gets the
+    `Completed` status, and a quest without a Reward step is finished at once (C# hung there:
+    quest 5134 and the data stubs). With a Ready step but no Reward step the early completion
+    turns the quest in at the Ready step (report acts satisfied, so its copper / items are paid);
+    with neither step it completes directly. No level based exp / copper is added for a quest
+    without a Reward step: the C# only added it while running the Reward step's components, and
+    the 328 level>0 quests without a Reward component are equipment upgrade stages, instance
+    staging quests and `reserve` stubs whose reward is the item or nothing.
+  - `DropQuest` runs the act cleanup (`QuestCleanup`, consuming cleanup-only items) for every
+    quest that reached its Reward step or `Completed` status, so early-completed quests no
+    longer keep their cleanup items (the C# ran it for every drop; the Rust port restricted
+    it to completions, which the early-completion path never matched).
+  - Selective rewards: the client sends a 1-based index (`quest_context_task` Lua:
+    `GetSelectiveItemIndex()` must be >= 1 when `GetQuestContextRewardSelectiveItemAllCount` is
+    > 0, and is passed unchanged to `TryCompleteQuestContext`), matching the 1-based
+    `ThisSelectiveIndex`. Quests that reach their Reward step without a valid choice (no report
+    act: auto-complete / journal reports send 0) now get the first selective item instead of none.
+  - A saved quest with status Ready on its Progress step is legal for LetItDone and score
+    quests (the status shows "ready to turn in", the step is left by a report). On any other
+    quest the status is stale: `load_from_rows` resets it to Progress and the load evaluation
+    promotes the quest to Ready when the objectives are complete.
+  - A score quest whose Progress step has no objective acts (5641: score 100, no acts) counts
+    its score as reached (C#: stuck forever). A `COMPLETE_QUEST_CONTEXT` requirement that names
+    the component's own quest (6596) is dropped at load (C#: never acceptable).
+  - `CompletedQuest.id` is 32 bits (the C# `ushort` wrapped for quest ids >= 4194304 and marked
+    nonexistent quest 3805700 instead of the event quests 8000001-8000004). The column is
+    `int unsigned`, stored rows are unchanged. `SCCompletedQuests` has a 16 bit block id, so
+    such blocks are not sent (the client cannot show them); a warning names the first one.
+  - Refused quest requests (`AddQuest`, `TryCompleteQuestAsLetItDone`) are logged at WARN with
+    character, quest and reason; the same refusal repeated within a minute goes to DEBUG.
 * systems::social: saves of guilds / families run inline in the handler (C# synchronous); a
   failed guild save keeps the removed-member ids for the next attempt. `ExpeditionConfig`
   defaults to the shipped `Expedition.json` (C# throws without the section). Player names /
@@ -863,6 +970,17 @@ NPC after `DoDie` cleared them (`OnDamageReceived` runs after `ReduceCurrentHp`)
   no spawn commands): screenshots show the Mistfiend and Wisp, and telemetry reported all
   six `npc_fogmonster` Mistfiend entities at cave heights below the terrain, plus a Mist
   Skeleton. This does not establish retail population density or validate every cave.
+* systems::npcs (2026-10-14): scheduled NPC groups now honor their event window through the
+  whole ordinary spawn lifecycle (Vile Gourdhead 14312 is the reference: its member rows
+  produce AUTOCREATED 15942 and NORMAL 15948 with schedules 53/54/55). `HasScheduledSpawner`
+  evaluates each candidate spawner's own schedule rows instead of looking every entry up
+  through the clone's template, so the AUTOCREATED fallback cannot spawn the event NPC before,
+  during or after the event (`NotStarted` / `InProgress` / `Ended` all suppress it). The
+  despawn check was inverted for live events: `InProgress` retains the event NPCs and
+  `NotStarted` / `Ended` schedule removal through the ordinary despawn / respawn tick, while
+  ordinary no-schedule NPCs and authored game-clock windows behave as before. Dated event rows
+  do not become recurring: the shipped October 16-30 2013 Halloween window stays expired.
+  Regression tests: `npc/spawner_schedule_tests.rs`.
 * `systems::npcs`: doodad func timers are tokio tasks (cancel = generation bump); `DoodadManager.Create`'s `Task.Run(InitDoodad)` is a spawned task; `TimeManager.OnTimeOfDayChange` runs from a 10 s poller. `GetNpcSpawner` template rewrites do not propagate to already loaded spawners; the "first" concurrent-dictionary entry is the lowest key; spawn files are processed in sorted name order (C# `Directory.GetFiles` order is unspecified). Portal book deletions are written at the next periodic save. Debug messages check only the character's access level. Coffer slot counting stops at 255 (C# loops forever). Where the C# would throw on a null / failed cast the Rust code returns quietly. Sticky parents are not modelled.
 * systems::housing: dates are stored with second precision (unix seconds); `DateTime.MinValue`
   rows load as 0, so a manually inserted house with both dates at MinValue gets 1970-01-15 as
@@ -904,6 +1022,14 @@ NPC after `DoDie` cleared them (`OnDamageReceived` runs after `ReduceCurrentHp`)
 * systems::vehicles: a missing unit formula evaluates to 0 (C# NullReferenceException); index
   errors of `NextPoint` / `ShipyardSteps[-1]` are logged and end the call (C# exceptions).
 
+* systems::services / skills / economy (RPA-02): the C# `LaborPower` setter wrote
+  `accounts.labor` on every change; Rust records the change in `Character.labor_power_unsaved`
+  and `save_character` adds it to `accounts.labor` in the save transaction (save acks subtract
+  only the captured delta). Online regeneration adds to the cached balance instead of
+  rewriting the account row from the database value. Offline labor is one atomic capped update.
+  The tick resolves the character under the save transaction lock (serialized with
+  `select_character`'s load and world registration). Before an offline write, it flushes a
+  departing sibling's pending labor (`SaveManager::flush_account_labor_locked`).
 * systems::services: the WebApi 500 page shows the Rust error chain instead of a .NET stack
   trace, and System.Text.Json / NotSupportedException messages are close paraphrases. Character
   `CreatedAt` of characters created in the running session is written without the `Z` of a
@@ -976,6 +1102,16 @@ NPC after `DoDie` cleared them (`OnDamageReceived` runs after `ReduceCurrentHp`)
   each pending slot's individual respawn deadline are preserved. Focused tests in
   `spawner_population_tests.rs` cover the limits, deadlines and direct-delete reconciliation.
 
+* systems::npcs (2026-10-16): a corpse / queued despawn timer that fires after its NPC was
+  already deleted directly (and so reconciled out of `SpawnedNpcs`, see above) is an idempotent
+  no-op: `NpcSpawner::despawn` logs the missing entry at debug instead of the C# warning
+  `NPC ... not found in SpawnedNpcs` when the object has already left the world; the warning stays
+  for an NPC that is still a live world object but missing from its list. A stale handle whose
+  object id was released and reused by another NPC (GM `despawn` of a corpse with pending
+  timers) is skipped entirely, and `check_respawns_tick` no longer releases the id / spawner link
+  of the NPC that reused it (the C# `Despawn` and its caller act on the id regardless).
+  Tests in `spawner_population_tests.rs`.
+
 * systems::npcs (2026-10-14): the active-region spawner tick is a bounded activation pass
   instead of the per-second sweep that updated every spawner whose authored player radius was
   entered. Ordinary spawners are indexed per instance and authored 64 m region and queried
@@ -1040,14 +1176,93 @@ NPC after `DoDie` cleared them (`OnDamageReceived` runs after `ReduceCurrentHp`)
   thread pool is created. Focused tests in `systems/ai/manager.rs` cover the candidate selection
   and batching.
 
+* systems::npcs (2026-10-14): the Halloween schedules of the 1.2 compact data are one-off rows
+  (`53`/`54`/`55` "Halloween event 12:00/17:00/22:00" 2013-10-16 .. 10-30, `57` "Halloween
+  event NPC" 2013-10-16 .. 10-30, `58` "Halloween event craft doodad" 2013-10-16 .. 11-06,
+  `8000001` "NA Halloween doodad placement Ezna/Austera" 2014-10-20 .. 11-04), all expired.
+  `Events` (default `Halloween.Enabled = true`) rewrites those six rows in memory at startup
+  (`ScheduleData::apply_halloween_window`, wired in `main.rs` after `GameData::load`) instead
+  of editing the read-only `compact.sqlite3`: the yearly mode keeps each row's month / day /
+  time and uses the current UTC year (next year when the rolled end is already past); an
+  explicit `Start` / `End` pair (`YYYY-MM-DDTHH:MM:SSZ`, parsed strictly, both or neither)
+  replaces the window while the daily hours of `53`-`55` stay; invalid values log a warning and
+  fall back to the yearly window. `Enabled = false` leaves the retail rows expired.
+  `ScheduleData` also builds the `quest -> schedules` map the C# left as `//TODO: quests data`
+  in `LoadGameScheduleSpawnersData` and exposes `period_status_quest`.
+
+* systems::npcs (2026-10-15): the schedule items (event timer bar) are live
+  (`schedule_item_session.rs`, `schedule_item_packets.rs`); the 1.2 C# never sent or took them,
+  so this follows the 5.0 C# (`CSTakeScheduleItemPacket`, `SCScheduleItemSentPacket`) and the 1.2
+  client. World entry (`CSNotifyInGame`) joins the account session and sends
+  `SCScheduleItemUpdatePacket` (0x1eb); a 60 s tick credits the account clock and re-sends the list
+  only to characters whose rows changed (progress, a window opening / closing, a daily reset or a
+  take through another character of the account); leaving the world credits the open interval
+  first. The take is `CSTakeScheduleItemPacket` (**0x13b**, one `u32` schedule row id; the opcode
+  and body were read off the 1.2 `x2game.dll` Lua binding: it builds a packet object with opcode
+  field `0x13b` and the id at `+0xc`, and `OnScheduleItemSent` reads a `u32` plus a `u8`). It
+  reserves, hands the reward over (bag if the whole stack fits, otherwise one `SYS_EXPRESS`
+  letter, like the achievement rewards) and only then records the receipt, all under the economy
+  `ops_lock`, so a window pays once; a failed hand-over leaves the term ready. The answer is
+  `SCScheduleItemSentPacket` (0x151: `u32` schedule id, `u8` by-mail), followed by a fresh list.
+  Deviations / unverified: the take packet's body width is inferred (the serializer writes the
+  field through a generic stream call whose width was not traced; it matches the 5.0 C#);
+  eligibility is `paid_patron` = the connection payment state (premium for every account) with no
+  premium grade and no PC-bang, so rows needing a specific grade or a PC-bang are never listed;
+  the progress is loaded at startup (`ScheduleItemManager::restore`) and saved inside the
+  financial snapshot transaction (`SaveManager`), not by the C# per-account saves.
+
 * systems::npcs (2026-10-14): a `DoodadFuncRatioRespawn` replacement initializes the new doodad
   synchronously (`Spawn` -> `InitDoodad` -> `DoPhaseFuncs`), so a cyclic definition recursed
   without bound until the stack overflowed; the 1.2 compact data has five template pairs whose
   phase functions respawn into each other at ratio 10000 (e.g. 4345/g10678/f520 ->
   4349/g10680/f521 -> 4345), and the C# per-doodad `ListGroupId` recursion guard resets with the
-  replacement. Each spawner now tracks its active synchronous replacement chain: a repeated
-  source `(template, func group)` or a chain deeper than 8 entries is rejected with a warning,
-  the current doodad stays in its phase, and finite A -> B -> C chains are unchanged.
+  replacement. Each spawner now tracks its active synchronous replacement chain: a chain deeper
+  than 8 entries, or a repeated source `(template, func group)` whose hops since its first
+  occurrence all always pass their roll (ratio >= 9999, an unconditional cycle), is rejected with
+  a warning, the current doodad stays in its phase, and finite A -> B -> C chains are unchanged.
+  A repeat through a hop with a chance below 1 is allowed (bounded by the depth limit only), as
+  in the C#: the weather marker 2768 (func group 7055 respawns into 2768 / 3085 / 3086 / 3225 /
+  3226 at 20% each) reaches 7055 again synchronously from its initial phase 7026 through its
+  RatioChange funcs (about 7% of spawns) and ends by chance; the first guard version rejected
+  those replacements ("replacement chain rejected") and the doodad waited for its Final to
+  respawn the base template.
+
+* systems::npcs (2026-10-16): world-spawned ("natural") doodads keep their growth state across
+  server restarts. The C# (and the first Rust port) recreated every doodad of
+  `doodad_spawns*.json` in its Start phase with the full growth timer on each start, so with
+  restarts more frequent than the longest growth chain (about 9 400 of the 42 670 main_world
+  spawns need more than 24 h, the longest about 103 h) trees, ore, wild crops and cotton never
+  matured. Deviation: doodads whose template waits at least 5 minutes in some phase (`Timer` with
+  a next phase, `Growth`, `Final` with `After`; about 10 900 main_world spawns, 143 templates;
+  shorter chains restart in seconds and static props have nothing to keep) are stored in the new
+  table `doodad_spawn_states`, keyed by `(world id, spawn key)` where the key is the spawn
+  entry's authored template id + position at 0.1 m (not the doodad's current template, which a
+  `DoodadFuncRatioRespawn` swaps, and not the JSON `Id`, present on 7 entries only). The row holds
+  the current template, func group, plant / growth / phase time, `Data` and the interaction
+  counters. Writes are coalesced per key and flushed in batches every 5 s, by the periodic and
+  shutdown save (`doodad::save`); the row is deleted when the doodad is deleted (harvest, Final,
+  despawn), so a respawn starts fresh as before. At startup (`SpawnManager::load`, main world
+  only) all rows are read once; `DoodadSpawner::spawn` restores the first doodad of an entry with
+  the player-doodad load mechanism (`FuncGroupId` setter, then `OverridePhaseTime = PhaseTime`),
+  so the phase timer resumes with its remaining delay and an expired phase fires promptly.
+  Downtime counts as growth time. Rows whose template or func group no longer exist or whose
+  template is no longer timed are dropped with one summary warning; two spawn entries sharing a
+  key are only tracked for the first. Tracking stays off if the table cannot be read. Limitation
+  (as for player doodads): a phase that has both a `Timer`/`Growth` and a `Final` with `After`
+  lets only the first consume the saved phase time.
+
+* systems::npcs (2026-10-16): `DoodadFuncTod` takes its `curTime >= Tod` catch-up on every
+  entry, which ignores that the clock wraps; the 20 day/night board templates (West Gate
+  4345-4352, Blue Salt 6175 / 6213 and their variants: day board Tod 20:00, variant Tod 02:00 or
+  06:00, each respawning into the other through `DoodadFuncRatioRespawn`) therefore swapped back
+  and forth synchronously for the whole game evening (20:00-24:00, about 40 real minutes every
+  4 hours), tripping the replacement-chain guard about 880 times a minute and churning doodads
+  and packets until the base template's Final respawned it. A doodad created by a
+  `DoodadFuncRatioRespawn` replacement (`DoodadSpawner::spawn` with `RespawnDoodadTemplateId`
+  set) now skips the Tod catch-up during its entry phase (`suppress_tod_catch_up`, cleared by
+  `InitDoodad`): it was created at this time of day, so its Tod refers to the next occurrence,
+  which the time-of-day watcher fires on crossing. The C# has no such suppression (its chain
+  recursed). Boards respawned by their own Final, and every other spawn, keep the catch-up.
 
 * systems::ai (2026-10-15): the optional compact patch
   `SQL/patches/compact/2026-10-14-fix-npc-ai-param-syntax.sql` repairs malformed Lua syntax
@@ -1058,6 +1273,76 @@ NPC after `DoDie` cleared them (`OnDamageReceived` runs after `ReduceCurrentHp`)
   diagnostics now report plan, tick and maintenance time with active-work counts. Parallel tick
   time is elapsed batch time, including dispatch and await overhead, rather than summed job time.
 
+* systems::ai (2026-10-16): retail NPC route files are not shipped (`Data/Path` has 13 files, while
+  `ai_commands` references 280 distinct FollowPath names such as `public_mate2`, `public_garden3`
+  and `tuto_move`). As in the C# (`Simulation.GoToPath`: warn and return, the NPC stays put and
+  keeps `IsInPatrol`), `Simulation` stops without moving, but the "Stop moving... no recorded
+  path file" warning is now logged once per file name (`System::first_missing_path`) and at debug
+  afterwards, since a repeating skill such as the tutorial NPC's `tuto_move` fired it every 30 s.
+  Quest-component follow paths (`QuestComponentTemplate.AiPathName`, unused by the C#) are
+  reported the same way, once per name, instead of an error on every run.
+  The `Impossible to parse npc_ai_params` warning now names the compact patch that repairs rows
+  443, 835 and 1975.
+
+* systems::ai (2026-10-16): route data is now generated from the 10.x client. The designers' AI
+  paths are the `<aiPath>` entities of `game/worlds/<world>/level_design/zone/<key>/editor/npc.xml`
+  in the 10.x `game_pak`; `aaemu-aipaths` (`crates/aaemu-tool-aipaths`, see its README) writes the
+  ones the compact database asks for (`quest_components.ai_path_name`, FollowPath `ai_commands`)
+  as `Data/Path/<name>.path` in world coordinates (zone origin cell from the 1.2 `world.xml`, plus
+  the entity position, plus the scaled and `Rotate`d local points; the direction of `Rotate` was
+  settled against the 1.2 terrain, `real_ai_generated_paths_follow_the_terrain`). It never
+  overwrites a file that exists, so the hand recorded routes stay. Deviation: a name used by
+  several zones (`public_farm*`, `public_mate*`, `tuto_move`) is written as `<name>@<zone key>.path`
+  variants and `AiPathsManager::resolve_path_file` picks the variant whose route passes closest to
+  the NPC, for both `AiCtx::load_ai_path_points` and `Simulation` (whose per-NPC route cache is
+  keyed by the file stem). Not generated: names the 10.x data lacks (`public_garden*`,
+  `caravan_maha_*`, `sunrise_745_*`, ...), spawner-attached paths (`AIPath_<zone>_<npc>_<n>`, whose
+  points are relative to their spawner) and zones whose origin differs between 1.2 and 10.x (none
+  of the asked-for names is in one). `Rec._Speed`, `Rec._PathType` and `Closed` are not encoded:
+  every asked-for path has `Closed=0` and the route plays once.
+
+* systems::ai (2026-10-17): `Simulation` no longer indexes a route with another file's length.
+  The C# `ReadPath` returns early for an already cached file name without refreshing `MovePath`
+  (the raw lines of the last file read), while `OnMove` / `GoToPath` took the end of the route and
+  the first target from `MovePath` and the points from `Path`. After route A -> route B -> cached
+  A the two disagreed and `Path[MoveStepIndex]` threw in the C# (a swallowed exception in the task
+  there); in the Rust port it panicked in the scheduled move task, poisoned the NPC's simulation
+  lock and every later AI tick of that NPC panicked on `simulation poisoned` until a restart
+  (`index out of bounds: the len is 5 but the index is 5`). Deviation: all length, emptiness and
+  target checks use `Path` (the parsed points of the selected route) via `Simulation::advance`, an
+  index outside it (also a one-point route turning back) logs a warning with the NPC and file name
+  and stops the move, and `lock_sim` recovers a poisoned simulation lock (clears the poison)
+  instead of panicking. The back and forth semantics are unchanged.
+
+* systems::npcs (2026-10-16): `Data/Portal/worldgates.json` has generated entries. The `Return`
+  special effect (type 25) with a non-zero `value1` teleports to the world gate of that
+  `return_points.id`, but the file only held 26 hand recorded gates, so quest skills such as
+  "The Crazy Son" (quest 532: skill 13507, buff 1494, buff trigger -> `Return` 30, "near Liania")
+  logged `Cannot find return WorldGate`. The retail positions are the `ReturnPoint_<editor_name>`
+  spheres of `game/worlds/main_world/level_design/zone/<key>/editor/return_point.xml` in the 10.x
+  `game_pak`; `aaemu-aipaths return-points` (see the crate README) appends 40 gates in a marked
+  section of the file (world X/Y = zone origin cell * 1024 + the zone-local position, Z as is,
+  Yaw from the `Rotate` quaternion, zone key and name checked against the 1.2 `world.xml` and
+  the compact `zones`). The method reproduces the hand recorded gates 402-405, 513, 514, 614 and
+  389 within 1-4 m. `SubZoneId` is the gate id (only the dictionary key, never looked up by
+  sub zone). `real_worldgates_follow_the_terrain` checks every generated Z against the 1.2
+  heightmap, or a navmesh node within 20 m (the upper floors of gates 42, 304 and 306); gates
+  399, 400, 533, 627 and 681 failed both and are left out (`--skip`). Still missing: 100 of the
+  166 distinct `Return` ids. 79 have no point in the 10.x main_world files (instance worlds such
+  as Nachashgar, the libraries and Howling Abyss, which need their own world origins, plus 54, 68,
+  69, 73, ...), 16 have no `return_points` row at all (19, 20, 40, ...) and 5 were skipped. The
+  warning stays and prints the entry to add. Ten hand recorded gates are more than 5 m from their
+  10.x point (221, 372, 617, 619, 628, 672, 673, 354, 652, and 48 by 6 m); they are untouched.
+
+* systems::npcs (2026-10-15): `DoodadFuncClout` with `UseOriginSource` takes the first doodad
+  within 4 m of the caster as the area trigger's owner, and the C# scheduled the
+  `DoodadFuncCloutTask` on that owner, so it changed that doodad's phase to the clout's
+  `NextPhase`, a function group of the other template. NPC 10119 near Arach Hollow summons doodad
+  5007, whose clout moved the Amber Boulder (4252) into 5007's `DoodadFuncFinal` phase. That
+  deleted the boulder, so quest 3447 "Fellow Searchers" could not be completed. 991 clouts use
+  the origin source and 602 of them have a next phase. The borrowed doodad is still the trigger
+  origin, but the task now changes the phase of the doodad that owns the clout.
+
 * systems::vehicles / managers::item (2026-10-15): the shared death hook ignores self-deaths
   of objects other than characters and mates instead of reporting a missing mate owner. A mate
   whose owner really is missing still logs the mate and owner object IDs. A successful item
@@ -1065,16 +1350,61 @@ NPC after `DoDie` cleared them (`OnDamageReceived` runs after `ReduceCurrentHp`)
   (for example, an item consumed before its first save). SQL errors and transaction handling are
   unchanged, and deletion IDs are acknowledged only after commit.
 
+* systems::skills log noise (2026-10-16): `CSStopCasting` with `tl == 0` and a plot tl for a plot
+  that already ended (the client repeats it ~30 times per plot) is logged at debug instead of
+  the C# warning; no acknowledgement packet is sent (client behaviour unverified; possible
+  follow-up: answer with SCPlotCastingStopped/SCPlotChannelingStopped as for a mismatched
+  plot). "Failed to remove unit aggro" is still a warning for direct callers, but the
+  `AddUnitAggro` NoFight/Returning guards and the death fan-out of `clear_incoming_aggro`
+  (which the C# also logged) go to debug. `aggro_watch` (Rust-only reverse index of the C#
+  `OnHealed`/`OnDeath` subscriptions) is now unregistered when an NPC's whole table is dropped
+  (`combat::drop_aggro_table`, NPC death and `ClearAllAggroTargetsAndCheckCombatState`), so
+  stale holders no longer receive the victim's death fan-out.
+
 * Static-data gaps (2026-10-15): buffs 2149, 1142 and 1933 reference absent skill controllers
   3554, 1806 and 7749 in the available 1.2 compact copies. Their controller behavior remains
   unsupported pending authentic definitions; no replacement parameters are invented. The supplied
   BuffEffect warnings also reference 33 absent buff templates, ten referenced by skill rows.
-  Restoring them requires an authentic 1.2 dataset. Skill 14602
+  Restoring them requires an authentic 1.2 dataset. Counts (compact.sqlite3): 338 buffs
+  reference 113 absent skill controllers (also 6121 for buff 4341, 2883 for buff 1643) and 35
+  BuffEffect rows reference 30 absent buffs (16 of them used by skill effects). The C# warned on
+  every buff start; the Rust port warns once per (buff, controller) pair (repeats at debug) plus
+  one startup summary for each gap, with per-row detail at debug. Skill 14602
   already exists and uses the inherited fallback cast path for Memory Tome interactions; its
-  "undefined use type" diagnostic does not mean the skill template is absent. Quest skill 16881
-  references NPC group 200, whose members 7976/7977 have no available NPC templates; the meaning
-  of its unique `unit_reqs` kind-34 `value2 = 1` remains unverified. Missing authored `tuto_move`,
+  "undefined use type" diagnostic does not mean the skill template is absent: it is the normal
+  path for doodad / quest-interaction skills (14907, 14599, 16520..16620, 19015 ... are
+  unlearned, mostly target-type-8 skills) and is logged at debug here (the C# warned). Quest skill 16881
+  (Detection Orb, quest 2394) references NPC group 200, whose members 7976/7977 have no available
+  NPC templates. Its unique `unit_reqs` kind-34 `value2 = 1` is a negation: the 10.x zone server
+  (`sub_39770380`) passes a TargetNpcGroup requirement when the target NPC is in the existing
+  group and `value2 == 0`, or is not in it and `value2 != 0`. The C# only checked that the
+  target is an NPC. The Rust port checked strict membership, which rejected every Detection Orb
+  cast with result 93 ("Invalid target"). It now follows the zone server. Missing authored `tuto_move`,
   `public_farm*` and `public_mate*` paths also remain data gaps.
+* `BuffTrigger.Execute` / `TimeoutBuffTrigger.Execute` logged "Owner is not a Unit" and returned for every trigger of a buff owned by a doodad (hostile area skills such as 16486 hit factionless doodads, so e.g. the shrink buffs start on them). The trigger can never run for a doodad, so `subscribe_triggers` now skips non-unit owners (trace log) instead of subscribing a trigger that only warns; the `execute_trigger` guard stays as a safety net and names the buff and owner. Behaviour is otherwise unchanged.
+* systems::economy (quest item events, 2026-10-17): the C# raised no `OnConsumedItem` for a partial
+  `CSDestroyItem` (only the full destroy, through `RemoveItem`) and none for the giving side of a
+  trade (`AddOrMoveExistingItem` only notified the destination container's owner). `ItemGather`
+  objectives therefore kept counting items that had left the character. Here the partial destroy
+  (`item_handlers::CSDestroyItemPacket`) pushes `ItemFx::Consumed` for the destroyed units and
+  `ItemContainer::add_or_move_inner` pushes it for the source owner when the item moves between two
+  characters' bags (trade), so the objective is recounted when items leave.
+
+### Ranking boards (Rust only)
+
+The 1.2 C# never answered `CSRankCharacterPacket` (empty, log-only) and has no `CSRankSnapshotPacket` (0x130, unnamed in the opcode tables, `ranking_packets.rs`). The Rust server answers both from a global store (`systems::social::ranking_manager`, `server.systems.social.ranking`):
+
+- **Requests.** 0x12f answers `SCRankCharacterPacket` (one row per supported board, zeros where the character has no score; `type_id` 0 because the request carries nothing to echo). 0x130 answers `SCRankSnapshotPacket` with the current period's standings (<= 100 lines); the racing board and unknown boards are not answered. The snapshot scope list stays empty (the raw scope figures are unresolved). The row's "account" string is the character name: the game database does not know the login account names. 0x130 is the one registration the C# registry-parity test exempts.
+- **Persistence.** `character_rank_scores` (one row per character, board and period) and `rank_period_payouts` (periods already paid), loaded at startup and upserted by every `SaveManager` pass (`AfterCharacters`). Every row is rewritten on each save (idempotent, so a rolled-back save loses nothing); `Character::ranking_state` is unused (standings need offline characters, so the store is global).
+- **Events.** The arena board scores at the end of an instant game (`instant_game::record_rankings`, once per game): win/lose/draw/invalid points are `game_rule_sets.rank_*_point` (only rule set 28, the gladiator duel in zone group 77: win 4, lose 1). Because `EndGame` leaves both corps `LOSE` when the timer runs out (mirrored C# bug), a timed-out duel scores both players as losers. The two fishing boards score each trophy fish a player lands (`fishing::record_catch`, from `DoodadFuncConvertFish` and the equipped-fish conversion) in the player's zone group; they only count inside the board's authored window, which ended in 2014, so on the shipped data no catch scores. The racing board is never recorded.
+- **Period close.** A once-a-minute task (first tick at start-up) mails every closed, unpaid period: place -> `rank_scope_links` band -> `rank_rewards` item (count and grade as authored) as a `SYS_EXPRESS` letter (offline winners included), then `SCRankRewardMailPacket` to online winners. The period is marked paid before the letters are built, inside the economy operation gate; a crash between the letters and the next save can therefore lose (never duplicate) the mark. `rank_rewards.weeks` (how long the reward lasts) and appellation rewards (none authored) are not applied.
+- **Not sent.** `SCRankAlarmPacket` (0x205): only the fishing contest authors alarms (`start_time_alarm` -5 / `end_time_alarm` 0 and message strings), that board ended in 2014 and the packet's `kind` / `rank_alarm_kind` values are unresolved, so no trigger is invented.
+
+### Startup warnings (Rust only)
+
+- **`FamilyIdManager` and family 0.** `characters.family` is 0 for a character without a family. The C# `FamilyIdManager` passes `Exclude = []`, so every start logged "Object ID 0 in DB is less than 1". `IdManagerSpec` now carries the C# `_exclude` list (checked before the first-id warning, as in `IdManager.Initialize`) and `FAMILY_ID` excludes 0. Every other manager keeps an empty list and still warns about ids below its first id.
+- **Orphan tower defense waves.** The shipped `compact.sqlite3` has `tower_def_progs` rows for `tower_def_id` 9, 22 and 33 with no `tower_defs` parent (20 waves). The C# `return`s at the first one; the Rust loader skips them (see the instances section) and now logs one info summary with the count and the distinct parent ids; the per-row line is `debug`.
+- **Client sources not found.** `Configurations/ClientData.json` lists four default sources and array settings merge by index (as in Microsoft.Extensions.Configuration), so a `Config.Local.json` with two sources leaves the last two defaults in place. `ClientFileManager::from_sources` logs a source that does not exist at `info` while at least one source is valid, and at `warn` for each (plus the existing error) when none is. `add_source` itself only logs not-found at `debug`.
 
 ## Live testing (phase 5): fixes and deliberate deviations
 
@@ -1119,6 +1449,40 @@ servers (see `rust/LIVE-TESTING.md`). Fixed porting bugs are in the git history 
   out-of-battle `RegenTick` (`regen.rs:141`) adds the composed value truncated; the in-battle /
   post-cast branches are unchanged. Added the missing `IncomingSiegeDamageMul` getter
   (attribute used by 9 buff `unit_modifiers` rows).
+
+* Quest evaluations requested while a character is selected but not yet in game are parked
+  until its `CSNotifyInGameCompletedPacket` (`systems::quests::on_in_game_completed`). The C#
+  `QuestManager.EnqueueEvaluation` ran `QuestManagerRunQueueTask` 1 ms after `Quests.Load`, so
+  `RunCurrentStep` sent `SCQuestContextUpdatedPacket` before `CSSpawnCharacterPacket`; the 1.2
+  client crashes (access violation) on that packet when the quest's component carries
+  `ai_command_set_id` / `play_cinema_before_bubble` (quest 63, component 8101). The same
+  updates now arrive right after the character is in the world. Entries of a character that
+  leaves first are dropped (`on_leave_world`); characters already in the world (world switches)
+  are unaffected. Quest timers expiring before the spawn are not deferred.
+
+* `SusManager` speed analysis: baselines carry their time, instance and a teleport counter
+  (`Character::teleport_seq`, bumped by `Character::set_disabled_set_position(true)`, the C#
+  `GameObject.DisabledSetPosition` setter that called `ResetAnalyzePlayerDeltaMovement`). The
+  speed is taken over the real time since the baseline (at least the nominal 5 s), and a
+  baseline older than 10 s, from another instance or another teleport counter is re-seeded
+  instead of judged. The C# kept baselines fresh differently: `FinalizeTransform` propagated to
+  the child transforms of a mount / slave (riders), and the setter reset them on teleports;
+  the Rust move handler only finalizes the packet's target, so riders and teleported players
+  were reported as 40 to 3000 m/s runs (and re-summoned mates, whose database id outlives the
+  spawn, as pets). The riding / slave-bound / `disabled_set_position` early returns of the move
+  handler, mate spawn / delete and leaving the world reset the baseline explicitly
+  (`CharacterMates.CreateNewMate` reset it too). Thresholds (25 / 27.5 m/s) are unchanged.
+* `CSMoveUnitPacket` for an object the world no longer holds (a mount the server just
+  despawned: summon toggle, dungeon entry, death) logs `Invalid target` at debug, not warn: the
+  client keeps sending a few moves after the despawn.
+* `Character.ChangeLabor` inside an item operation (`ItemTxn`: labor-costing doodad placement, auction
+  mail money, trade-pack sale) queues its `AddExp` as `ItemFx::Exp` instead of calling it inline. In the C#
+  `AddExp` runs inline (exp packet, level broadcast, `DoOnLevelUpEvents`, in that order) before the labor
+  change and its packet; in Rust `AddExp` ends in a quest operation that takes the economy ops lock, which
+  the transaction already holds on that thread (not re-entrant: the live server froze on 2026-10-16). The
+  effect now runs in `fx::flush` after the lock is released, still before the labor packet, and after the
+  item task packets queued earlier (the C# sends those inline first too). `quests::events::with_quests`
+  logs an error and returns `None` when the thread already holds the ops lock instead of hanging.
 
 Parity status of the scripted scenarios: `login`, `lobby` and `full` (fresh character) produce
 the same S->C traffic as the C# servers after id / time normalisation (0 findings); a second
@@ -1184,6 +1548,10 @@ and in NPC wandering / buff remaining times.
   the moved source item and passes `fromSlot` as the previous slot of the target item's leave
   event; `CSWithdrawMoneyPacket` reports `ItemTaskType.DepositMoney`; `ExpandSlot` never sends its
   `MoneyChange` task.
+* systems::economy: the two "is not welcome in this container" rejections of `SplitOrMoveItemEx`
+  (an item the target / source container refuses, e.g. armor sent to a wrong equipment slot) are
+  logged at `warn` (C#: `Error`) and include the whole request (from / to type, slot, item ids,
+  owner). The client is the source of the request and `CanAccept` already warns with the cause.
 * systems::economy: `BindType.HasFlag(...)` on the plain `ItemBindType` enum is a bit test
   (`BindOnUnpack` matches 4..7, `BindOnEquip` matches 3 and 7); mirrored.
 * systems::economy: `CSBuyItems` refuses only when money, honor *and* vocation are all short;
@@ -1401,7 +1769,7 @@ Additional world-side fixes from the same audit:
 * Mate pool and regeneration formulas now receive the complete attribute parameter set plus
   mate kind. Real 1.2 level-five horse formulas produce 1,012 maximum HP and 335 maximum MP;
   the old incomplete parameter map failed and produced zero maximum pools. Summoning clamps
-  saved pools to the computed maximum and preserves injured, exhausted and dead saves. Mate
+  saved pools to the computed maximum and preserves injured and exhausted saves. Mate
   skill requests require ownership or an actual server-managed passenger/parent relation
   before charging resources. The slave child-cannon versus parent-caster mapping remains
   unverified and is not tightened by this mate-only rule.
@@ -1409,6 +1777,26 @@ Additional world-side fixes from the same audit:
   mounting, dismounting and dismissal/resummoning passed. The native Run! action was not
   exercised because the captured pet button had no key binding and its Lua click handler
   only dismissed a tooltip; server cast permission flows are tested separately.
+* Dead mates and the stablehand revive (not in the C#, which only logged
+  `CSRepairPetItemsPacket` and never marked a mate dead). The 1.2 `SummonMate` item detail is
+  `exp i32, dead u8, level u8` (`ItemDetails::mate_dead`, persisted in the details blob). When a
+  mate dies (`vehicles::on_death_event` -> `mates::on_death`) the summon item gets the dead flag
+  (plus the mate's live level/exp, from which the client prices the revive), the `mates` row
+  loses its HP, and the owner receives `SCItemTaskSuccess(MateDeath, ItemUpdate)` and
+  `MATE_DEAD`; a repeated death/dismissal sends nothing again. The corpse stays in the world
+  until dismissed. The client never checks the flag, so `spawn_mount` refuses a flagged item or
+  a saved zero-HP row (a legacy row gets the flag then) with `MATE_CANNOT_SPAWN_WHILE_CORPSE`.
+  The stabler dialog (`X2:GetTotalRepairsForPetItems`) sends `CSRepairPetItemsPacket(npc)`, now
+  handled by `mates::revive_pet_items`: the npc must be the current interaction object, a
+  stabler and within 5 m (`TOO_FAR_AWAY`); every flagged `SummonMate` item in bag and bank is
+  revived for `floor(0.5 * level + level^2.3 + 0.5)` copper each (detail level), refused with
+  `MATE_CANNOT_REPAIR_WHILE_CORPSE` while one of those mates is still summoned and with
+  `NOT_ENOUGH_MONEY` when the bag money does not cover the total. A revive charges the money
+  (`DepositMoney` task), clears the flags, restores the rows to the new-mate pool values
+  (`MATE_FULL_POOL` 9999, clamped to the computed maximum at the next summon, i.e. full HP/MP)
+  and sends `SCItemTaskSuccess(RepairPets, ItemUpdate...)` + `MATE_RESURRECTED`. The old
+  blacksmith repair of `EQUIPMENT_MATE` gear on this opcode was wrong (the client only sends it
+  to stablers) and is removed.
 * Character persistence saves `reported_as_bot_count` as well as `bot_reported_count`; the
   former was read but omitted from REPLACE, resetting the reported character's counter on
   every save. A private-MySQL temporary-table test covers repeated saves and adjacent fields.
@@ -1516,3 +1904,34 @@ commit acknowledgement preserves newer dirty rows/deletions. The wiki audits
 record targeted tests, MySQL rollback/reload and the real 1.2 client evidence,
 including GM fixture setup and remaining authored content/review limitations.
 See Docs/wiki/Quest-Audit.md and Docs/wiki/Mail-Audit.md.
+
+### Spawn data import (October 17, 2026)
+
+| Area | Rust / data | Status | Notes |
+| --- | --- | --- | --- |
+| Quest NPCs / doodads missing from every `*_spawns.json` | `app/Data/Worlds/{main_world,instance_library,instance_prologue,instance_nachashgar,instance_burntcastle_armory,arche_mall_world}`, `rust/tools/spawn_import/` | data | Positions from the 10.x pak (per-zone `npc_spawners.g`, per-cell `doodad.g`), the 1.2 `npc_spawner_npcs` rows and the git history of upstream spawn JSON. A position is imported only when it sits on the 1.2 heightmap (`|dz| <= 5 m`, ignored test `dump_terrain_heights`), next to an existing spawn of the same world (`<= 40 m`, `|dz| <= 8 m`: interiors, caves, bridges) or on clipped ground (heights are `u16 / 64`, so ground above 1024 m reads 1024) of a zone/frame verified by its other candidates. Editor-tier positions win over git-only ones. Imported: main_world 181 NPC / 58 doodad entries, instance_library 131 doodads, instance_prologue 8, instance_nachashgar 2, instance_burntcastle_armory 1, arche_mall_world 3 NPC / 1 doodad. Entries carry a `Title` naming the basis (the loader ignores it). |
+| Zones whose origin differs between the 1.2 and 10.x `world.xml` (190, 192, 193, 200, 227, 251, 266, 281, 286, 287) | same | data | The content sits at the 10.x position (zone origin x 1024 + local): the 1.2 origin never fits the 1.2 heightmap (0 of 154 editor candidates with unclipped terrain), the 10.x frame does (many points within 0.1 m). Z values above the 1024 m ceiling cannot be verified. Candidates whose terrain differs by tens of metres (10.x-only zones such as 157, parts of 190/281) were rejected. |
+| `NpcSpawner.SelectSpawnerId` for NORMAL multi-member spawners | `systems/npcs/npc/spawner.rs` (`select_spawner_id`) | matches the C# | Not changed. A JSON entry clones every game-data spawner that has its unit as a member and (memberwise clone) shares one `NpcSpawnerIds` list, so with more than one spawner only an AUTOCREATED unscheduled one or a scheduled one is ever selected: a unit that has no JSON entry of its own and is only a sibling of a NORMAL group spawner (Vicious/Silent Treant 3105/3106, Goblin Fighter 527, ...) never spawns. The 13 audit findings of this kind are all `ConAcceptNpcKill` starters, which `starter_accepts` evaluates as an OR over the component's acts, and in every one of the 7 quests other listed NPCs spawn, so no quest is blocked; the data would need real positions for these units (the 10.x editor has no placement of those group spawners). |
+
+## Achievement producers (live wiring)
+
+The achievement subsystem has no 1.2 C# manager; the behaviour follows `rust/docs/achievement-hook-audit.txt`
+(which lists every record kind, its producer and what is still unwired). Deliberate choices:
+
+* **Entry snapshot** runs from `CSNotifyInGamePacket` (after the trial login step): back-credit, the
+  `SCAchievementsPacket` list, then pending rewards.
+* **Producers** report through `systems::report_achievement(s)` (`server.systems.hooks.achievements`).
+  The economy operation lock is not re-entrant, so events raised while the thread holds it (an
+  `ItemTxn`, a quest operation) are queued and flushed when it is released; events raised under the
+  team / family / expedition managers' own locks use `refresh_achievements_later` and run when the
+  packet handler returns. `economy::OpsGuard` tracks the holding thread.
+* **Repeatable quests** (kinds 27/28) credit +1 per completed run on top of the entry back-credit of 1
+  per distinct quest (audit Q3). Category counts therefore count repeats live.
+* **ENCHANT_FAILURE** credits only a plain FAIL result; BREAK and DOWNGRADE are not proven to be "failures"
+  (Q4). **GET_LOOTPACK** credits doodad loot packs only (Q6). **MAKE_HOUSING** credits the owner who
+  performs the last build action. **Auction** and **jury** credits go to online characters only.
+* **GET_FACTION** is state-derived (entry back-credit plus the crossing of the infamy threshold in
+  `CrimeManager::add_crime_points`); other faction changes do not credit (Q8).
+* **GET_ITEM_TYPE (k29), KILL_SLAVE (k26), MY_DISHONORABLE_POINT (k49), siege results (k57-60)** stay
+  unwired (see the audit for why). `SCAchievementResetedPacket` (0x1ff) has no 1.2 trigger and is
+  deliberately never sent.

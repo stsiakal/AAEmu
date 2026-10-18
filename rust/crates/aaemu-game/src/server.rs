@@ -1,7 +1,7 @@
 //! Shared server state (the C# singletons used by this phase) and the frame dispatcher
 //! (`GameProtocolHandler.OnReceive` after reassembly).
 
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 
 use sqlx::mysql::MySqlPool;
@@ -51,6 +51,9 @@ pub struct GameServer {
     /// A weak self reference for the timers that outlive a packet handler.
     self_ref: std::sync::OnceLock<std::sync::Weak<GameServer>>,
     next_connection_id: AtomicU32,
+    /// Set while the graceful shutdown returns the players to the world list: entering the world
+    /// is refused (`systems::services::shutdown`).
+    shutting_down: AtomicBool,
 }
 
 impl GameServer {
@@ -87,7 +90,17 @@ impl GameServer {
             login: LoginLink::default(),
             self_ref: std::sync::OnceLock::new(),
             next_connection_id: AtomicU32::new(1),
+            shutting_down: AtomicBool::new(false),
         }
+    }
+
+    /// `true` while the graceful shutdown is returning players to the world list.
+    pub fn is_shutting_down(&self) -> bool {
+        self.shutting_down.load(Ordering::SeqCst)
+    }
+
+    pub fn set_shutting_down(&self, value: bool) {
+        self.shutting_down.store(value, Ordering::SeqCst);
     }
 
     /// Registers the shared handle (call once after wrapping the server in an `Arc`).
@@ -143,6 +156,8 @@ impl GameServer {
             Some(reg) => {
                 let started = std::time::Instant::now();
                 let res = (reg.handler)(self, conn, raw.body).await;
+                // Achievement events queued under foreign locks run now that the handler is done.
+                crate::systems::flush_achievements(self);
                 let took = started.elapsed();
                 if took > std::time::Duration::from_millis(250) {
                     let names = if raw.level == LEVEL_PROXY {
@@ -168,12 +183,7 @@ impl GameServer {
                 let known = opcodes::name_of(names, raw.opcode)
                     .map(|n| format!(" ({n}: not ported yet)"))
                     .unwrap_or_default();
-                let dump: String = raw
-                    .body
-                    .unread()
-                    .iter()
-                    .map(|b| format!("{b:02x} "))
-                    .collect();
+                let dump = aaemu_commons::net::hex_dump(raw.body.unread());
                 tracing::error!(
                     "Unknown packet 0x{:02x}({}){} from {}:\n{}",
                     raw.opcode,

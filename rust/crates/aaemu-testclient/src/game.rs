@@ -4,7 +4,7 @@
 //! level 2 (proxy / CryNetwork) just `[u16 opcode]`. 1.2 traffic is neither encrypted nor
 //! compressed.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::time::{Duration, Instant};
 
 use aaemu_commons::helpers;
@@ -88,21 +88,198 @@ pub struct UnitInfo {
     /// Character id (type 0) or NPC template id (type 1).
     pub id: u32,
     pub pos: (f32, f32, f32),
+    /// Transport-layer id of a mate (type 5, `SCUnitStatePacket`); 0 for every other unit.
+    pub tl_id: u16,
 }
 
-/// How many recent inbound chat texts [`GameState`] keeps.
-pub const CHAT_LOG_LIMIT: usize = 64;
-
-/// Move time reported by the landing `CSMoveUnitPacket` after a teleport.
-const TELEPORT_LAND_MS: u32 = 1000;
-
-/// A doodad seen in `SCDoodadCreatedPacket` / `SCDoodadsCreatedPacket`.
+/// A doodad seen in `SCDoodadCreatedPacket` / `SCDoodadsCreatedPacket` (`Doodad.Write`).
 #[derive(Clone, Debug, PartialEq)]
 pub struct DoodadInfo {
     pub obj_id: u32,
     pub template_id: u32,
     pub pos: (f32, f32, f32),
+    /// Current phase (`func_group_id`), updated by `SCDoodadPhaseChangedPacket`.
+    pub func_group_id: u32,
+    pub owner_obj_id: u32,
+    pub parent_obj_id: u32,
+    pub quest_glow: u32,
+    pub data: i32,
 }
+
+/// Reads one `Doodad.Write` entry (see `models/doodad.rs` of the game crate).
+fn read_doodad(s: &mut PacketStream) -> anyhow::Result<DoodadInfo> {
+    let obj_id = s.read_bc()?;
+    let template_id = s.read_u32()?;
+    let owner_obj_id = s.read_bc()?;
+    let parent_obj_id = s.read_bc()?;
+    s.read_u8()?; // attach point
+    let pos = s.read_position()?;
+    s.read_i16()?; // roll
+    s.read_i16()?; // pitch
+    s.read_i16()?; // yaw
+    s.read_f32()?; // scale
+    s.read_bool()?; // has loot item
+    let func_group_id = s.read_u32()?;
+    s.read_u32()?; // owner id
+    s.read_u64()?; // ucc id
+    s.read_u32()?; // item template id
+    s.read_u32()?; // type2
+    s.read_u32()?; // time left
+    s.read_i64()?; // plant time
+    let quest_glow = s.read_u32()?;
+    s.read_i32()?; // family
+    s.read_i32()?; // puzzle group
+    s.read_u8()?; // owner type
+    s.read_u32()?; // owner db id
+    let data = s.read_i32()?;
+    Ok(DoodadInfo {
+        obj_id,
+        template_id,
+        pos,
+        func_group_id,
+        owner_obj_id,
+        parent_obj_id,
+        quest_glow,
+        data,
+    })
+}
+
+/// The last `SCMateSpawnedPacket`: the owner's own view of the summoned mate.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MateSpawn {
+    pub tl_id: u16,
+    pub db_id: u32,
+    pub item_id: u64,
+    pub user_state: u8,
+}
+
+/// One item of an `SCItemTaskSuccessPacket` task.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TaskItem {
+    /// `ItemAction` of the task (5 create, 9 update detail, ...).
+    pub task: u8,
+    /// Template id (0 for tasks that do not carry it, e.g. `UpdateDetail`).
+    pub template: u32,
+    pub id: u64,
+    /// `SummonMate` detail block: `(exp, dead flag, level)`; a non-zero dead flag marks a corpse.
+    pub mate: Option<(i32, u8, u8)>,
+}
+
+/// The readable part of an `SCItemTaskSuccessPacket`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ItemTaskInfo {
+    /// `ItemTaskType` (59 mate death, 58 repair pets, 11 GM, ...).
+    pub action: u8,
+    pub items: Vec<TaskItem>,
+    /// Sum of the `MoneyChange` tasks (copper; negative = deducted).
+    pub money: i64,
+}
+
+/// Something the server told us that scenarios assert on, in arrival order.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum GameEvent {
+    /// `SCErrorMsgPacket` (error code).
+    ErrorMsg(i16),
+    ItemTask(ItemTaskInfo),
+}
+
+/// `ItemAction` values of the tasks [`parse_item_task`] reads.
+mod item_action {
+    pub const CHANGE_MONEY_AMOUNT: u8 = 1;
+    pub const CHANGE_BANK_MONEY_AMOUNT: u8 = 2;
+    pub const CREATE: u8 = 5;
+    pub const TAKE: u8 = 6;
+    pub const UPDATE_DETAIL: u8 = 9;
+    pub const CHANGE_OWNER: u8 = 15;
+}
+
+/// Best-effort decode of an `SCItemTaskSuccessPacket` body (`[u8 reason][u8 count]`, then the
+/// tasks, see `models/item_task.rs` of the game crate). Reading stops at the first task kind it
+/// does not know or on truncation; what was read so far is returned.
+pub fn parse_item_task(body: &[u8]) -> ItemTaskInfo {
+    fn details(s: &mut PacketStream) -> anyhow::Result<Option<(i32, u8, u8)>> {
+        let len = s.read_i16()?;
+        if len != 128 {
+            bail!("task details length {len}");
+        }
+        let mut block = [0u8; 128];
+        for b in &mut block {
+            *b = s.read_u8()?;
+        }
+        // detail type 3 = SummonMate: [i32 exp][u8 dead][u8 level]
+        Ok((block[0] == 3).then(|| {
+            (
+                i32::from_le_bytes([block[1], block[2], block[3], block[4]]),
+                block[5],
+                block[6],
+            )
+        }))
+    }
+    fn read(s: &mut PacketStream, info: &mut ItemTaskInfo) -> anyhow::Result<()> {
+        info.action = s.read_u8()?;
+        let count = s.read_u8()?;
+        for _ in 0..count {
+            let task = s.read_u8()?;
+            match task {
+                item_action::CHANGE_MONEY_AMOUNT | item_action::CHANGE_BANK_MONEY_AMOUNT => {
+                    info.money += i64::from(s.read_i32()?);
+                }
+                item_action::CREATE | item_action::CHANGE_OWNER | item_action::TAKE => {
+                    s.read_u8()?; // slot type
+                    s.read_u8()?; // slot
+                    let template = s.read_u32()?;
+                    let id = s.read_u64()?;
+                    info.items.push(TaskItem {
+                        task,
+                        template,
+                        id,
+                        mate: None,
+                    });
+                    s.read_u8()?; // grade
+                    s.read_u8()?; // flags
+                    s.read_i32()?; // count
+                    let mate = details(s)?;
+                    if let Some(item) = info.items.last_mut() {
+                        item.mate = mate;
+                    }
+                    s.read_i64()?; // create time
+                    s.read_i32()?; // lifespan
+                    s.read_u32()?; // made unit id
+                    s.read_u8()?; // world id
+                    s.read_i64()?; // unsecure time
+                    s.read_i64()?; // unpack time
+                }
+                item_action::UPDATE_DETAIL => {
+                    s.read_u8()?; // slot type
+                    s.read_u8()?; // slot
+                    let id = s.read_u64()?;
+                    let mate = details(s)?;
+                    info.items.push(TaskItem {
+                        task,
+                        template: 0,
+                        id,
+                        mate,
+                    });
+                }
+                _ => break,
+            }
+        }
+        Ok(())
+    }
+    let mut s = PacketStream::from_bytes(body.to_vec());
+    let mut info = ItemTaskInfo::default();
+    let _ = read(&mut s, &mut info);
+    info
+}
+
+/// How many recent inbound chat texts [`GameState`] keeps.
+pub const CHAT_LOG_LIMIT: usize = 64;
+
+/// `CSTeleportEndedPacket` orientation: the identity quaternion `(0, 0, 0, 1)`.
+const TELEPORT_ENDED_ORIENTATION: [u8; 16] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x80, 0x3f];
+
+/// Move time reported by the landing `CSMoveUnitPacket` after a teleport.
+const TELEPORT_LAND_MS: u32 = 1000;
 
 /// What the bot learned from the server so far.
 #[derive(Debug, Default)]
@@ -154,6 +331,20 @@ pub struct GameState {
     pub chat_count: u64,
     /// Bag slots the character-select snapshot announced (`SCCharacterInvenInitPacket`).
     pub bag_slots: u8,
+    /// Latest `SCUnitPointsPacket` per unit: `(hp, mp)` (the wire carries them times 100).
+    pub unit_points: HashMap<u32, (i32, i32)>,
+    /// Units announced dead by `SCUnitDeathPacket` (and not removed since).
+    pub dead_units: HashSet<u32>,
+    /// Last `SCMateSpawnedPacket`.
+    pub mate_spawned: Option<MateSpawn>,
+    /// Number of `SCMateSpawnedPacket`s seen so far.
+    pub mate_spawn_count: u32,
+    /// `SCErrorMsgPacket`s and `SCItemTaskSuccessPacket`s in arrival order; scenarios remember
+    /// `events.len()` before an action and inspect what was appended.
+    pub events: Vec<GameEvent>,
+    /// Position of the last `SCTeleportUnitPacket` (a GM `/move` only tells the client to go
+    /// there; the server adopts the position from the client's next movement packet).
+    pub last_teleport: Option<(f32, f32, f32)>,
     pub disconnected: bool,
 }
 
@@ -180,6 +371,11 @@ impl GameState {
             .filter(|d| d.template_id == template_id)
             .min_by(|a, b| dist2(a.pos, me).total_cmp(&dist2(b.pos, me)))
             .cloned()
+    }
+
+    /// Updates the state from a packet.
+    pub fn observe(&mut self, p: &Packet) -> anyhow::Result<()> {
+        observe_into(self, p)
     }
 }
 
@@ -449,6 +645,7 @@ pub(crate) fn observe_into(st: &mut GameState, p: &Packet) -> anyhow::Result<()>
         let obj_id = s.read_bc()?;
         let name = s.read_string()?;
         let unit_type = s.read_u8()?;
+        let mut tl_id = 0;
         let id = match unit_type {
             0 => {
                 let id = s.read_u32()?;
@@ -460,6 +657,13 @@ pub(crate) fn observe_into(st: &mut GameState, p: &Packet) -> anyhow::Result<()>
                 let tpl = s.read_u32()?;
                 s.read_u32()?;
                 s.read_u8()?;
+                tpl
+            }
+            5 => {
+                // Mate: tl id, template id, owner character id.
+                tl_id = s.read_u16()?;
+                let tpl = s.read_u32()?;
+                s.read_u32()?;
                 tpl
             }
             _ => return Ok(()),
@@ -478,6 +682,7 @@ pub(crate) fn observe_into(st: &mut GameState, p: &Packet) -> anyhow::Result<()>
                 unit_type,
                 id,
                 pos,
+                tl_id,
             },
         );
     } else if p.is_sc(sc::SCOneUnitMovementPacket) {
@@ -500,6 +705,31 @@ pub(crate) fn observe_into(st: &mut GameState, p: &Packet) -> anyhow::Result<()>
         for _ in 0..n {
             let id = s.read_bc()?;
             st.units.remove(&id);
+            st.unit_points.remove(&id);
+            st.dead_units.remove(&id);
+        }
+    } else if p.is_sc(sc::SCUnitPointsPacket) {
+        let obj_id = s.read_bc()?;
+        let hp = s.read_i32()? / 100;
+        let mp = s.read_i32()? / 100;
+        st.unit_points.insert(obj_id, (hp, mp));
+    } else if p.is_sc(sc::SCUnitDeathPacket) {
+        st.dead_units.insert(s.read_bc()?);
+    } else if p.is_sc(sc::SCErrorMsgPacket) {
+        st.events.push(GameEvent::ErrorMsg(s.read_i16()?));
+    } else if p.is_sc(sc::SCMateSpawnedPacket) {
+        st.mate_spawned = Some(MateSpawn {
+            tl_id: s.read_u16()?,
+            db_id: s.read_u32()?,
+            item_id: s.read_u64()?,
+            user_state: s.read_u8()?,
+        });
+        st.mate_spawn_count += 1;
+    } else if p.is_sc(sc::SCDoodadPhaseChangedPacket) {
+        let id = s.read_bc()?;
+        let group = s.read_u32()?;
+        if let Some(d) = st.doodads.get_mut(&id) {
+            d.func_group_id = group;
         }
     } else if p.is_sc(sc::SCCharacterInvenContentsPacket) {
         let slot_type = s.read_u8()?;
@@ -518,6 +748,8 @@ pub(crate) fn observe_into(st: &mut GameState, p: &Packet) -> anyhow::Result<()>
             }
         }
     } else if p.is_sc(sc::SCItemTaskSuccessPacket) {
+        st.events
+            .push(GameEvent::ItemTask(parse_item_task(&p.body)));
         inventory::apply_item_task_success(&mut st.bag, &p.body)?;
     } else if p.is_sc(sc::SCDoodadCreatedPacket) {
         let doodad = read_doodad(&mut s)?;
@@ -604,6 +836,7 @@ pub(crate) fn observe_into(st: &mut GameState, p: &Packet) -> anyhow::Result<()>
         s.read_i16()?; // error message
         let pos = s.read_position()?;
         s.read_f32()?; // z2 (yaw)
+        st.last_teleport = Some(pos);
         st.self_pos = pos;
         if st.self_obj != 0 {
             if let Some(u) = st.units.get_mut(&st.self_obj) {
@@ -683,40 +916,6 @@ fn read_character_head(s: &mut PacketStream) -> anyhow::Result<CharInfo> {
         gender,
         level,
         faction,
-    })
-}
-
-/// `Doodad.Write` (`models/doodad.rs`): the object id, template id and world position are the
-/// fields the runner needs; the rest of the fixed-size body is read and discarded.
-fn read_doodad(s: &mut PacketStream) -> anyhow::Result<DoodadInfo> {
-    let obj_id = s.read_bc()?;
-    let template_id = s.read_u32()?;
-    s.read_bc()?; // owner object id
-    s.read_bc()?; // parent object id
-    s.read_u8()?; // attach point
-    let pos = s.read_position()?;
-    s.read_i16()?; // roll
-    s.read_i16()?; // pitch
-    s.read_i16()?; // yaw
-    s.read_f32()?; // scale
-    s.read_bool()?; // hasLootItem
-    s.read_u32()?; // func group id
-    s.read_u32()?; // owner id
-    s.read_u64()?; // ucc id
-    s.read_u32()?; // item template id
-    s.read_u32()?; // type2
-    s.read_u32()?; // time left
-    s.read_i64()?; // plant time
-    s.read_u32()?; // quest glow
-    s.read_i32()?; // family
-    s.read_i32()?; // puzzle group
-    s.read_u8()?; // owner type
-    s.read_u32()?; // owner db id
-    s.read_i32()?; // data
-    Ok(DoodadInfo {
-        obj_id,
-        template_id,
-        pos,
     })
 }
 
@@ -819,14 +1018,42 @@ impl GameClient {
             .await
     }
 
+    /// `CSMoveUnitPacket` for another object of ours (the mate we ride), without touching
+    /// our own tracked position.
+    pub async fn move_obj_to(
+        &mut self,
+        obj_id: u32,
+        pos: (f32, f32, f32),
+        time: u32,
+    ) -> anyhow::Result<()> {
+        let own = self.state.self_pos;
+        self.move_obj_inner(obj_id, pos, time, 0).await?;
+        self.state.self_pos = own;
+        if let Some(u) = self.state.units.get_mut(&obj_id) {
+            u.pos = pos;
+        }
+        Ok(())
+    }
+
     async fn move_to_with_direction(
         &mut self,
         pos: (f32, f32, f32),
         time: u32,
         direction: i8,
     ) -> anyhow::Result<()> {
+        let obj = self.state.self_obj;
+        self.move_obj_inner(obj, pos, time, direction).await
+    }
+
+    async fn move_obj_inner(
+        &mut self,
+        obj_id: u32,
+        pos: (f32, f32, f32),
+        time: u32,
+        direction: i8,
+    ) -> anyhow::Result<()> {
         let mut s = PacketStream::new();
-        s.write_bc(self.state.self_obj)
+        s.write_bc(obj_id)
             .write_u8(1) // MoveTypeEnum.Unit
             .write_u32(time)
             .write_u8(0x02) // Moving
@@ -898,8 +1125,9 @@ impl GameClient {
         }
     }
 
-    /// `CSTeleportEndedPacket` (the client's answer to `SCTeleportUnitPacket`).
-    async fn teleport_ended(&mut self, pos: (f32, f32, f32)) -> anyhow::Result<()> {
+    /// `CSTeleportEndedPacket`: the client's answer to `SCTeleportUnitPacket` (the server
+    /// then accepts our movement packets again and re-announces the objects around).
+    pub async fn teleport_ended(&mut self, pos: (f32, f32, f32)) -> anyhow::Result<()> {
         let body = teleport_ended_body(pos);
         self.send_cs(cs::CSTeleportEndedPacket, &body).await
     }
@@ -982,6 +1210,114 @@ impl GameClient {
             .write_bc(owner_obj)
             .write_u8(0);
         self.send_cs(cs::CSLootCloseBagPacket, s.as_bytes()).await
+    }
+
+    /// `CSCreateDoodadPacket` (0x0e6): plant / place doodad `id` from the bag item `item_id`.
+    pub async fn create_doodad(
+        &mut self,
+        id: u32,
+        pos: (f32, f32, f32),
+        z_rot: f32,
+        scale: f32,
+        item_id: u64,
+    ) -> anyhow::Result<()> {
+        let mut s = PacketStream::new();
+        s.write_u32(id)
+            .write_i64(aaemu_commons::helpers::convert_coord_to_long(pos.0))
+            .write_i64(aaemu_commons::helpers::convert_coord_to_long(pos.1))
+            .write_f32(pos.2)
+            .write_f32(z_rot)
+            .write_f32(scale)
+            .write_u64(item_id);
+        self.send_cs(cs::CSCreateDoodadPacket, s.as_bytes()).await
+    }
+
+    /// `CSStartSkillPacket`: unit caster (us) on a doodad target (`SkillCastDoodadTarget`), what
+    /// the client sends for a doodad interaction skill.
+    pub async fn start_doodad_skill(
+        &mut self,
+        skill_id: u32,
+        doodad_obj: u32,
+    ) -> anyhow::Result<()> {
+        let mut s = PacketStream::new();
+        s.write_u32(skill_id)
+            .write_u8(0) // SkillCasterType.Unit
+            .write_bc(self.state.self_obj)
+            .write_u8(4) // SkillCastTargetType.Doodad
+            .write_bc(doodad_obj)
+            .write_u8(0); // flag: no skill object
+        self.send_cs(cs::CSStartSkillPacket, s.as_bytes()).await
+    }
+
+    /// `CSStartSkillPacket` cast from an inventory item (the item's use skill) on ourselves,
+    /// as the client does for a summon item.
+    pub async fn use_item_skill(
+        &mut self,
+        skill_id: u32,
+        item_id: u64,
+        item_template_id: u32,
+    ) -> anyhow::Result<()> {
+        let me = self.state.self_obj;
+        self.start_item_skill(skill_id, item_id, item_template_id, me)
+            .await
+    }
+
+    /// `CSStartSkillPacket` cast by an item (the 1.2 client's item-use skill): item caster
+    /// (our object, the item id and template), unit target, no skill object.
+    pub async fn start_item_skill(
+        &mut self,
+        skill_id: u32,
+        item_id: u64,
+        item_template_id: u32,
+        target_obj: u32,
+    ) -> anyhow::Result<()> {
+        let mut s = PacketStream::new();
+        s.write_u32(skill_id)
+            .write_u8(2) // SkillCasterType.Item
+            .write_bc(self.state.self_obj)
+            .write_u64(item_id)
+            .write_u32(item_template_id)
+            .write_u8(0) // type1
+            .write_u32(0) // type2
+            .write_u8(0) // SkillCastUnitTarget
+            .write_bc(target_obj)
+            .write_u8(0); // flag: no skill object
+        self.send_cs(cs::CSStartSkillPacket, s.as_bytes()).await
+    }
+
+    /// `CSRemoveMatePacket`: dismiss the mate with transport id `tl_id`.
+    pub async fn remove_mate(&mut self, tl_id: u16) -> anyhow::Result<()> {
+        let mut s = PacketStream::new();
+        s.write_u16(tl_id);
+        self.send_cs(cs::CSRemoveMatePacket, s.as_bytes()).await
+    }
+
+    /// `CSRepairPetItemsPacket`: the stablehand revive of dead summon items; the NPC must be the
+    /// current interaction object (`CSInteractNPCPacket` first).
+    pub async fn repair_pet_items(&mut self, npc_obj: u32) -> anyhow::Result<()> {
+        let mut s = PacketStream::new();
+        s.write_bc(npc_obj);
+        self.send_cs(cs::CSRepairPetItemsPacket, s.as_bytes()).await
+    }
+
+    /// `CSInteractNPCPacket`.
+    pub async fn interact_npc(&mut self, npc_obj: u32, target_changed: bool) -> anyhow::Result<()> {
+        let mut s = PacketStream::new();
+        s.write_bc(npc_obj).write_bool(target_changed);
+        self.send_cs(cs::CSInteractNPCPacket, s.as_bytes()).await
+    }
+
+    /// `CSStartInteractionPacket` (asks the NPC for its interaction skill list).
+    pub async fn start_interaction(&mut self, npc_obj: u32) -> anyhow::Result<()> {
+        let mut s = PacketStream::new();
+        s.write_bc(npc_obj)
+            .write_bc(npc_obj)
+            .write_i32(0) // extra info
+            .write_i32(0) // pick id
+            .write_u8(1) // mouse button
+            .write_i32(0); // modifier keys
+        self.send_cs(cs::CSStartInteractionPacket, s.as_bytes())
+            .await
     }
 
     /// Select the unit used by auto attacks, as the real client does before attacking.
@@ -1184,13 +1520,13 @@ fn start_skill_body(skill_id: u32, caster: &SkillCaster, target: &SkillCastTarge
 }
 
 /// `CSTeleportEndedPacket` body (`systems/npcs/portal/packets.rs` `read`): the fixed point x/y,
-/// z and 16 orientation bytes.
+/// z and 16 orientation bytes (the identity quaternion).
 fn teleport_ended_body(pos: (f32, f32, f32)) -> Vec<u8> {
     let mut s = PacketStream::new();
     s.write_i64(helpers::convert_coord_to_long(pos.0))
         .write_i64(helpers::convert_coord_to_long(pos.1))
         .write_f32(pos.2)
-        .write_raw(&[0u8; 16]);
+        .write_raw(&TELEPORT_ENDED_ORIENTATION);
     s.into_bytes()
 }
 
@@ -1286,7 +1622,7 @@ mod body_tests {
         )
         .unwrap();
         assert_eq!((p.x, p.y, p.z), (1234.5, -678.25, 78.5));
-        assert_eq!(p.ori, [0u8; 16]);
+        assert_eq!(p.ori, TELEPORT_ENDED_ORIENTATION);
     }
 
     #[test]
@@ -1445,6 +1781,7 @@ mod body_tests {
                 unit_type: 1,
                 id: 100,
                 pos: (1.0, 2.0, 3.0),
+                tl_id: 0,
             },
         );
         st.doodads.insert(
@@ -1453,6 +1790,11 @@ mod body_tests {
                 obj_id: 9,
                 template_id: 200,
                 pos: (0.0, 0.0, 0.0),
+                func_group_id: 0,
+                owner_obj_id: 0,
+                parent_obj_id: 0,
+                quest_glow: 0,
+                data: 0,
             },
         );
         let mut body = PacketStream::new();

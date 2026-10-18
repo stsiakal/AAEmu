@@ -20,6 +20,10 @@
 use crate::server::GameServer;
 use crate::systems::skills::combat::MAX_LOOTING_RANGE;
 use crate::systems::skills::geometry::{distance_to, Target};
+use crate::systems::social::achievement::char_record_kind;
+use crate::systems::social::achievement_hooks::{
+    lowest_party_level, AchievementInput, RecordMatch,
+};
 use crate::world::{NpcRef, PlayerRef, WorldObject};
 
 /// The 1.2 player experience modifier (`plMod`) for `eligible` players with tagging rights.
@@ -138,12 +142,48 @@ pub fn before_death(server: &GameServer, npc: &NpcRef, killer: Option<&WorldObje
     }
 
     let killer_player = killer.and_then(|k| k.as_player().cloned());
+
+    // Tag Share contributors: quest progress (not XP / loot) for every damage contributor and
+    // their party / raid mates in range, on top of the eligible players (or the killer when
+    // nobody is eligible).
+    let mut tag_share_extra: Vec<PlayerRef> = Vec::new();
+    if server.config.world.tag_share_enabled {
+        let mut credited: Vec<u32> = eligible.iter().map(|p| p.obj_id).collect();
+        if eligible.is_empty() {
+            if let Some(ck) = &killer_player {
+                credited.push(ck.obj_id);
+            }
+        }
+        for contributor in all_contributors(server, &me, &dealers) {
+            if !credited.contains(&contributor.obj_id) {
+                credited.push(contributor.obj_id);
+                tag_share_extra.push(contributor);
+            }
+        }
+    }
+
+    // Everyone who gets a direct kill event below. Marked before the first event is raised so a
+    // team-shared ObjZoneKill of one of them cannot count the kill a second time for another.
+    {
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        let direct = eligible
+            .iter()
+            .chain(killer_player.iter().filter(|_| eligible.is_empty()))
+            .chain(tag_share_extra.iter());
+        for p in direct {
+            p.data()
+                .skill_char
+                .note_direct_kill_credit(npc.obj_id, now_ms);
+        }
+    }
+
     if eligible.is_empty() {
         if let Some(ck) = &killer_player {
             if let Some(q) = &quests {
                 q.on_npc_killed(server, ck, npc);
                 q.add_exp(server, ck, kill_exp, npc.obj_id);
             }
+            report_kill(server, ck, npc);
             // The killer's active mates (vehicles subsystem).
             crate::systems::vehicles::mates::reward_kill_exp(server, ck, kill_exp);
         }
@@ -169,28 +209,36 @@ pub fn before_death(server: &GameServer, npc: &NpcRef, killer: Option<&WorldObje
             if let Some(q) = &quests {
                 q.on_npc_killed(server, pl, npc);
             }
+            report_kill(server, pl, npc);
         }
     }
 
-    // Tag Share: quest progress (not XP / loot) for every damage contributor and their
-    // party / raid mates in range, after both branches above.
-    if server.config.world.tag_share_enabled {
-        let mut credited: Vec<u32> = eligible.iter().map(|p| p.obj_id).collect();
-        if eligible.is_empty() {
-            if let Some(ck) = &killer_player {
-                credited.push(ck.obj_id);
-            }
+    // Tag Share: quest progress for the contributors after both branches above.
+    for contributor in &tag_share_extra {
+        if let Some(q) = &quests {
+            q.on_npc_killed(server, contributor, npc);
         }
-        for contributor in all_contributors(server, &me, &dealers) {
-            if credited.contains(&contributor.obj_id) {
-                continue;
-            }
-            credited.push(contributor.obj_id);
-            if let Some(q) = &quests {
-                q.on_npc_killed(server, &contributor, npc);
-            }
-        }
+        report_kill(server, contributor, npc);
     }
+}
+
+/// `KILL_NPC` achievement credit for one player who shares the kill (same eligibility as the
+/// monster-hunt quest event). The record's party-level cap is matched against the lowest level in
+/// the player's party / raid.
+fn report_kill(server: &GameServer, player: &PlayerRef, npc: &NpcRef) {
+    let template_id = npc.data().unit.template_id;
+    crate::systems::report_achievement(
+        server,
+        player,
+        AchievementInput::Increment {
+            kind_id: char_record_kind::KILL_NPC,
+            amount: 1,
+            matcher: RecordMatch::NpcKill {
+                template_id,
+                lowest_party_level: Some(lowest_party_level(server, player)),
+            },
+        },
+    );
 }
 
 /// `Tagging.GetAllContributors(MaxLootingRange)`: every online damage dealer in range plus
@@ -262,7 +310,7 @@ pub fn after_death(server: &GameServer, npc: &NpcRef, _killer: Option<&WorldObje
             .filter_map(|id| server.world.character_by_obj_id(id))
             .collect()
     };
-    npc.data().unit.skill_state.aggro_table.clear();
+    crate::systems::skills::combat::drop_aggro_table(server, &me);
     for p in &aggro_players {
         let po = WorldObject::from(p);
         crate::systems::skills::combat::clear_aggro_of_unit(server, &me, &po);
@@ -384,6 +432,42 @@ mod tests {
             vec!["exp 256 140 513".to_string(), "kill 256 513".to_string()]
         );
         assert_eq!(npc2.data().tagger_obj_id, 0);
+    }
+
+    #[tokio::test]
+    async fn a_tagged_kill_progresses_the_kill_npc_achievement() {
+        use crate::systems::social::achievement::char_record_kind;
+        use crate::systems::social::achievement_flow_tests::{
+            achievement_ops, one_achievement, player_of,
+        };
+        // Killing npc template 200 twice completes the achievement.
+        let mut gd = super::super::manager::tests::npc_game_data();
+        gd.systems.social.achievements =
+            one_achievement(1, 2, 0, 10, char_record_kind::KILL_NPC, 200, 0);
+        let server = Arc::new(test_server_with(gd));
+        server.set_self();
+        crate::systems::npcs::install_hooks(&server);
+        crate::systems::social::install_hooks(&server);
+        let (mut client, _player) = player_of(&server);
+
+        let kill = |obj_id| {
+            let npc = super::super::manager::create(&server, obj_id, 200).unwrap();
+            npc.data().tagger_obj_id = 0x100;
+            before_death(&server, &npc, None);
+        };
+        kill(0x201);
+        assert_eq!(
+            achievement_ops(client.drain_ops()),
+            [sc::SCAchievementChangedPacket]
+        );
+        kill(0x202);
+        assert_eq!(
+            achievement_ops(client.drain_ops()),
+            [
+                sc::SCAchievementChangedPacket,
+                sc::SCAchievementCompletedPacket
+            ]
+        );
     }
 
     #[test]

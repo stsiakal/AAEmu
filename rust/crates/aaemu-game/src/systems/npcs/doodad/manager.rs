@@ -12,7 +12,7 @@
 //! * `Delete()` also cancels the doodad's `FuncTask` (C# only `DoodadSpawner.Despawn` does), so
 //!   no timer keeps firing for a deleted doodad.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex, RwLock};
 
 use super::packets::{
@@ -51,6 +51,8 @@ pub struct DoodadManager {
     climates: RwLock<HashMap<u32, Vec<i32>>>,
     /// Test override of the `PhaseRatio` roll.
     forced_phase_ratio: Mutex<Option<i32>>,
+    /// Test rolls consumed one per `PhaseRatio` roll before `forced_phase_ratio` applies.
+    phase_ratio_queue: Mutex<VecDeque<i32>>,
 }
 
 impl Default for DoodadManager {
@@ -61,6 +63,7 @@ impl Default for DoodadManager {
             growth_rate: Mutex::new(1.0),
             climates: RwLock::new(HashMap::new()),
             forced_phase_ratio: Mutex::new(None),
+            phase_ratio_queue: Mutex::new(VecDeque::new()),
         }
     }
 }
@@ -97,7 +100,23 @@ impl DoodadManager {
 
     /// The forced `PhaseRatio` roll (tests), `None` = `Random.Shared.Next(0, 10000)`.
     pub fn forced_phase_ratio(&self) -> Option<i32> {
+        if let Some(v) = self
+            .phase_ratio_queue
+            .lock()
+            .expect("doodads poisoned")
+            .pop_front()
+        {
+            return Some(v);
+        }
         *self.forced_phase_ratio.lock().expect("doodads poisoned")
+    }
+
+    /// Queues exact `PhaseRatio` rolls (tests); they are used first, in order, one per roll.
+    pub fn queue_phase_ratios(&self, rolls: &[i32]) {
+        self.phase_ratio_queue
+            .lock()
+            .expect("doodads poisoned")
+            .extend(rolls.iter().copied());
     }
 
     pub fn set_forced_phase_ratio(&self, v: Option<i32>) {
@@ -221,6 +240,7 @@ pub fn delete(server: &GameServer, world: &Arc<WorldInstance>, doodad: &DoodadRe
         d.phase.deleted = true;
         d.phase.func_task = 0; // deviation: cancel the FuncTask (see the module docs)
     }
+    super::natural::forget(server, doodad); // drop the saved growth state of a world doodad
     super::logic::clear_links(&DoodadCtx::new(server, world.clone(), doodad.clone()));
     world.delete(doodad);
     area_trigger::remove_doodad_area_triggers(server, doodad.obj_id);
@@ -361,7 +381,10 @@ fn create_player_doodad_with_labor(
         (c.id, c.unit.name.clone(), c.unit.transform.zone_id)
     };
     tracing::warn!("{char_name} is placing a doodad {id} at position {x} {y} {z}");
-    let world = server.world.world_of(&pobj)?;
+    let Some(world) = server.world.world_of(&pobj) else {
+        tracing::warn!("{char_name}: doodad {id} not placed: character is in no world");
+        return None;
+    };
     let economy = server.systems.npcs.hooks.economy.get();
 
     let target_house = if ignore_houses {
@@ -378,7 +401,12 @@ fn create_player_doodad_with_labor(
     }
 
     // C#: Create returns null for an unknown template (NullReferenceException).
-    let doodad = create(server, &world, 0, id, Some(&pobj), true)?;
+    let Some(doodad) = create(server, &world, 0, id, Some(&pobj), true) else {
+        tracing::warn!(
+            "{char_name}: doodad {id} not placed: unknown doodad template or create failed"
+        );
+        return None;
+    };
     {
         let mut d = doodad.data();
         // Persist only after the placement item has been successfully consumed.
@@ -458,6 +486,10 @@ fn create_player_doodad_with_labor(
             return None;
         };
         if !items.contains(&preferred.template_id) {
+            tracing::warn!(
+                "{char_name}: doodad {id} not placed: source item {item_id} (template {}) is not a seed of this doodad (valid item templates {items:?})",
+                preferred.template_id
+            );
             delete(server, &world, &doodad);
             server.ids.object.release_id(doodad.obj_id);
             return None;
@@ -477,6 +509,9 @@ fn create_player_doodad_with_labor(
     if let Some(h) = &economy {
         if item_id > 0 && !h.try_consume_doodad_source_item(server, player, id, item_id, labor_cost)
         {
+            tracing::warn!(
+                "{char_name}: doodad {id} not placed: could not consume source item {item_id} (labor cost {labor_cost})"
+            );
             delete(server, &world, &doodad);
             server.ids.object.release_id(doodad.obj_id);
             return None;
@@ -497,6 +532,14 @@ fn create_player_doodad_with_labor(
     }
     Some(doodad)
 }
+
+/// Anti-cheat sanity bound (metres, horizontal) of a client doodad placement from the server's
+/// position of the player. Rust only: the C# `CSCreateDoodadPacket` has no range check. The planting
+/// skills (10953 sapling / animal, 25536 seeds) have `max_range` 2, but the 1.2 client does not
+/// enforce it (live placements arrive 10.5 m and 15.6 m away), the server position of a walking
+/// player lags the client, and the vertical term adds terrain error, so this only rejects
+/// placements that are clearly out of reach.
+const PLACE_RANGE_SANITY: f32 = 30.0;
 
 /// `CSCreateDoodadPacket.Read` body.
 pub fn handle_create_doodad(server: &GameServer, player: &PlayerRef, p: &CSCreateDoodadPacket) {
@@ -535,9 +578,16 @@ pub fn handle_create_doodad(server: &GameServer, player: &PlayerRef, p: &CSCreat
         h.item_ids_from_doodad(server, p.id)
             .contains(&item.template_id)
     }) {
+        tracing::warn!(
+            "CreateDoodad, item {} (template {}) cannot place doodad {}",
+            p.item_id,
+            item.template_id,
+            p.id
+        );
         return;
     }
     let Some(template) = server.game_data.systems.npcs.doodad.template(p.id) else {
+        tracing::warn!("CreateDoodad, unknown doodad template {}", p.id);
         return;
     };
     let player_pos = world.world_pos_rot(&WorldObject::from(player));
@@ -546,14 +596,26 @@ pub fn handle_create_doodad(server: &GameServer, player: &PlayerRef, p: &CSCreat
         .systems
         .skills
         .skill(item.use_skill_id)
-        .map_or(10.0, |skill| skill.max_range.max(10) as f32);
-    let distance_squared =
-        (p.x - player_pos.x).powi(2) + (p.y - player_pos.y).powi(2) + (p.z - player_pos.z).powi(2);
+        .map_or(PLACE_RANGE_SANITY, |skill| {
+            (skill.max_range as f32).max(PLACE_RANGE_SANITY)
+        });
+    let distance_squared = (p.x - player_pos.x).powi(2) + (p.y - player_pos.y).powi(2);
     if distance_squared > range * range {
+        tracing::warn!(
+            "CreateDoodad, doodad {} is {:.1} m away, range {range}",
+            p.id,
+            distance_squared.sqrt()
+        );
+        player.send(error_msg(error_message::TOO_FAR_AWAY));
         return;
     }
     let target_zone = world.template.zone_id_at(p.x, p.y);
     if template.restrict_zone_id != 0 && template.restrict_zone_id != target_zone {
+        tracing::warn!(
+            "CreateDoodad, doodad {} is restricted to zone {}, target zone is {target_zone}",
+            p.id,
+            template.restrict_zone_id
+        );
         return;
     }
     // Get cost from related skill
@@ -596,6 +658,7 @@ pub fn handle_create_doodad(server: &GameServer, player: &PlayerRef, p: &CSCreat
         return;
     }
     let Ok(labor_cost) = i16::try_from(labor_cost) else {
+        tracing::warn!("CreateDoodad, labor cost {labor_cost} out of range");
         return;
     };
     create_player_doodad_with_labor(

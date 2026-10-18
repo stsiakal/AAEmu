@@ -80,6 +80,9 @@ pub struct Doodad {
     pub puzzle_group: i32,
     /// `Spawner?.Id` (0 = none).
     pub spawner_id: u32,
+    /// `(world id, spawn key)` of a world-spawned doodad whose growth state is persisted in
+    /// `doodad_spawn_states` (`systems::npcs::doodad::natural`); `None` = not tracked.
+    pub natural_key: Option<(u32, String)>,
     // ---- phase 3 / npcs (doodad behaviour) ----
     /// The phase-machine members (`ToNextPhase`, `OverridePhase`, `PhaseRatio`, `FuncTask`, ...).
     pub phase: DoodadPhaseState,
@@ -211,6 +214,7 @@ impl Doodad {
             quest_glow: 0,
             puzzle_group: -1,
             spawner_id: 0,
+            natural_key: None,
             phase: DoodadPhaseState::default(),
             coffer: None,
             seat: VehicleSeat::default(),
@@ -348,6 +352,10 @@ pub struct DoodadPhaseState {
     /// `DoodadFuncFinal.After` of the first `Final { After > 0 }` phase func of the current
     /// phase (`TimeLeft` cache: `final_phase_end_ms = PhaseTime + After`).
     pub final_after_ms: Option<i32>,
+    /// Set on a `DoodadFuncRatioRespawn` replacement until its entry phase has run: its
+    /// `DoodadFuncTod` funcs must not take the `curTime >= Tod` catch-up (see
+    /// `phase_funcs::use_phase_func`).
+    pub suppress_tod_catch_up: bool,
 }
 
 impl Doodad {

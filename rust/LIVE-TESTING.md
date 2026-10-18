@@ -4,6 +4,11 @@ How to run the Rust login + game servers against a real MySQL, the real 1.2 game
 headless client bot, how to compare their traffic with the C# servers (parity), how to load-test
 them, and how to start the real 1.2 client against them (`aaemu-launcher`).
 
+> Agents on the shared dev machine: don't set this up by hand. `Scripts/lane.sh new` +
+> `Scripts/live-stack.sh` give each session its own worktree, target dir, ports, databases and
+> runtime dir ([`AGENT-QUICKSTART.md`](../AGENT-QUICKSTART.md)). This page documents the setup
+> underneath, for other machines and for debugging.
+
 Everything below uses the layout of the reference run (Windows, Git Bash). Paths are examples:
 
 | What | Where (example) |
@@ -78,7 +83,7 @@ Ports used side by side (C# = Rust + 10000):
 ### Rust
 
 ```sh
-cd rust && cargo build --release --bins
+cd rust && cargo build --release --bins    # or --profile live: opt-level 1 + incremental, for fast rebuilds
 ```
 
 `aaemu-login` reads `Config.json` + `Config.Local.json` from its application directory;
@@ -303,6 +308,47 @@ failure reasons; the lines are printed and appended to `--out`:
 $TC quest --config testclient.local.json --login 127.0.0.1:21237 \
           --plan rust/tools/quest_audit/plan.json --quest 330 --quest 331 --out quest-audit.jsonl
 ```
+=======
+`questitem` (`full`'s login/create/select/spawn, then GM setup and a quest-item cast loop) uses
+the Detection Orb (item 17594, use skill 16881) of quest 2394 "Searching for Answers" on the
+Soulreath "Field of Honor Participant" / "Fighter Participant" NPCs (7824 / 7823) three times and
+asserts that the quest objective counts 3; a rejected cast fails the step with its `SkillResult`
+(93 = `skill_urk_target_npc_group`). Setup: `/move`, `/quest add 2394 Npc 511`,
+`/quest step 2394 Progress` (the start step also needs an Elf who completed quest 2392, which the
+Nuian bot is not) and `/item add`. Prerequisite: the bot's account needs GM access level 100;
+after the first run created the account, grant it once on the private MySQL (never 3306):
+`mysql -h127.0.0.1 -P3317 -uroot -e "UPDATE rs_game.accounts SET access_level=100 WHERE account_id=<id>"`
+(the id is in the `login.auth` step note and in the error of `game.questitem.gm`; the schema name
+is the one of the game server's `Connections`). Fields (`quest_item_quest`, `quest_item_giver`,
+`quest_item_template`, `quest_item_skill`, `quest_item_npcs`, `quest_item_uses`,
+`quest_item_pos`, `quest_item_max_attempts`) default to those values.
+
+`doodad` (same login and GM prerequisites as `questitem`) adds quest 3447 "Fellow Searchers"
+(`/quest add 3447 Npc 7890`, `/quest step 3447 Progress`), teleports next to the Amber Boulder
+(doodad 4252, Arach Hollow) and lists the doodads in sight. It casts the boulder's fake-use skill
+16790 on it with a doodad target and asserts that the quest objective counts 1. A boulder missing
+from the level spawn fails the `game.doodad.level_spawn` step. The scenario then interacts with a
+`/spawn doodad 4252` copy, so the cast is still checked, and removes that copy afterwards.
+
+`plant` (GM account) places crops, trees and baby animals with `CSCreateDoodadPacket` (daffodil 2274, potato
+2259, turmeric 2756, wolfdog 4867, elk 4891, growth fruit 4594, fir sapling 367) from seeds added with
+`/item add self`, about 2 m from the bot, and prints per placement whether the doodad was announced
+(`spawned`) and the item tasks / `SCErrorMsg` codes that came back. `AAEMU_PLANT_POS="x y z"` teleports first
+(a house plot, a public farm such as the stable at 14889 14250 116.5), `AAEMU_PLANT_COUNT=N` repeats each
+placement N times. The server log shows `CreateDoodad, ...` / `<name> is placing a doodad ...` and, when a
+placement is dropped, a `CreateDoodad, ...` / `... not placed: ...` warning with the reason; the rows land in
+the `doodads` table. Seeds cost 1 labor each outside houses and public farms, the bot has little labor.
+
+`stonethrow` and `ghost` (GM account, same prerequisites as `questitem`) check two log-noise fixes:
+`stonethrow` casts the stone-throwing skill 11268 from items 4056 / 24210 and asserts that the cast
+of a stack of 2 ends with an `ItemUnlock` (item task type 95) while the cast with the last stone
+sends none (server log: `plot 349 (skill 11268): source item <id> was consumed, no ItemUnlock
+sent` at debug level, no `SkillSourceItem ... no longer exists` error); `ghost` teleports to the
+ghost of spawner 3380 (template 3483 near 15149, 14959, 137), kills it (`/kill`), deletes the
+corpse (`/despawn npc <objId>`) and watches 130 s for exactly one respawn (server log: no
+`not found in SpawnedNpcs` warning). Run the game with
+`RUST_LOG=info,aaemu_game::systems::skills::plots=debug,aaemu_game::systems::npcs=debug` to see the
+debug lines.
 
 The combat step selects its NPC through `CSChangeTargetPacket` and faces it in movement
 packets so auto attacks and angle restrictions use the intended target. It matches skill responses to the player's object and skill IDs and reads
