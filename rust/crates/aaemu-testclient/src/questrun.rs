@@ -517,21 +517,28 @@ impl Fallback {
 /// Whose fault a result is (`blocker` of a result line).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Blocker {
-    /// `runner_gap` / `server_bug` / `data_gap` / `requirement` / `none`.
+    /// `runner_gap` / `suspect` / `data_gap` / `requirement` / `none`.
     pub class: String,
     pub reason: String,
     /// The code path / data row that explains the class.
     pub code: String,
+    /// A `suspect`'s evidence: what was observed (packet / error / result) and what the runner
+    /// expected, with the source of the expectation (plan / compact field / quest text).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub evidence: String,
 }
 
-/// The blocker classes of a result line.
+/// The blocker classes of a result line. `suspect` means the server behaved differently from
+/// what the runner expected: it is **triaged separately** and is only a confirmed server issue
+/// when it is reproduced and a retail source (client text, the C# original, period data) says
+/// the server is wrong.
 pub mod blocker_class {
     pub const NONE: &str = "none";
     pub const RUNNER_GAP: &str = "runner_gap";
-    pub const SERVER_BUG: &str = "server_bug";
+    pub const SUSPECT: &str = "suspect";
     pub const DATA_GAP: &str = "data_gap";
     pub const REQUIREMENT: &str = "requirement";
-    pub const ALL: [&str; 5] = [NONE, RUNNER_GAP, SERVER_BUG, DATA_GAP, REQUIREMENT];
+    pub const ALL: [&str; 5] = [NONE, RUNNER_GAP, SUSPECT, DATA_GAP, REQUIREMENT];
 }
 
 impl Default for Blocker {
@@ -540,6 +547,7 @@ impl Default for Blocker {
             class: blocker_class::NONE.into(),
             reason: String::new(),
             code: String::new(),
+            evidence: String::new(),
         }
     }
 }
@@ -550,6 +558,22 @@ impl Blocker {
             class: class.into(),
             reason: reason.into(),
             code: code.into(),
+            evidence: String::new(),
+        }
+    }
+
+    /// A `suspect` blocker: the observation, the code path and the evidence (observed vs
+    /// expected + source). `evidence` is mandatory here.
+    pub fn suspect(
+        reason: impl Into<String>,
+        code: impl Into<String>,
+        evidence: impl Into<String>,
+    ) -> Self {
+        Self {
+            class: blocker_class::SUSPECT.into(),
+            reason: reason.into(),
+            code: code.into(),
+            evidence: evidence.into(),
         }
     }
 }
@@ -644,6 +668,7 @@ struct SourceAttempt {
     reason: String,
     class: &'static str,
     code: &'static str,
+    evidence: String,
 }
 
 impl SourceAttempt {
@@ -658,13 +683,30 @@ impl SourceAttempt {
             reason: reason.into(),
             class,
             code,
+            evidence: String::new(),
         }
     }
 
-    /// `server_bug` outranks `runner_gap`, which outranks `data_gap`.
+    /// A `suspect` attempt: observed vs expected evidence is mandatory.
+    fn suspect(
+        source: impl Into<String>,
+        reason: impl Into<String>,
+        code: &'static str,
+        evidence: impl Into<String>,
+    ) -> Self {
+        Self {
+            source: source.into(),
+            reason: reason.into(),
+            class: blocker_class::SUSPECT,
+            code,
+            evidence: evidence.into(),
+        }
+    }
+
+    /// `suspect` outranks `runner_gap`, which outranks `data_gap`.
     fn severity(&self) -> u8 {
         match self.class {
-            blocker_class::SERVER_BUG => 3,
+            blocker_class::SUSPECT => 3,
             blocker_class::RUNNER_GAP => 2,
             blocker_class::DATA_GAP => 1,
             _ => 0,
@@ -691,8 +733,19 @@ impl QuestJournal {
         }
     }
 
+    fn note_suspect(
+        &mut self,
+        reason: impl Into<String>,
+        code: impl Into<String>,
+        evidence: impl Into<String>,
+    ) {
+        if self.blocker.is_none() {
+            self.blocker = Some(Blocker::suspect(reason, code, evidence));
+        }
+    }
+
     /// Sets the blocker from the failed real-source attempts (the worst one wins; every attempt
-    /// stays in the reason text).
+    /// stays in the reason text; a suspect keeps its evidence).
     fn note_source_attempts(&mut self, attempts: &[SourceAttempt]) {
         let Some(best) = attempts.iter().max_by_key(|a| a.severity()) else {
             return;
@@ -702,7 +755,14 @@ impl QuestJournal {
             .map(|a| format!("{}: {}", a.source, a.reason))
             .collect::<Vec<_>>()
             .join("; ");
-        self.note_blocker(best.class, reason, best.code);
+        if self.blocker.is_none() {
+            self.blocker = Some(Blocker {
+                class: best.class.into(),
+                reason,
+                code: best.code.into(),
+                evidence: best.evidence.clone(),
+            });
+        }
     }
 }
 
@@ -1184,6 +1244,14 @@ pub fn render_summary(report: &RunReport) -> String {
         let n = classes.get(class).copied().unwrap_or(0);
         out.push_str(&format!(" {class}={n}"));
     }
+    if classes.get(blocker_class::SUSPECT).copied().unwrap_or(0) > 0 {
+        out.push_str(
+            "\n[quest] suspects are triaged separately: a suspect is only a confirmed server \
+             issue when it is reproduced AND a retail source (client text, the C# original, \
+             period data) says the server is wrong; each suspect carries observed-vs-expected \
+             evidence",
+        );
+    }
     out.push_str("\n[quest] top reasons by blocker class:");
     for class in blocker_class::ALL {
         let mut reasons: BTreeMap<String, usize> = BTreeMap::new();
@@ -1423,7 +1491,7 @@ pub async fn run(
     let mut forced: BTreeSet<u32> = BTreeSet::new();
     // Item templates the selected quests may still need; the bag keeper never destroys them and
     // destroys the rest when the bag fills up over a long sweep.
-    let needed = needed_items(&selected);
+    let needed = needed_items(&selected, compact_db.as_ref());
     // Blocker class / reason of every quest already run, so a missing prerequisite can be
     // explained by the prerequisite's own result.
     let mut classes: BTreeMap<u32, (String, String)> = BTreeMap::new();
@@ -1499,8 +1567,9 @@ pub async fn run(
 }
 
 /// Every item template the selected quests may need: step targets, the items of their
-/// `item_sources` (containers included) and `OwnItem` requirements.
-fn needed_items(selected: &[Selected<'_>]) -> BTreeSet<u32> {
+/// `item_sources` (containers included), `OwnItem` requirements and the reagents of every use
+/// skill those items carry (the bag keeper must never destroy a reagent mid-sweep).
+fn needed_items(selected: &[Selected<'_>], compact_db: Option<&CompactDb>) -> BTreeSet<u32> {
     fn walk(source: &PlanItemSource, out: &mut BTreeSet<u32>) {
         if source.container_item_id != 0 {
             out.insert(source.container_item_id);
@@ -1510,16 +1579,33 @@ fn needed_items(selected: &[Selected<'_>]) -> BTreeSet<u32> {
         }
     }
     let mut out = BTreeSet::new();
+    let add_use_reagents = |item_id: u32, out: &mut BTreeSet<u32>| {
+        let Some(db) = compact_db else {
+            return;
+        };
+        let Ok(ItemUseSkill::Known { skill_id, .. }) = db.item_use_skill(item_id) else {
+            return;
+        };
+        for (reagent, _) in db.skill_reagents(skill_id).unwrap_or_default() {
+            out.insert(reagent);
+        }
+    };
     for target in selected {
         let Selected::Plan(quest) = target else {
             continue;
         };
         for step in &quest.steps {
-            out.extend(step.target.ids.iter().copied());
+            for item_id in &step.target.ids {
+                out.insert(*item_id);
+                add_use_reagents(*item_id, &mut out);
+            }
             for entry in step.item_sources.iter().flatten() {
                 out.insert(entry.item_id);
                 for source in &entry.sources {
                     walk(source, &mut out);
+                    if source.container_item_id != 0 {
+                        add_use_reagents(source.container_item_id, &mut out);
+                    }
                 }
             }
         }
@@ -1773,13 +1859,28 @@ fn classify_reason(quest: &PlanQuest, facts: Option<&KnownFacts<'_>>, reason: &s
                 .collect()
         });
         if undecided.is_empty() {
-            return Blocker::new(
-                blocker_class::SERVER_BUG,
+            return Blocker::suspect(
                 format!(
                     "server ignored the accept without an error and every plan requirement is \
                      met ({reason})"
                 ),
                 code::STARTER_ACCEPTS,
+                format!(
+                    "observed: no SCErrorMsg and no SCQuestContextStarted within {}s of the \
+                     accept; expected: engine.rs::starter_accepts accepts the start component \
+                     because every plan unit_reqs is met (plan requires: {})",
+                    ACCEPT_WAIT.as_secs(),
+                    if quest.requires.is_empty() {
+                        "none".to_string()
+                    } else {
+                        quest
+                            .requires
+                            .iter()
+                            .map(requirement_reason)
+                            .collect::<Vec<_>>()
+                            .join("; ")
+                    }
+                ),
             );
         }
         return Blocker::new(
@@ -1800,11 +1901,14 @@ fn classify_reason(quest: &PlanQuest, facts: Option<&KnownFacts<'_>>, reason: &s
         );
     }
     if has("using the starter item did not start the quest") {
-        return Blocker::new(
-            blocker_class::SERVER_BUG,
+        return Blocker::suspect(
             reason,
             "aaemu-game/src/systems/quests/events.rs::accept_quest_effect / \
              engine.rs::add_quest",
+            "observed: the starter item was used with its use_skill and neither \
+             SCQuestContextStarted nor SCErrorMsg arrived; expected: AcceptQuestEffect starts \
+             the quest for items whose items.impl_id is AcceptQuest (compact items / \
+             item_accept_quests binding)",
         );
     }
     if has("QuestDailyLimit") {
@@ -1826,6 +1930,22 @@ fn classify_reason(quest: &PlanQuest, facts: Option<&KnownFacts<'_>>, reason: &s
             reason,
             "aaemu-testclient/src/questrun.rs::free_bag_space (CSDestroyItemPacket / \
              CSExpandSlotsPacket)",
+        );
+    }
+    if has("NEED_REAGENT") {
+        return Blocker::new(
+            blocker_class::RUNNER_GAP,
+            reason,
+            "aaemu-game/src/systems/skills/validation.rs::check_resources (NEED_REAGENT, skill \
+             result 36) / compact.sqlite3 skill_reagents",
+        );
+    }
+    if has("BackpackOccupied") {
+        return Blocker::new(
+            blocker_class::RUNNER_GAP,
+            reason,
+            "aaemu-testclient/src/questrun.rs::free_bag_space / \
+             aaemu-game/src/systems/quests/engine.rs::can_accept_supply_items (BACKPACK_OCCUPIED)",
         );
     }
     if has("Item template id") && has("does not exist") {
@@ -1859,18 +1979,24 @@ fn classify_reason(quest: &PlanQuest, facts: Option<&KnownFacts<'_>>, reason: &s
         );
     }
     if has("no SCLoadInstancePacket after using") && has("for world") {
-        return Blocker::new(
-            blocker_class::SERVER_BUG,
+        return Blocker::suspect(
             reason,
             "aaemu-game/src/systems/instances/indun.rs::request_system_instance / \
              aaemu-game/src/systems/npcs/doodad/funcs/world.rs::enter_sys_instance",
+            "observed: the entrance doodad was used with its own func skill and no \
+             SCLoadInstancePacket arrived within the world-load window; expected: \
+             DoodadFuncEnterSysInstance queues/creates the system instance and the load answers \
+             with SCLoadInstancePacket (instances/indun.rs::request_system_instance -> \
+             dungeon -> world load)",
         );
     }
     if has("no SCLoadInstancePacket after using") {
-        return Blocker::new(
-            blocker_class::SERVER_BUG,
+        return Blocker::suspect(
             reason,
             "aaemu-game/src/systems/instances/indun.rs::request_leave_instance",
+            "observed: the exit doodad was used with its func skill and no SCLoadInstancePacket \
+             arrived; expected: DoodadFuncExitIndun -> request_leave_instance -> \
+             dungeon::leave_instance -> worlds::return_to_main_world sends SCLoadInstancePacket",
         );
     }
     if has("no world '") || has("no entrance doodad") || has("no DoodadFuncExitIndun") {
@@ -1915,35 +2041,85 @@ fn classify_reason(quest: &PlanQuest, facts: Option<&KnownFacts<'_>>, reason: &s
                 "aaemu-testclient/src/questrun.rs::GM_SPAWN_WINDOW (large kill goal)",
             );
         }
-        return Blocker::new(blocker_class::SERVER_BUG, reason, code::ON_NPC_KILLED);
+        return Blocker::suspect(
+            reason,
+            code::ON_NPC_KILLED,
+            "observed: the GM-spawned NPC was killed and the objective/quest did not advance; \
+             expected: events.rs::on_npc_killed dispatches MonsterHunt/MonsterGroupHunt for the \
+             killer (quest target list from the plan and compact quest_monster_npcs)",
+        );
     }
     if has("doodad interaction did not update") {
-        return Blocker::new(blocker_class::SERVER_BUG, reason, code::ON_DOODAD);
+        return Blocker::suspect(
+            reason,
+            code::ON_DOODAD,
+            "observed: the doodad was used with the interaction skill and no quest update or \
+             objective change followed; expected: the interaction effect fires \
+             events.rs::on_doodad_interaction with the doodad template and the \
+             QuestActObjInteraction target counts it (compact quest_act_obj_interactions)",
+        );
     }
     if has("talk act") && has("did not update") {
-        return Blocker::new(blocker_class::SERVER_BUG, reason, code::ON_TALK);
+        return Blocker::suspect(
+            reason,
+            code::ON_TALK,
+            "observed: the talk packet was sent to the NPC and the quest objective did not move; \
+             expected: the talk act counts the NPC's template (plan target ids / compact \
+             quest_act_obj_talks)",
+        );
     }
     if has("using the item did not update") {
-        return Blocker::new(blocker_class::SERVER_BUG, reason, code::ITEM_USE);
+        return Blocker::suspect(
+            reason,
+            code::ITEM_USE,
+            "observed: the item was cast with its use_skill and the objective stayed unchanged; \
+             expected: the use skill's effects advance the QuestActObjItemUse act (compact \
+             items.use_skill_id / quest_act_obj_item_uses)",
+        );
     }
     if has("sphere objective") {
-        return Blocker::new(blocker_class::SERVER_BUG, reason, code::SPHERES);
+        return Blocker::suspect(
+            reason,
+            code::SPHERES,
+            "observed: the character entered the sign sphere and the objective did not change; \
+             expected: spheres.rs::tick dispatches EnterSphere for the sphere component (plan \
+             spheres geometry)",
+        );
     }
     if has("no SCQuestContextCompleted") {
-        return Blocker::new(blocker_class::SERVER_BUG, reason, code::ON_REPORT);
+        return Blocker::suspect(
+            reason,
+            code::ON_REPORT,
+            "observed: the report packet was sent to the target and no \
+             SCQuestContextCompleted arrived; expected: events.rs::on_report completes the Ready \
+             component at the reported NPC/doodad (plan report act)",
+        );
     }
     if has("server rejected") || has("accept rejected") || has("no starter: accept rejected") {
-        return Blocker::new(blocker_class::SERVER_BUG, reason, code::ADD_QUEST);
+        return Blocker::suspect(
+            reason,
+            code::ADD_QUEST,
+            "observed: the server answered the accept with SCErrorMsg; expected: the accept \
+             path accepts the start component (engine.rs::add_quest / starter_accepts; plan \
+             accept act and unit_reqs)",
+        );
     }
     if has("quest entered FAILED") {
-        return Blocker::new(
-            blocker_class::SERVER_BUG,
+        return Blocker::suspect(
             reason,
             "aaemu-game/src/systems/quests/engine.rs (fail_quest)",
+            "observed: the live quest row moved to FAILED; expected: the plan steps satisfy \
+             every non-optional act (plan components/acts)",
         );
     }
     if has("no SCQuestContextStarted after entering the sphere") {
-        return Blocker::new(blocker_class::SERVER_BUG, reason, code::SPHERES);
+        return Blocker::suspect(
+            reason,
+            code::SPHERES,
+            "observed: the character entered the starter sphere and no SCQuestContextStarted \
+             arrived; expected: spheres.rs::tick dispatches the starter event \
+             (on_enter_quest_starter_sphere) for the sphere component",
+        );
     }
     if has("is not handled by runner")
         || has("needs --compact-db")
@@ -2697,7 +2873,7 @@ async fn run_quest(
     let mut forced_complete = false;
     let force_class = matches!(
         blocker.class.as_str(),
-        blocker_class::RUNNER_GAP | blocker_class::SERVER_BUG | blocker_class::DATA_GAP
+        blocker_class::RUNNER_GAP | blocker_class::SUSPECT | blocker_class::DATA_GAP
     );
     if opts.force_blocked
         && force_class
@@ -2726,10 +2902,15 @@ async fn run_quest(
                 );
             }
             Err(reason) => {
-                journal.note_blocker(
-                    blocker_class::SERVER_BUG,
+                journal.note_suspect(
                     format!("force attempt failed: {reason}"),
                     code::ADD_QUEST,
+                    format!(
+                        "observed: /quest add + /quest step Reward for {} did not complete the \
+                         quest ({reason}); expected: the GM quest command marks the quest \
+                         completed (commands/scripts/quest_cmd.rs -> engine.rs::gm_set_step)",
+                        quest.quest_id
+                    ),
                 );
             }
         }
@@ -4874,14 +5055,19 @@ async fn gather_source(
                     "quest_supply act {act}"
                 ))));
             }
-            Ok(SourceOutcome::Failed(SourceAttempt::new(
+            Ok(SourceOutcome::Failed(SourceAttempt::suspect(
                 format!("quest_supply act {act}"),
                 format!(
                     "the supply act gave none of item(s) {ids:?} in {}s",
                     SOURCE_WAIT.as_secs()
                 ),
-                blocker_class::SERVER_BUG,
                 "aaemu-game/src/systems/quests/acts.rs (QuestActSupplyItem)",
+                format!(
+                    "observed: no SCItemTaskSuccess for item(s) {ids:?} within {}s of the act \
+                     running; expected: the quest's own supply act hands the items over \
+                     (compact quest_act_supply_items / acts.rs::QuestActSupplyItem)",
+                    SOURCE_WAIT.as_secs()
+                ),
             )))
         }
         "npc_loot" => {
@@ -4895,6 +5081,45 @@ async fn gather_source(
                     blocker_class::DATA_GAP,
                     "compact.sqlite3 loot_pack_dropping_npcs",
                 )));
+            }
+            // A quest-bound drop (`items.loot_quest_id`) only rolls while that quest is active
+            // (`loot.rs::try_take_loot_locked` HasQuest gate, as the C#): without the quest the
+            // kills can never produce the item.
+            if let Some(bound) = source.loot_quest_id {
+                let active = bound == quest_id || game.state.quests.contains_key(&bound);
+                if !active {
+                    let repeatable = compact_db
+                        .and_then(|db| db.quest_repeatable(bound).ok().flatten())
+                        .unwrap_or(false);
+                    let completed = game.state.completed_quests.contains(&bound);
+                    let (class, code) = if completed && !repeatable {
+                        (
+                            blocker_class::REQUIREMENT,
+                            "compact.sqlite3 items.loot_quest_id (completed, not repeatable)",
+                        )
+                    } else {
+                        (
+                            blocker_class::RUNNER_GAP,
+                            "aaemu-testclient/src/questrun.rs::step_gather (quest not active) / \
+                             aaemu-game/src/systems/economy/loot.rs:243 try_take_loot_locked \
+                             (HasQuest(loot_quest_id))",
+                        )
+                    };
+                    return Ok(SourceOutcome::Failed(SourceAttempt::new(
+                        format!("npc_loot pack {}", source.loot_pack_id),
+                        format!(
+                            "item(s) {ids:?} have loot_quest_id {bound} and quest {bound} is {}; \
+                             the drop only rolls while it is active",
+                            if completed {
+                                "already completed"
+                            } else {
+                                "not active in this run (run it first)"
+                            }
+                        ),
+                        class,
+                        code,
+                    )));
+                }
             }
             let positions = source_positions(source, step_world(step).as_deref());
             let window = (Instant::now() + SOURCE_WINDOW).min(deadline);
@@ -4995,7 +5220,23 @@ async fn gather_source(
                 ))));
             }
             if kills > 0 {
-                return Ok(SourceOutcome::Failed(SourceAttempt::new(
+                // A full bag can swallow the loot silently (`give_loot_pack`'s room check);
+                // that is the runner's state, not a suspect.
+                let capacity = bag_capacity(&game.state);
+                let free = capacity.saturating_sub(game.state.bag.len() as u32);
+                if free < 3 {
+                    return Ok(SourceOutcome::Failed(SourceAttempt::new(
+                        format!("npc_loot pack {}", source.loot_pack_id),
+                        format!(
+                            "loot pack {} rolled nothing in {kills} kill(s); the bag had only \
+                             {free}/{capacity} free slot(s)",
+                            source.loot_pack_id
+                        ),
+                        blocker_class::RUNNER_GAP,
+                        "aaemu-testclient/src/questrun.rs::bag_capacity (bag full)",
+                    )));
+                }
+                return Ok(SourceOutcome::Failed(SourceAttempt::suspect(
                     format!("npc_loot pack {}", source.loot_pack_id),
                     format!(
                         "loot pack {} rolled nothing in {kills} kill(s) of npc(s) {:?}{}",
@@ -5003,11 +5244,29 @@ async fn gather_source(
                         source.npc_ids,
                         if spawned { " (GM-spawned)" } else { "" }
                     ),
-                    blocker_class::SERVER_BUG,
                     code::LOOT_ROLL,
+                    format!(
+                        "observed: {kills} kill(s) credited to the bot and no \
+                         SCItemTaskSuccess for item(s) {ids:?}; expected: loots.drop_rate {:?} \
+                         on pack {} grants the item on the kill's loot roll (plan item_sources \
+                         / compact loots; loot.rs::generate_loot/try_take_loot)",
+                        source.chance, source.loot_pack_id
+                    ),
                 )));
             }
-            Ok(SourceOutcome::Failed(SourceAttempt::new(
+            if positions.is_empty() {
+                return Ok(SourceOutcome::Failed(SourceAttempt::new(
+                    format!("npc_loot pack {}", source.loot_pack_id),
+                    format!(
+                        "no npc of template(s) {:?} was visible and the plan has no location \
+                         for it",
+                        source.npc_ids
+                    ),
+                    blocker_class::DATA_GAP,
+                    "plan.py / Data/Worlds/world_spawns.json",
+                )));
+            }
+            Ok(SourceOutcome::Failed(SourceAttempt::suspect(
                 format!("npc_loot pack {}", source.loot_pack_id),
                 format!(
                     "no npc of template(s) {:?} was visible at {} plan location(s) and the GM \
@@ -5015,16 +5274,14 @@ async fn gather_source(
                     source.npc_ids,
                     positions.len()
                 ),
-                if positions.is_empty() {
-                    blocker_class::DATA_GAP
-                } else {
-                    blocker_class::SERVER_BUG
-                },
-                if positions.is_empty() {
-                    "plan.py / Data/Worlds/world_spawns.json"
-                } else {
-                    "aaemu-game/src/systems/npcs/spawn_manager.rs"
-                },
+                "aaemu-game/src/systems/npcs/spawn_manager.rs",
+                format!(
+                    "observed: no unit of template(s) {:?} at {} plan location(s) and none \
+                     after /spawn npc; expected: the world spawn data (or the GM spawn) creates \
+                     the NPC (plan locations from world_spawns.json; spawn_manager)",
+                    source.npc_ids,
+                    positions.len()
+                ),
             )))
         }
         "doodad" => {
@@ -5115,11 +5372,16 @@ async fn gather_source(
                     return match buy_item_at(game, 0, doodad.obj_id, ids[0], count, deadline).await
                     {
                         Ok(note) => Ok(SourceOutcome::Progress(Some(note))),
-                        Err(f) => Ok(SourceOutcome::Failed(SourceAttempt::new(
+                        Err(f) => Ok(SourceOutcome::Failed(SourceAttempt::suspect(
                             format!("doodad {func}"),
                             f.reason,
-                            blocker_class::SERVER_BUG,
                             "aaemu-game/src/systems/economy/store.rs:242 (CSBuyItemsPacket)",
+                            format!(
+                                "observed: CSBuyItemsPacket(doodad {}, item {}) and no \
+                                 SCItemTaskSuccess; expected: the purchase doodad sells item \
+                                 {} (compact doodad_func_purchases.item_id)",
+                                doodad.obj_id, ids[0], ids[0]
+                            ),
                         ))),
                     };
                 }
@@ -5184,6 +5446,57 @@ async fn gather_source(
                     "compact.sqlite3 loots.drop_rate (1.2 data)",
                 )));
             }
+            // When the data has no phase edge leading to the loot group, no interaction can
+            // ever harvest it (doodad 4594's harvest phase sits behind a growth that 1.2 does
+            // not link): a data gap with the phase ids.
+            if let Some(db) = compact_db {
+                let loot_phases = db
+                    .doodad_loot_phases(last_template, ids[0])
+                    .unwrap_or_default();
+                if !loot_phases.is_empty() {
+                    let (starts, edges) = db.doodad_phase_graph(last_template).unwrap_or_default();
+                    let mut reachable: HashSet<u32> = starts.iter().copied().collect();
+                    let mut queue: Vec<u32> = starts.clone();
+                    while let Some(group) = queue.pop() {
+                        for (from, to) in &edges {
+                            if *from == group && reachable.insert(*to) {
+                                queue.push(*to);
+                            }
+                        }
+                    }
+                    if !loot_phases.iter().any(|phase| reachable.contains(phase)) {
+                        return Ok(SourceOutcome::Failed(SourceAttempt::new(
+                            format!("doodad {func}"),
+                            format!(
+                                "doodad {last_template}: loot phase(s) {loot_phases:?} of item \
+                                 {} are not reachable from its Start phase(s) {starts:?} (phase \
+                                 edges {edges:?})",
+                                ids[0]
+                            ),
+                            blocker_class::DATA_GAP,
+                            "compact.sqlite3 doodad_funcs.next_phase (no growth link in 1.2)",
+                        )));
+                    }
+                }
+            }
+            // A nearly full bag silently swallows the loot (`give_loot_pack` room check):
+            // the runner's state, not a suspect.
+            let capacity = bag_capacity(&game.state);
+            let free = capacity.saturating_sub(game.state.bag.len() as u32);
+            if free < 3 {
+                return Ok(SourceOutcome::Failed(SourceAttempt::new(
+                    format!("doodad {func}"),
+                    format!(
+                        "doodad(s) {:?} used {uses} time(s) (last template {last_template}{}) \
+                         gave none of item(s) {ids:?} while the bag had only {free}/{capacity} \
+                         free slot(s)",
+                        source.doodad_ids,
+                        if spawned { ", GM-spawned" } else { "" }
+                    ),
+                    blocker_class::RUNNER_GAP,
+                    "aaemu-testclient/src/questrun.rs::bag_capacity (bag full)",
+                )));
+            }
             // A doodad whose last phase carried its own skill was stuck in fake-use / growth
             // phases the runner could not drive toward the loot func (the natural spawn may
             // outgrow them over time); that is the runner's limit, not a server answer.
@@ -5200,7 +5513,7 @@ async fn gather_source(
                     "aaemu-testclient/src/questrun.rs::doodad_phase_skill (no growth wait)",
                 )));
             }
-            Ok(SourceOutcome::Failed(SourceAttempt::new(
+            Ok(SourceOutcome::Failed(SourceAttempt::suspect(
                 format!("doodad {func}"),
                 format!(
                     "doodad(s) {:?} used {uses} time(s) (last template {last_template}{}) gave \
@@ -5208,8 +5521,15 @@ async fn gather_source(
                     source.doodad_ids,
                     if spawned { ", GM-spawned" } else { "" }
                 ),
-                blocker_class::SERVER_BUG,
                 code::DOODAD_LOOT,
+                format!(
+                    "observed: {uses} use(s) of doodad(s) {:?} with their phase skill and no \
+                     SCItemTaskSuccess for item(s) {ids:?} (bag had {free} free slots); \
+                     expected: the doodad's loot func grants the item (compact \
+                     doodad_func_loot_items.percent/count for item {}) — \
+                     npcs/doodad/funcs/items.rs::loot_item",
+                    source.doodad_ids, ids[0]
+                ),
             )))
         }
         "store" => {
@@ -5277,11 +5597,16 @@ async fn gather_source(
                     let Some(npc) =
                         wait_for_target(game, &vendors, &HashSet::new(), appear).await?
                     else {
-                        return Ok(SourceOutcome::Failed(SourceAttempt::new(
+                        return Ok(SourceOutcome::Failed(SourceAttempt::suspect(
                             "store",
                             format!("no merchant npc of template(s) {vendors:?} appeared"),
-                            blocker_class::SERVER_BUG,
                             "aaemu-game/src/systems/npcs/spawn_manager.rs",
+                            format!(
+                                "observed: /spawn npc {template} answered and no unit of \
+                                 template(s) {vendors:?} appeared within the wait; expected: the \
+                                 GM spawn creates a live NPC (commands/scripts/spawn.rs -> \
+                                 spawner.spawn_all)"
+                            ),
                         )));
                     };
                     spawned = true;
@@ -5313,14 +5638,20 @@ async fn gather_source(
                     if spawned { ", gm_spawn" } else { "" }
                 ))));
             }
-            Ok(SourceOutcome::Failed(SourceAttempt::new(
+            Ok(SourceOutcome::Failed(SourceAttempt::suspect(
                 "store",
                 format!(
                     "merchant npc {} (packs {:?}) sold none of item {} x{}",
                     npc.id, source.pack_ids, ids[0], count
                 ),
-                blocker_class::SERVER_BUG,
                 "aaemu-game/src/systems/economy/store.rs:242 (CSBuyItemsPacket)",
+                format!(
+                    "observed: CSBuyItemsPacket(npc {}, item {}, x{count}) and no \
+                     SCItemTaskSuccess for the item; expected: merchant npc {} sells item {} \
+                     from pack(s) {:?} at the template price (compact merchant_goods / \
+                     npcs.merchant and store.rs::run)",
+                    npc.id, ids[0], npc.id, ids[0], source.pack_ids
+                ),
             )))
         }
         "item_open" => {
@@ -5442,6 +5773,30 @@ async fn gather_source(
                     }
                     Err(e) => return Err(StepFailure::io(e)),
                 };
+                // The open skill can need every reagent of a list at once (the doll pouches:
+                // skill 22045/22046 want all nine dolls); a missing reagent is the runner's
+                // gap and is reported instead of blaming the open.
+                if let Err(f) = ensure_use_reagents(
+                    game,
+                    quest_id,
+                    skill,
+                    compact_db,
+                    craft_db,
+                    Instant::now() + Duration::from_secs(30),
+                    journal,
+                    needed,
+                    depth,
+                )
+                .await
+                {
+                    return Ok(SourceOutcome::Failed(SourceAttempt::new(
+                        format!("item_open {container}"),
+                        f.reason,
+                        blocker_class::RUNNER_GAP,
+                        "aaemu-testclient/src/questrun.rs::ensure_use_reagents / \
+                         compact.sqlite3 skill_reagents",
+                    )));
+                }
                 let target = use_item_target(game, target_type, step)?;
                 let before = game.state.bag_count(ids);
                 game.use_item(item.item_id, container, skill, target)
@@ -5449,7 +5804,9 @@ async fn gather_source(
                     .map_err(StepFailure::io)?;
                 opened += 1;
                 last_note = Some(format!("opened container {container} x{opened}"));
-                let until = (Instant::now() + USE_WAIT).min(deadline);
+                // The open's result (grant / skill product) gets a fresh window: the step
+                // deadline may already be spent on the reagent gathering.
+                let until = Instant::now() + USE_WAIT;
                 let _ = wait_for_gather(game, quest_id, ids, want, objective, until)
                     .await
                     .map_err(StepFailure::io)?;
@@ -5465,18 +5822,40 @@ async fn gather_source(
                     "opened container {container} x{opened}"
                 ))));
             }
-            Ok(SourceOutcome::Failed(SourceAttempt::new(
+            // A full (or nearly full) bag makes `give_loot_pack` / the skill product fail to
+            // hand the item over; that is the runner's bag state, not a suspect.
+            let capacity = bag_capacity(&game.state);
+            let free = capacity.saturating_sub(game.state.bag.len() as u32);
+            if free < 3 {
+                return Ok(SourceOutcome::Failed(SourceAttempt::new(
+                    format!("item_open {container}"),
+                    format!(
+                        "opened container {container} x{opened} and item(s) {ids:?} never \
+                         arrived while the bag had only {free}/{capacity} free slot(s)"
+                    ),
+                    blocker_class::RUNNER_GAP,
+                    "aaemu-testclient/src/questrun.rs::bag_capacity (bag full)",
+                )));
+            }
+            Ok(SourceOutcome::Failed(SourceAttempt::suspect(
                 format!("item_open {container}"),
                 format!(
                     "opened container {container} x{opened} but item(s) {ids:?} never arrived ({})",
                     last_note.unwrap_or_else(|| "container not obtained".into())
                 ),
-                blocker_class::SERVER_BUG,
                 if source.grant.as_deref() == Some("skill_product") {
                     "aaemu-game/src/systems/skills/skill.rs (skill_products)"
                 } else {
                     code::GAIN_ITEM
                 },
+                format!(
+                    "observed: container {container} was used {opened} time(s) with its open \
+                     skill and no SCItemTaskSuccess for item(s) {ids:?}; expected: the open \
+                     skill's grant (grant {:?}, loot_pack {}) hands the item over (compact \
+                     gain_loot_pack_item_effects / skill_products; \
+                     economy/loot.rs::give_loot_pack)",
+                    source.grant, source.loot_pack_id
+                ),
             )))
         }
         "craft" => {
@@ -5495,27 +5874,35 @@ async fn gather_source(
                 return Ok(SourceOutcome::Progress(note));
             }
             let reason = note.unwrap_or_else(|| "craft made no progress".into());
-            let class =
-                if reason.contains("needs --compact-db") || reason.contains("trade-pack recipe") {
-                    blocker_class::RUNNER_GAP
-                } else if reason.contains("data gap")
-                    || reason.contains("not in the game data")
-                    || reason.contains("not in the data")
-                {
-                    blocker_class::DATA_GAP
-                } else {
-                    blocker_class::SERVER_BUG
-                };
-            let code_path = match class {
-                blocker_class::RUNNER_GAP => code::RUNNER,
-                blocker_class::DATA_GAP => "compact.sqlite3 crafts / craft_products",
-                _ => "aaemu-game/src/systems/economy/craft.rs (EndCraft)",
-            };
-            Ok(SourceOutcome::Failed(SourceAttempt::new(
+            if reason.contains("needs --compact-db") || reason.contains("trade-pack recipe") {
+                return Ok(SourceOutcome::Failed(SourceAttempt::new(
+                    format!("craft {:?}", source.craft_ids),
+                    reason,
+                    blocker_class::RUNNER_GAP,
+                    code::RUNNER,
+                )));
+            }
+            if reason.contains("data gap")
+                || reason.contains("not in the game data")
+                || reason.contains("not in the data")
+            {
+                return Ok(SourceOutcome::Failed(SourceAttempt::new(
+                    format!("craft {:?}", source.craft_ids),
+                    reason,
+                    blocker_class::DATA_GAP,
+                    "compact.sqlite3 crafts / craft_products",
+                )));
+            }
+            Ok(SourceOutcome::Failed(SourceAttempt::suspect(
                 format!("craft {:?}", source.craft_ids),
                 reason,
-                class,
-                code_path,
+                "aaemu-game/src/systems/economy/craft.rs (EndCraft)",
+                format!(
+                    "observed: the craft flow for recipe(s) {:?} ran and no product landed in \
+                     the bag; expected: craft_products of the recipe creates item(s) {ids:?} \
+                     (compact craft_products; craft.rs::end_craft -> EndCraft)",
+                    source.craft_ids
+                ),
             )))
         }
         other => Ok(SourceOutcome::Failed(SourceAttempt::new(
@@ -6091,22 +6478,7 @@ async fn ensure_requirement_items(
         }) {
             step
         } else {
-            owned_step = PlanStep {
-                component_id: 0,
-                component_kind: "Start".into(),
-                act_id: 0,
-                act_type: "QuestActObjItemGather".into(),
-                target: PlanTarget {
-                    kind: "item".into(),
-                    ids: vec![item_id],
-                    count: 1,
-                },
-                locations: Vec::new(),
-                status: "ok".into(),
-                sources: None,
-                item_sources: None,
-                spheres: None,
-            };
+            owned_step = synthetic_item_step(item_id, 1);
             &owned_step
         };
         let (_kind, note) = step_gather(
@@ -6128,6 +6500,130 @@ async fn ensure_requirement_items(
                 format!("own_item {item_id} could not be obtained before the accept ({note})"),
             ));
         }
+    }
+    Ok(())
+}
+
+/// A synthetic item step for an item outside the quest's own steps (reagents, OwnItem
+/// requirements): no locations, sources resolved from `compact.sqlite3` by [`step_gather`].
+fn synthetic_item_step(item_id: u32, count: i32) -> PlanStep {
+    PlanStep {
+        component_id: 0,
+        component_kind: "Start".into(),
+        act_id: 0,
+        act_type: "QuestActObjItemGather".into(),
+        target: PlanTarget {
+            kind: "item".into(),
+            ids: vec![item_id],
+            count: count.max(1),
+        },
+        locations: Vec::new(),
+        status: "ok".into(),
+        sources: None,
+        item_sources: None,
+        spheres: None,
+    }
+}
+
+/// Ensures every reagent a use skill needs is in the bag before the cast. `first_reagent_only`
+/// skills need one of the listed reagents, others need **all** of them (quest 5307/5313: skill
+/// 22045/22046 wants the nine dolls at once, otherwise the server answers NEED_REAGENT / skill
+/// result 36). Missing reagents go through the item ladder (open more packs, then a marked GM
+/// item); a reagent the runner cannot obtain is a `runner_gap`, never a suspect.
+#[allow(clippy::too_many_arguments)]
+async fn ensure_use_reagents(
+    game: &mut GameClient,
+    quest_id: u32,
+    skill_id: u32,
+    compact_db: Option<&CompactDb>,
+    craft_db: Option<&CraftDb>,
+    deadline: Instant,
+    journal: &mut QuestJournal,
+    needed: &BTreeSet<u32>,
+    depth: u32,
+) -> Result<(), StepFailure> {
+    let Some(db) = compact_db else {
+        return Ok(());
+    };
+    let reagents = db.skill_reagents(skill_id).unwrap_or_default();
+    if reagents.is_empty() {
+        return Ok(());
+    }
+    if depth > ITEM_OPEN_DEPTH {
+        return Err(StepFailure::plan(
+            QuestOutcome::RunnerUnsupported,
+            StepOutcomeKind::Unsupported,
+            format!(
+                "use skill {skill_id} needs reagents and the reagent sources nest too deep \
+                 (item_open depth {depth})"
+            ),
+        ));
+    }
+    let first_only = db.skill_first_reagent_only(skill_id).unwrap_or(false);
+    let mut missing = Vec::new();
+    for (item, amount) in reagents {
+        if amount <= 0 {
+            continue;
+        }
+        if game.state.bag_count(&[item]) >= amount {
+            if first_only {
+                return Ok(());
+            }
+            continue;
+        }
+        // Each reagent gets a fresh window: the use is the terminal action of the step and the
+        // step deadline is usually spent on the source attempts.
+        let window = (Instant::now() + Duration::from_secs(30))
+            .min(deadline.max(Instant::now() + Duration::from_secs(5)));
+        let step = synthetic_item_step(item, amount);
+        let mut reagent_journal = QuestJournal::default();
+        let note = step_gather(
+            game,
+            quest_id,
+            &step,
+            None,
+            compact_db,
+            craft_db,
+            window,
+            &mut reagent_journal,
+            needed,
+        )
+        .await
+        .map(|(_, note)| note)
+        .unwrap_or_else(|f| f.reason);
+        journal.fallbacks.extend(reagent_journal.fallbacks);
+        if game.state.bag_count(&[item]) < amount {
+            missing.push(format!("reagent {item} x{amount} ({note})"));
+            if first_only {
+                break;
+            }
+        } else if first_only {
+            return Ok(());
+        }
+    }
+    if !missing.is_empty() {
+        let reason = format!(
+            "NEED_REAGENT (skill result 36): use skill {skill_id} requires all of {} and the \
+             runner could not obtain {}",
+            db.skill_reagents(skill_id)
+                .unwrap_or_default()
+                .iter()
+                .map(|(item, amount)| format!("{item} x{amount}"))
+                .collect::<Vec<_>>()
+                .join(", "),
+            missing.join("; ")
+        );
+        journal.note_blocker(
+            blocker_class::RUNNER_GAP,
+            reason.clone(),
+            "compact.sqlite3 skill_reagents / \
+             aaemu-game/src/systems/skills/validation.rs::check_resources (NEED_REAGENT)",
+        );
+        return Err(StepFailure::plan(
+            QuestOutcome::RunnerUnsupported,
+            StepOutcomeKind::Unsupported,
+            reason,
+        ));
     }
     Ok(())
 }
@@ -6303,6 +6799,20 @@ async fn step_accept_item(
         }
         Err(e) => return Err(StepFailure::io(e)),
     };
+    // The starter item's use skill may itself need reagents (all of them when
+    // `first_reagent_only` is false); fetch them before the cast (NEED_REAGENT is runner_gap).
+    ensure_use_reagents(
+        game,
+        quest_id,
+        skill,
+        compact_db,
+        craft_db,
+        Instant::now() + Duration::from_secs(30),
+        journal,
+        needed,
+        0,
+    )
+    .await?;
     let target = use_item_target(game, target_type, step)?;
     game.use_item(item.item_id, item.template_id, skill, target)
         .await
@@ -6428,12 +6938,28 @@ async fn step_use_item(
             }
             Err(e) => return Err(StepFailure::io(e)),
         };
+        // A use skill can require several reagents at once (first_reagent_only = false): fetch
+        // every one before the cast; NEED_REAGENT is the runner's gap, never a suspect.
+        ensure_use_reagents(
+            game,
+            quest_id,
+            skill,
+            compact_db,
+            craft_db,
+            Instant::now() + Duration::from_secs(30),
+            journal,
+            needed,
+            0,
+        )
+        .await?;
         let target = use_item_target(game, target_type, step)?;
         game.use_item(item.item_id, item.template_id, skill, target)
             .await
             .map_err(StepFailure::io)?;
         used_note = format!("item {} skill {skill}", item.template_id);
-        let until = (Instant::now() + USE_WAIT).min(deadline);
+        // The cast's result (skill product / item task) gets a fresh window: the step deadline
+        // may already be spent on the item gathering.
+        let until = Instant::now() + USE_WAIT;
         if wait_progress(game, quest_id, objective, want, until)
             .await
             .map_err(StepFailure::io)?
@@ -7952,7 +8478,8 @@ mod tests {
             &QuestJournal::default(),
         );
         assert_eq!(blocker.class, blocker_class::REQUIREMENT, "{blocker:?}");
-        // Nothing left undecided → the server refused without an error → server bug.
+        // Nothing left undecided → the server refused without an error → a suspect, and every
+        // suspect carries observed-vs-expected evidence.
         let plain = quest(10, "ok");
         let blocker = classify_blocker(
             &plain,
@@ -7961,7 +8488,11 @@ mod tests {
             Some(&silent),
             &QuestJournal::default(),
         );
-        assert_eq!(blocker.class, blocker_class::SERVER_BUG, "{blocker:?}");
+        assert_eq!(blocker.class, blocker_class::SUSPECT, "{blocker:?}");
+        assert!(
+            blocker.evidence.contains("observed:") && blocker.evidence.contains("expected:"),
+            "{blocker:?}"
+        );
         // A 1.2 data gap (no sign sphere) is not the server's fault.
         let sphere = FailedStep {
             act_id: 1,
@@ -8061,7 +8592,7 @@ mod tests {
             Some(&small),
             &QuestJournal::default(),
         );
-        assert_eq!(blocker.class, blocker_class::SERVER_BUG, "{blocker:?}");
+        assert_eq!(blocker.class, blocker_class::SUSPECT, "{blocker:?}");
     }
 
     #[test]
@@ -8092,6 +8623,16 @@ mod tests {
             .fallbacks
             .push(Fallback::new("forced_complete", "16", "real result stuck"));
         forced.blocker = Blocker::new(blocker_class::RUNNER_GAP, "no source", "runner");
+        let mut suspect = line(
+            17,
+            QuestOutcome::Stuck,
+            Some("using the item did not update quest 17"),
+        );
+        suspect.blocker = Blocker::suspect(
+            "using the item did not update quest 17",
+            "skills item_use",
+            "observed: no objective change; expected: the use skill advances the act",
+        );
         let report = RunReport {
             results: vec![
                 line(10, QuestOutcome::Completed, None),
@@ -8109,6 +8650,7 @@ mod tests {
                 ),
                 with_fallback,
                 forced,
+                suspect,
             ],
             aborted: false,
             ordering_cyclic: 1,
@@ -8118,6 +8660,8 @@ mod tests {
         assert!(text.contains("rejected=2"), "{text}");
         assert!(text.contains("prereq_missing=2"), "{text}");
         assert!(text.contains("none=5"), "{text}");
+        assert!(text.contains("suspect=1"), "{text}");
+        assert!(text.contains("suspects are triaged separately"), "{text}");
         assert!(text.contains("data_gap=1"), "{text}");
         assert!(text.contains("runner_gap=1"), "{text}");
         assert!(

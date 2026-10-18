@@ -230,9 +230,14 @@ status/objectives and the chat messages seen.
 
 **Every line says whose fault it is.** `blocker: {class, reason, code}` is always present
 (`none` on a clean run) with `class` one of `runner_gap` (the runner cannot drive it yet),
-`server_bug` (the server misbehaves; `code` names the `file:line`), `data_gap` (the 1.2 data
-lacks the source / NPC / doodad / skill), `requirement` (race / faction / level / quest state
-the bot cannot meet — expected). `fallbacks: [{kind, target, reason}]` lists every GM shortcut
+`suspect` (the server behaved differently from what the runner expected; `code` names the
+`file:line` and `evidence` records what was observed — packet / error / result — and what the
+runner expected, with the source of the expectation: plan, compact field or quest text),
+`data_gap` (the 1.2 data lacks the source / NPC / doodad / skill), `requirement` (race / faction
+/ level / quest state the bot cannot meet — expected). **Suspects are triaged separately**: a
+suspect is only a confirmed server issue when it is reproduced AND a retail source (client text,
+the C# original, period data) says the server is wrong; nothing in this file calls a suspect a
+confirmed bug by itself. `fallbacks: [{kind, target, reason}]` lists every GM shortcut
 actually taken (`gm_item`, `gm_spawn`, `forced_complete`), each with the concrete reason the
 real path failed (e.g. "loot pack 6459 rolled nothing in 5 kills", "doodad 2552 used 3 times
 gave none of item 15985", "the merchants table lists npc 1196 but npcs.merchant is false").
@@ -264,19 +269,32 @@ flagged `unknown_item_source` get the same reverse lookups straight from `compac
 preferred, `func_for_skill` matches nothing with the generic Use skill otherwise); a failed
 loot roll leaves the doodad intact and is retried up to three times (`funcs/items.rs::loot_item`
 does not advance the phase), a `DoodadFuncLootPack` whose pack drops the item at an effectively
-zero rate is reported `data_gap` with the rate, and a GM-spawned doodad stuck in its initial
-fake-use phases is `runner_gap` ("the natural spawn has already outgrown them"), because
-`/spawn doodad` cannot choose a phase.
+zero rate is reported `data_gap` with the rate, a doodad whose loot group is not reachable from
+its `Start` phase through any `next_phase` edge is `data_gap` with the phase ids (doodad 4594),
+and a doodad stuck in fake-use phases the interaction cannot drive is `runner_gap` (a GM-spawned
+one starts there anyway; `/spawn doodad` cannot choose a phase).
+
+**Reagents, quest-bound loot and the bag.** A use skill can require a reagent list; when
+`skills.first_reagent_only` is false **all** of them must be in the bag before the cast (quest
+5307/5313: skill 22045/22046 needs the nine dolls at once). The runner fetches every missing
+reagent through the same item ladder (opening the pouch packs, then a marked GM item) before the
+cast and reports a failed one as `runner_gap` (`NEED_REAGENT`, skill result 36), never as a
+suspect. An item with `items.loot_quest_id` only drops while that quest is active
+(`loot.rs::try_take_loot_locked`'s HasQuest gate): the npc_loot source checks it first and
+classifies a missing binding as `runner_gap` (run the quest first) or `requirement` (already
+completed, not repeatable). A container / loot-pack item that "never arrived" while the bag was
+nearly full is the runner's own bag state (`runner_gap`), not a suspect.
 
 **A long sweep keeps its bag usable.** The bag is the scarce resource over hundreds of quests:
 loot, quest supplies and `/item add` all fail on a full bag (the GM command then answers
 "Item could not be created!"). The runner tracks the slot capacity
 (`SCCharacterInvenInitPacket` / `SCInvenExpandedPacket`), and when it is nearly full it destroys
 the stacks no selected quest needs (`CSDestroyItemPacket`; the wanted templates come from the
-plan's step targets, `item_sources` containers and `OwnItem` requirements); when every item is
-needed it adds the `bag_expands` item `8000025` (a marked `gm_item` fallback) and asks the
-server to expand (`CSExpandSlotsPacket`). A bag that still cannot take an item is reported as
-its own runner state ("bag full"), never as a plain GM failure.
+plan's step targets, `item_sources` containers, `OwnItem` requirements and every use skill's
+reagents); when every item is needed it adds the `bag_expands` item `8000025` (a marked
+`gm_item` fallback) and asks the server to expand (`CSExpandSlotsPacket`). A bag that still
+cannot take an item is reported as its own runner state ("bag full"), never as a plain GM
+failure, and suspect classifications check the free slots first.
 
 **NPCs / doodads: real spawn first, `/spawn` fallback marked.** Accept / talk / report /
 interaction steps find the nearest visible target, teleport next to it and interact; when the
@@ -313,7 +331,7 @@ only exists after a `SpawnEffect` skill cannot be driven for the accept / talk /
 
 **Force-blocked last resort.** `--force-blocked` (`/quest add <id>` + `/quest step <id>
 Reward`, `commands/scripts/quest_cmd.rs`) is **on by default for `--all-ok`** and disabled with
-`--no-force`; explicit `--quest` lists opt in explicitly. Only `runner_gap` / `server_bug` /
+`--no-force`; explicit `--quest` lists opt in explicitly. Only `runner_gap` / `suspect` /
 `data_gap` results are forced: a `requirement` (race / faction / gender / schedule / already
 completed) is never forced — completing another faction's content would inflate the run and
 pollute the completed set. A forced quest keeps its real result and failed step, adds
@@ -343,8 +361,8 @@ recognised by its new position.
 bundle and grants its loot (`economy/loot.rs::give_loot_pack`; `gain_item` / `skill_product`
 variants grant directly). A `gm spawn fallback did not reach the goal` on a large kill goal is
 a `runner_gap` (the fallback window cannot kill hundreds); a small goal that the spawned NPC's
-kills do not advance stays `server_bug`. `--quest` selects single quest ids (repeatable),
-`--all-ok` every
+kills do not advance is a `suspect` with the objective evidence. `--quest` selects single quest
+ids (repeatable), `--all-ok` every
 plan quest with status `ok`, `--summary` prints the grouped counts above; the lines are printed
 and appended to `--out`:
 

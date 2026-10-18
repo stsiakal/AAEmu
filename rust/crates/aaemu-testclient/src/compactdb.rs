@@ -521,6 +521,102 @@ impl CompactDb {
         Ok(row)
     }
 
+    /// `skill_reagents` of a skill: `(item_id, amount)` in data order. `first_reagent_only`
+    /// decides whether one or every reagent is required (`skills/handlers.rs` validation).
+    pub fn skill_reagents(&self, skill_id: u32) -> anyhow::Result<Vec<(u32, i32)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT item_id, amount FROM skill_reagents WHERE skill_id = ?1 ORDER BY id",
+        )?;
+        let mut out = Vec::new();
+        for row in stmt.query_map([skill_id], |r| {
+            Ok((r.get::<_, u32>(0)?, r.get::<_, i32>(1)?))
+        })? {
+            out.push(row?);
+        }
+        Ok(out)
+    }
+
+    /// `skills.first_reagent_only` (`true`: any one reagent satisfies the cast).
+    pub fn skill_first_reagent_only(&self, skill_id: u32) -> anyhow::Result<bool> {
+        let row = self
+            .conn
+            .query_row(
+                "SELECT first_reagent_only FROM skills WHERE id = ?1",
+                [skill_id],
+                |r| {
+                    Ok(r.get::<_, Option<String>>(0)?
+                        .is_some_and(|v| v.eq_ignore_ascii_case("t") || v == "1"))
+                },
+            )
+            .optional()?;
+        Ok(row.unwrap_or(false))
+    }
+
+    /// The doodad's phase groups whose funcs grant `item_id` (`DoodadFuncLootItem` directly or a
+    /// `DoodadFuncLootPack` whose pack contains it).
+    pub fn doodad_loot_phases(
+        &self,
+        doodad_template: u32,
+        item_id: u32,
+    ) -> anyhow::Result<Vec<u32>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT DISTINCT g.id FROM doodad_func_groups g \
+             JOIN doodad_funcs df ON df.doodad_func_group_id = g.id \
+             WHERE g.doodad_almighty_id = ?1 AND ( \
+                 (df.actual_func_type = 'DoodadFuncLootItem' AND df.actual_func_id IN ( \
+                     SELECT id FROM doodad_func_loot_items WHERE item_id = ?2)) \
+                 OR (df.actual_func_type = 'DoodadFuncLootPack' AND df.actual_func_id IN ( \
+                     SELECT lp.id FROM doodad_func_loot_packs lp \
+                     JOIN loots l ON l.loot_pack_id = lp.loot_pack_id \
+                     WHERE l.item_id = ?2))) \
+             ORDER BY g.id",
+        )?;
+        let mut out = Vec::new();
+        for row in stmt.query_map(rusqlite::params![doodad_template, item_id], |r| {
+            r.get::<_, u32>(0)
+        })? {
+            out.push(row?);
+        }
+        Ok(out)
+    }
+
+    /// The phase graph of a doodad template: `(Start-kind group ids, (from, next_phase) edges)`.
+    /// A spawned doodad starts in a Start-kind group (`npcs/doodad/phase.rs::init_doodad`); the
+    /// loot phase is reachable only when an edge chain leads to it.
+    #[allow(clippy::type_complexity)]
+    pub fn doodad_phase_graph(
+        &self,
+        doodad_template: u32,
+    ) -> anyhow::Result<(Vec<u32>, Vec<(u32, u32)>)> {
+        let start_groups: Vec<u32> = {
+            let mut stmt = self.conn.prepare(
+                "SELECT id FROM doodad_func_groups \
+                 WHERE doodad_almighty_id = ?1 AND doodad_func_group_kind_id = 1 ORDER BY id",
+            )?;
+            let rows = stmt
+                .query_map([doodad_template], |r| r.get::<_, u32>(0))?
+                .collect::<Result<Vec<_>, _>>()?;
+            rows
+        };
+        let mut edges = Vec::new();
+        {
+            let mut stmt = self.conn.prepare(
+                "SELECT df.doodad_func_group_id, df.next_phase \
+                 FROM doodad_funcs df \
+                 JOIN doodad_func_groups g ON g.id = df.doodad_func_group_id \
+                 WHERE g.doodad_almighty_id = ?1 AND df.next_phase > 0 \
+                 ORDER BY df.id",
+            )?;
+            for row in stmt.query_map([doodad_template], |r| {
+                Ok((r.get::<_, u32>(0)?, r.get::<_, i32>(1)?))
+            })? {
+                let (from, to) = row?;
+                edges.push((from, to as u32));
+            }
+        }
+        Ok((start_groups, edges))
+    }
+
     /// The highest drop rate of `item_id` in the loot packs the doodad template's
     /// `DoodadFuncLootPack` funcs grant (for the "effectively zero drop rate" data gap).
     pub fn doodad_pack_drop_chance(
@@ -912,5 +1008,14 @@ mod tests {
             .skill_character_block(24354, Some(4), Some(113), None)
             .unwrap()
             .is_none());
+        // Quest 5307/5313: skill 22045 needs all nine dolls (first_reagent_only = false).
+        assert_eq!(db.skill_reagents(22045).unwrap().len(), 9);
+        assert!(!db.skill_first_reagent_only(22045).unwrap());
+        // Doodad 4594's harvest phase 11308 grants item 21850 but no Start-kind phase leads to
+        // it (the 1.2 growth link is missing): a data gap, not a suspect.
+        assert_eq!(db.doodad_loot_phases(4594, 21850).unwrap(), vec![11308]);
+        let (starts, edges) = db.doodad_phase_graph(4594).unwrap();
+        assert!(starts.is_empty());
+        assert!(edges.contains(&(11307, 11308)));
     }
 }
