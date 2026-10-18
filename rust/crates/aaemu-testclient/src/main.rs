@@ -14,6 +14,10 @@
 //!                         (--quest ID...|--all-ok) [--with-prereqs] [--new-character]
 //!                         [--race name|id] [--gender m|f] [--compact-db path]
 //!                         [--out results.jsonl] [--step-timeout-secs N] [--summary]
+//! aaemu-testclient craft  [--config F] [--login H:P] (--craft ID...|--sample N|--all)
+//!                         [--limit N] [--new-character] [--race name|id] [--gender m|f]
+//!                         [--compact-db path] [--out results.jsonl] [--step-timeout-secs N]
+//!                         [--keep-products] [--summary]
 //! ```
 //!
 //! Settings come from `--config` (JSON, see `testclient.example.json`), then the flags. Keep
@@ -23,6 +27,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use aaemu_testclient::craftrun;
 use aaemu_testclient::diff::{self, DiffConfig};
 use aaemu_testclient::load;
 use aaemu_testclient::questrun::{self, QuestOutcome};
@@ -305,9 +310,61 @@ async fn main() -> anyhow::Result<()> {
                 bail!("connection lost during the quest run");
             }
         }
+        "craft" => {
+            let cfg = bot_config(&args)?;
+            let race = match args.get("race") {
+                Some(value) => questrun::parse_race(value)?,
+                None => 1,
+            };
+            let gender = match args.get("gender") {
+                Some(value) => questrun::parse_gender(value)?,
+                None => 1,
+            };
+            let opts = craftrun::RunOptions {
+                craft_ids: args
+                    .get_all("craft")
+                    .iter()
+                    .map(|v| v.parse::<u32>().context("--craft needs a numeric craft id"))
+                    .collect::<anyhow::Result<_>>()?,
+                all: args.has("all"),
+                sample: args
+                    .get("sample")
+                    .map(|v| v.parse::<usize>().context("--sample needs a number"))
+                    .transpose()?,
+                limit: args
+                    .get("limit")
+                    .map(|v| v.parse::<usize>().context("--limit needs a number"))
+                    .transpose()?,
+                new_character: args.has("new-character"),
+                race,
+                gender,
+                step_timeout: Duration::from_secs(
+                    args.get("step-timeout-secs").unwrap_or("90").parse()?,
+                ),
+                compact_db: args.get("compact-db").map(PathBuf::from),
+                out: args.get("out").map(PathBuf::from),
+                keep_products: args.has("keep-products"),
+            };
+            let report = craftrun::run(&cfg, &opts).await?;
+            let crafted = report
+                .results
+                .iter()
+                .filter(|r| r.result == craftrun::CraftOutcome::Crafted)
+                .count();
+            println!(
+                "[craft] {} result line(s), {crafted} crafted",
+                report.results.len()
+            );
+            if args.has("summary") {
+                println!("{}", craftrun::render_summary(&report));
+            }
+            if report.aborted {
+                bail!("connection lost during the craft run");
+            }
+        }
         _ => {
             println!(
-                "usage: aaemu-testclient run|parity|diff|load|quest [--flags]; see the crate docs"
+                "usage: aaemu-testclient run|parity|diff|load|quest|craft [--flags]; see the crate docs"
             );
         }
     }

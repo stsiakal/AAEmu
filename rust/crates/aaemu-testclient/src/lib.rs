@@ -3,6 +3,7 @@
 //! server implementations and a concurrent load driver. See `rust/LIVE-TESTING.md`.
 
 pub mod compactdb;
+pub mod craftrun;
 pub mod diff;
 pub mod game;
 pub mod inventory;

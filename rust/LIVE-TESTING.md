@@ -278,6 +278,58 @@ packets so auto attacks and angle restrictions use the intended target. It match
 the 1.2 `SkillResult` extra field before optional integer data. Missing combat NPCs and
 rejected casts fail the step; an NPC's own cast notification cannot count as a player cast.
 
+### Crafting sweep
+
+The `craft` subcommand drives the crafting pipeline against the same `compact.sqlite3` the
+server loads (`crafts`, `craft_materials`, `craft_products`, `craft_pack_crafts` and the craft
+skills). For each recipe it prepares the character with GM commands and then crafts through the
+packets the 1.2 client sends:
+
+* `/item add self <id> <count>` fills every `craft_materials` row (a material / product template
+  missing from the 1.2 `items` table is reported `unsupported`: the GM give could not create it
+  either);
+* `/labor <amount> [actabilityGroupId]` tops up labor power and actability points; for a
+  `crafts.actability_limit` above the current expert-limit cap it additionally walks the real
+  `CSUpgradeExpertLimitPacket` -> `SCExpertLimitModifiedPacket` steps (the point clamps at the
+  step's `expert_limits.up_limit`, `skills/progress.rs::change_labor_locked`);
+* a skill `Level` requirement (`unit_reqs` kind 1; the Commerce craft skill 16766 needs 10) is
+  reached with `/level`;
+* `/spawn doodad <crafts.req_doodad_id>` places a required station 3 m in front (a doodad
+  already within 20 m is reused), then `CSExecuteCraftPacket(craftId, doodadObjId, count = 1)`
+  starts the craft.
+
+The runner watches the cast (`SCSkillStarted` / `SCSkillFired` / `SCSkillEnded`,
+`SCCharacterLaborPowerChangedPacket` with `action = actabilityGroupId` and `point` = the
+proficiency gained, `SCItemTaskSuccessPacket`, `SCErrorMsgPacket`) and records one JSON line per
+recipe: result (`crafted`, `product_mismatch`, `server_rejected`, `no_doodad`,
+`material_unavailable`, `actability_blocked`, `unsupported`, `timeout`, `error`), expected vs
+actual materials / products from the bag deltas (auto-equipped trade-pack products are read off
+the equipment item tasks into `products_equipped`), labor spent vs the skill's `ConsumeLaborPower`
+(scaled by the actability step), proficiency gained, the observed cast time next to
+`crafts.cast_delay` and `skills.casting_time`, `SkillResult` / `SCErrorMsg` codes and the chat
+window. After each recipe the created items (and a trade pack the server auto-equipped into the
+backpack slot) are destroyed again, so a 50-slot bag does not fill mid-sweep; a `148/315`
+(`BackpackOccupied`) rejection left over from an earlier session clears the backpack slot once
+and retries the recipe.
+
+```sh
+$TC craft --config testclient.local.json --login 127.0.0.1:21237 \
+          --compact-db rust/crates/aaemu-game/app/Data/compact.sqlite3 \
+          --craft 153 --craft 5716 --out craft-audit.jsonl --summary
+$TC craft ... --sample 40           # 40 usable recipes spread over the actability groups
+$TC craft ... --all --limit 100     # the first 100 crafts in id order
+```
+
+`--craft` selects single recipes (repeatable), `--sample N` a deterministic round-robin over the
+actability groups among the recipes whose materials and products all exist in the 1.2 data,
+`--all` every craft in id order; `--limit N` caps the list, `--new-character` / `--race` /
+`--gender` create a bot character like the quest runner, `--keep-products` leaves the bag deltas
+for inspection and `--summary` prints the result counts and top failure reasons. A craft whose
+server-side cast is dropped without any packet (failed skill requirement, GCD, insufficient
+labor) is recorded `timeout` naming that: `CraftHooks::start_craft_cast`
+(`systems/economy/bridges.rs`) discards `Skill.Use`'s result, so those rejections are silent
+where `CharacterCraft.Craft`'s own checks send `SCErrorMsg` pairs.
+
 Run `login` last in a parity session: a world cookie that is never used leaves a pending entry
 on the game server, which makes the C# game server stop answering the login server (fixed in
 the Rust server, see `aaemu-game/PORTING.md`).
