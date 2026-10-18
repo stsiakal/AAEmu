@@ -1012,10 +1012,10 @@ pub fn parse_state_labor(body: &[u8]) -> anyhow::Result<i32> {
     Ok(parse_state_equipment(body)?.0)
 }
 
-/// `SCCharacterStatePacket` -> `(labor_power, equipment rows)`. The equipment list is the
-/// container's `EquipmentItemSlot` order; `slot` is the row index
-/// (`EquipmentItemSlot.Backpack` = 26).
-pub fn parse_state_equipment(body: &[u8]) -> anyhow::Result<(i32, Vec<EquippedItem>)> {
+/// `SCCharacterStatePacket` -> `(labor_power, equipment rows, active abilities)`. The equipment
+/// list is the container's `EquipmentItemSlot` order; `slot` is the row index
+/// (`EquipmentItemSlot.Backpack` = 26); the abilities are `ability1..3` (`models/char_data.rs`).
+pub fn parse_state_equipment(body: &[u8]) -> anyhow::Result<(i32, Vec<EquippedItem>, [u8; 3])> {
     use aaemu_game::models::unit_model::UnitCustomModelParams;
     let mut s = PacketStream::from_bytes(body.to_vec());
     s.read_u32()?; // instance id
@@ -1047,12 +1047,12 @@ pub fn parse_state_equipment(body: &[u8]) -> anyhow::Result<(i32, Vec<EquippedIt
             });
         }
     }
-    s.read_bytes(3)?; // ability1..3
+    let abilities = [s.read_u8()?, s.read_u8()?, s.read_u8()?]; // ability1..3
     s.read_i64()?; // x
     s.read_i64()?; // y
     s.read_f32()?; // z
     let _model = UnitCustomModelParams::read(&mut s)?;
-    Ok((s.read_i16()? as i32, equipment))
+    Ok((s.read_i16()? as i32, equipment, abilities))
 }
 
 /// The fixed `Character.Write` head before the equipment rows.
@@ -1325,7 +1325,7 @@ async fn setup_world(
     for p in select_packets.iter().chain(spawn_packets.iter()) {
         session.observe(p);
         if p.is_sc(sc::SCCharacterStatePacket) {
-            if let Ok((labor, equipment)) = parse_state_equipment(&p.body) {
+            if let Ok((labor, equipment, _abilities)) = parse_state_equipment(&p.body) {
                 session.labor = Some(labor);
                 for item in equipment {
                     session.equipment.insert(item.slot, item);
@@ -3171,8 +3171,9 @@ mod tests {
         UnitCustomModelParams::default().write(&mut s);
         s.write_i16(77); // labor
 
-        let (labor, equipment) = parse_state_equipment(s.as_bytes()).unwrap();
+        let (labor, equipment, abilities) = parse_state_equipment(s.as_bytes()).unwrap();
         assert_eq!(labor, 77);
+        assert_eq!(abilities, [0, 0, 0]);
         assert_eq!(
             equipment,
             vec![
