@@ -217,6 +217,10 @@ fn load_world_spawns(db_path: &Path) -> anyhow::Result<HashMap<String, u32>> {
     }
     let text = std::fs::read_to_string(&path)
         .with_context(|| format!("reading world spawns {}", path.display()))?;
+    // The shipped file has a BOM and `//` comments; strip them like the server's loader does.
+    let text = aaemu_game::data::world_templates::strip_json_extensions(
+        text.trim_start_matches('\u{feff}'),
+    );
     let value: serde_json::Value = serde_json::from_str(&text)
         .with_context(|| format!("parsing world spawns {}", path.display()))?;
     let mut out = HashMap::new();
@@ -242,6 +246,21 @@ use rusqlite::OptionalExtension as _;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The shipped `world_spawns.json` starts with a BOM and carries `//` comments.
+    #[test]
+    fn world_spawns_accept_bom_and_comments() {
+        let dir = std::env::temp_dir().join(format!("aaemu-ws-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("Worlds")).unwrap();
+        std::fs::write(
+            dir.join("Worlds").join("world_spawns.json"),
+            "\u{feff}[\n  {\n    \"Name\": \"instance_library_3\", // Screaming Archives\n    \"SpawnPosition\": { \"ZoneId\": 298 }\n  }\n]\n",
+        )
+        .unwrap();
+        let spawns = load_world_spawns(&dir.join("compact.sqlite3")).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(spawns.get("instance_library_3"), Some(&298));
+    }
 
     /// Runs only on a machine with the game data; CI does not ship `compact.sqlite3`.
     #[test]
