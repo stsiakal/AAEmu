@@ -1,0 +1,325 @@
+"""Unit tests for the obsidian-armor backport with small in-memory databases."""
+
+import json
+import os
+import sqlite3
+import sys
+import tempfile
+import unittest
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from backport import (  # noqa: E402
+    Borrower,
+    Db,
+    apply_patch,
+    build_backport,
+    build_closure,
+    render_patch,
+    resolve_item_set,
+    run_backport,
+    weapons_comparison,
+)
+
+BASE_SCHEMA = """
+CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT, icon_id INTEGER,
+    buff_id INTEGER, LEVEL INTEGER, milestone_id INTEGER, translate TEXT);
+CREATE TABLE item_armors (id INTEGER PRIMARY KEY, item_id INTEGER,
+    slot_type_id INTEGER, type_id INTEGER, mod_set_id INTEGER, asset_id INTEGER);
+CREATE TABLE buffs (id INTEGER PRIMARY KEY, name TEXT, duration INTEGER);
+CREATE TABLE unit_modifiers (id INTEGER PRIMARY KEY, owner_type TEXT,
+    owner_id INTEGER, unit_attribute_id INTEGER, unit_modifier_type_id INTEGER,
+    value INTEGER, linear_level_bonus INTEGER);
+CREATE TABLE equip_item_attr_modifiers (id INTEGER PRIMARY KEY, alias TEXT,
+    str_weight INTEGER, dex_weight INTEGER, sta_weight INTEGER, int_weight INTEGER,
+    spi_weight INTEGER);
+CREATE TABLE crafts (id INTEGER PRIMARY KEY, title TEXT, skill_id INTEGER,
+    milestone_id INTEGER, translate TEXT);
+CREATE TABLE craft_products (id INTEGER PRIMARY KEY, craft_id INTEGER,
+    item_id INTEGER, amount INTEGER);
+CREATE TABLE craft_materials (id INTEGER PRIMARY KEY, craft_id INTEGER,
+    item_id INTEGER, amount INTEGER);
+CREATE TABLE craft_pack_crafts (id INTEGER PRIMARY KEY, craft_pack_id INTEGER,
+    craft_id INTEGER);
+CREATE TABLE skills (id INTEGER PRIMARY KEY, name TEXT, consume_lp INTEGER,
+    actability_group_id INTEGER, cooldown_time INTEGER, SHOW TEXT, milestone_id INTEGER);
+CREATE TABLE skill_effects (id INTEGER PRIMARY KEY, skill_id INTEGER,
+    effect_id INTEGER, weight INTEGER, chance INTEGER);
+CREATE TABLE effects (id INTEGER PRIMARY KEY, actual_id INTEGER, actual_type TEXT);
+CREATE TABLE craft_effects (id INTEGER PRIMARY KEY, wi_id INTEGER);
+CREATE TABLE buff_effects (id INTEGER PRIMARY KEY, buff_id INTEGER, chance INTEGER,
+    stack INTEGER, ab_level INTEGER);
+CREATE TABLE icons (id INTEGER PRIMARY KEY, filename TEXT, name TEXT);
+CREATE TABLE item_assets (id INTEGER PRIMARY KEY, model_id INTEGER);
+CREATE TABLE localized_texts (id INTEGER PRIMARY KEY, tbl_name TEXT,
+    tbl_column_name TEXT, idx INTEGER, ko TEXT, ko_ver INTEGER, en_us TEXT,
+    en_us_ver INTEGER, zh_cn TEXT, zh_cn_ver INTEGER, ja TEXT, ja_ver INTEGER,
+    ru TEXT, ru_ver INTEGER, zh_tw TEXT, zh_tw_ver INTEGER, de TEXT, de_ver INTEGER,
+    fr TEXT, fr_ver INTEGER);
+CREATE TABLE item_weapons (id INTEGER PRIMARY KEY, item_id INTEGER);
+"""
+
+REF_SCHEMA = """
+CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT, icon_id INTEGER,
+    buff_id INTEGER, level INTEGER, auction_charge INTEGER);
+CREATE TABLE item_armors (id INTEGER PRIMARY KEY, item_id INTEGER,
+    slot_type_id INTEGER, type_id INTEGER, mod_set_id INTEGER, asset_id INTEGER,
+    invisible_asset INTEGER);
+CREATE TABLE buffs (id INTEGER PRIMARY KEY, name TEXT, duration INTEGER,
+    balance_level INTEGER);
+CREATE TABLE unit_modifiers (owner_type TEXT, owner_id INTEGER,
+    unit_attribute_id INTEGER, unit_modifier_type_id INTEGER, value INTEGER,
+    linear_level_bonus INTEGER);
+CREATE TABLE equip_item_attr_modifiers (id INTEGER PRIMARY KEY, alias TEXT,
+    str_weight INTEGER, dex_weight INTEGER, sta_weight INTEGER, int_weight INTEGER,
+    spi_weight INTEGER);
+CREATE TABLE crafts (id INTEGER PRIMARY KEY, title TEXT, skill_id INTEGER,
+    products_pack_id INTEGER);
+CREATE TABLE craft_products (id INTEGER PRIMARY KEY, craft_id INTEGER,
+    item_id INTEGER, amount INTEGER);
+CREATE TABLE craft_materials (id INTEGER PRIMARY KEY, craft_id INTEGER,
+    item_id INTEGER, amount INTEGER);
+CREATE TABLE craft_pack_crafts (id INTEGER PRIMARY KEY, craft_pack_id INTEGER,
+    craft_id INTEGER);
+CREATE TABLE skills (id INTEGER PRIMARY KEY, name TEXT, consume_lp INTEGER,
+    actability_group_id INTEGER, cooldown_time INTEGER, show INTEGER,
+    account_cooldown INTEGER);
+CREATE TABLE skill_effects (id INTEGER PRIMARY KEY, skill_id INTEGER,
+    effect_id INTEGER, weight INTEGER, chance INTEGER, check_source_tag_src INTEGER);
+CREATE TABLE effects (id INTEGER PRIMARY KEY, actual_id INTEGER, actual_type TEXT);
+CREATE TABLE craft_effects (id INTEGER PRIMARY KEY, wi_id INTEGER);
+CREATE TABLE buff_effects (id INTEGER PRIMARY KEY, buff_id INTEGER, chance INTEGER,
+    stack INTEGER, ab_level INTEGER);
+CREATE TABLE icons (id INTEGER PRIMARY KEY, filename TEXT);
+CREATE TABLE item_assets (id INTEGER PRIMARY KEY, model_id INTEGER);
+CREATE TABLE localized_texts (tbl_name TEXT, tbl_column_name TEXT, idx INTEGER,
+    en_us TEXT);
+CREATE TABLE item_weapons (id INTEGER PRIMARY KEY, item_id INTEGER);
+"""
+
+
+def make_db(schema, rows):
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.executescript(schema)
+    for statement, values in rows:
+        conn.execute(statement, values)
+    conn.commit()
+    return Db(conn=conn)
+
+
+def base_db():
+    rows = [
+        ("INSERT INTO items VALUES (?,?,?,?,?,?,?)", (12, "Existing mat", 0, 0, 1, 0, "f")),
+        ("INSERT INTO items VALUES (?,?,?,?,?,?,?)", (1000, "Base mat", 0, 0, 1, 0, "f")),
+        ("INSERT INTO item_assets VALUES (?,?)", (5, 1)),
+        ("INSERT INTO icons VALUES (?,?,?)", (1, "x.dds", "x")),
+        ("INSERT INTO skills VALUES (?,?,?,?,?,?,?)", (500, "Base craft skill", 100, 0, 0, "t", 0)),
+        ("INSERT INTO item_weapons VALUES (?,?)", (1, 12)),
+    ]
+    return make_db(BASE_SCHEMA, rows)
+
+
+def ref_db():
+    rows = [
+        ("INSERT INTO items VALUES (?,?,?,?,?,?)", (10, "Test Armor", 77, 50, 46, 5)),
+        ("INSERT INTO items VALUES (?,?,?,?,?,?)", (11, "Test Mat", 78, 0, 10, 0)),
+        ("INSERT INTO item_armors VALUES (?,?,?,?,?,?,?)", (900, 10, 1, 1, 77, 5, 0)),
+        ("INSERT INTO buffs VALUES (?,?,?,?)", (50, "armor buff", 0, 0)),
+        ("INSERT INTO buffs VALUES (?,?,?,?)", (60, "self buff", 0, 0)),
+        ("INSERT INTO unit_modifiers VALUES (?,?,?,?,?,?)", ("Buff", 50, 6, 0, 100, 0)),
+        ("INSERT INTO equip_item_attr_modifiers VALUES (?,?,?,?,?,?,?)",
+         (77, "str:1", 1, 2, 3, 4, 5)),
+        ("INSERT INTO crafts VALUES (?,?,?,?)", (20, "Craft Armor", 500, 0)),
+        ("INSERT INTO crafts VALUES (?,?,?,?)", (21, "Craft Mat", 900, 0)),
+        ("INSERT INTO craft_products VALUES (?,?,?,?)", (200, 20, 10, 1)),
+        ("INSERT INTO craft_products VALUES (?,?,?,?)", (201, 21, 11, 1)),
+        ("INSERT INTO craft_materials VALUES (?,?,?,?)", (300, 20, 11, 2)),
+        ("INSERT INTO craft_materials VALUES (?,?,?,?)", (301, 20, 1000, 1)),
+        ("INSERT INTO craft_materials VALUES (?,?,?,?)", (302, 21, 12, 1)),
+        ("INSERT INTO craft_pack_crafts VALUES (?,?,?)", (400, 5, 20)),
+        ("INSERT INTO skills VALUES (?,?,?,?,?,?,?)", (900, "Test craft skill", 650, 11, 0, 1, 0)),
+        ("INSERT INTO skill_effects VALUES (?,?,?,?,?,?)", (950, 900, 960, 0, 100, 0)),
+        ("INSERT INTO skill_effects VALUES (?,?,?,?,?,?)", (951, 900, 962, 0, 100, 0)),
+        ("INSERT INTO effects VALUES (?,?,?)", (960, 961, "CraftEffect")),
+        ("INSERT INTO effects VALUES (?,?,?)", (962, 963, "BuffEffect")),
+        ("INSERT INTO craft_effects VALUES (?,?)", (961, 56)),
+        ("INSERT INTO buff_effects VALUES (?,?,?,?,?)", (963, 60, 100, 1, 0)),
+        ("INSERT INTO localized_texts VALUES (?,?,?,?)", ("items", "name", 10, "Test Armor EN")),
+        ("INSERT INTO localized_texts VALUES (?,?,?,?)", ("items", "description", 10, "A test")),
+        ("INSERT INTO localized_texts VALUES (?,?,?,?)", ("items", "name", 11, "Test Mat EN")),
+    ]
+    return make_db(REF_SCHEMA, rows)
+
+
+class BackportTests(unittest.TestCase):
+    def test_resolve_item_set(self):
+        self.assertEqual(resolve_item_set("obsidian-armor"), list(range(35581, 35626)))
+        self.assertEqual(resolve_item_set("5, 7,5"), [5, 7])
+        with self.assertRaises(ValueError):
+            resolve_item_set("")
+
+    def test_closure_recursion_and_stop_at_base(self):
+        base, ref = base_db(), ref_db()
+        closure = build_closure(base, ref, [10])
+        self.assertEqual(closure["items"], [10, 11])
+        self.assertEqual(closure["crafts"], [20, 21])
+        self.assertEqual(closure["refused_crafts"], [])
+        self.assertEqual(closure["refused_items"], [])
+
+    def test_custom_ids_refused(self):
+        base, ref = base_db(), ref_db()
+        ref.conn.execute("INSERT INTO items VALUES (?,?,?,?,?,?)", (8000001, "custom mat", 0, 0, 1, 0))
+        ref.conn.execute("INSERT INTO crafts VALUES (?,?,?,?)", (8000002, "custom craft", 500, 0))
+        ref.conn.execute("INSERT INTO craft_products VALUES (?,?,?,?)", (8000010, 8000002, 11, 1))
+        ref.conn.execute("INSERT INTO craft_materials VALUES (?,?,?,?)", (8000011, 8000002, 8000001, 1))
+        ref.conn.execute("INSERT INTO craft_materials VALUES (?,?,?,?)", (303, 20, 8000001, 1))
+        ref.conn.commit()
+        closure = build_closure(base, ref, [10])
+        self.assertEqual(closure["items"], [10, 11])
+        self.assertNotIn(8000001, closure["items"])
+        refused_craft_ids = {entry["craft_id"] for entry in closure["refused_crafts"]}
+        self.assertIn(8000002, refused_craft_ids)
+        refused_item_ids = {entry["item_id"] for entry in closure["refused_items"]}
+        self.assertIn(8000001, refused_item_ids)
+        _, _, report = build_backport(base, ref, [10])
+        custom_items = {entry["id"] for entry in report["refused"]["custom_items"]}
+        self.assertIn(8000001, custom_items)
+        custom_crafts = {entry["id"] for entry in report["refused"]["custom_crafts"]}
+        self.assertIn(8000002, custom_crafts)
+
+    def test_collision_and_name_conflict_refused(self):
+        base, ref = base_db(), ref_db()
+        base.conn.execute("INSERT INTO items VALUES (?,?,?,?,?,?,?)",
+                          (10, "Different name", 0, 0, 1, 0, "f"))
+        base.conn.execute("INSERT INTO crafts VALUES (?,?,?,?,?)",
+                          (20, "Existing craft", 500, 0, "f"))
+        base.conn.commit()
+        _, rows, report = build_backport(base, ref, [10])
+        self.assertNotIn(10, [row["id"] for row in rows.get("items", [])])
+        self.assertNotIn(20, [row["id"] for row in rows.get("crafts", [])])
+        conflict_ids = {entry["id"] for entry in report["refused"]["name_conflicts"]}
+        self.assertIn(10, conflict_ids)
+        collision_ids = {entry["id"] for entry in report["refused"]["collisions"]}
+        self.assertIn(20, collision_ids)
+
+    def test_column_mapping_defaults_and_dropped_columns(self):
+        base, ref = base_db(), ref_db()
+        _, rows, report = build_backport(base, ref, [10])
+        item_rows = {row["id"]: row for row in rows["items"]}
+        self.assertEqual(item_rows[10]["LEVEL"], 46)
+        self.assertEqual(item_rows[10]["milestone_id"], 0)
+        self.assertEqual(item_rows[10]["translate"], "f")
+        self.assertEqual(item_rows[11]["translate"], "f")
+        self.assertEqual(report["columns_filled_with_1_2_defaults"]["items"]["milestone_id"], 2)
+        self.assertEqual(report["columns_filled_with_1_2_defaults"]["items"]["translate"], 2)
+        dropped = report["columns_dropped_from_3_0"]["items"]["auction_charge"]
+        self.assertEqual(dropped["count"], 1)
+        self.assertEqual(dropped["examples"], [{"id": 10, "value": 5}])
+        craft_rows = {row["id"]: row for row in rows["crafts"]}
+        self.assertEqual(craft_rows[20]["milestone_id"], 0)
+        skill_rows = {row["id"]: row for row in rows["skills"]}
+        self.assertEqual(skill_rows[900]["SHOW"], "t")
+        self.assertEqual(report["boolean_value_conversions"]["skills"]["SHOW"], 1)
+
+    def test_synthesized_ids_and_deterministic_sql(self):
+        base, ref = base_db(), ref_db()
+        _, rows, report = build_backport(base, ref, [10])
+        unit_rows = rows["unit_modifiers"]
+        self.assertEqual(unit_rows[0]["id"], 1)
+        self.assertEqual(report["synthesized_ids"]["unit_modifiers"]["count"], 1)
+        sql_one = render_patch(rows, "b", "r", "cmd", "s1", "s2")
+        base2, ref2 = base_db(), ref_db()
+        _, rows2, _ = build_backport(base2, ref2, [10])
+        sql_two = render_patch(rows2, "b", "r", "cmd", "s1", "s2")
+        self.assertEqual(sql_one, sql_two)
+        self.assertIn("documented guess: borrowed from 3.0.4.2", sql_one)
+        self.assertTrue(sql_one.startswith("-- version_gaps backport"))
+        self.assertEqual(sql_one.count("BEGIN;"), 1)
+        self.assertEqual(sql_one.count("COMMIT;"), 1)
+
+    def test_skill_effect_chain_and_buff_borrow(self):
+        base, ref = base_db(), ref_db()
+        _, rows, report = build_backport(base, ref, [10])
+        self.assertEqual([row["id"] for row in rows["skills"]], [900])
+        self.assertEqual(sorted(row["id"] for row in rows["skill_effects"]), [950, 951])
+        self.assertEqual(sorted(row["id"] for row in rows["effects"]), [960, 962])
+        self.assertEqual([row["id"] for row in rows["craft_effects"]], [961])
+        self.assertEqual([row["id"] for row in rows["buff_effects"]], [963])
+        self.assertEqual(sorted(row["id"] for row in rows["buffs"]), [50, 60])
+        self.assertEqual(
+            report["buff_effects_referenced_buffs_missing_in_1_2"], [60]
+        )
+
+    def test_localized_texts_mapping(self):
+        base, ref = base_db(), ref_db()
+        _, rows, report = build_backport(base, ref, [10])
+        localized = rows["localized_texts"]
+        by_key = {(row["idx"], row["tbl_column_name"]): row for row in localized}
+        name_row = by_key[(10, "name")]
+        self.assertEqual(name_row["en_us"], "Test Armor EN")
+        self.assertEqual(name_row["ko"], "Test Armor")
+        self.assertEqual(name_row["ko_ver"], 0)
+        self.assertEqual(name_row["zh_cn"], "")
+        desc_row = by_key[(10, "description")]
+        self.assertEqual(desc_row["en_us"], "A test")
+        self.assertEqual(desc_row["ko"], "")
+        self.assertEqual(report["borrowed_rows"]["localized_texts"], 3)
+
+    def test_materials_without_source_and_icons(self):
+        base, ref = base_db(), ref_db()
+        _, _, report = build_backport(base, ref, [10])
+        materials = {entry["item_id"]: entry for entry in report["materials_without_1_2_source"]}
+        self.assertEqual(set(materials), {11})
+        self.assertEqual(materials[11]["name"], "Test Mat")
+        self.assertEqual(materials[11]["retail_crafts_in_3_0"], [21])
+        self.assertFalse(materials[11]["custom_only"])
+        icons = {(entry["item_id"], entry["icon_id"]) for entry in report["icons_missing_in_1_2"]}
+        self.assertEqual(icons, {(10, 77), (11, 78)})
+
+    def test_apply_patch_and_integrity(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base_path = os.path.join(tmp, "base.sqlite3")
+            ref_path = os.path.join(tmp, "ref.sqlite3")
+            out_sql = os.path.join(tmp, "patch.sql")
+            out_db = os.path.join(tmp, "patched.sqlite3")
+            for path, source in ((base_path, base_db()), (ref_path, ref_db())):
+                source.conn.commit()
+                target = sqlite3.connect(path)
+                source.conn.backup(target)
+                target.close()
+            report = run_backport(base_path, ref_path, "10", out_sql, out_db)
+            self.assertEqual(report["integrity_check"], "ok")
+            self.assertTrue(os.path.exists(out_sql))
+            conn = sqlite3.connect(out_db)
+            try:
+                items = conn.execute("select id from items order by id").fetchall()
+                crafts = conn.execute("select id from crafts order by id").fetchall()
+            finally:
+                conn.close()
+            self.assertEqual(items, [(10,), (11,), (12,), (1000,)])
+            self.assertEqual(crafts, [(20,), (21,)])
+            self.assertIn("obsidian armor", json.dumps(report, ensure_ascii=False))
+
+    def test_weapons_comparison(self):
+        base, ref = base_db(), ref_db()
+        ref.conn.execute("INSERT INTO items VALUES (?,?,?,?,?,?)", (100, "흑요석 검", 0, 0, 1, 0))
+        ref.conn.execute("INSERT INTO item_weapons VALUES (?,?)", (2, 100))
+        ref.conn.execute("INSERT INTO items VALUES (?,?,?,?,?,?)", (101, "upgrade one", 0, 0, 1, 0))
+        ref.conn.execute("INSERT INTO item_weapons VALUES (?,?)", (3, 101))
+        ref.conn.execute("INSERT INTO crafts VALUES (?,?,?,?)", (30, "Upgrade", 500, 0))
+        ref.conn.execute("INSERT INTO craft_products VALUES (?,?,?,?)", (210, 30, 101, 1))
+        ref.conn.execute("INSERT INTO craft_materials VALUES (?,?,?,?)", (310, 30, 100, 1))
+        ref.conn.commit()
+        comparison = weapons_comparison(base, ref)
+        self.assertEqual(comparison["base_obsidian_weapons"]["count"], 0)
+        self.assertEqual(
+            comparison["non_obsidian_named_upgrade_products"]["ref"]["count"], 1
+        )
+        self.assertEqual(
+            comparison["non_obsidian_named_upgrade_products"]["ref"]["weapons"], 1
+        )
+
+
+if __name__ == "__main__":
+    unittest.main()
