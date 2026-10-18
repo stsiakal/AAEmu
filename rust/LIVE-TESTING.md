@@ -420,6 +420,50 @@ naming that: `CraftHooks::start_craft_cast` (`systems/economy/bridges.rs`) disca
 `Skill.Use`'s result, so those rejections are silent where `CharacterCraft.Craft`'s own checks
 send `SCErrorMsg` pairs.
 
+### Skill sweep
+
+The `skill` subcommand casts every class skill (`skills.ability_id` 1..10, 170 rows on the
+shipped data) once on the live server and checks the outcome against the same
+`compact.sqlite3` (`skills`, `skill_effects` -> `effects` -> `buff_effects` / `damage_effects` /
+`heal_effects`, `unit_reqs`). GM account needed (access level 100), like `craft`.
+
+Per skill the runner makes the skill's ability one of `ability1..3` (`CSSwapAbilityPacket`),
+`/level 55`, learns the skill (`CSLearnSkillPacket`), equips the holdable slots the data's
+`unit_reqs` demand (one-hand sword, shield, bow, instrument), refills HP/MP with `/heal`, clears
+buffs left by earlier skills with `/buff -<id>` and resets cooldowns with `/resetcd`. Targets
+by `skills.target_type_id`: hostile skills on a spawned passive training dummy (NPC 13013) the
+bot faces at a distance inside `min_range..max_range`; self / friendly skills on the bot; position
+skills at the dummy's position (or the bot's, without a hostile relation); doodad skills on a
+spawned doodad. Other target types, and `target_dead` skills with a friendly target (a resurrect
+needs a dead player), are `unsupported` with the reason. The cast is `CSStartSkillPacket`.
+
+Observed: `SCSkillStarted` (cast times, `SkillResult`), `SCSkillFired` (effect delay, channel
+time), `SCSkillEnded` / `SCSkillStopped`, plot skills' `SCPlotEvent` / `SCPlotEnded` (the server
+batches plot events into `CompressedGamePackets`; the runner reads the first inner packet),
+`SCErrorMsg`, `SCUnitPoints` (mana spent, target HP delta), `SCBuffCreated` / `SCBuffRemoved`
+on caster and target, and a second immediate cast for the cooldown check.
+
+Each line of the JSONL records the data fields next to the observed ones (cast / channel /
+effect-delay times, `mana_cost_expected` vs `mana_spent`, `cooldown_time_ms` and `recast_result`,
+`expected_buffs` vs `buffs_created_*`, `damage_rows` / `heal_rows` vs `target_hp_delta`,
+`plot_events`) and a `mismatches` array with one short reason per deviation. `result` is `ok`
+(the cast ran), `rejected` (a `SkillResult` or `SCErrorMsg`, or a plot skill that sent no plot
+event), `timeout` (a non-plot cast the server dropped silently for 6 s), `unsupported` or
+`setup_failed`.
+
+```sh
+$TC skill --config testclient.local.json --login 127.0.0.1:21237           --compact-db rust/crates/aaemu-game/app/Data/compact.sqlite3           --new-character --all --out skill-audit.jsonl --summary
+$TC skill ... --skill 10377 --skill 10644      # single skills (repeatable)
+$TC skill ... --ability 3 --limit 10           # one ability, first 10 skills
+```
+
+`--ability` selects an ability id (1..10, repeatable), `--all` all 170, `--limit N` caps the
+list, `--new-character` / `--race` / `--gender` create a bot character, `--step-timeout-secs`
+(default 90) bounds one skill and `--summary` prints the result counts, the top mismatch reasons
+and the top failure reasons. **Resume:** an existing `--out` file makes the run skip every
+skill id already recorded in it. The account allows 6 characters, so use a fresh test account
+after a few `--new-character` runs. A whole sweep takes about 25 minutes.
+
 Run `login` last in a parity session: a world cookie that is never used leaves a pending entry
 on the game server, which makes the C# game server stop answering the login server (fixed in
 the Rust server, see `aaemu-game/PORTING.md`).

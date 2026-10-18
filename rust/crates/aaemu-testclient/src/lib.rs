@@ -13,4 +13,5 @@ pub mod quest;
 pub mod questrun;
 pub mod record;
 pub mod scenario;
+pub mod skillrun;
 pub mod stream;

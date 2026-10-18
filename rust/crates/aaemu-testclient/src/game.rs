@@ -144,6 +144,17 @@ fn read_doodad(s: &mut PacketStream) -> anyhow::Result<DoodadInfo> {
     })
 }
 
+/// One buff a unit carries, tracked from `SCBuffCreatedPacket` / `SCBuffRemovedPacket`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BuffInfo {
+    /// `buffs.id` of the applied buff.
+    pub buff_id: u32,
+    /// `Skill.Template.Id` when the buff is a skill's toggle buff, else 0.
+    pub skill_id: u32,
+    /// The owner's buff slot (`SCBuffRemovedPacket.index` removes by it).
+    pub index: u32,
+}
+
 /// The last `SCMateSpawnedPacket`: the owner's own view of the summoned mate.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MateSpawn {
@@ -333,6 +344,9 @@ pub struct GameState {
     pub bag_slots: u8,
     /// Latest `SCUnitPointsPacket` per unit: `(hp, mp)` (the wire carries them times 100).
     pub unit_points: HashMap<u32, (i32, i32)>,
+    /// Buffs per unit object id, by the owner's buff slot (`SCBuffCreatedPacket` /
+    /// `SCBuffRemovedPacket`); the skill sweep reads what a cast applied.
+    pub buffs: HashMap<u32, BTreeMap<u32, BuffInfo>>,
     /// Units announced dead by `SCUnitDeathPacket` (and not removed since).
     pub dead_units: HashSet<u32>,
     /// Last `SCMateSpawnedPacket`.
@@ -707,6 +721,7 @@ pub(crate) fn observe_into(st: &mut GameState, p: &Packet) -> anyhow::Result<()>
             st.units.remove(&id);
             st.unit_points.remove(&id);
             st.dead_units.remove(&id);
+            st.buffs.remove(&id);
         }
     } else if p.is_sc(sc::SCUnitPointsPacket) {
         let obj_id = s.read_bc()?;
@@ -715,6 +730,32 @@ pub(crate) fn observe_into(st: &mut GameState, p: &Packet) -> anyhow::Result<()>
         st.unit_points.insert(obj_id, (hp, mp));
     } else if p.is_sc(sc::SCUnitDeathPacket) {
         st.dead_units.insert(s.read_bc()?);
+    } else if p.is_sc(sc::SCBuffCreatedPacket) {
+        // `SCBuffCreatedPacket::write`: caster (type byte + body), caster id, owner obj id,
+        // index, buff id, caster level, ab level, skill id, then `Buff.WriteData`.
+        let caster_kind = s.read_u8()?;
+        SkillCaster::read(caster_kind, &mut s)?;
+        s.read_u32()?; // caster_id (character id; 0 for a pure unit caster)
+        let owner_obj_id = s.read_bc()?;
+        let index = s.read_u32()?;
+        let buff_id = s.read_u32()?;
+        s.read_u8()?; // caster_level
+        s.read_i16()?; // ab_level
+        let skill_id = s.read_u32()?;
+        st.buffs.entry(owner_obj_id).or_default().insert(
+            index,
+            BuffInfo {
+                buff_id,
+                skill_id,
+                index,
+            },
+        );
+    } else if p.is_sc(sc::SCBuffRemovedPacket) {
+        let obj_id = s.read_bc()?;
+        let index = s.read_u32()?;
+        if let Some(buffs) = st.buffs.get_mut(&obj_id) {
+            buffs.remove(&index);
+        }
     } else if p.is_sc(sc::SCErrorMsgPacket) {
         st.events.push(GameEvent::ErrorMsg(s.read_i16()?));
     } else if p.is_sc(sc::SCMateSpawnedPacket) {
@@ -860,6 +901,7 @@ pub(crate) fn observe_into(st: &mut GameState, p: &Packet) -> anyhow::Result<()>
         st.self_pos = pos;
         st.units.clear();
         st.doodads.clear();
+        st.buffs.clear();
     }
     Ok(())
 }
@@ -1130,6 +1172,56 @@ impl GameClient {
     pub async fn teleport_ended(&mut self, pos: (f32, f32, f32)) -> anyhow::Result<()> {
         let body = teleport_ended_body(pos);
         self.send_cs(cs::CSTeleportEndedPacket, &body).await
+    }
+
+    /// `CSLearnSkillPacket` (0x092): learn a skill of an active ability (the server answers
+    /// `SCSkillLearnedPacket`, or stays silent when the ability is inactive / points are short).
+    pub async fn learn_skill(&mut self, skill_id: u32) -> anyhow::Result<()> {
+        self.send_cs(cs::CSLearnSkillPacket, &learn_skill_body(skill_id))
+            .await
+    }
+
+    /// `CSSwapAbilityPacket` (0x096): replace the active ability `old_ability` with `ability`
+    /// (the server resets the old ability's learned skills).
+    pub async fn swap_ability(&mut self, old_ability: u8, ability: u8) -> anyhow::Result<()> {
+        let body = swap_ability_body(self.state.self_obj, old_ability, ability);
+        self.send_cs(cs::CSSwapAbilityPacket, &body).await
+    }
+
+    /// `CSResetSkillsPacket` (0x094): reset the learned skills of `ability_id`.
+    pub async fn reset_skills(&mut self, ability_id: u8) -> anyhow::Result<()> {
+        self.send_cs(cs::CSResetSkillsPacket, &reset_skills_body(ability_id))
+            .await
+    }
+
+    /// `CSSwapItemsPacket` between any slot types (`MoveArgs` block).
+    pub async fn move_item(
+        &mut self,
+        from_item: u64,
+        from_slot_type: u8,
+        from_slot: u8,
+        to_item: u64,
+        to_slot_type: u8,
+        to_slot: u8,
+    ) -> anyhow::Result<()> {
+        let mut s = PacketStream::new();
+        s.write_u64(from_item)
+            .write_u64(to_item)
+            .write_u8(from_slot_type)
+            .write_u8(from_slot)
+            .write_u8(to_slot_type)
+            .write_u8(to_slot);
+        self.send_cs(cs::CSSwapItemsPacket, s.as_bytes()).await
+    }
+
+    /// Equips a bag item into an `EquipmentItemSlot` index (`1` = equipment container).
+    pub async fn equip_item(
+        &mut self,
+        item_id: u64,
+        bag_slot: u8,
+        equip_slot: u8,
+    ) -> anyhow::Result<()> {
+        self.move_item(item_id, 2, bag_slot, 0, 1, equip_slot).await
     }
 
     /// `CSStartSkillPacket`: unit caster (us) on a unit target.
@@ -1519,6 +1611,28 @@ fn start_skill_body(skill_id: u32, caster: &SkillCaster, target: &SkillCastTarge
     s.into_bytes()
 }
 
+/// `CSLearnSkillPacket` body: just the skill id (`systems/skills/handlers.rs` `read`).
+fn learn_skill_body(skill_id: u32) -> Vec<u8> {
+    skill_id.to_le_bytes().to_vec()
+}
+
+/// `CSSwapAbilityPacket` body: `objId` (24-bit), old ability, new ability, `auap` bool.
+fn swap_ability_body(obj_id: u32, old_ability: u8, ability: u8) -> Vec<u8> {
+    let mut s = PacketStream::new();
+    s.write_bc(obj_id)
+        .write_u8(old_ability)
+        .write_u8(ability)
+        .write_bool(false);
+    s.into_bytes()
+}
+
+/// `CSResetSkillsPacket` body: ability id and the `ausp` bool.
+fn reset_skills_body(ability_id: u8) -> Vec<u8> {
+    let mut s = PacketStream::new();
+    s.write_u8(ability_id).write_bool(false);
+    s.into_bytes()
+}
+
 /// `CSTeleportEndedPacket` body (`systems/npcs/portal/packets.rs` `read`): the fixed point x/y,
 /// z and 16 orientation bytes (the identity quaternion).
 fn teleport_ended_body(pos: (f32, f32, f32)) -> Vec<u8> {
@@ -1623,6 +1737,69 @@ mod body_tests {
         .unwrap();
         assert_eq!((p.x, p.y, p.z), (1234.5, -678.25, 78.5));
         assert_eq!(p.ori, TELEPORT_ENDED_ORIENTATION);
+    }
+
+    #[test]
+    fn learn_swap_and_reset_bodies_decode_with_the_server_readers() {
+        use aaemu_game::systems::skills::handlers::{
+            CSLearnSkillPacket, CSResetSkillsPacket, CSSwapAbilityPacket,
+        };
+
+        let p = CSLearnSkillPacket::read(&mut PacketStream::from_bytes(learn_skill_body(10375)))
+            .unwrap();
+        assert_eq!(p.skill_id, 10375);
+
+        let p = CSSwapAbilityPacket::read(&mut PacketStream::from_bytes(swap_ability_body(
+            0x1234, 11, 7,
+        )))
+        .unwrap();
+        assert_eq!((p.obj_id, p.old_ability, p.ability), (0x1234, 11, 7));
+        assert!(!p.auap);
+
+        let p =
+            CSResetSkillsPacket::read(&mut PacketStream::from_bytes(reset_skills_body(4))).unwrap();
+        assert_eq!(p.ability_id, 4);
+        assert!(!p.ausp);
+    }
+
+    #[test]
+    fn buff_packets_track_created_and_removed() {
+        use aaemu_game::systems::skills::packets::{SCBuffCreatedPacket, SCBuffRemovedPacket};
+
+        let mut st = GameState::default();
+        let created = SCBuffCreatedPacket {
+            skill_caster: SkillCaster::Unit(0x100),
+            caster_id: 42,
+            owner_obj_id: 0x100,
+            index: 3,
+            buff_id: 2206,
+            caster_level: 55,
+            ab_level: 55,
+            skill_id: 10375,
+            charge: 1,
+            duration: 10_000,
+            tick: 0.0,
+        };
+        let mut body = PacketStream::new();
+        created.write(&mut body);
+        observe_into(&mut st, &packet(sc::SCBuffCreatedPacket, body.into_bytes())).unwrap();
+        assert_eq!(
+            st.buffs[&0x100][&3],
+            BuffInfo {
+                buff_id: 2206,
+                skill_id: 10375,
+                index: 3,
+            }
+        );
+
+        let mut body = PacketStream::new();
+        SCBuffRemovedPacket {
+            obj_id: 0x100,
+            index: 3,
+        }
+        .write(&mut body);
+        observe_into(&mut st, &packet(sc::SCBuffRemovedPacket, body.into_bytes())).unwrap();
+        assert!(st.buffs[&0x100].is_empty());
     }
 
     #[test]

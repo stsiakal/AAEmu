@@ -21,7 +21,7 @@ block — created and removed by [`Scripts/lane.sh`](Scripts/lane.sh). Lanes nev
 locks, ports or processes, so sessions cannot collide.
 
 On this machine the lane base is **`rust-rewrite-bots`** and MySQL is 8.4: both are set in the
-untracked `D:/aaemu-lanes/machine.env` (`AAEMU_LANE_BASE`, `AAEMU_MYSQL_BIN`), which `lane.sh`
+untracked `D:/aaemu-lanes/machine.conf` (`AAEMU_LANE_BASE`, `AAEMU_MYSQL_BIN`), which `lane.sh`
 reads first.
 
 ```sh

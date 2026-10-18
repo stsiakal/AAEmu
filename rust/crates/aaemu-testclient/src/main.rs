@@ -20,6 +20,10 @@
 //!                         [--limit N] [--new-character] [--race name|id] [--gender m|f]
 //!                         [--compact-db path] [--out results.jsonl] [--step-timeout-secs N]
 //!                         [--keep-products] [--summary]
+//! aaemu-testclient skill  [--config F] [--login H:P] (--skill ID...|--ability ID...|--all)
+//!                         [--limit N] [--new-character] [--race name|id] [--gender m|f]
+//!                         [--compact-db path] [--out results.jsonl] [--step-timeout-secs N]
+//!                         [--summary]
 //! ```
 //!
 //! Settings come from `--config` (JSON, see `testclient.example.json`), then the flags. Keep
@@ -35,6 +39,7 @@ use aaemu_testclient::load;
 use aaemu_testclient::questrun::{self, QuestOutcome};
 use aaemu_testclient::record::{self, Recorder};
 use aaemu_testclient::scenario::{self, BotConfig, Kind, Outcome};
+use aaemu_testclient::skillrun;
 use anyhow::{bail, Context};
 use tracing_subscriber::EnvFilter;
 
@@ -320,6 +325,59 @@ async fn main() -> anyhow::Result<()> {
                 bail!("connection lost during the quest run");
             }
         }
+        "skill" => {
+            let cfg = bot_config(&args)?;
+            let race = match args.get("race") {
+                Some(value) => questrun::parse_race(value)?,
+                None => 1,
+            };
+            let gender = match args.get("gender") {
+                Some(value) => questrun::parse_gender(value)?,
+                None => 1,
+            };
+            let abilities = args
+                .get_all("ability")
+                .iter()
+                .map(|v| {
+                    v.parse::<u8>()
+                        .context("--ability needs a numeric ability id (1..10)")
+                })
+                .collect::<anyhow::Result<Vec<u8>>>()?;
+            let opts = skillrun::RunOptions {
+                skill_ids: args
+                    .get_all("skill")
+                    .iter()
+                    .map(|v| v.parse::<u32>().context("--skill needs a numeric skill id"))
+                    .collect::<anyhow::Result<_>>()?,
+                abilities,
+                all: args.has("all"),
+                limit: args
+                    .get("limit")
+                    .map(|v| v.parse::<usize>().context("--limit needs a number"))
+                    .transpose()?,
+                new_character: args.has("new-character"),
+                race,
+                gender,
+                step_timeout: Duration::from_secs(
+                    args.get("step-timeout-secs").unwrap_or("90").parse()?,
+                ),
+                compact_db: args.get("compact-db").map(PathBuf::from),
+                out: args.get("out").map(PathBuf::from),
+            };
+            let report = skillrun::run(&cfg, &opts).await?;
+            let ok = report
+                .results
+                .iter()
+                .filter(|r| r.result == skillrun::SkillOutcome::Ok)
+                .count();
+            println!("[skill] {} result line(s), {ok} ok", report.results.len());
+            if args.has("summary") {
+                println!("{}", skillrun::render_summary(&report));
+            }
+            if report.aborted {
+                bail!("connection lost during the skill run");
+            }
+        }
         "craft" => {
             let cfg = bot_config(&args)?;
             let race = match args.get("race") {
@@ -374,7 +432,7 @@ async fn main() -> anyhow::Result<()> {
         }
         _ => {
             println!(
-                "usage: aaemu-testclient run|parity|diff|load|quest|craft [--flags]; see the crate docs"
+                "usage: aaemu-testclient run|parity|diff|load|quest|craft|skill [--flags]; see the crate docs"
             );
         }
     }

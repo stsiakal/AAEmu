@@ -21,6 +21,9 @@ set -euo pipefail
 
 REPO=$(cd "$(dirname "$0")/.." && pwd)
 LANES=${AAEMU_LANES:-D:/aaemu-lanes}
+# Machine-local overrides (AAEMU_MYSQL_BIN, AAEMU_DB_USER, ...), never committed; see lane.sh.
+# shellcheck disable=SC1091
+[ -f "$LANES/machine.conf" ] && source "$LANES/machine.conf"
 LANE=${AAEMU_LANE:-}
 if [ -z "$LANE" ]; then
   for f in "$LANES"/*.env; do
@@ -42,6 +45,7 @@ PROFILE=${AAEMU_PROFILE:-live}                            # cargo profile: live 
 BIN=${AAEMU_BIN:-D:/aaemu-target/main/$PROFILE}            # cargo target dir (see rust/.cargo/config.toml)
 MYSQL_BIN=${AAEMU_MYSQL_BIN:-/c/Program Files/MySQL/MySQL Server 8.0/bin}
 MYSQL_PORT=${AAEMU_MYSQL_PORT:-3317}                      # private instance; NEVER the user's 3306
+DB_USER=${AAEMU_DB_USER:-aaemu}                            # the servers' MySQL account (lane configs)
 CLIENT=${AAEMU_CLIENT:-D:/AA1.2/bin32/archeage.exe}       # read-only client install
 LOGIN=${AAEMU_LOGIN:-127.0.0.1:21237}
 CLIENT_USER=${AAEMU_USER:-clienttest}
@@ -100,7 +104,7 @@ lane_configs() {
   "SkipHostResolve": true,
   "InternalNetwork": { "Host": "127.0.0.1", "Port": ${p}234 },
   "Network": { "Host": "127.0.0.1", "Port": ${p}237, "NumConnections": 100 },
-  "Connections": { "AutoApplyUpdates": true, "MySQLProvider": { "Database": "$DB_LOGIN", "Host": "127.0.0.1", "Port": "$MYSQL_PORT", "User": "aaemu", "Password": "$pw" } },
+  "Connections": { "AutoApplyUpdates": true, "MySQLProvider": { "Database": "$DB_LOGIN", "Host": "127.0.0.1", "Port": "$MYSQL_PORT", "User": "$DB_USER", "Password": "$pw" } },
   "GameServers": [ { "Id": 1, "Name": "Lane-$LANE", "Host": "127.0.0.1", "Port": ${p}239, "Hidden": false } ]
 }
 EOF
@@ -112,7 +116,7 @@ EOF
   "StreamNetwork": { "Host": "127.0.0.1", "Port": ${p}250 },
   "WebApiNetwork": { "Host": "127.0.0.1", "Port": ${p}280 },
   "LoginNetwork": { "Host": "127.0.0.1", "Port": "${p}234" },
-  "Connections": { "AutoApplyUpdates": true, "MySQLProvider": { "Database": "$DB_GAME", "Host": "127.0.0.1", "Port": "$MYSQL_PORT", "User": "aaemu", "Password": "$pw" } },
+  "Connections": { "AutoApplyUpdates": true, "MySQLProvider": { "Database": "$DB_GAME", "Host": "127.0.0.1", "Port": "$MYSQL_PORT", "User": "$DB_USER", "Password": "$pw" } },
   "ClientData": { "Sources": [ "$CLIENT_PAK" ] }
 }
 EOF
