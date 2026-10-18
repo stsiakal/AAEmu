@@ -29,6 +29,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import shutil
 import sqlite3
 import sys
@@ -44,6 +45,10 @@ NAMED_SETS = {"obsidian-armor": list(range(35581, 35626))}
 
 TABLE_ORDER = (
     "items",
+    "icons",
+    "armor_assets",
+    "item_assets",
+    "item_armor_assets",
     "item_armors",
     "item_weapons",
     "item_accessories",
@@ -183,6 +188,23 @@ class Borrower:
             "craft_pack_crafts_semantics": None,
         }
         self._buff_effect_buff_ids = set()
+        self.armor_asset_map = {}
+        self.item_asset_map = {}
+        self.icon_map = {}
+        self._base_item_asset_by_path = None
+        self.report["look_borrows"] = {
+            "armor_assets": {"new_ids": [], "reused_ids": []},
+            "item_assets": {"new_ids": [], "reused_ids": []},
+            "item_armor_assets": {"new_ids": []},
+            "icon_borrows": {"borrowed_ids": [], "reused_ids": [], "remapped": []},
+            "item_armors_asset_id_remap": {},
+            "server_reads_look_tables": {
+                "armor_assets": False,
+                "item_armor_assets": False,
+                "item_assets": False,
+                "icons": False,
+            },
+        }
 
     # -- schema helpers ---------------------------------------------------
 
@@ -217,7 +239,11 @@ class Borrower:
 
     def next_synth_id(self, table):
         if table not in self.synth_next:
-            self.synth_next[table] = self.base_max_id(table)
+            base_max = self.base_max_id(table)
+            self.synth_next[table] = base_max
+            entry = self.report["synthesized_ids"][table]
+            entry["base_max"] = base_max
+            entry["above_custom_min"] = base_max >= CUSTOM_ID_MIN
         while True:
             self.synth_next[table] += 1
             candidate = self.synth_next[table]
@@ -340,6 +366,142 @@ class Borrower:
 
     # -- closure borrowing ------------------------------------------------
 
+    def _base_item_assets_by_path(self):
+        if self._base_item_asset_by_path is None:
+            self._base_item_asset_by_path = {}
+            if self.base.has("item_assets"):
+                for row in self.base.rows("select id, path from item_assets"):
+                    if row["path"]:
+                        self._base_item_asset_by_path[row["path"].lower()] = row["id"]
+        return self._base_item_asset_by_path
+
+    def _chain_paths(self, db, armor_asset_id):
+        if not db.has("item_armor_assets") or not db.has("item_assets"):
+            return {}
+        return {
+            row["path"]: row["asset_id"]
+            for row in db.rows(
+                "select iaa.asset_id, ia.path from item_armor_assets iaa"
+                " join item_assets ia on ia.id = iaa.asset_id"
+                " where iaa.armor_asset_id = ?",
+                (armor_asset_id,),
+            )
+        }
+
+    def _asset_id_for_path(self, ref_asset_id):
+        if ref_asset_id in self.item_asset_map:
+            return self.item_asset_map[ref_asset_id]
+        ref_row = self.ref.row("select * from item_assets where id = ?", (ref_asset_id,))
+        if ref_row is None or not ref_row.get("path"):
+            self.report["refused"]["missing_references"].append(
+                {"table": "item_assets", "id": ref_asset_id}
+            )
+            self.item_asset_map[ref_asset_id] = ref_asset_id
+            return ref_asset_id
+        path = ref_row["path"].lower()
+        base_id = self._base_item_assets_by_path().get(path)
+        if base_id is not None:
+            self.item_asset_map[ref_asset_id] = base_id
+            self.report["look_borrows"]["item_assets"]["reused_ids"].append(
+                {"ref_id": ref_asset_id, "id": base_id, "path": ref_row["path"]}
+            )
+            return base_id
+        new_id = self.next_synth_id("item_assets")
+        self._plan_row("item_assets", ref_row, new_id)
+        self.item_asset_map[ref_asset_id] = new_id
+        self.report["look_borrows"]["item_assets"]["new_ids"].append(new_id)
+        return new_id
+
+    def borrow_armor_look(self, armor_asset_id):
+        if armor_asset_id in self.armor_asset_map:
+            return self.armor_asset_map[armor_asset_id]
+        if not (
+            self.ref.has("armor_assets")
+            and self.ref.has("item_armor_assets")
+            and self.ref.has("item_assets")
+        ):
+            self.armor_asset_map[armor_asset_id] = armor_asset_id
+            return armor_asset_id
+        ref_row = self.ref.row("select * from armor_assets where id = ?", (armor_asset_id,))
+        if ref_row is None:
+            self.report["refused"]["missing_references"].append(
+                {"table": "armor_assets", "id": armor_asset_id}
+            )
+            self.armor_asset_map[armor_asset_id] = armor_asset_id
+            return armor_asset_id
+        base_paths = self._chain_paths(self.base, armor_asset_id)
+        ref_paths = self._chain_paths(self.ref, armor_asset_id)
+        same_meaning = bool(ref_paths) and set(base_paths) == set(ref_paths)
+        if same_meaning:
+            new_id = armor_asset_id
+            self.report["look_borrows"]["armor_assets"]["reused_ids"].append(
+                {"id": armor_asset_id, "reason": "identical item_armor_assets chain"}
+            )
+        else:
+            new_id = self.next_synth_id("armor_assets")
+            planned = self._plan_row("armor_assets", ref_row, new_id)
+            default_asset = ref_row.get("default_asset_id") or 0
+            if default_asset:
+                planned["default_asset_id"] = self._asset_id_for_path(default_asset)
+            self.report["look_borrows"]["armor_assets"]["new_ids"].append(new_id)
+            self.report["look_borrows"]["item_armors_asset_id_remap"][
+                str(armor_asset_id)
+            ] = new_id
+        self.armor_asset_map[armor_asset_id] = new_id
+        for iaa_row in self.ref.rows(
+            "select * from item_armor_assets where armor_asset_id = ? order by id",
+            (armor_asset_id,),
+        ):
+            asset_id = self._asset_id_for_path(iaa_row["asset_id"])
+            row = dict(iaa_row)
+            row["armor_asset_id"] = new_id
+            row["asset_id"] = asset_id
+            row_id = self.next_synth_id("item_armor_assets")
+            row["id"] = row_id
+            self._plan_row("item_armor_assets", row, row_id)
+            self.report["look_borrows"]["item_armor_assets"]["new_ids"].append(row_id)
+        return new_id
+
+    def borrow_icon(self, icon_id):
+        if icon_id in self.icon_map:
+            return self.icon_map[icon_id]
+        if not self.ref.has("icons"):
+            self.icon_map[icon_id] = icon_id
+            return icon_id
+        ref_row = self.ref.row("select * from icons where id = ?", (icon_id,))
+        if ref_row is None:
+            self.report["refused"]["missing_references"].append(
+                {"table": "icons", "id": icon_id}
+            )
+            self.icon_map[icon_id] = icon_id
+            return icon_id
+        base_row = self.base.row(
+            "select id, filename from icons where id = ?", (icon_id,)
+        )
+        ref_filename = (ref_row.get("filename") or "").lower()
+        if base_row is not None and (base_row["filename"] or "").lower() == ref_filename:
+            self.icon_map[icon_id] = icon_id
+            self.report["look_borrows"]["icon_borrows"]["reused_ids"].append(
+                {"id": icon_id, "filename": ref_row.get("filename")}
+            )
+            return icon_id
+        if base_row is None:
+            new_id = icon_id
+        else:
+            new_id = self.next_synth_id("icons")
+            self.report["look_borrows"]["icon_borrows"]["remapped"].append(
+                {
+                    "ref_id": icon_id,
+                    "id": new_id,
+                    "base_filename": base_row["filename"],
+                    "ref_filename": ref_row.get("filename"),
+                }
+            )
+        self._plan_row("icons", ref_row, new_id)
+        self.icon_map[icon_id] = new_id
+        self.report["look_borrows"]["icon_borrows"]["borrowed_ids"].append(new_id)
+        return new_id
+
     def borrow_item(self, item_id, start=False):
         existing = self.base.row("select id, name from items where id = ?", (item_id,))
         if existing is not None:
@@ -367,15 +529,19 @@ class Borrower:
                 {"table": "items", "id": item_id}
             )
             return
-        self._plan_row("items", ref_row, item_id)
+        item_row = self._plan_row("items", ref_row, item_id)
         for table in ITEM_CLASS_TABLES:
             if not self.ref.has(table):
                 continue
             for row in self.ref.rows(
                 f'select * from "{table}" where item_id = ? order by id', (item_id,)
             ):
-                self.plan_row(table, row)
+                planned = self.plan_row(table, row)
                 if table == "item_armors":
+                    if planned is not None:
+                        asset_id = row.get("asset_id") or 0
+                        if asset_id:
+                            planned["asset_id"] = self.borrow_armor_look(asset_id)
                     self._check_armor_references(row)
         for table, key, condition in ITEM_SCOPED_TABLES:
             if not self.ref.has(table):
@@ -388,11 +554,15 @@ class Borrower:
         buff_id = ref_row.get("buff_id") or 0
         if buff_id > 0:
             self.borrow_buff(buff_id, source="item", item_id=item_id)
-        icon_id = ref_row.get("icon_id") or 0
-        if icon_id and icon_id not in self.base.ids("icons"):
-            self.report["icons_missing_in_1_2"].append(
-                {"item_id": item_id, "icon_id": icon_id}
-            )
+        for column in ("icon_id", "over_icon_id", "male_icon_id"):
+            icon_id = ref_row.get(column) or 0
+            if not icon_id:
+                continue
+            if icon_id not in self.base.ids("icons"):
+                self.report["icons_missing_in_1_2"].append(
+                    {"item_id": item_id, "icon_id": icon_id, "column": column}
+                )
+            item_row[column] = self.borrow_icon(icon_id)
 
     def _check_armor_references(self, row):
         mod_set_id = row.get("mod_set_id") or 0
@@ -406,11 +576,6 @@ class Borrower:
                 self.report["refused"]["missing_references"].append(
                     {"table": "equip_item_attr_modifiers", "id": mod_set_id}
                 )
-        asset_id = row.get("asset_id") or 0
-        if asset_id and asset_id not in self.base.ids("item_assets"):
-            self.report["refused"]["missing_references"].append(
-                {"table": "item_assets", "id": asset_id, "item_id": row.get("item_id")}
-            )
 
     def borrow_buff(self, buff_id, source, item_id=None):
         if buff_id in self.seen_ids.get("buffs", set()):
@@ -713,6 +878,53 @@ def build_backport(base, ref, item_ids):
     for buff_id in sorted(borrower._buff_effect_buff_ids):
         if buff_id not in base.ids("buffs"):
             borrower.report["buff_effects_referenced_buffs_missing_in_1_2"].append(buff_id)
+    model_paths = set()
+    for ref_id in borrower.item_asset_map:
+        row = ref.row("select path from item_assets where id = ?", (ref_id,))
+        if row and row["path"]:
+            model_paths.add(row["path"])
+    icon_files = set()
+    for ref_id in borrower.icon_map:
+        row = ref.row("select filename from icons where id = ?", (ref_id,))
+        if row and row["filename"]:
+            icon_files.add(row["filename"])
+    borrower.report["assets_needed"] = {
+        "model_paths": sorted(model_paths),
+        "icon_files": sorted(icon_files),
+    }
+    obsidian_assets = set()
+    for item_id in item_ids:
+        for row in ref.rows(
+            "select asset_id from item_armors where item_id = ?", (item_id,)
+        ):
+            if row["asset_id"]:
+                obsidian_assets.add(row["asset_id"])
+    obsidian_models = set()
+    for armor_asset_id in sorted(obsidian_assets):
+        obsidian_models.update(borrower._chain_paths(ref, armor_asset_id))
+    obsidian_icons = set()
+    icon_columns = [
+        column
+        for column in ("icon_id", "over_icon_id", "male_icon_id")
+        if column in ref.columns("items")
+    ]
+    for item_id in item_ids:
+        if not icon_columns:
+            break
+        row = ref.row(
+            f'select {", ".join(icon_columns)} from items where id = ?',
+            (item_id,),
+        )
+        if row is None:
+            continue
+        for column in icon_columns:
+            value = row.get(column) or 0
+            if value:
+                icon = ref.row("select filename from icons where id = ?", (value,))
+                if icon and icon["filename"]:
+                    obsidian_icons.add(icon["filename"])
+    borrower.report["assets_needed"]["obsidian_model_paths"] = sorted(obsidian_models)
+    borrower.report["assets_needed"]["obsidian_icon_files"] = sorted(obsidian_icons)
     report = dict(borrower.report)
     report["borrowed_rows"] = dict(report["borrowed_rows"])
     report["synthesized_ids"] = dict(report["synthesized_ids"])
@@ -865,7 +1077,131 @@ def weapons_comparison(base, ref):
     }
 
 
-def run_backport(base_path, ref_path, items_spec, out_sql, out_db, command=None):
+def canon_pak_path(path):
+    path = path.replace("\\", "/").lower()
+    if path.startswith("game/"):
+        return path
+    return "game/" + path
+
+
+def parse_asset_refs(file_path):
+    if not file_path.lower().endswith((".cdf", ".mtl")):
+        return set()
+    with open(file_path, "rb") as handle:
+        text = handle.read().decode("utf-8", errors="replace")
+    refs = set()
+    for match in re.finditer(r'(?:File|Material)="([^"]+)"', text):
+        ref = match.group(1)
+        if ref.lower().endswith(".tif"):
+            ref = ref[:-4] + ".dds"
+        refs.add(canon_pak_path(ref))
+    return refs
+
+
+def walk_asset_closure(paths, extract_dir, pak10):
+    closure = {canon_pak_path(p) for p in paths}
+    missing = set()
+    frontier = set(closure)
+    while frontier:
+        new = set()
+        for path in sorted(frontier):
+            if extract_dir is None:
+                continue
+            local = os.path.join(extract_dir, path.replace("/", os.sep))
+            if not os.path.exists(local):
+                continue
+            for ref in parse_asset_refs(local):
+                if ref in closure:
+                    continue
+                closure.add(ref)
+                new.add(ref)
+                if pak10 is not None and ref not in pak10:
+                    missing.add(ref)
+        frontier = new
+    return closure, missing
+
+
+def read_listing(path):
+    if path is None:
+        return None
+    lines = set()
+    with open(path, encoding="utf-8", errors="replace") as handle:
+        for line in handle:
+            line = line.strip().lower()
+            if line:
+                lines.add(line)
+    return lines
+
+
+def build_assets_section(assets_needed, extract_dir, pak10, pak12):
+    model_paths = set(assets_needed.get("model_paths") or [])
+    icon_files = set(assets_needed.get("icon_files") or [])
+    direct = [canon_pak_path(p) for p in sorted(model_paths)]
+    direct += [canon_pak_path("ui/icon/" + f) for f in sorted(icon_files)]
+    closure, missing = walk_asset_closure(direct, extract_dir, pak10)
+    by_extension = defaultdict(int)
+    for path in closure:
+        by_extension[path.rsplit(".", 1)[-1]] += 1
+    section = {
+        "model_paths": sorted(model_paths),
+        "icon_files": sorted(icon_files),
+        "direct_files": len(direct),
+        "closure_files": len(closure),
+        "by_extension": dict(sorted(by_extension.items())),
+        "missing_in_pak10": sorted(missing),
+        "paths": sorted(closure),
+    }
+    if pak12 is not None:
+        shared = sorted(p for p in closure if p in pak12)
+        section["shared_with_1_2_pak"] = shared
+        section["only_in_10x_pak"] = sorted(p for p in closure if p not in pak12)
+    obsidian_models = assets_needed.get("obsidian_model_paths") or []
+    if obsidian_models:
+        obsidian_icons = assets_needed.get("obsidian_icon_files") or []
+        obsidian_direct = [canon_pak_path(p) for p in sorted(obsidian_models)]
+        obsidian_direct += [
+            canon_pak_path("ui/icon/" + f) for f in sorted(obsidian_icons)
+        ]
+        obsidian_closure, obsidian_missing = walk_asset_closure(
+            obsidian_direct, extract_dir, pak10
+        )
+        obsidian_ext = defaultdict(int)
+        for path in obsidian_closure:
+            obsidian_ext[path.rsplit(".", 1)[-1]] += 1
+        section["obsidian_only"] = {
+            "model_paths": sorted(obsidian_models),
+            "icon_files": sorted(obsidian_icons),
+            "direct_files": len(obsidian_direct),
+            "closure_files": len(obsidian_closure),
+            "by_extension": dict(sorted(obsidian_ext.items())),
+            "missing_in_pak10": sorted(obsidian_missing),
+        }
+        if pak12 is not None:
+            section["obsidian_only"]["shared_with_1_2_pak"] = sorted(
+                p for p in obsidian_closure if p in pak12
+            )
+            section["obsidian_only"]["only_in_10x_pak"] = sorted(
+                p for p in obsidian_closure if p not in pak12
+            )
+    return section
+
+
+def write_asset_list(out_path, section):
+    Path(out_path).write_text("\n".join(section["paths"]) + "\n", encoding="utf-8")
+
+
+def run_backport(
+    base_path,
+    ref_path,
+    items_spec,
+    out_sql,
+    out_db,
+    command=None,
+    assets_out=None,
+    assets_extract_dir=None,
+    pak10_listing=None,
+    pak12_listing=None,
+):
     started = time.time()
     base = Db(path=base_path)
     ref = Db(path=ref_path)
@@ -899,6 +1235,18 @@ def run_backport(base_path, ref_path, items_spec, out_sql, out_db, command=None)
         report["weapons_comparison"] = weapons_comparison(base, ref)
         report["outputs"] = {"sql": str(out_sql), "db": str(out_db)}
         report["integrity_check"] = integrity
+        if assets_out:
+            pak10 = read_listing(pak10_listing)
+            pak12 = read_listing(pak12_listing)
+            section = build_assets_section(
+                report.get("assets_needed", {}),
+                assets_extract_dir,
+                pak10,
+                pak12,
+            )
+            write_asset_list(assets_out, section)
+            section["list"] = str(assets_out)
+            report["assets"] = section
         report["elapsed_seconds"] = round(time.time() - started, 3)
         return report
     finally:
@@ -926,6 +1274,49 @@ def print_summary(report):
         for table, cols in sorted(conversions.items()):
             for col, count in sorted(cols.items()):
                 print(f"  {table}.{col}: {count} rows")
+    look = report.get("look_borrows") or {}
+    if look:
+        armor = look["armor_assets"]
+        assets = look["item_assets"]
+        chain = look["item_armor_assets"]
+        icons = look["icon_borrows"]
+        print("look chain borrows:")
+        print(
+            f"  armor_assets: new {len(armor['new_ids'])}"
+            f" {armor['new_ids'][:3]}..., reused {len(armor['reused_ids'])}"
+        )
+        print(
+            f"  item_assets: new {len(assets['new_ids'])}"
+            f" {assets['new_ids'][:3]}..., reused by path {len(assets['reused_ids'])}"
+        )
+        print(
+            f"  item_armor_assets: new {len(chain['new_ids'])}"
+            f" {chain['new_ids'][:3]}..."
+        )
+        print(
+            f"  icons: borrowed {len(icons['borrowed_ids'])}"
+            f" {icons['borrowed_ids'][:3]}..., reused {len(icons['reused_ids'])}"
+            f" (same filename), remapped {len(icons['remapped'])}"
+        )
+        print(f"  server reads look tables: {look['server_reads_look_tables']}")
+    assets = report.get("assets")
+    if assets:
+        print(
+            f"client assets: {assets['closure_files']} files"
+            f" {assets['by_extension']}, shared with 1.2 pak"
+            f" {len(assets.get('shared_with_1_2_pak') or [])}, only 10.x"
+            f" {len(assets.get('only_in_10x_pak') or [])}, missing in 10.x"
+            f" {len(assets['missing_in_pak10'])}"
+        )
+        obsidian = assets.get("obsidian_only")
+        if obsidian:
+            print(
+                f"  obsidian-only subset: {obsidian['closure_files']} files"
+                f" {obsidian['by_extension']}, shared"
+                f" {len(obsidian.get('shared_with_1_2_pak') or [])}, only 10.x"
+                f" {len(obsidian.get('only_in_10x_pak') or [])}, missing in 10.x"
+                f" {len(obsidian['missing_in_pak10'])}"
+            )
     dropped = report["columns_dropped_from_3_0"]
     if dropped:
         print("3.0-only columns with non-default values (not representable in 1.2):")
@@ -980,10 +1371,28 @@ def main(argv=None):
     parser.add_argument("--out-sql", required=True, help="SQL patch output path")
     parser.add_argument("--out-db", required=True, help="patched database copy path")
     parser.add_argument("--report", required=True, help="JSON report output path")
+    parser.add_argument(
+        "--assets-out",
+        help="client asset list output path (pak paths, one per line)",
+    )
+    parser.add_argument(
+        "--assets-extract-dir",
+        help="directory with 10.x files already extracted (for the dependency walk)",
+    )
+    parser.add_argument("--pak10-listing", help="10.x pak listing (one path per line)")
+    parser.add_argument("--pak12-listing", help="1.2 pak listing (one path per line)")
     args = parser.parse_args(argv)
 
     report = run_backport(
-        args.base, args.ref, args.items, args.out_sql, args.out_db
+        args.base,
+        args.ref,
+        args.items,
+        args.out_sql,
+        args.out_db,
+        assets_out=args.assets_out,
+        assets_extract_dir=args.assets_extract_dir,
+        pak10_listing=args.pak10_listing,
+        pak12_listing=args.pak12_listing,
     )
     with open(args.report, "w", encoding="utf-8") as handle:
         json.dump(report, handle, ensure_ascii=False, indent=2, default=str)

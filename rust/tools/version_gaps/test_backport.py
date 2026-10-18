@@ -13,12 +13,14 @@ from backport import (  # noqa: E402
     Borrower,
     Db,
     apply_patch,
+    build_assets_section,
     build_backport,
     build_closure,
     render_patch,
     resolve_item_set,
     run_backport,
     weapons_comparison,
+    write_asset_list,
 )
 
 BASE_SCHEMA = """
@@ -50,13 +52,17 @@ CREATE TABLE craft_effects (id INTEGER PRIMARY KEY, wi_id INTEGER);
 CREATE TABLE buff_effects (id INTEGER PRIMARY KEY, buff_id INTEGER, chance INTEGER,
     stack INTEGER, ab_level INTEGER);
 CREATE TABLE icons (id INTEGER PRIMARY KEY, filename TEXT, name TEXT);
-CREATE TABLE item_assets (id INTEGER PRIMARY KEY, model_id INTEGER);
+CREATE TABLE item_assets (id INTEGER PRIMARY KEY, model_id INTEGER, path TEXT);
 CREATE TABLE localized_texts (id INTEGER PRIMARY KEY, tbl_name TEXT,
     tbl_column_name TEXT, idx INTEGER, ko TEXT, ko_ver INTEGER, en_us TEXT,
     en_us_ver INTEGER, zh_cn TEXT, zh_cn_ver INTEGER, ja TEXT, ja_ver INTEGER,
     ru TEXT, ru_ver INTEGER, zh_tw TEXT, zh_tw_ver INTEGER, de TEXT, de_ver INTEGER,
     fr TEXT, fr_ver INTEGER);
 CREATE TABLE item_weapons (id INTEGER PRIMARY KEY, item_id INTEGER);
+CREATE TABLE armor_assets (id INTEGER PRIMARY KEY, name TEXT, slot_type_id INTEGER,
+    default_asset_id INTEGER);
+CREATE TABLE item_armor_assets (id INTEGER PRIMARY KEY, armor_asset_id INTEGER,
+    asset_id INTEGER);
 """
 
 REF_SCHEMA = """
@@ -91,10 +97,15 @@ CREATE TABLE craft_effects (id INTEGER PRIMARY KEY, wi_id INTEGER);
 CREATE TABLE buff_effects (id INTEGER PRIMARY KEY, buff_id INTEGER, chance INTEGER,
     stack INTEGER, ab_level INTEGER);
 CREATE TABLE icons (id INTEGER PRIMARY KEY, filename TEXT);
-CREATE TABLE item_assets (id INTEGER PRIMARY KEY, model_id INTEGER);
+CREATE TABLE item_assets (id INTEGER PRIMARY KEY, model_id INTEGER, path TEXT,
+    hide_horn INTEGER);
 CREATE TABLE localized_texts (tbl_name TEXT, tbl_column_name TEXT, idx INTEGER,
     en_us TEXT);
 CREATE TABLE item_weapons (id INTEGER PRIMARY KEY, item_id INTEGER);
+CREATE TABLE armor_assets (id INTEGER PRIMARY KEY, slot_type_id INTEGER,
+    default_asset_id INTEGER);
+CREATE TABLE item_armor_assets (id INTEGER PRIMARY KEY, armor_asset_id INTEGER,
+    asset_id INTEGER);
 """
 
 
@@ -112,10 +123,13 @@ def base_db():
     rows = [
         ("INSERT INTO items VALUES (?,?,?,?,?,?,?)", (12, "Existing mat", 0, 0, 1, 0, "f")),
         ("INSERT INTO items VALUES (?,?,?,?,?,?,?)", (1000, "Base mat", 0, 0, 1, 0, "f")),
-        ("INSERT INTO item_assets VALUES (?,?)", (5, 1)),
+        ("INSERT INTO item_assets VALUES (?,?,?)", (5, 1, "objects/item/test.cgf")),
         ("INSERT INTO icons VALUES (?,?,?)", (1, "x.dds", "x")),
         ("INSERT INTO skills VALUES (?,?,?,?,?,?,?)", (500, "Base craft skill", 100, 0, 0, "t", 0)),
         ("INSERT INTO item_weapons VALUES (?,?)", (1, 12)),
+        ("INSERT INTO armor_assets VALUES (?,?,?,?)", (5, "old look", 1, 0)),
+        ("INSERT INTO item_armor_assets VALUES (?,?,?)", (600, 5, 60)),
+        ("INSERT INTO item_assets VALUES (?,?,?)", (60, 0, "objects/characters/test/old.cdf")),
     ]
     return make_db(BASE_SCHEMA, rows)
 
@@ -148,6 +162,12 @@ def ref_db():
         ("INSERT INTO localized_texts VALUES (?,?,?,?)", ("items", "name", 10, "Test Armor EN")),
         ("INSERT INTO localized_texts VALUES (?,?,?,?)", ("items", "description", 10, "A test")),
         ("INSERT INTO localized_texts VALUES (?,?,?,?)", ("items", "name", 11, "Test Mat EN")),
+        ("INSERT INTO armor_assets VALUES (?,?,?)", (5, 1, 0)),
+        ("INSERT INTO item_armor_assets VALUES (?,?,?)", (700, 5, 6)),
+        ("INSERT INTO item_assets VALUES (?,?,?,?)",
+         (6, 0, "objects/characters/test/x.cdf", 0)),
+        ("INSERT INTO icons VALUES (?,?)", (77, "icon_x.dds")),
+        ("INSERT INTO icons VALUES (?,?)", (78, "icon_y.dds")),
     ]
     return make_db(REF_SCHEMA, rows)
 
@@ -319,6 +339,118 @@ class BackportTests(unittest.TestCase):
         self.assertEqual(
             comparison["non_obsidian_named_upgrade_products"]["ref"]["weapons"], 1
         )
+
+
+    def test_look_chain_remap(self):
+        base, ref = base_db(), ref_db()
+        _, rows, report = build_backport(base, ref, [10])
+        armor_rows = {row["id"]: row for row in rows["armor_assets"]}
+        self.assertEqual(sorted(armor_rows), [6])
+        self.assertEqual(armor_rows[6]["slot_type_id"], 1)
+        self.assertEqual(armor_rows[6]["name"], "")
+        asset_rows = {row["id"]: row for row in rows["item_assets"]}
+        self.assertEqual(sorted(asset_rows), [61])
+        self.assertEqual(asset_rows[61]["path"], "objects/characters/test/x.cdf")
+        iaa = rows["item_armor_assets"]
+        self.assertEqual(iaa[0]["armor_asset_id"], 6)
+        self.assertEqual(iaa[0]["asset_id"], 61)
+        self.assertEqual(rows["item_armors"][0]["asset_id"], 6)
+        self.assertEqual(
+            report["look_borrows"]["item_armors_asset_id_remap"], {"5": 6}
+        )
+        self.assertEqual(report["look_borrows"]["armor_assets"]["new_ids"], [6])
+
+    def test_item_assets_path_reuse(self):
+        base, ref = base_db(), ref_db()
+        base.conn.execute(
+            "INSERT INTO item_assets VALUES (?,?,?)",
+            (500, 0, "objects/characters/test/x.cdf"),
+        )
+        base.conn.commit()
+        _, rows, report = build_backport(base, ref, [10])
+        self.assertNotIn("item_assets", rows)
+        self.assertEqual(rows["item_armor_assets"][0]["asset_id"], 500)
+        self.assertEqual(
+            report["look_borrows"]["item_assets"]["reused_ids"][0]["id"], 500
+        )
+
+    def test_icon_reuse_and_remap(self):
+        base, ref = base_db(), ref_db()
+        base.conn.execute("INSERT INTO icons VALUES (?,?,?)", (77, "icon_x.dds", "x"))
+        base.conn.execute("INSERT INTO icons VALUES (?,?,?)", (78, "old_y.dds", "y"))
+        base.conn.commit()
+        _, rows, report = build_backport(base, ref, [10])
+        item_rows = {row["id"]: row for row in rows["items"]}
+        self.assertEqual(item_rows[10]["icon_id"], 77)
+        self.assertEqual(item_rows[11]["icon_id"], 79)
+        icon_rows = {row["id"]: row for row in rows["icons"]}
+        self.assertEqual(icon_rows[79]["filename"], "icon_y.dds")
+        self.assertEqual(
+            report["look_borrows"]["icon_borrows"]["remapped"],
+            [
+                {
+                    "ref_id": 78,
+                    "id": 79,
+                    "base_filename": "old_y.dds",
+                    "ref_filename": "icon_y.dds",
+                }
+            ],
+        )
+
+    def test_asset_list_determinism(self):
+        base, ref = base_db(), ref_db()
+        _, _, report = build_backport(base, ref, [10])
+        with tempfile.TemporaryDirectory() as tmp:
+            cdf = os.path.join(tmp, "game", "objects", "characters", "test", "x.cdf")
+            os.makedirs(os.path.dirname(cdf))
+            with open(cdf, "w", encoding="utf-8") as handle:
+                handle.write(
+                    '<CharacterDefinition><Model File="objects/characters/test/x.chr" '
+                    'Material="objects/characters/test/x.mtl"/></CharacterDefinition>'
+                )
+            chr_path = os.path.join(
+                tmp, "game", "objects", "characters", "test", "x.chr"
+            )
+            with open(chr_path, "wb") as handle:
+                handle.write(b"CryTek")
+            mtl = os.path.join(tmp, "game", "objects", "characters", "test", "x.mtl")
+            with open(mtl, "w", encoding="utf-8") as handle:
+                handle.write(
+                    '<Material><Textures><Texture Map="Diffuse" '
+                    'File="objects/Textures/t.tif"/></Textures></Material>'
+                )
+            texture = os.path.join(tmp, "game", "objects", "textures", "t.dds")
+            os.makedirs(os.path.dirname(texture))
+            with open(texture, "wb") as handle:
+                handle.write(b"DDS ")
+            pak10 = {
+                "game/objects/characters/test/x.cdf",
+                "game/objects/characters/test/x.chr",
+                "game/objects/characters/test/x.mtl",
+                "game/objects/textures/t.dds",
+                "game/ui/icon/icon_x.dds",
+                "game/ui/icon/icon_y.dds",
+            }
+            pak12 = {"game/objects/textures/t.dds"}
+            first = build_assets_section(report["assets_needed"], tmp, pak10, pak12)
+            second = build_assets_section(report["assets_needed"], tmp, pak10, pak12)
+            self.assertEqual(first, second)
+            self.assertEqual(first["closure_files"], 6)
+            self.assertEqual(first["by_extension"]["cdf"], 1)
+            self.assertIn("game/objects/textures/t.dds", first["shared_with_1_2_pak"])
+            self.assertNotIn(
+                "game/objects/characters/test/x.cdf", first["shared_with_1_2_pak"]
+            )
+            out_one = os.path.join(tmp, "a.txt")
+            out_two = os.path.join(tmp, "b.txt")
+            write_asset_list(out_one, first)
+            write_asset_list(out_two, second)
+            with open(out_one, encoding="utf-8") as handle:
+                text_one = handle.read()
+            with open(out_two, encoding="utf-8") as handle:
+                text_two = handle.read()
+            self.assertEqual(text_one, text_two)
+            self.assertIn("game/objects/characters/test/x.chr", text_one)
 
 
 if __name__ == "__main__":
