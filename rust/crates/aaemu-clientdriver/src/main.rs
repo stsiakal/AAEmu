@@ -7,6 +7,7 @@
 //! aaemu-clientdriver lua    [--target system|ui|third] [--pid N] <code...>|-   run Lua, print result
 //! aaemu-clientdriver exec   [--target ...] [--pid N] <code...>|-   IScriptSystem::ExecuteBuffer
 //! aaemu-clientdriver repl   [--target ...] [--pid N]               interactive line REPL
+//! aaemu-clientdriver oracle stats [--out PATH] [--no-heal] [--pid N] client-vs-server stat check
 //! aaemu-clientdriver unload [--pid N]              unhook and unload the driver
 //! ```
 //!
@@ -23,6 +24,9 @@ use anyhow::{bail, Context};
 
 #[cfg(windows)]
 use aaemu_clientdriver::win::{find_clients, inject, is_driver_loaded, Driver};
+
+#[cfg(windows)]
+mod oracle;
 
 struct Args {
     cmd: String,
@@ -205,6 +209,25 @@ fn run() -> anyhow::Result<()> {
             let c = code(&a)?;
             let mut d = Driver::connect(resolve_pid(&a)?, Duration::from_secs(5))?;
             print_reply(d.send(&Request::ExecuteBuffer(a.target, c))?)
+        }
+        "oracle" => {
+            let sub = a.rest.first().map(String::as_str).unwrap_or("stats");
+            if sub != "stats" {
+                bail!("oracle expects the `stats` subcommand");
+            }
+            let mut out = PathBuf::from("oracle-stats.json");
+            let mut skip_heal = false;
+            let mut it = a.rest.iter().skip(1);
+            while let Some(arg) = it.next() {
+                match arg.as_str() {
+                    "--out" => {
+                        out = it.next().context("--out needs a path")?.into();
+                    }
+                    "--no-heal" => skip_heal = true,
+                    other => bail!("unknown oracle option {other}"),
+                }
+            }
+            oracle::stats(resolve_pid(&a)?, &oracle::StatsOptions { out, skip_heal })
         }
         "unload" => {
             let mut d = Driver::connect(resolve_pid(&a)?, Duration::from_secs(5))?;

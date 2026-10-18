@@ -213,6 +213,34 @@ chat). The intended controller flow is to call the same Lua handlers the UI butt
 than synthesising clicks; mapping the exact call sequence for each step (login button → server
 select → character select/create → enter world → move/chat) is the next task on top of this driver.
 
+### Stat oracle (`oracle stats`)
+
+The 1.2 protocol sends no derived stats (see the research note in `D:/aa-re/parity/combat-oracle.md`),
+so the client computes max HP/MP, DPS, armor, crit and avoidance itself; the server computes the
+same quantities in `systems/skills/stats.rs`. `oracle stats` compares both sides for a GM character
+in the world:
+
+```sh
+$T oracle stats [--out oracle-stats.json] [--no-heal] [--pid N]
+```
+
+It runs `X2Unit:UnitInfo('player')`, `X2Unit:UnitModifierInfo('player')`, the
+`X2Unit:UnitMaxHealth/UnitMaxMana` pools, the equipped items (`X2Equipment:GetEquippedItemTooltipInfo`)
+and the buff list in the UI state, then wraps `X2Chat.DispatchChatMessage` — the native sink every
+incoming chat line passes through — and sends `/heal <name>` and `/getattribute all` through the
+normal Say channel. The recorded chat is parsed back into `Name: value` pairs. Each pair is
+compared with the transform declared in `src/oracle.rs`'s `MAPPINGS` table (for example client DPS
+is real DPS while the server stores thousandths; `*_mul` keys are percent deltas while the server
+getters return `1 + bonus/1000`), with exact ints and a 0.01 float tolerance, and a JSON report is
+written with the raw client tables and key sets, the server reply, the pairs, both unmapped lists
+and the self check (`health == max_health` after the heal; `/heal` needs the character's own name
+because a targetless `/heal` is a no-op server-side). The mapping is deliberately conservative:
+keys without an explicit evidence trail are listed as unmapped, never guessed.
+
+A run needs a GM character; the heal step can be skipped for non-GM characters with `--no-heal`.
+Run it on a fresh level-1 character (a fresh character is full HP, so damage it first with
+`/damage 50%` to exercise the heal check), after `/level 50`, and with equipment equipped.
+
 ---
 
 ## 5. Verification (live, this machine)

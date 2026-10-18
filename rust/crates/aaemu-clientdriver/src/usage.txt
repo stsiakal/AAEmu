@@ -16,6 +16,12 @@ aaemu-clientdriver: run Lua inside a running ArcheAge 1.2 client
   exec   [-t ...] [--pid N] <code...>|-
                                     run <code> through IScriptSystem::ExecuteBuffer (no result)
   repl   [-t ...] [--pid N]         interactive line REPL
+  oracle stats [--out PATH] [--no-heal] [--pid N]
+                                    compare the client's self-computed stat tables (UnitInfo /
+                                    UnitModifierInfo / max HP/MP) with the server's
+                                    /getattribute reply (GM character in world); writes JSON
+                                    (default oracle-stats.json), optionally skipping the
+                                    GM heal + full-pool self check
   unload [--pid N]                  detach hooks and restore a hidden window; restart to reattach
 
 With no --pid the single running client is used. Code read from stdin when the argument is `-`
