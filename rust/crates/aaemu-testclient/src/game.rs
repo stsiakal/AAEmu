@@ -751,6 +751,13 @@ pub(crate) fn observe_into(st: &mut GameState, p: &Packet) -> anyhow::Result<()>
         st.events
             .push(GameEvent::ItemTask(parse_item_task(&p.body)));
         inventory::apply_item_task_success(&mut st.bag, &p.body)?;
+    } else if p.is_sc(sc::SCInvenExpandedPacket) {
+        // `SCInvenExpandedPacket { slot_type: u8, num_slots: u8 }` (`item_packets.rs`).
+        let slot_type = s.read_u8()?;
+        let num_slots = s.read_u8()?;
+        if slot_type == inventory::SLOT_TYPE_INVENTORY {
+            st.bag_slots = st.bag_slots.max(num_slots);
+        }
     } else if p.is_sc(sc::SCDoodadCreatedPacket) {
         let doodad = read_doodad(&mut s)?;
         st.doodads.insert(doodad.obj_id, doodad);
@@ -1216,6 +1223,29 @@ impl GameClient {
             .write_u8(0) // currency: money
             .write_bool(false); // use AA point
         self.send_cs(cs::CSBuyItemsPacket, s.as_bytes()).await
+    }
+
+    /// `CSDestroyItemPacket`: destroy `count` of the bag item `item_id` at `slot`
+    /// (`slot_type::INVENTORY` = 2; `economy/item_handlers.rs`). Count <= 0 destroys the stack.
+    pub async fn destroy_item(&mut self, item_id: u64, slot: u8, count: i32) -> anyhow::Result<()> {
+        let mut s = PacketStream::new();
+        s.write_u64(item_id)
+            .write_u8(2) // SlotType.Inventory
+            .write_u8(slot)
+            .write_i32(count);
+        self.send_cs(cs::CSDestroyItemPacket, s.as_bytes()).await
+    }
+
+    /// `CSExpandSlotsPacket`: ask the server to expand the bag (`slot_type` 2, `inventory.rs
+    /// ::expand_slot` consumes the expansion item / money it requires).
+    pub async fn expand_slots(
+        &mut self,
+        slot_type: i32,
+        auto_use_aa_point: bool,
+    ) -> anyhow::Result<()> {
+        let mut s = PacketStream::new();
+        s.write_i32(slot_type).write_bool(auto_use_aa_point);
+        self.send_cs(cs::CSExpandSlotsPacket, s.as_bytes()).await
     }
 
     /// `CSLootOpenBagPacket` with `lootAll`: the server `OpenBag(.., true)` auto-takes every

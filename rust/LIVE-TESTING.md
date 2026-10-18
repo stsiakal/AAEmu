@@ -237,7 +237,13 @@ actually taken (`gm_item`, `gm_spawn`, `forced_complete`), each with the concret
 real path failed (e.g. "loot pack 6459 rolled nothing in 5 kills", "doodad 2552 used 3 times
 gave none of item 15985", "the merchants table lists npc 1196 but npcs.merchant is false").
 `--summary` groups results, blocker classes and their top reasons, and prints how many quests
-completed without any fallback, with fallbacks, and forced.
+completed without any fallback, with fallbacks, and forced; requirements (race / faction /
+gender / already completed) are counted separately as `not_applicable` / `already_completed`,
+never as forced. A quest the character already completed (its `SCErrorMsg 621 QuestDailyLimit`
+is the server's "already completed, not repeatable" answer, `engine.rs::add_quest`) is skipped
+with status `already_completed` and blocker `none`; the first sighting inside a run converts to
+that result (the error records the id), later selections skip it before touching the server, and
+it is never forced again.
 
 **Items escalate through real sources, GM add last.** For every `QuestActConAcceptItem`,
 `QuestActObjItemGather` / `EtcItemObtain` / `ConAcceptItemGain`, `QuestActObjItemUse` and
@@ -253,19 +259,38 @@ flagged `unknown_item_source` get the same reverse lookups straight from `compac
 (`loot_pack_dropping_npcs`, `doodad_func_loot_items` / `_packs`, `merchant_goods`,
 `craft_products`, `skill_effects` -> `gain_loot_pack_item_effects` / `special_effects` /
 `skill_products`). Doodads are used at their **current** position (the interaction skill's
-~4 m range check), a failed loot roll leaves the doodad intact and is retried up to three times
-(`funcs/items.rs::loot_item` does not advance the phase), and a `DoodadFuncLootPack` whose pack
-drops the item at an effectively zero rate is reported `data_gap` with the rate.
+~4 m range check) and with the **phase's own skill** (`doodad_func_skills`: `func_skill_id`,
+`FakeUse.fake_skill_id`, `Use.skill_id`; the fake-use phase that leads to a phase with funcs is
+preferred, `func_for_skill` matches nothing with the generic Use skill otherwise); a failed
+loot roll leaves the doodad intact and is retried up to three times (`funcs/items.rs::loot_item`
+does not advance the phase), a `DoodadFuncLootPack` whose pack drops the item at an effectively
+zero rate is reported `data_gap` with the rate, and a GM-spawned doodad stuck in its initial
+fake-use phases is `runner_gap` ("the natural spawn has already outgrown them"), because
+`/spawn doodad` cannot choose a phase.
+
+**A long sweep keeps its bag usable.** The bag is the scarce resource over hundreds of quests:
+loot, quest supplies and `/item add` all fail on a full bag (the GM command then answers
+"Item could not be created!"). The runner tracks the slot capacity
+(`SCCharacterInvenInitPacket` / `SCInvenExpandedPacket`), and when it is nearly full it destroys
+the stacks no selected quest needs (`CSDestroyItemPacket`; the wanted templates come from the
+plan's step targets, `item_sources` containers and `OwnItem` requirements); when every item is
+needed it adds the `bag_expands` item `8000025` (a marked `gm_item` fallback) and asks the
+server to expand (`CSExpandSlotsPacket`). A bag that still cannot take an item is reported as
+its own runner state ("bag full"), never as a plain GM failure.
 
 **NPCs / doodads: real spawn first, `/spawn` fallback marked.** Accept / talk / report /
 interaction steps find the nearest visible target, teleport next to it and interact; when the
 natural spawn is missing, `/spawn npc` / `/spawn doodad` is used and recorded as a `gm_spawn`
-fallback (with the wait that failed). `QuestActConAcceptNpcKill` / `ConAcceptNpcEmotion` are
-accepted **at** the NPC (treating them as hunts left 61 quests unaccepted in the v8 run), and
-group hunts retry every target template with `/spawn`, skip corpses ("already dead" replies do
-not count as kills) and report the objective state when the fallback window closes. A
-let-it-done / score quest that reaches `READY` before its counters are full stops the step and
-turns in (quest 266 leaves its Progress step at 5/20 because `score` is reached).
+fallback (with the wait that failed; a plan step marked `scheduled_spawn` whose window the bot
+is outside is a `requirement` naming the spawn window, `spawn_manager.rs::period_status_npc`).
+An accept whose answer packet was missed but whose quest row exists in the state (the long
+gather may consume the answer window) counts as accepted instead of "no answer".
+`QuestActConAcceptNpcKill` / `ConAcceptNpcEmotion` are accepted **at** the NPC (treating them as
+hunts left 61 quests unaccepted in the v8 run), and group hunts retry every target template with
+`/spawn`, skip corpses ("already dead" replies do not count as kills) and report the objective
+state when the fallback window closes. A let-it-done / score quest that reaches `READY` before
+its counters are full stops the step and turns in (quest 266 leaves its Progress step at 5/20
+because `score` is reached).
 
 **`QuestActObjAggro`** needs the quest accepted from its engage-combat NPC
 (`npcs.engage_combat_give_quest_id`); the runner accepts from that NPC (GM-spawned when absent,
@@ -277,7 +302,8 @@ table, then `/kill` raises the kill event that the act ranks (`events.rs::kill_u
 `z`, `radius`); a step without it records `runner_unsupported` "no sign sphere for component N"
 as `data_gap` (the geometry lives in the client pak's `quest_sign_sphere.g`; the export's
 `missing_sphere_components` names the components 1.2 never shipped). `prereq_quests` that are
-neither in the select snapshot nor completed during the run skip with `prereq_missing`.
+neither completed nor run in the session skip; a chain that only fails on a requirement is
+`requirement_unmet` naming the prerequisite and its reason, otherwise `prereq_missing`.
 `FactionMatch` / `MotherFaction` requirements are decided from the select snapshot head's
 faction id and the compact database's `system_factions.mother_id`; `OwnItem` from the bag,
 `CompleteQuestContext` / `PreCompleteQuestContext` from the completed / active sets (an
@@ -287,22 +313,38 @@ only exists after a `SpawnEffect` skill cannot be driven for the accept / talk /
 
 **Force-blocked last resort.** `--force-blocked` (`/quest add <id>` + `/quest step <id>
 Reward`, `commands/scripts/quest_cmd.rs`) is **on by default for `--all-ok`** and disabled with
-`--no-force`; explicit `--quest` lists opt in explicitly. A forced quest keeps its real result
-and failed step, adds `forced_complete: true` and a `forced_complete` fallback with the original
-reason, so its dependents still run; later quests list the forced prerequisite ids in
-`forced_prereqs`. A quest whose forcing the server refuses keeps the failure reason in the
-blocker.
+`--no-force`; explicit `--quest` lists opt in explicitly. Only `runner_gap` / `server_bug` /
+`data_gap` results are forced: a `requirement` (race / faction / gender / schedule / already
+completed) is never forced — completing another faction's content would inflate the run and
+pollute the completed set. A forced quest keeps its real result and failed step, adds
+`forced_complete: true` and a `forced_complete` fallback with the original reason, so its
+dependents still run; later quests list the forced prerequisite ids in `forced_prereqs` and a
+chain that only fails on a requirement is `requirement_unmet` naming the prerequisite. A quest
+whose forcing the server refuses keeps the failure reason in the blocker.
 
-Items / hunts use the plan's `item_sources` / `locations`; the bag is tracked from
+Items / hunts use the plan's `item_sources` / `locations` (a hunt at the locations of the step's
+own world); the bag is tracked from
 `SCCharacterInvenContentsPacket` + `SCItemTaskSuccessPacket` (`ItemCountUpdate` deltas), kills
 credit through `/kill` (`systems/services/commands/scripts/kill.rs`), loot corpses are taken
 with `CSLootOpenBagPacket(lootAll)` / `CSLootCloseBagPacket`, `craft` sources use the craft
 runner's flow (materials, `/labor`, `CSUpgradeExpertLimitPacket`, `/spawn doodad`,
 `CSExecuteCraftPacket`), and world steps enter / leave instances through their entrance / exit
 doodads (`Data/Worlds/world_spawns.json`, `DoodadFuncEnterSysInstance` / `DoodadFuncExitIndun`).
+An entrance doodad is used with its own func skill (the Mirage Isle portal's 17829; the generic
+Use skill matches nothing); entrances whose skill has a race / faction `unit_reqs` the character
+fails are skipped for a usable one and, when every entrance is gated, the world is a
+`requirement` for this character. The exit doodad is one whose exit func sits in a `Start`-kind
+group (spawned phase `4139`-style ones hide it behind `DoodadFuncSkillHit`); after the leave the
+runner re-anchors with a `/move` round-trip, because the server can keep resolving the character
+to the instance world (a doodad spawned there is invisible in the main world). `/spawn doodad`
+is retried (a spawn tick can miss) and a re-spawned doodad whose object id was reused is
+recognised by its new position.
 `item_open` sources open bundle items; the open skill's `GainLootPackItemEffect` consumes the
 bundle and grants its loot (`economy/loot.rs::give_loot_pack`; `gain_item` / `skill_product`
-variants grant directly). `--quest` selects single quest ids (repeatable), `--all-ok` every
+variants grant directly). A `gm spawn fallback did not reach the goal` on a large kill goal is
+a `runner_gap` (the fallback window cannot kill hundreds); a small goal that the spawned NPC's
+kills do not advance stays `server_bug`. `--quest` selects single quest ids (repeatable),
+`--all-ok` every
 plan quest with status `ok`, `--summary` prints the grouped counts above; the lines are printed
 and appended to `--out`:
 

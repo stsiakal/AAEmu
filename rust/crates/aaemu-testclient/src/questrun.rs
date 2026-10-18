@@ -402,6 +402,8 @@ pub enum QuestOutcome {
     PrereqMissing,
     /// A `unit_reqs` requirement the runner can check is not met.
     RequirementUnmet,
+    /// The character already completed the (non-repeatable) quest: skipped, not a failure.
+    AlreadyCompleted,
     BlockedPlan,
     /// A loaded quest record without a Start component: not acceptable in play.
     Auxiliary,
@@ -415,13 +417,14 @@ pub enum QuestOutcome {
 
 impl QuestOutcome {
     /// Every variant, for stable summary counts.
-    pub const ALL: [QuestOutcome; 12] = [
+    pub const ALL: [QuestOutcome; 13] = [
         QuestOutcome::Completed,
         QuestOutcome::Failed,
         QuestOutcome::Stuck,
         QuestOutcome::Rejected,
         QuestOutcome::PrereqMissing,
         QuestOutcome::RequirementUnmet,
+        QuestOutcome::AlreadyCompleted,
         QuestOutcome::BlockedPlan,
         QuestOutcome::Auxiliary,
         QuestOutcome::NoStarter,
@@ -439,6 +442,7 @@ impl QuestOutcome {
             QuestOutcome::Rejected => "rejected",
             QuestOutcome::PrereqMissing => "prereq_missing",
             QuestOutcome::RequirementUnmet => "requirement_unmet",
+            QuestOutcome::AlreadyCompleted => "already_completed",
             QuestOutcome::BlockedPlan => "blocked_plan",
             QuestOutcome::Auxiliary => "auxiliary",
             QuestOutcome::NoStarter => "no_starter",
@@ -1207,13 +1211,28 @@ pub fn render_summary(report: &RunReport) -> String {
         .filter(|r| r.result == QuestOutcome::Completed && !r.fallbacks.is_empty())
         .count();
     let forced = report.results.iter().filter(|r| r.forced_complete).count();
+    // Requirements (race / faction / gender / already completed) are "not applicable to this
+    // character", counted separately from the forced shortcuts.
+    let not_applicable = report
+        .results
+        .iter()
+        .filter(|r| r.blocker.class == blocker_class::REQUIREMENT)
+        .count();
+    let already_completed = report
+        .results
+        .iter()
+        .filter(|r| r.result == QuestOutcome::AlreadyCompleted)
+        .count();
     out.push_str(&format!(
         "\n[quest] completed without fallback={completed_without} with fallbacks={completed_with} \
-         forced={forced}"
+         forced={forced} not_applicable={not_applicable} already_completed={already_completed}"
     ));
     let mut reasons: BTreeMap<String, usize> = BTreeMap::new();
     for r in &report.results {
-        if r.result == QuestOutcome::Completed {
+        if matches!(
+            r.result,
+            QuestOutcome::Completed | QuestOutcome::AlreadyCompleted
+        ) {
             continue;
         }
         let reason = r
@@ -1402,6 +1421,12 @@ pub async fn run(
     // Quests forced to completion earlier in the run (`--force-blocked`); later quests record
     // them in `forced_prereqs`.
     let mut forced: BTreeSet<u32> = BTreeSet::new();
+    // Item templates the selected quests may still need; the bag keeper never destroys them and
+    // destroys the rest when the bag fills up over a long sweep.
+    let needed = needed_items(&selected);
+    // Blocker class / reason of every quest already run, so a missing prerequisite can be
+    // explained by the prerequisite's own result.
+    let mut classes: BTreeMap<u32, (String, String)> = BTreeMap::new();
     let mut report = RunReport {
         ordering_cyclic,
         ..RunReport::default()
@@ -1418,6 +1443,17 @@ pub async fn run(
             report.aborted = true;
             break;
         }
+        // Keep the bag usable: destroy stacks no selected quest needs when it is nearly full
+        // (a full bag makes loot, quest supplies and `/item add` fail alike).
+        if bag_pressure(&game.state) {
+            let _ = free_bag_space(
+                &mut game,
+                &needed,
+                Instant::now() + Duration::from_secs(20),
+                false,
+            )
+            .await;
+        }
         let result = match target {
             Selected::Plan(quest) => {
                 run_quest(
@@ -1431,11 +1467,26 @@ pub async fn run(
                     opts.step_timeout,
                     opts,
                     &mut forced,
+                    &needed,
+                    &classes,
                 )
                 .await
             }
             Selected::Unknown(id) => missing_quest_result(id, &character),
         };
+        // Record the result for later prerequisite explanations. A requirement result that is
+        // itself only a prerequisite chain is reduced to its root requirement, so dependent
+        // lines do not nest ("prerequisite 61 (requirement): prerequisite 62 (requirement): ...").
+        let mut class_reason = result.blocker.reason.clone();
+        if result.blocker.class == blocker_class::REQUIREMENT {
+            if let Some(index) = class_reason.rfind("requirement ") {
+                class_reason = class_reason[index..].to_string();
+            }
+        }
+        classes.insert(
+            result.quest_id,
+            (result.blocker.class.clone(), class_reason),
+        );
         emit(&mut writer, &result)?;
         report.results.push(result);
         if game.state.disconnected {
@@ -1445,6 +1496,57 @@ pub async fn run(
     }
     leave(&mut game).await;
     Ok(report)
+}
+
+/// Every item template the selected quests may need: step targets, the items of their
+/// `item_sources` (containers included) and `OwnItem` requirements.
+fn needed_items(selected: &[Selected<'_>]) -> BTreeSet<u32> {
+    fn walk(source: &PlanItemSource, out: &mut BTreeSet<u32>) {
+        if source.container_item_id != 0 {
+            out.insert(source.container_item_id);
+        }
+        for child in source.container_sources.iter().flatten() {
+            walk(child, out);
+        }
+    }
+    let mut out = BTreeSet::new();
+    for target in selected {
+        let Selected::Plan(quest) = target else {
+            continue;
+        };
+        for step in &quest.steps {
+            out.extend(step.target.ids.iter().copied());
+            for entry in step.item_sources.iter().flatten() {
+                out.insert(entry.item_id);
+                for source in &entry.sources {
+                    walk(source, &mut out);
+                }
+            }
+        }
+        for req in &quest.requires {
+            if (req.kind_id == REQ_OWN_ITEM || kind_key(&req.kind) == "ownitem") && req.value1 > 0 {
+                if let Ok(id) = u32::try_from(req.value1) {
+                    out.insert(id);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// The bag slot count (`SCCharacterInvenInitPacket` / `SCInvenExpandedPacket`; 50 when the
+/// snapshot never announced one).
+fn bag_capacity(state: &GameState) -> u32 {
+    if state.bag_slots == 0 {
+        50
+    } else {
+        u32::from(state.bag_slots)
+    }
+}
+
+/// True when the bag is close to its slot limit and should be cleaned before the next quest.
+fn bag_pressure(state: &GameState) -> bool {
+    (state.bag.len() as u32) + 8 >= bag_capacity(state)
 }
 
 /// Opens `--compact-db` (or the default game-data path when it exists). Steps that need
@@ -1601,15 +1703,21 @@ fn classify_blocker(
     if outcome == QuestOutcome::Completed {
         return journal.blocker.clone().unwrap_or_default();
     }
+    if outcome == QuestOutcome::AlreadyCompleted {
+        return Blocker::default();
+    }
     if let Some(hint) = &journal.blocker {
+        // The gather arms know the concrete source failures; use them for item-goal failures
+        // only. An accept that then failed for its own reason must not inherit the gather's
+        // blocker (the gather even succeeded with a marked fallback).
         let item_goal = failed_step.is_none_or(|f| {
-            f.reason.starts_with("item(s) ")
+            (f.reason.starts_with("item(s) ")
                 || f.reason.starts_with("item ")
                 || f.reason.contains("not obtained")
                 || f.reason.contains("not in the bag")
-                || f.reason.contains("starter item")
-                || f.reason.contains("container")
-                || f.reason.contains("accept silently ignored")
+                || f.reason.contains("container"))
+                && !f.reason.contains("accept")
+                && !f.reason.contains("no answer from server")
         });
         if item_goal {
             return hint.clone();
@@ -1617,7 +1725,7 @@ fn classify_blocker(
     }
     let reason = failed_step.map_or_else(|| outcome.name().to_string(), |f| f.reason.clone());
     match outcome {
-        QuestOutcome::Completed => Blocker::default(),
+        QuestOutcome::Completed | QuestOutcome::AlreadyCompleted => Blocker::default(),
         QuestOutcome::Auxiliary => Blocker::new(
             blocker_class::DATA_GAP,
             "quest has no Start component (plan status auxiliary); the server cannot accept it",
@@ -1684,8 +1792,55 @@ fn classify_reason(quest: &PlanQuest, facts: Option<&KnownFacts<'_>>, reason: &s
             code::CAN_COMPONENT_RUN,
         );
     }
+    if has("scheduled_spawn") || has("spawn window") {
+        return Blocker::new(
+            blocker_class::REQUIREMENT,
+            reason,
+            "aaemu-game/src/systems/npcs/spawn_manager.rs::period_status_npc (spawn window)",
+        );
+    }
+    if has("using the starter item did not start the quest") {
+        return Blocker::new(
+            blocker_class::SERVER_BUG,
+            reason,
+            "aaemu-game/src/systems/quests/events.rs::accept_quest_effect / \
+             engine.rs::add_quest",
+        );
+    }
+    if has("QuestDailyLimit") {
+        // The one place `engine.rs::add_quest` sends this code: "already completed and not
+        // repeatable" (engine.rs ~1600); expected for a character that ran the quest before.
+        return Blocker::new(
+            blocker_class::REQUIREMENT,
+            reason,
+            "aaemu-game/src/systems/quests/engine.rs (add_quest: already completed, not \
+             repeatable)",
+        );
+    }
     if has("its game schedule window is not in progress") {
         return Blocker::new(blocker_class::REQUIREMENT, reason, code::SCHEDULE);
+    }
+    if has("Item could not be created") || has("bag full") {
+        return Blocker::new(
+            blocker_class::RUNNER_GAP,
+            reason,
+            "aaemu-testclient/src/questrun.rs::free_bag_space (CSDestroyItemPacket / \
+             CSExpandSlotsPacket)",
+        );
+    }
+    if has("Item template id") && has("does not exist") {
+        return Blocker::new(
+            blocker_class::DATA_GAP,
+            reason,
+            "compact.sqlite3 items (the template is not in the 1.2 data)",
+        );
+    }
+    if has("cannot spawn doodad") || has("don't exist") {
+        return Blocker::new(
+            blocker_class::DATA_GAP,
+            reason,
+            "compact.sqlite3 doodad_almighties (the template is not in the 1.2 data)",
+        );
     }
     if has("no sign sphere") {
         return Blocker::new(
@@ -1693,6 +1848,36 @@ fn classify_reason(quest: &PlanQuest, facts: Option<&KnownFacts<'_>>, reason: &s
             reason,
             "client quest_sign_sphere.g (quests-spheres.json summary.missing_sphere_components); \
              aaemu-game/src/systems/quests/spheres.rs::load",
+        );
+    }
+    if has("is blocked for this character") {
+        return Blocker::new(
+            blocker_class::REQUIREMENT,
+            reason,
+            "compact.sqlite3 unit_reqs (owner_type Skill) / \
+             aaemu-game/src/systems/skills/unit_reqs.rs::validate",
+        );
+    }
+    if has("no SCLoadInstancePacket after using") && has("for world") {
+        return Blocker::new(
+            blocker_class::SERVER_BUG,
+            reason,
+            "aaemu-game/src/systems/instances/indun.rs::request_system_instance / \
+             aaemu-game/src/systems/npcs/doodad/funcs/world.rs::enter_sys_instance",
+        );
+    }
+    if has("no SCLoadInstancePacket after using") {
+        return Blocker::new(
+            blocker_class::SERVER_BUG,
+            reason,
+            "aaemu-game/src/systems/instances/indun.rs::request_leave_instance",
+        );
+    }
+    if has("no world '") || has("no entrance doodad") || has("no DoodadFuncExitIndun") {
+        return Blocker::new(
+            blocker_class::DATA_GAP,
+            reason,
+            "Data/Worlds/world_spawns.json / compact.sqlite3 doodad funcs (1.2 data)",
         );
     }
     if has("has no skills row") || has("has no use_skill_id") {
@@ -1710,6 +1895,26 @@ fn classify_reason(quest: &PlanQuest, facts: Option<&KnownFacts<'_>>, reason: &s
         );
     }
     if has("gm spawn fallback did not reach") {
+        // A goal far beyond what the fallback window can kill (e.g. a 300-kill group hunt) is
+        // the runner's window, not a server misbehaviour.
+        let large = reason
+            .split(" at ")
+            .nth(1)
+            .and_then(|rest| rest.split('/').nth(1))
+            .and_then(|den| {
+                den.split(|c: char| !c.is_ascii_digit())
+                    .next()
+                    .map(str::to_string)
+            })
+            .and_then(|digits| digits.parse::<i64>().ok())
+            .is_some_and(|den| den > 60);
+        if large {
+            return Blocker::new(
+                blocker_class::RUNNER_GAP,
+                reason,
+                "aaemu-testclient/src/questrun.rs::GM_SPAWN_WINDOW (large kill goal)",
+            );
+        }
         return Blocker::new(blocker_class::SERVER_BUG, reason, code::ON_NPC_KILLED);
     }
     if has("doodad interaction did not update") {
@@ -1944,6 +2149,8 @@ async fn run_quest(
     step_timeout: Duration,
     opts: &RunOptions,
     forced: &mut BTreeSet<u32>,
+    needed: &BTreeSet<u32>,
+    classes: &BTreeMap<u32, (String, String)>,
 ) -> QuestResult {
     let start = Instant::now();
     let chat_start = game.state.chat_count;
@@ -1953,6 +2160,31 @@ async fn run_quest(
     let mut journal = QuestJournal::default();
     let forced_prereqs = forced_prereqs_of(quest, forced);
 
+    // A quest the character already completed (the select snapshot or this session) that is not
+    // repeatable can only answer `QuestDailyLimit`; skip it as `already_completed` (no failure,
+    // no force).
+    let repeatable = compact_db
+        .and_then(|db| db.quest_repeatable(quest.quest_id).ok().flatten())
+        .unwrap_or(false);
+    if game.state.completed_quests.contains(&quest.quest_id) && !repeatable {
+        return finish_quest(
+            game,
+            quest,
+            character,
+            QuestOutcome::AlreadyCompleted,
+            None,
+            steps,
+            last_info,
+            level_raised_to,
+            chat_start,
+            start,
+            &journal,
+            Blocker::default(),
+            forced_prereqs,
+            false,
+        );
+    }
+
     let (outcome, failed_step) = 'run: {
         if let Some(gate) = plan_gate(quest) {
             break 'run (gate, None);
@@ -1960,18 +2192,29 @@ async fn run_quest(
 
         // Prerequisites first: a quest whose prerequisite is neither in the select snapshot nor
         // completed live is skipped without touching the server. Forced prerequisites are in
-        // `completed_quests` because forcing completed them on the server.
+        // `completed_quests` because forcing completed them on the server. A chain that only
+        // fails on a requirement (race / faction / gender) is `requirement_unmet` naming the
+        // prerequisite, not `prereq_missing`.
         let missing = missing_prerequisites(&quest.prereq_quests, &game.state.completed_quests);
         if !missing.is_empty() {
-            let reason = format!(
-                "prerequisite quests not completed: {}",
-                missing
-                    .iter()
-                    .map(u32::to_string)
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            );
-            break 'run (QuestOutcome::PrereqMissing, Some(gate_failed_step(reason)));
+            let described: Vec<String> = missing
+                .iter()
+                .map(|id| match classes.get(id) {
+                    Some((class, reason)) => format!("prerequisite {id} ({class}): {reason}"),
+                    None => format!("prerequisite {id} was not run in this session"),
+                })
+                .collect();
+            let only_requirement = missing.iter().all(|id| {
+                classes
+                    .get(id)
+                    .is_some_and(|(class, _)| class == blocker_class::REQUIREMENT)
+            });
+            let outcome = if only_requirement {
+                QuestOutcome::RequirementUnmet
+            } else {
+                QuestOutcome::PrereqMissing
+            };
+            break 'run (outcome, Some(gate_failed_step(described.join("; "))));
         }
 
         // Meet the quest's level demand (`min_level` when present, else `level`; `Level`
@@ -1998,6 +2241,7 @@ async fn run_quest(
             craft_db,
             requirement_deadline,
             &mut journal,
+            needed,
         )
         .await
         {
@@ -2098,10 +2342,16 @@ async fn run_quest(
                     if let Err(f) =
                         implicit_accept(game, quest.quest_id, Instant::now() + step_timeout).await
                     {
+                        if f.quest == QuestOutcome::AlreadyCompleted {
+                            break 'run (QuestOutcome::AlreadyCompleted, None);
+                        }
                         break 'run (f.quest, Some(gate_failed_step(f.reason)));
                     }
                 }
                 Err(f) => {
+                    if f.quest == QuestOutcome::AlreadyCompleted {
+                        break 'run (QuestOutcome::AlreadyCompleted, None);
+                    }
                     break 'run (
                         f.quest,
                         Some(FailedStep {
@@ -2233,6 +2483,7 @@ async fn run_quest(
                         craft_db,
                         deadline,
                         &mut journal,
+                        needed,
                     )
                     .await
                 }
@@ -2245,6 +2496,7 @@ async fn run_quest(
                         craft_db,
                         deadline,
                         &mut journal,
+                        needed,
                     )
                     .await
                 }
@@ -2279,6 +2531,7 @@ async fn run_quest(
                         craft_db,
                         deadline,
                         &mut journal,
+                        needed,
                     )
                     .await
                 }
@@ -2323,6 +2576,13 @@ async fn run_quest(
                         note: f.reason.clone(),
                         ms,
                     });
+                    // `QuestDailyLimit` proved the quest was already completed: the whole result
+                    // becomes `already_completed` (no failed step, no forcing).
+                    if f.quest == QuestOutcome::AlreadyCompleted {
+                        outcome = Some(QuestOutcome::AlreadyCompleted);
+                        failed_step = None;
+                        break;
+                    }
                     outcome = Some(f.quest);
                     failed_step = Some(FailedStep {
                         act_id: step.act_id,
@@ -2395,13 +2655,55 @@ async fn run_quest(
         (outcome, failed_step)
     };
 
+    // Classify the real result before any forcing: the class decides whether forcing is legal
+    // (requirements are never forced). The facts borrow only the read-only state, so they are
+    // scoped to this block; the blocker is owned.
+    let blocker = {
+        let owned_items: BTreeSet<u32> = game
+            .state
+            .bag
+            .values()
+            .map(|item| item.template_id)
+            .collect();
+        let active_quests: BTreeSet<u32> = game.state.quests.keys().copied().collect();
+        let faction = game
+            .state
+            .self_info
+            .as_ref()
+            .map(|info| info.faction)
+            .filter(|faction| *faction != 0);
+        let mother_faction = match (faction, compact_db) {
+            (Some(faction), Some(db)) => db.mother_faction(faction).ok().flatten(),
+            _ => None,
+        };
+        let facts = KnownFacts {
+            level: (*raised_level).max(u32::from(character.start_level)),
+            race: Some(character.race),
+            gender: Some(character.gender),
+            faction,
+            mother_faction,
+            completed: &game.state.completed_quests,
+            owned_items: &owned_items,
+            active_quests: &active_quests,
+        };
+        classify_blocker(quest, Some(&facts), outcome, failed_step.as_ref(), &journal)
+    };
+
     // Last resort (`--force-blocked`): force a quest that could not finish to Reward so its
     // dependents still run. The real result and failed step are kept; `forced_complete` marks
-    // the shortcut and later quests record it in `forced_prereqs`.
+    // the shortcut and later quests record it in `forced_prereqs`. A requirement on race /
+    // faction / gender (or another requirement) is never forced: that quest is simply not
+    // applicable to this character and forcing it would complete another faction's content.
     let mut forced_complete = false;
+    let force_class = matches!(
+        blocker.class.as_str(),
+        blocker_class::RUNNER_GAP | blocker_class::SERVER_BUG | blocker_class::DATA_GAP
+    );
     if opts.force_blocked
+        && force_class
         && outcome != QuestOutcome::Completed
         && outcome != QuestOutcome::Auxiliary
+        && outcome != QuestOutcome::AlreadyCompleted
     {
         let original = failed_step
             .as_ref()
@@ -2433,33 +2735,6 @@ async fn run_quest(
         }
     }
 
-    let owned_items: BTreeSet<u32> = game
-        .state
-        .bag
-        .values()
-        .map(|item| item.template_id)
-        .collect();
-    let active_quests: BTreeSet<u32> = game.state.quests.keys().copied().collect();
-    let faction = game
-        .state
-        .self_info
-        .as_ref()
-        .map(|info| info.faction)
-        .filter(|faction| *faction != 0);
-    let mother_faction = match (faction, compact_db) {
-        (Some(faction), Some(db)) => db.mother_faction(faction).ok().flatten(),
-        _ => None,
-    };
-    let facts = KnownFacts {
-        level: (*raised_level).max(u32::from(character.start_level)),
-        race: Some(character.race),
-        gender: Some(character.gender),
-        faction,
-        mother_faction,
-        completed: &game.state.completed_quests,
-        owned_items: &owned_items,
-        active_quests: &active_quests,
-    };
     finish_quest(
         game,
         quest,
@@ -2472,7 +2747,7 @@ async fn run_quest(
         chat_start,
         start,
         &journal,
-        Some(&facts),
+        blocker,
         forced_prereqs,
         forced_complete,
     )
@@ -2521,11 +2796,10 @@ fn finish_quest(
     chat_start: u64,
     start: Instant,
     journal: &QuestJournal,
-    facts: Option<&KnownFacts<'_>>,
+    blocker: Blocker,
     forced_prereqs: Vec<u32>,
     forced_complete: bool,
 ) -> QuestResult {
-    let blocker = classify_blocker(quest, facts, outcome, failed_step.as_ref(), journal);
     result_line(
         game,
         quest,
@@ -2772,6 +3046,25 @@ impl StepFailure {
     }
 }
 
+/// The rejection of an accept. `ErrorCode 621 (QuestDailyLimit)` is the server's answer to a
+/// non-repeatable already-completed quest (`engine.rs::add_quest`): record it as completed so
+/// later selections skip it and report `already_completed` (blocker none) instead of a failure.
+fn rejected_accept(game: &mut GameClient, quest_id: u32, what: &str, code: i16) -> StepFailure {
+    if code == 621 {
+        game.state.completed_quests.insert(quest_id);
+        return StepFailure::plan(
+            QuestOutcome::AlreadyCompleted,
+            StepOutcomeKind::Rejected,
+            format!("{what}: already completed and not repeatable (QuestDailyLimit)"),
+        );
+    }
+    StepFailure::plan(
+        QuestOutcome::Rejected,
+        StepOutcomeKind::Rejected,
+        format!("{what} rejected: {}", error_reason(code)),
+    )
+}
+
 // ----- worlds -----
 
 /// The plan world the bot is in (`None` = `main_world`), tracked by [`switch_world`]. The
@@ -2821,53 +3114,67 @@ async fn spawn_world_doodad(
     template: u32,
     deadline: Instant,
 ) -> Result<DoodadInfo, StepFailure> {
-    let before: HashSet<u32> = game
+    let before: HashMap<u32, (f32, f32, f32)> = game
         .state
         .doodads
         .values()
         .filter(|d| d.template_id == template)
-        .map(|d| d.obj_id)
+        .map(|d| (d.obj_id, d.pos))
         .collect();
-    let messages = game
-        .gm(
-            &format!("spawn doodad {template}"),
-            Duration::from_millis(1500),
-        )
-        .await
-        .map_err(StepFailure::io)?;
-    if messages
-        .iter()
-        .any(|m| m.contains("don't exist") || m.contains("parse error"))
-    {
-        return Err(StepFailure::unsupported_reason(format!(
-            "cannot spawn doodad {template}: {}",
-            messages.join("; ")
-        )));
-    }
-    let appear = (Instant::now() + APPEAR_WAIT).min(deadline);
-    loop {
-        if let Some(doodad) = game
-            .state
-            .doodads
-            .values()
-            .filter(|d| d.template_id == template && !before.contains(&d.obj_id))
-            .min_by(|a, b| {
-                dist2(a.pos, game.state.self_pos).total_cmp(&dist2(b.pos, game.state.self_pos))
-            })
-            .cloned()
-        {
-            return Ok(doodad);
+    // `/spawn doodad` answers with a chat line even when the doodad never becomes visible (the
+    // spawn tick can miss); retry the command a few times before failing.
+    for _ in 0..3 {
+        if Instant::now() >= deadline {
+            break;
         }
-        let left = appear.saturating_duration_since(Instant::now());
-        if left.is_zero() {
-            return Err(StepFailure::timeout(format!(
-                "doodad {template} did not appear after /spawn doodad"
-            )));
-        }
-        game.recv_within(left.min(PUMP))
+        let messages = game
+            .gm(
+                &format!("spawn doodad {template}"),
+                Duration::from_millis(1500),
+            )
             .await
             .map_err(StepFailure::io)?;
+        if messages
+            .iter()
+            .any(|m| m.contains("don't exist") || m.contains("parse error"))
+        {
+            return Err(StepFailure::unsupported_reason(format!(
+                "cannot spawn doodad {template}: {}",
+                messages.join("; ")
+            )));
+        }
+        let appear = (Instant::now() + APPEAR_WAIT).min(deadline);
+        loop {
+            // The command spawns 3 m in front of the bot. A new object id is the clean signal;
+            // when the server reuses the id of the just-despawned doodad, its position moved.
+            if let Some(doodad) = game
+                .state
+                .doodads
+                .values()
+                .filter(|d| {
+                    d.template_id == template
+                        && (!before.contains_key(&d.obj_id)
+                            || dist2(d.pos, before[&d.obj_id]) > 1.0)
+                })
+                .min_by(|a, b| {
+                    dist2(a.pos, game.state.self_pos).total_cmp(&dist2(b.pos, game.state.self_pos))
+                })
+                .cloned()
+            {
+                return Ok(doodad);
+            }
+            let left = appear.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                break;
+            }
+            game.recv_within(left.min(PUMP))
+                .await
+                .map_err(StepFailure::io)?;
+        }
     }
+    Err(StepFailure::timeout(format!(
+        "doodad {template} did not appear after /spawn doodad (3 attempts)"
+    )))
 }
 
 /// Waits for the world-load answer of an entrance / exit use and confirms it like the real
@@ -2920,23 +3227,76 @@ async fn enter_world(
     let entrances = db
         .world_entrance_doodads(zone_key)
         .map_err(StepFailure::io)?;
-    let Some(&template) = entrances.first() else {
+    if entrances.is_empty() {
         return Err(StepFailure::unsupported_reason(format!(
             "no entrance doodad for world '{name}' (zone key {zone_key}) in the game data"
         )));
-    };
-    let Some(skill) = db.interaction_use_skill().map_err(StepFailure::io)? else {
+    }
+    let Some(generic_skill) = db.interaction_use_skill().map_err(StepFailure::io)? else {
         return Err(StepFailure::unsupported_reason(
             "the game data has no InteractionEffect Use skill",
         ));
     };
+    // Entrance doodads carry their own skill (17829 on the Mirage Isle portal) and some are
+    // faction-gated (the instance_library portal's skill 24354 requires the Haranya factions):
+    // pick the first entrance this character may use; when every one is blocked, that is a
+    // requirement, not a server fault.
+    let race = game.state.self_info.as_ref().map(|info| info.race);
+    let faction = game
+        .state
+        .self_info
+        .as_ref()
+        .map(|info| info.faction)
+        .filter(|faction| *faction != 0);
+    let mother_faction = match (faction, Some(db)) {
+        (Some(faction), Some(db)) => db.mother_faction(faction).ok().flatten(),
+        _ => None,
+    };
+    let mut chosen: Option<(u32, Option<u32>)> = None;
+    let mut blocked: Option<String> = None;
+    for &template in entrances.iter().take(8) {
+        let skill = db
+            .doodad_start_skills(template)
+            .unwrap_or_default()
+            .into_iter()
+            .next();
+        let block = match skill {
+            Some(skill) => db
+                .skill_character_block(skill, race, faction, mother_faction)
+                .unwrap_or(None)
+                .map(|reason| format!("entrance doodad {template} skill {skill}: {reason}")),
+            None => None,
+        };
+        if let Some(reason) = block {
+            blocked.get_or_insert(reason);
+            continue;
+        }
+        chosen = Some((template, skill));
+        break;
+    }
+    let Some((template, chosen_skill)) = chosen else {
+        return Err(StepFailure::plan(
+            QuestOutcome::RequirementUnmet,
+            StepOutcomeKind::Unsupported,
+            format!(
+                "every entrance doodad of world '{name}' is blocked for this character: {}",
+                blocked.unwrap_or_else(|| "no usable entrance skill".into())
+            ),
+        ));
+    };
     let doodad = spawn_world_doodad(game, template, deadline).await?;
+    // The entrance func carries its own skill; the generic Use skill matches no func there and
+    // the server drops the interaction.
+    let skill = chosen_skill
+        .or_else(|| doodad_phase_skill(db, &doodad))
+        .unwrap_or(generic_skill);
     game.use_doodad(skill, doodad.obj_id)
         .await
         .map_err(StepFailure::io)?;
     if !wait_world_load(game, deadline).await? {
         return Err(StepFailure::timeout(format!(
-            "no SCLoadInstancePacket after using entrance doodad {template} for world '{name}'"
+            "no SCLoadInstancePacket after using entrance doodad {template} (skill {skill}) for \
+             world '{name}'"
         )));
     }
     Ok(())
@@ -2959,20 +3319,26 @@ async fn exit_world(
             "no DoodadFuncExitIndun doodad in the game data",
         ));
     };
-    let Some(skill) = db.interaction_use_skill().map_err(StepFailure::io)? else {
+    let Some(generic_skill) = db.interaction_use_skill().map_err(StepFailure::io)? else {
         return Err(StepFailure::unsupported_reason(
             "the game data has no InteractionEffect Use skill",
         ));
     };
     let doodad = spawn_world_doodad(game, template, deadline).await?;
+    let skill = doodad_phase_skill(db, &doodad).unwrap_or(generic_skill);
     game.use_doodad(skill, doodad.obj_id)
         .await
         .map_err(StepFailure::io)?;
     if !wait_world_load(game, deadline).await? {
         return Err(StepFailure::timeout(format!(
-            "no SCLoadInstancePacket after using the exit doodad {template}"
+            "no SCLoadInstancePacket after using the exit doodad {template} (skill {skill})"
         )));
     }
+    // Re-anchor the character in the main world: after the leave the server-side transform can
+    // still resolve to the instance (`world_of`), and a doodad spawned there is invisible in the
+    // main world. The GM `/move` round-trip refreshes the region.
+    let here = game.state.self_pos;
+    let _ = game.teleport(near(here)).await;
     Ok(())
 }
 
@@ -3171,6 +3537,25 @@ async fn find_or_spawn_npc(
     Ok(npc)
 }
 
+/// Adds the plan's `scheduled_spawn` note to a spawn failure: the server's `period_status_npc`
+/// gates those spawners on a time window the runner cannot move, so this is a requirement (the
+/// bot is outside the window), not a runner bug.
+fn annotate_scheduled(f: StepFailure, step: &PlanStep) -> StepFailure {
+    if step.status == "scheduled_spawn" {
+        StepFailure::plan(
+            QuestOutcome::RequirementUnmet,
+            f.step,
+            format!(
+                "{} (the plan marks the target scheduled_spawn: the server's spawn window gates \
+                 it)",
+                f.reason
+            ),
+        )
+    } else {
+        f
+    }
+}
+
 /// The nearest visible doodad of `template_id` (waits [`APPEAR_WAIT`]); when the natural spawn is
 /// missing, `/spawn doodad` is the marked GM fallback.
 async fn find_or_spawn_doodad(
@@ -3206,6 +3591,16 @@ async fn approach(game: &mut GameClient, pos: (f32, f32, f32), deadline: Instant
     }
 }
 
+/// The skill that drives the doodad's current phase, from the compact data: the funcs' own
+/// `func_skill_id`, `DoodadFuncFakeUse.fake_skill_id` or `DoodadFuncUse.skill_id`
+/// (`func_for_skill` matches exactly these and falls back to the first skill-less func only
+/// when none matches; the generic Use skill cannot drive a phase whose funcs carry a skill).
+fn doodad_phase_skill(db: &CompactDb, doodad: &DoodadInfo) -> Option<u32> {
+    db.doodad_func_skills(doodad.template_id, doodad.func_group_id)
+        .ok()
+        .and_then(|skills| skills.into_iter().next())
+}
+
 async fn step_accept(
     game: &mut GameClient,
     quest_id: u32,
@@ -3221,7 +3616,9 @@ async fn step_accept(
     let pos = step_location(step)?;
     game.teleport(near(pos)).await.map_err(StepFailure::io)?;
     settle(game, deadline).await;
-    let npc = find_or_spawn_npc(game, npc_template, deadline, journal).await?;
+    let npc = find_or_spawn_npc(game, npc_template, deadline, journal)
+        .await
+        .map_err(|f| annotate_scheduled(f, step))?;
     approach(game, npc.pos, deadline).await;
     game.start_quest(quest_id, npc.obj_id)
         .await
@@ -3231,7 +3628,7 @@ async fn step_accept(
     // duplicate / invalid id / failed start-component requirement (`engine.rs::add_quest`).
     // `SCQuestUnitReqFailedPacket` exists in the 1.2 opcode table but no server sends it, so the
     // only answers are started / SCErrorMsg / nothing.
-    let answer_deadline = (Instant::now() + ACCEPT_WAIT).min(deadline);
+    let answer_deadline = Instant::now() + ACCEPT_WAIT;
     let found = wait_for_packet(game, answer_deadline, |p| {
         started_for(p, quest_id) || p.is_sc(sc::SCErrorMsgPacket)
     })
@@ -3243,11 +3640,10 @@ async fn step_accept(
         }
         Some(p) => {
             let code = p.stream().read_i16().unwrap_or(0);
-            Err(StepFailure::plan(
-                QuestOutcome::Rejected,
-                StepOutcomeKind::Rejected,
-                format!("accept rejected: {}", error_reason(code)),
-            ))
+            Err(rejected_accept(game, quest_id, "accept", code))
+        }
+        None if game.state.quests.contains_key(&quest_id) => {
+            Ok((StepOutcomeKind::Ok, format!("npc {npc_template} (state)")))
         }
         None => Err(StepFailure::plan(
             QuestOutcome::Rejected,
@@ -3278,7 +3674,7 @@ async fn step_accept_doodad(
     game.start_quest_doodad(quest_id, doodad.obj_id)
         .await
         .map_err(StepFailure::io)?;
-    let answer_deadline = (Instant::now() + ACCEPT_WAIT).min(deadline);
+    let answer_deadline = Instant::now() + ACCEPT_WAIT;
     let found = wait_for_packet(game, answer_deadline, |p| {
         started_for(p, quest_id) || p.is_sc(sc::SCErrorMsgPacket)
     })
@@ -3290,12 +3686,12 @@ async fn step_accept_doodad(
         }
         Some(p) => {
             let code = p.stream().read_i16().unwrap_or(0);
-            Err(StepFailure::plan(
-                QuestOutcome::Rejected,
-                StepOutcomeKind::Rejected,
-                format!("accept rejected: {}", error_reason(code)),
-            ))
+            Err(rejected_accept(game, quest_id, "accept", code))
         }
+        None if game.state.quests.contains_key(&quest_id) => Ok((
+            StepOutcomeKind::Ok,
+            format!("doodad {doodad_template} (state)"),
+        )),
         None => Err(StepFailure::plan(
             QuestOutcome::Rejected,
             StepOutcomeKind::Rejected,
@@ -3356,7 +3752,9 @@ async fn step_report(
     let pos = step_location(step)?;
     game.teleport(near(pos)).await.map_err(StepFailure::io)?;
     settle(game, deadline).await;
-    let npc = find_or_spawn_npc(game, npc_template, deadline, journal).await?;
+    let npc = find_or_spawn_npc(game, npc_template, deadline, journal)
+        .await
+        .map_err(|f| annotate_scheduled(f, step))?;
     approach(game, npc.pos, deadline).await;
     game.complete_quest(quest_id, npc.obj_id, 0)
         .await
@@ -3472,12 +3870,13 @@ async fn step_doodad_interaction(
             "interaction skill lookup needs --compact-db (game data)",
         ));
     };
-    let Some(skill) = db.interaction_use_skill().map_err(StepFailure::io)? else {
+    let Some(generic_skill) = db.interaction_use_skill().map_err(StepFailure::io)? else {
         return Err(StepFailure::unsupported(
             "the game data has no InteractionEffect Use skill",
         ));
     };
     let want = step.target.count.max(1);
+    let mut used_skill = generic_skill;
     loop {
         if quest_completed(game, quest_id) || quest_ready(game, quest_id) {
             break;
@@ -3504,7 +3903,10 @@ async fn step_doodad_interaction(
             .cloned()
             .unwrap_or_else(|| doodad.clone());
         approach(game, current.pos, deadline).await;
-        game.use_doodad(skill, doodad.obj_id)
+        // A phase whose funcs carry their own skill (a fake-use step on the way to the quest
+        // func) must be driven with it; the generic Use skill matches nothing there.
+        used_skill = doodad_phase_skill(db, &current).unwrap_or(generic_skill);
+        game.use_doodad(used_skill, doodad.obj_id)
             .await
             .map_err(StepFailure::io)?;
         let until = (Instant::now() + USE_WAIT).min(deadline);
@@ -3514,7 +3916,7 @@ async fn step_doodad_interaction(
     }
     Ok((
         StepOutcomeKind::Ok,
-        format!("doodad {doodad_template} skill {skill}"),
+        format!("doodad {doodad_template} skill {used_skill}"),
     ))
 }
 
@@ -4115,6 +4517,7 @@ async fn step_gather(
     craft_db: Option<&CraftDb>,
     deadline: Instant,
     journal: &mut QuestJournal,
+    needed: &BTreeSet<u32>,
 ) -> StepRun {
     let ids = &step.target.ids;
     let want = step.target.count.max(1);
@@ -4180,6 +4583,7 @@ async fn step_gather(
             0,
             journal,
             &mut attempts,
+            needed,
         )
         .await?
     }
@@ -4240,7 +4644,7 @@ async fn step_gather(
     if missing > 0 {
         let item_id = ids[0];
         let fallback_deadline = Instant::now() + GM_ITEM_WINDOW;
-        let added = gm_item_add(game, item_id, missing, fallback_deadline).await?;
+        let added = gm_item_add(game, item_id, missing, fallback_deadline, needed, journal).await?;
         journal.fallback(
             "gm_item",
             item_id.to_string(),
@@ -4399,6 +4803,7 @@ fn gather_from_sources<'a>(
     depth: u32,
     journal: &'a mut QuestJournal,
     attempts: &'a mut Vec<SourceAttempt>,
+    needed: &'a BTreeSet<u32>,
 ) -> LocalBoxFuture<'a, Result<Option<String>, StepFailure>> {
     Box::pin(async move {
         let mut last_note = None;
@@ -4410,7 +4815,7 @@ fn gather_from_sources<'a>(
             }
             match gather_source(
                 game, quest_id, ids, want, objective, source, step, compact_db, craft_db, deadline,
-                depth, journal,
+                depth, journal, needed,
             )
             .await
             {
@@ -4455,6 +4860,7 @@ async fn gather_source(
     deadline: Instant,
     depth: u32,
     journal: &mut QuestJournal,
+    needed: &BTreeSet<u32>,
 ) -> Result<SourceOutcome, StepFailure> {
     match source.kind.as_str() {
         "quest_supply" => {
@@ -4639,7 +5045,7 @@ async fn gather_source(
                     code::RUNNER,
                 )));
             };
-            let Some(skill) = db.interaction_use_skill().map_err(StepFailure::io)? else {
+            let Some(generic_skill) = db.interaction_use_skill().map_err(StepFailure::io)? else {
                 return Ok(SourceOutcome::Failed(SourceAttempt::new(
                     format!("doodad {func}"),
                     "the game data has no InteractionEffect Use skill".to_string(),
@@ -4649,8 +5055,13 @@ async fn gather_source(
             };
             let positions = source_positions(source, step_world(step).as_deref());
             let mut used: HashSet<u32> = HashSet::new();
+            // Uses per doodad object while its phase stays unchanged (a failed loot roll).
+            let mut retry_counts: HashMap<u32, u32> = HashMap::new();
             let mut uses = 0usize;
             let mut last_template = 0u32;
+            // The last used doodad's phase carried its own skill (a fake-use / growth step): the
+            // loot phase is behind it, which is the runner's limit, not a server answer.
+            let mut last_had_skill = false;
             let mut spawned = false;
             let mut next_location = 0usize;
             while !gather_done(&game.state, ids, want, quest_id, objective)
@@ -4713,6 +5124,11 @@ async fn gather_source(
                     };
                 }
                 let before_phase = doodad.func_group_id;
+                // Phase funcs with their own skill (a fake-use step before the loot func) need
+                // exactly that skill; loot funcs are skill-less and use the generic one.
+                let phase_skill = doodad_phase_skill(db, &doodad);
+                last_had_skill = phase_skill.is_some();
+                let skill = phase_skill.unwrap_or(generic_skill);
                 game.use_doodad(skill, doodad.obj_id)
                     .await
                     .map_err(StepFailure::io)?;
@@ -4722,11 +5138,18 @@ async fn gather_source(
                     .await
                     .map_err(StepFailure::io)?;
                 let after = game.state.doodads.get(&doodad.obj_id);
-                // A failed loot roll leaves the doodad in place with the same phase
-                // (`funcs/items.rs::loot_item` does not advance the phase); retry it up to three
-                // times before moving on.
+                // A phase change is progress toward the loot func: keep driving the same doodad
+                // (the fake-use phases advance to the loot phase). Mark it used only when it
+                // despawned or three uses left the phase unchanged (a failed loot roll,
+                // `funcs/items.rs::loot_item` does not advance the phase).
                 let unchanged = after.is_some_and(|d| d.func_group_id == before_phase);
-                if !unchanged || uses.is_multiple_of(3) {
+                let retries = retry_counts.entry(doodad.obj_id).or_insert(0);
+                if unchanged {
+                    *retries += 1;
+                } else {
+                    *retries = 0;
+                }
+                if after.is_none() || *retries >= 3 || uses >= 30 {
                     used.insert(doodad.obj_id);
                 }
             }
@@ -4759,6 +5182,22 @@ async fn gather_source(
                     ),
                     blocker_class::DATA_GAP,
                     "compact.sqlite3 loots.drop_rate (1.2 data)",
+                )));
+            }
+            // A doodad whose last phase carried its own skill was stuck in fake-use / growth
+            // phases the runner could not drive toward the loot func (the natural spawn may
+            // outgrow them over time); that is the runner's limit, not a server answer.
+            if last_had_skill {
+                return Ok(SourceOutcome::Failed(SourceAttempt::new(
+                    format!("doodad {func}"),
+                    format!(
+                        "doodad(s) {:?} used {uses} time(s) (last template {last_template}{}) \
+                         never reached the loot phase: its last phase is a fake-use / growth step",
+                        source.doodad_ids,
+                        if spawned { ", GM-spawned" } else { "" }
+                    ),
+                    blocker_class::RUNNER_GAP,
+                    "aaemu-testclient/src/questrun.rs::doodad_phase_skill (no growth wait)",
                 )));
             }
             Ok(SourceOutcome::Failed(SourceAttempt::new(
@@ -4937,12 +5376,14 @@ async fn gather_source(
                             depth + 1,
                             journal,
                             &mut container_attempts,
+                            needed,
                         )
                         .await?
                         .or(last_note);
                     }
                     if game.state.bag_count(&[container]) == 0 {
-                        let added = gm_item_add(game, container, 1, deadline).await?;
+                        let added =
+                            gm_item_add(game, container, 1, deadline, needed, journal).await?;
                         journal.fallback(
                             "gm_item",
                             container.to_string(),
@@ -5092,42 +5533,174 @@ async fn gm_item_add(
     item_id: u32,
     count: i32,
     deadline: Instant,
+    needed: &BTreeSet<u32>,
+    journal: &mut QuestJournal,
 ) -> Result<i32, StepFailure> {
     let mut added = 0;
+    let mut freed_once = false;
     while added < count && Instant::now() < deadline {
         let chunk = (count - added).min(CRAFT_ITEM_ADD_CHUNK);
-        let before = game.state.bag_count(&[item_id]);
-        let messages = game
-            .gm(
-                &format!("item add self {item_id} {chunk}"),
-                Duration::from_millis(1200),
-            )
-            .await
-            .map_err(StepFailure::io)?;
-        let until = (Instant::now() + CRAFT_GM_WAIT).min(deadline);
-        loop {
-            let after = game.state.bag_count(&[item_id]);
-            if after > before {
-                added += after - before;
-                break;
+        match gm_item_add_once(game, item_id, chunk, deadline).await {
+            Ok(n) => added += n,
+            Err(f) if !freed_once && f.reason.contains("could not be created") => {
+                // The bag is full (`items.rs` acquire_default_item); free room and retry once.
+                freed_once = true;
+                let used_gm_item = free_bag_space(game, needed, deadline, true).await?;
+                if used_gm_item {
+                    journal.fallback(
+                        "gm_item",
+                        BAG_EXPANSION_ITEM.to_string(),
+                        "bag was full; a bag-expansion item was GM-added and used".to_string(),
+                    );
+                }
             }
-            let left = until.saturating_duration_since(Instant::now());
-            if left.is_zero() {
-                return Err(StepFailure::plan(
-                    QuestOutcome::RunnerUnsupported,
-                    StepOutcomeKind::Unsupported,
-                    format!(
-                        "GM /item add self {item_id} {chunk} created nothing (chat: {})",
-                        messages.join(" | ")
-                    ),
-                ));
-            }
-            game.recv_within(left.min(PUMP))
-                .await
-                .map_err(StepFailure::io)?;
+            Err(f) => return Err(f),
         }
     }
     Ok(added)
+}
+
+/// One `/item add self <id> <count>` command plus its bag wait; no bag management (so
+/// [`free_bag_space`] can add the expansion item). Fails with the command's chat text when the
+/// server refuses (missing template, full bag).
+async fn gm_item_add_once(
+    game: &mut GameClient,
+    item_id: u32,
+    chunk: i32,
+    deadline: Instant,
+) -> Result<i32, StepFailure> {
+    let before = game.state.bag_count(&[item_id]);
+    let messages = game
+        .gm(
+            &format!("item add self {item_id} {chunk}"),
+            Duration::from_millis(1200),
+        )
+        .await
+        .map_err(StepFailure::io)?;
+    let chat = messages.join(" | ");
+    if messages
+        .iter()
+        .any(|m| m.contains("does not exist") || m.contains("could not be created"))
+    {
+        return Err(StepFailure::plan(
+            QuestOutcome::RunnerUnsupported,
+            StepOutcomeKind::Unsupported,
+            if chat.contains("does not exist") {
+                format!("GM /item add self {item_id} {chunk} failed (chat: {chat})")
+            } else {
+                format!(
+                    "GM /item add self {item_id} {chunk} created nothing (bag full; chat: {chat})"
+                )
+            },
+        ));
+    }
+    let until = (Instant::now() + CRAFT_GM_WAIT).min(deadline);
+    loop {
+        let after = game.state.bag_count(&[item_id]);
+        if after > before {
+            return Ok(after - before);
+        }
+        let left = until.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Err(StepFailure::plan(
+                QuestOutcome::RunnerUnsupported,
+                StepOutcomeKind::Unsupported,
+                format!("GM /item add self {item_id} {chunk} created nothing (chat: {chat})"),
+            ));
+        }
+        game.recv_within(left.min(PUMP))
+            .await
+            .map_err(StepFailure::io)?;
+    }
+}
+
+/// The bag-expansion item of `bag_expands` (`inventory.rs::expand_slot` needs one per step).
+const BAG_EXPANSION_ITEM: u32 = 8_000_025;
+
+/// Destroys stacks no selected quest needs until the bag has room, then (when `allow_expansion`)
+/// buys and consumes a bag-expansion item and asks the server to expand. Returns `true` when a
+/// GM expansion item was used. The bag is the long run's scarce resource: loot, quest supplies
+/// and `/item add` all fail on a full bag.
+async fn free_bag_space(
+    game: &mut GameClient,
+    needed: &BTreeSet<u32>,
+    deadline: Instant,
+    allow_expansion: bool,
+) -> Result<bool, StepFailure> {
+    let capacity = bag_capacity(&game.state);
+    // Destroy stacks the selected quests never need, newest slots first (the oldest slots tend
+    // to hold quest items of the current chain).
+    let mut destroyed = 0usize;
+    while (game.state.bag.len() as u32) + 2 >= capacity && destroyed < 60 {
+        let Some((slot, item)) = game
+            .state
+            .bag
+            .iter()
+            .rev()
+            .find(|(_, item)| !needed.contains(&item.template_id))
+            .map(|(slot, item)| (*slot, *item))
+        else {
+            break;
+        };
+        if Instant::now() >= deadline {
+            break;
+        }
+        game.destroy_item(item.item_id, slot, item.count)
+            .await
+            .map_err(StepFailure::io)?;
+        destroyed += 1;
+        let until = (Instant::now() + Duration::from_secs(2)).min(deadline);
+        while Instant::now() < until {
+            if !game.state.bag.contains_key(&slot) {
+                break;
+            }
+            game.recv_within(PUMP).await.map_err(StepFailure::io)?;
+        }
+    }
+    if (game.state.bag.len() as u32) + 2 < capacity {
+        return Ok(false);
+    }
+    if !allow_expansion || Instant::now() >= deadline {
+        return Err(StepFailure::plan(
+            QuestOutcome::RunnerUnsupported,
+            StepOutcomeKind::Unsupported,
+            format!(
+                "bag full ({} / {} slot(s)) and every item is needed; destroyed {destroyed} \
+                 stack(s)",
+                game.state.bag.len(),
+                capacity
+            ),
+        ));
+    }
+
+    // Expansion: the server consumes one `bag_expands` item per step (`inventory.rs
+    // ::expand_slot`); add it when missing, then send `CSExpandSlotsPacket`.
+    let mut used_gm_item = false;
+    if game.state.bag_count(&[BAG_EXPANSION_ITEM]) == 0 {
+        let _ = gm_item_add_once(game, BAG_EXPANSION_ITEM, 1, deadline).await?;
+        used_gm_item = true;
+    }
+    let before = game.state.bag_slots;
+    game.expand_slots(2, true).await.map_err(StepFailure::io)?;
+    let until = (Instant::now() + Duration::from_secs(2)).min(deadline);
+    while Instant::now() < until {
+        if game.state.bag_slots > before {
+            break;
+        }
+        game.recv_within(PUMP).await.map_err(StepFailure::io)?;
+    }
+    if game.state.bag_slots <= before {
+        return Err(StepFailure::plan(
+            QuestOutcome::RunnerUnsupported,
+            StepOutcomeKind::Unsupported,
+            format!(
+                "bag full and CSExpandSlotsPacket expanded nothing (slots {}); bag_expands data \
+                 or money missing",
+                game.state.bag_slots
+            ),
+        ));
+    }
+    Ok(used_gm_item)
 }
 
 /// GM gold for merchant purchases (`/gold add self 10000 0 0` = 10,000 gold).
@@ -5356,7 +5929,7 @@ async fn step_accept_sphere(
 ) -> StepRun {
     let sphere = sphere_of(step)?.clone();
     enter_sphere(game, &sphere, deadline).await?;
-    let answer_deadline = (Instant::now() + ACCEPT_WAIT).min(deadline);
+    let answer_deadline = Instant::now() + ACCEPT_WAIT;
     let found = wait_for_packet(game, answer_deadline, |p| {
         started_for(p, quest_id) || p.is_sc(sc::SCErrorMsgPacket)
     })
@@ -5367,12 +5940,10 @@ async fn step_accept_sphere(
         Some(p) if started_for(&p, quest_id) => Ok((StepOutcomeKind::Ok, note)),
         Some(p) => {
             let code = p.stream().read_i16().unwrap_or(0);
-            Err(StepFailure::plan(
-                QuestOutcome::Rejected,
-                StepOutcomeKind::Rejected,
-                format!("sphere accept rejected: {}", error_reason(code)),
-            ))
+            Err(rejected_accept(game, quest_id, "sphere accept", code))
         }
+        None if game.state.quests.contains_key(&quest_id) => Ok((StepOutcomeKind::Ok, note)),
+        None if quest_completed(game, quest_id) => Ok((StepOutcomeKind::Ok, note)),
         None => Err(StepFailure::plan(
             QuestOutcome::Rejected,
             StepOutcomeKind::Rejected,
@@ -5418,12 +5989,12 @@ fn stuck_failed_step(quest: &PlanQuest) -> FailedStep {
 async fn implicit_accept(
     game: &mut GameClient,
     quest_id: u32,
-    deadline: Instant,
+    _deadline: Instant,
 ) -> Result<(), StepFailure> {
     game.start_quest(quest_id, 0)
         .await
         .map_err(StepFailure::io)?;
-    let answer_deadline = (Instant::now() + ACCEPT_WAIT).min(deadline);
+    let answer_deadline = Instant::now() + ACCEPT_WAIT;
     let found = wait_for_packet(game, answer_deadline, |p| {
         started_for(p, quest_id) || p.is_sc(sc::SCErrorMsgPacket)
     })
@@ -5433,12 +6004,9 @@ async fn implicit_accept(
         Some(p) if started_for(&p, quest_id) => Ok(()),
         Some(p) => {
             let code = p.stream().read_i16().unwrap_or(0);
-            Err(StepFailure::plan(
-                QuestOutcome::NoStarter,
-                StepOutcomeKind::Rejected,
-                format!("no starter: accept rejected ({})", error_reason(code)),
-            ))
+            Err(rejected_accept(game, quest_id, "no starter: accept", code))
         }
+        None if game.state.quests.contains_key(&quest_id) => Ok(()),
         None => Err(StepFailure::plan(
             QuestOutcome::NoStarter,
             StepOutcomeKind::Rejected,
@@ -5464,7 +6032,7 @@ async fn accept_from_npc(
     game.start_quest(quest_id, npc.obj_id)
         .await
         .map_err(StepFailure::io)?;
-    let answer_deadline = (Instant::now() + ACCEPT_WAIT).min(deadline);
+    let answer_deadline = Instant::now() + ACCEPT_WAIT;
     let found = wait_for_packet(game, answer_deadline, |p| {
         started_for(p, quest_id) || p.is_sc(sc::SCErrorMsgPacket)
     })
@@ -5474,15 +6042,9 @@ async fn accept_from_npc(
         Some(p) if started_for(&p, quest_id) => Ok(()),
         Some(p) => {
             let code = p.stream().read_i16().unwrap_or(0);
-            Err(StepFailure::plan(
-                QuestOutcome::Rejected,
-                StepOutcomeKind::Rejected,
-                format!(
-                    "accept at NPC {npc_template} rejected: {}",
-                    error_reason(code)
-                ),
-            ))
+            Err(rejected_accept(game, quest_id, "accept at NPC", code))
         }
+        None if game.state.quests.contains_key(&quest_id) => Ok(()),
         None => Err(StepFailure::plan(
             QuestOutcome::Rejected,
             StepOutcomeKind::Rejected,
@@ -5504,6 +6066,7 @@ async fn ensure_requirement_items(
     craft_db: Option<&CraftDb>,
     deadline: Instant,
     journal: &mut QuestJournal,
+    needed: &BTreeSet<u32>,
 ) -> Result<(), StepFailure> {
     for req in &quest.requires {
         let key = kind_key(&req.kind);
@@ -5555,6 +6118,7 @@ async fn ensure_requirement_items(
             craft_db,
             deadline,
             journal,
+            needed,
         )
         .await?;
         if game.state.bag_count(&[item_id]) == 0 {
@@ -5636,11 +6200,15 @@ async fn force_quest_complete(
 /// `QuestActConAcceptComponent`: the act is always satisfied when the Start component runs
 /// (`engine.rs::starter_accepts`: `ConAutoComplete | ConAcceptComponent => true`), so a plain
 /// `CSStartQuestContextPacket` without an NPC / doodad / sphere is accepted.
-async fn step_accept_component(game: &mut GameClient, quest_id: u32, deadline: Instant) -> StepRun {
+async fn step_accept_component(
+    game: &mut GameClient,
+    quest_id: u32,
+    _deadline: Instant,
+) -> StepRun {
     game.start_quest(quest_id, 0)
         .await
         .map_err(StepFailure::io)?;
-    let answer_deadline = (Instant::now() + ACCEPT_WAIT).min(deadline);
+    let answer_deadline = Instant::now() + ACCEPT_WAIT;
     let found = wait_for_packet(game, answer_deadline, |p| {
         started_for(p, quest_id) || p.is_sc(sc::SCErrorMsgPacket)
     })
@@ -5652,11 +6220,10 @@ async fn step_accept_component(game: &mut GameClient, quest_id: u32, deadline: I
         }
         Some(p) => {
             let code = p.stream().read_i16().unwrap_or(0);
-            Err(StepFailure::plan(
-                QuestOutcome::Rejected,
-                StepOutcomeKind::Rejected,
-                format!("accept rejected: {}", error_reason(code)),
-            ))
+            Err(rejected_accept(game, quest_id, "accept", code))
+        }
+        None if game.state.quests.contains_key(&quest_id) => {
+            Ok((StepOutcomeKind::Ok, "component accept (state)".into()))
         }
         None => Err(StepFailure::plan(
             QuestOutcome::Rejected,
@@ -5670,6 +6237,7 @@ async fn step_accept_component(game: &mut GameClient, quest_id: u32, deadline: I
 /// carries the `AcceptQuestEffect` (`skills` -> `quests::bridges` -> `events::
 /// accept_quest_effect` -> `quest_id_from_starter_item`); the item is gathered through the
 /// step's `item_sources` when it is not in the bag.
+#[allow(clippy::too_many_arguments)]
 async fn step_accept_item(
     game: &mut GameClient,
     quest_id: u32,
@@ -5678,6 +6246,7 @@ async fn step_accept_item(
     craft_db: Option<&CraftDb>,
     deadline: Instant,
     journal: &mut QuestJournal,
+    needed: &BTreeSet<u32>,
 ) -> StepRun {
     let ids = &step.target.ids;
     let want = step.target.count.max(1);
@@ -5689,7 +6258,7 @@ async fn step_accept_item(
     let mut gathered = None;
     if game.state.bag_count(ids) < want {
         let (kind, note) = step_gather(
-            game, quest_id, step, None, compact_db, craft_db, deadline, journal,
+            game, quest_id, step, None, compact_db, craft_db, deadline, journal, needed,
         )
         .await?;
         gathered = Some(kind);
@@ -5738,7 +6307,7 @@ async fn step_accept_item(
     game.use_item(item.item_id, item.template_id, skill, target)
         .await
         .map_err(StepFailure::io)?;
-    let answer_deadline = (Instant::now() + ACCEPT_WAIT).min(deadline);
+    let answer_deadline = Instant::now() + ACCEPT_WAIT;
     let found = wait_for_packet(game, answer_deadline, |p| {
         started_for(p, quest_id) || p.is_sc(sc::SCErrorMsgPacket)
     })
@@ -5749,12 +6318,14 @@ async fn step_accept_item(
         Some(p) if started_for(&p, quest_id) => Ok((gathered.unwrap_or(StepOutcomeKind::Ok), note)),
         Some(p) => {
             let code = p.stream().read_i16().unwrap_or(0);
-            Err(StepFailure::plan(
-                QuestOutcome::Rejected,
-                StepOutcomeKind::Rejected,
-                format!("item accept rejected: {}", error_reason(code)),
-            ))
+            Err(rejected_accept(game, quest_id, "item accept", code))
         }
+        // The accept item's `AcceptQuestEffect` starts the quest even when the start packet is
+        // lost (a long gather may have consumed the answer window): the state row is the proof.
+        None if game.state.quests.contains_key(&quest_id) => Ok((
+            gathered.unwrap_or(StepOutcomeKind::Ok),
+            format!("{note} (state)"),
+        )),
         None => Err(StepFailure::plan(
             QuestOutcome::Rejected,
             StepOutcomeKind::Rejected,
@@ -5776,6 +6347,7 @@ async fn step_use_item(
     craft_db: Option<&CraftDb>,
     deadline: Instant,
     journal: &mut QuestJournal,
+    needed: &BTreeSet<u32>,
 ) -> StepRun {
     let ids = &step.target.ids;
     let want = step.target.count.max(1);
@@ -5788,7 +6360,7 @@ async fn step_use_item(
     let mut gathered_note: Option<String> = None;
     if game.state.bag_count(ids) < want {
         let (kind, note) = step_gather(
-            game, quest_id, step, objective, compact_db, craft_db, deadline, journal,
+            game, quest_id, step, objective, compact_db, craft_db, deadline, journal, needed,
         )
         .await?;
         gathered = Some(kind);
@@ -6228,16 +6800,21 @@ async fn step_kill(
     if step.target.ids.is_empty() {
         return Err(StepFailure::unsupported("kill step without target ids"));
     }
+    // The run loop switched the bot into the step's world; hunt at the locations of that world.
+    let world = step_world(step);
     let positions: Vec<(f32, f32, f32)> = step
         .locations
         .iter()
-        .filter(|l| l.world.eq_ignore_ascii_case(MAIN_WORLD))
+        .filter(|l| match &world {
+            Some(w) => l.world.eq_ignore_ascii_case(w),
+            None => l.world.eq_ignore_ascii_case(MAIN_WORLD),
+        })
         .map(|l| (l.x, l.y, l.z))
         .collect();
     if positions.is_empty() && step.status != "dynamic_spawn" && step.status != "scheduled_spawn" {
         // Reuse the "other world" / "no location" reason.
         return Err(step_location(step).err().unwrap_or_else(|| {
-            StepFailure::unsupported("kill step without a main-world location")
+            StepFailure::unsupported("kill step without a location in its step world")
         }));
     }
     let want = step.target.count.max(1);
@@ -7319,6 +7896,7 @@ mod tests {
             (QuestOutcome::Rejected, "rejected"),
             (QuestOutcome::PrereqMissing, "prereq_missing"),
             (QuestOutcome::RequirementUnmet, "requirement_unmet"),
+            (QuestOutcome::AlreadyCompleted, "already_completed"),
             (QuestOutcome::BlockedPlan, "blocked_plan"),
             (QuestOutcome::Auxiliary, "auxiliary"),
             (QuestOutcome::NoStarter, "no_starter"),
@@ -7423,6 +8001,67 @@ mod tests {
             &QuestJournal::default(),
         );
         assert_eq!(blocker.class, blocker_class::NONE, "{blocker:?}");
+        // `QuestDailyLimit` is the server's "already completed, not repeatable" answer
+        // (`engine.rs::add_quest`): a requirement, never a server bug.
+        let daily = FailedStep {
+            act_id: 0,
+            act_type: String::new(),
+            reason: "accept rejected: QuestDailyLimit".into(),
+        };
+        let blocker = classify_blocker(
+            &plain,
+            Some(&facts),
+            QuestOutcome::Rejected,
+            Some(&daily),
+            &QuestJournal::default(),
+        );
+        assert_eq!(blocker.class, blocker_class::REQUIREMENT, "{blocker:?}");
+        // A full-bag GM add is the runner's own state, not the GM command's fault.
+        let bag_full = FailedStep {
+            act_id: 0,
+            act_type: String::new(),
+            reason: "GM /item add self 1466 1 created nothing (bag full; chat: x)".into(),
+        };
+        let blocker = classify_blocker(
+            &plain,
+            Some(&facts),
+            QuestOutcome::RunnerUnsupported,
+            Some(&bag_full),
+            &QuestJournal::default(),
+        );
+        assert_eq!(blocker.class, blocker_class::RUNNER_GAP, "{blocker:?}");
+        // A GM-spawned fallback that cannot reach a large kill goal is the runner's window; a
+        // small goal it cannot reach stays a server bug.
+        let large = FailedStep {
+            act_id: 0,
+            act_type: String::new(),
+            reason: "gm spawn fallback did not reach the goal for npc 1 (objective 0 of quest 2 \
+                     at 19/300, GM-spawned)"
+                .into(),
+        };
+        let blocker = classify_blocker(
+            &plain,
+            Some(&facts),
+            QuestOutcome::Stuck,
+            Some(&large),
+            &QuestJournal::default(),
+        );
+        assert_eq!(blocker.class, blocker_class::RUNNER_GAP, "{blocker:?}");
+        let small = FailedStep {
+            act_id: 0,
+            act_type: String::new(),
+            reason: "gm spawn fallback did not reach the goal for npc 1 (objective 0 of quest 2 \
+                     at 2/8, GM-spawned)"
+                .into(),
+        };
+        let blocker = classify_blocker(
+            &plain,
+            Some(&facts),
+            QuestOutcome::Stuck,
+            Some(&small),
+            &QuestJournal::default(),
+        );
+        assert_eq!(blocker.class, blocker_class::SERVER_BUG, "{blocker:?}");
     }
 
     #[test]
@@ -7482,7 +8121,10 @@ mod tests {
         assert!(text.contains("data_gap=1"), "{text}");
         assert!(text.contains("runner_gap=1"), "{text}");
         assert!(
-            text.contains("completed without fallback=1 with fallbacks=1 forced=1"),
+            text.contains(
+                "completed without fallback=1 with fallbacks=1 forced=1 not_applicable=0 \
+                 already_completed=0"
+            ),
             "{text}"
         );
         assert!(

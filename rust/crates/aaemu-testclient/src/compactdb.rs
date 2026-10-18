@@ -408,6 +408,89 @@ impl CompactDb {
         Ok(out)
     }
 
+    /// The skills that drive the doodad's `Start`-kind phase groups (the phase a fresh spawn
+    /// begins in); empty when the template has no Start group. Used to filter entrance doodads
+    /// whose skill the character cannot cast (faction / race requirements).
+    pub fn doodad_start_skills(&self, doodad_template: u32) -> anyhow::Result<Vec<u32>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT x.skill FROM ( \
+                 SELECT df.func_skill_id AS skill, df.id AS fid FROM doodad_funcs df \
+                 JOIN doodad_func_groups g ON g.id = df.doodad_func_group_id \
+                 WHERE g.doodad_almighty_id = ?1 AND g.doodad_func_group_kind_id = 1 \
+                     AND df.func_skill_id > 0 \
+                 UNION \
+                 SELECT fu.fake_skill_id AS skill, df.id AS fid FROM doodad_funcs df \
+                 JOIN doodad_func_groups g ON g.id = df.doodad_func_group_id \
+                 JOIN doodad_func_fake_uses fu ON df.actual_func_type = 'DoodadFuncFakeUse' \
+                     AND fu.id = df.actual_func_id \
+                 WHERE g.doodad_almighty_id = ?1 AND g.doodad_func_group_kind_id = 1 \
+                     AND fu.fake_skill_id > 0 \
+                 UNION \
+                 SELECT du.skill_id AS skill, df.id AS fid FROM doodad_funcs df \
+                 JOIN doodad_func_groups g ON g.id = df.doodad_func_group_id \
+                 JOIN doodad_func_uses du ON df.actual_func_type = 'DoodadFuncUse' \
+                     AND du.id = df.actual_func_id \
+                 WHERE g.doodad_almighty_id = ?1 AND g.doodad_func_group_kind_id = 1 \
+                     AND du.skill_id > 0 \
+             ) x JOIN skills s ON s.id = x.skill \
+             ORDER BY x.fid",
+        )?;
+        let rows = stmt.query_map([doodad_template], |r| r.get::<_, u32>(0))?;
+        let mut out = Vec::new();
+        for row in rows {
+            let skill = row?;
+            if !out.contains(&skill) {
+                out.push(skill);
+            }
+        }
+        Ok(out)
+    }
+
+    /// A `unit_reqs` row of `skill_id` (`owner_type = 'Skill'`) the character cannot satisfy:
+    /// `Race` / `FactionMatch(-Only)(-Not)` / `MotherFaction(-Only)(-Not)`
+    /// (`skills/unit_reqs.rs::validate`). `None` when the skill has no such requirement or the
+    /// character facts are unknown (the server then decides).
+    pub fn skill_character_block(
+        &self,
+        skill_id: u32,
+        race: Option<u8>,
+        faction: Option<u32>,
+        mother_faction: Option<u32>,
+    ) -> anyhow::Result<Option<String>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT kind_id, value1 FROM unit_reqs \
+             WHERE owner_type = 'Skill' AND owner_id = ?1",
+        )?;
+        let rows = stmt.query_map([skill_id], |r| {
+            Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?))
+        })?;
+        for row in rows {
+            let (kind_id, value1) = row?;
+            let blocked = match kind_id {
+                0x03 => race.is_some_and(|race| i64::from(race) != value1),
+                0x28 | 0x37 => faction.is_some_and(|faction| i64::from(faction) != value1),
+                0x3A => faction.is_some_and(|faction| i64::from(faction) == value1),
+                0x2A | 0x38 => mother_faction.is_some_and(|mother| i64::from(mother) != value1),
+                0x3B => mother_faction.is_some_and(|mother| i64::from(mother) == value1),
+                _ => false,
+            };
+            if blocked {
+                let name = match kind_id {
+                    0x03 => "race",
+                    0x28 | 0x37 => "faction",
+                    0x3A => "not-faction",
+                    0x2A | 0x38 => "mother_faction",
+                    0x3B => "not-mother_faction",
+                    _ => "kind",
+                };
+                return Ok(Some(format!(
+                    "the skill's unit_reqs require {name} {value1} (kind_id {kind_id})"
+                )));
+            }
+        }
+        Ok(None)
+    }
+
     /// The NPC whose `EngageCombatGiveQuestId` gives `quest_id` (the NPC acceptor of
     /// `QuestActObjAggro`; `quests/lifecycle_sim_tests.rs` documents the live path).
     pub fn engage_quest_npc(&self, quest_id: u32) -> anyhow::Result<Option<u32>> {
@@ -460,6 +543,68 @@ impl CompactDb {
             .optional()?
             .flatten();
         Ok(row)
+    }
+
+    /// `quest_contexts.repeatable`; `None` when the quest has no row. A completed non-repeatable
+    /// quest can only answer `QuestDailyLimit` (`engine.rs::add_quest`).
+    pub fn quest_repeatable(&self, quest_id: u32) -> anyhow::Result<Option<bool>> {
+        let row = self
+            .conn
+            .query_row(
+                "SELECT repeatable FROM quest_contexts WHERE id = ?1",
+                [quest_id],
+                |r| {
+                    Ok(r.get::<_, Option<String>>(0)?
+                        .is_some_and(|v| v.eq_ignore_ascii_case("t") || v == "1"))
+                },
+            )
+            .optional()?;
+        Ok(row)
+    }
+
+    /// The skills that drive the current phase of a doodad: the funcs' own `func_skill_id`, the
+    /// `DoodadFuncFakeUse.fake_skill_id` and `DoodadFuncUse.skill_id` of the func group, in func
+    /// order (`npcs/doodad/data.rs::func_for_skill` matches the client's skill against exactly
+    /// these). A func with no skill (a loot func) is driven once the phase reaches it.
+    pub fn doodad_func_skills(
+        &self,
+        doodad_template: u32,
+        func_group_id: u32,
+    ) -> anyhow::Result<Vec<u32>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT x.skill FROM ( \
+                 SELECT df.func_skill_id AS skill, df.id AS fid, df.next_phase AS nxt \
+                 FROM doodad_funcs df \
+                 WHERE df.doodad_func_group_id = ?2 AND df.func_skill_id > 0 \
+                 UNION \
+                 SELECT fu.fake_skill_id AS skill, df.id AS fid, df.next_phase AS nxt \
+                 FROM doodad_funcs df \
+                 JOIN doodad_func_fake_uses fu ON df.actual_func_type = 'DoodadFuncFakeUse' \
+                     AND fu.id = df.actual_func_id \
+                 WHERE df.doodad_func_group_id = ?2 AND fu.fake_skill_id > 0 \
+                 UNION \
+                 SELECT du.skill_id AS skill, df.id AS fid, df.next_phase AS nxt \
+                 FROM doodad_funcs df \
+                 JOIN doodad_func_uses du ON df.actual_func_type = 'DoodadFuncUse' \
+                     AND du.id = df.actual_func_id \
+                 WHERE df.doodad_func_group_id = ?2 AND du.skill_id > 0 \
+             ) x \
+             JOIN doodad_func_groups g ON g.id = ?2 AND g.doodad_almighty_id = ?1 \
+             JOIN skills s ON s.id = x.skill \
+             ORDER BY EXISTS(SELECT 1 FROM doodad_funcs nf \
+                             WHERE nf.doodad_func_group_id = x.nxt) DESC, x.fid",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![doodad_template, func_group_id], |r| {
+            r.get::<_, u32>(0)
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            let skill = row?;
+            if !out.contains(&skill) {
+                out.push(skill);
+            }
+        }
+        Ok(out)
     }
 
     /// `npcs.merchant` and the last `merchants.merchant_pack_id` of the NPC (the server's
@@ -547,24 +692,38 @@ impl CompactDb {
 
     /// A doodad template with an `DoodadFuncExitIndun` func that returns to the saved main
     /// world position (`return_point_id` 0 / null; `funcs/world.rs::exit_indun`). The runner
-    /// spawns it inside an instance to leave.
+    /// spawns it inside an instance to leave. Templates whose exit func lives in a `Start`-kind
+    /// group (and carries its own skill) come first: the spawn starts in that group, so a single
+    /// use leaves; the progress-group variants hide the exit func behind `DoodadFuncSkillHit`
+    /// phases the runner cannot drive (template 4139).
     pub fn exit_doodad(&self) -> anyhow::Result<Option<u32>> {
-        let row = self
-            .conn
-            .query_row(
+        let query = |start_kind_only: bool| {
+            let kind_filter = if start_kind_only {
+                "AND g.doodad_func_group_kind_id = 1 AND df.func_skill_id > 0"
+            } else {
+                ""
+            };
+            format!(
                 "SELECT dfa.id \
                  FROM doodad_func_exit_induns e \
-                 JOIN doodad_funcs df ON df.actual_func_id = e.id \
-                     AND df.actual_func_type = 'DoodadFuncExitIndun' \
+                 JOIN doodad_funcs df ON df.actual_func_type = 'DoodadFuncExitIndun' \
+                     AND df.actual_func_id = e.id \
                  JOIN doodad_func_groups g ON g.id = df.doodad_func_group_id \
                  JOIN doodad_almighties dfa ON dfa.id = g.doodad_almighty_id \
-                 WHERE e.return_point_id IS NULL OR e.return_point_id = 0 \
-                 ORDER BY df.id, dfa.id LIMIT 1",
-                [],
-                |r| r.get::<_, u32>(0),
+                 WHERE (e.return_point_id IS NULL OR e.return_point_id = 0) {kind_filter} \
+                 ORDER BY df.id, dfa.id LIMIT 1"
             )
-            .optional()?;
-        Ok(row)
+        };
+        for start_kind_only in [true, false] {
+            let row = self
+                .conn
+                .query_row(&query(start_kind_only), [], |r| r.get::<_, u32>(0))
+                .optional()?;
+            if row.is_some() {
+                return Ok(row);
+            }
+        }
+        Ok(None)
     }
 }
 
@@ -675,6 +834,9 @@ mod tests {
         assert!(db.world_entrance_doodads(260).unwrap().contains(&4894));
         assert!(!db.world_entrance_doodads(296).unwrap().is_empty());
         assert!(db.exit_doodad().unwrap().is_some());
+        // The picked exit doodad is directly usable (Start-kind group with its own skill), not
+        // template 4139 whose exit func hides behind DoodadFuncSkillHit phases.
+        assert_ne!(db.exit_doodad().unwrap(), Some(4139));
     }
 
     /// The v9 item-source reverse lookups (plan.py's tables, read here for
@@ -717,5 +879,38 @@ mod tests {
         // npc 1196 is listed in `merchants` but is not a merchant in its template.
         assert_eq!(db.npc_merchant(1196).unwrap(), Some((false, 266)));
         assert!(db.npc_merchant(1061).unwrap().is_some_and(|(m, _)| m));
+        // Repeatable flags (quest 18 is not repeatable, 2107 is).
+        assert_eq!(db.quest_repeatable(18).unwrap(), Some(false));
+        assert_eq!(db.quest_repeatable(2107).unwrap(), Some(true));
+        assert_eq!(db.quest_repeatable(0).unwrap(), None);
+        // The Mirage Isle entrance doodad 4894 is driven by skill 17829 (its func has a skill;
+        // the generic Use skill matches nothing there); the doll pouch's fake-use phase has its
+        // own two skills before the loot func.
+        assert_eq!(db.doodad_func_skills(4894, 12204).unwrap(), vec![17829]);
+        // The fake-use whose next phase has funcs (13589 -> 5432, the loot) comes before the
+        // one leading to 5433, a phase with no funcs at all.
+        assert_eq!(
+            db.doodad_func_skills(2552, 5431).unwrap(),
+            vec![13589, 13593]
+        );
+        assert_eq!(
+            db.doodad_func_skills(2552, 5432).unwrap(),
+            Vec::<u32>::new()
+        );
+        // The Mirage Isle portal's Start group drives with skill 17829; doodad 4139's Start
+        // group (SkillHit funcs) carries none, so its exit func hidden in the Progress group is
+        // not reachable from a fresh spawn.
+        assert_eq!(db.doodad_start_skills(4894).unwrap(), vec![17829]);
+        assert!(db.doodad_start_skills(4139).unwrap().is_empty());
+        // The instance_library entrance skill 24354 requires faction 109/112/113: a 109 caster
+        // is blocked, 113 is allowed.
+        assert!(db
+            .skill_character_block(24354, Some(4), Some(109), None)
+            .unwrap()
+            .is_some());
+        assert!(db
+            .skill_character_block(24354, Some(4), Some(113), None)
+            .unwrap()
+            .is_none());
     }
 }
