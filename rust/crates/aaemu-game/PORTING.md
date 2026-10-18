@@ -663,6 +663,14 @@ is no longer mirrored (see "Known deviations", dead NPC returned and healed).
 
 ## Known deviations from the C#
 
+* systems::services / systems::vehicles (mount speed analysis): `SusManager` samples the
+  driver's (or owner's) `teleport_seq` and `disabled_set_position` for mates, and successful
+  ride / unride operations reset the mate baseline. C# `SusManager` / `CharacterMates` did
+  not invalidate that baseline for rider teleports or seat changes. This prevents a short
+  teleport from being audited as mount speeding without changing either speed threshold.
+  Speed reports also include object id, baseline / current positions, elapsed ms and instance
+  id, captured by the analysis before advancing its baseline.
+
 * Logging (`aaemu_commons::logging`, login and game): `Logs/` lives under the application
   directory instead of the executable's directory, so servers built into one target directory no
   longer share (and delete) each other's files. NLog's `deleteOldFileOnStartup` became "move the
@@ -1767,7 +1775,9 @@ Additional world-side fixes from the same audit:
   `X2Chat` bindings. Explicit native leave parameters remain unverified; disconnect cleanup
   is covered separately.
 * Mate pool and regeneration formulas now receive the complete attribute parameter set plus
-  mate kind. Real 1.2 level-five horse formulas produce 1,012 maximum HP and 335 maximum MP;
+  mate kind. Slave melee, ranged and spell increments, armor and magic resistance also receive
+  level and all six attributes, matching the C# getters (level-50 melee increment: 5,400).
+  Real 1.2 level-five horse formulas produce 1,012 maximum HP and 335 maximum MP;
   the old incomplete parameter map failed and produced zero maximum pools. Summoning clamps
   saved pools to the computed maximum and preserves injured and exhausted saves. Mate
   skill requests require ownership or an actual server-managed passenger/parent relation
