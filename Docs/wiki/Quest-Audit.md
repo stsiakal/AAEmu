@@ -127,7 +127,11 @@ python -m unittest discover -s rust/tools/quest_audit -v
 `plan.py` writes the per-quest step plan used by the quest bot: for every loaded quest the
 ordered acts, their NPC/doodad/item/zone targets and up to five spawn locations from
 `Data/Worlds`. Targets with no world spawn are `no_spawn` (the quest is `blocked`), NPCs
-summoned by a `SpawnEffect` are `dynamic_spawn` with the effect and skill ids:
+summoned by a `SpawnEffect` are `dynamic_spawn` with the effect and skill ids. Item steps
+carry `item_sources` (npc loot, doodad funcs, quest supplies, crafts, stores); items that
+drop from a `GainLootPackItemEffect` loot pack or are granted by a `GainItem` /
+`skill_products` skill get an `item_open` source with the bundle's `use_skill_id` container
+item and its own sources in `container_sources` (resolved three levels deep, cycle-guarded):
 
 ```powershell
 python -I rust/tools/quest_audit/plan.py --db rust/crates/aaemu-game/app/Data/compact.sqlite3 --worlds rust/crates/aaemu-game/app/Data/Worlds --output D:/aaemu-audits/quest-plan.json

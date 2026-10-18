@@ -70,10 +70,15 @@ def database():
         CREATE TABLE effects (id INTEGER, actual_id INTEGER, actual_type TEXT);
         CREATE TABLE skill_effects (id INTEGER, skill_id INTEGER, effect_id INTEGER);
         CREATE TABLE skills (id INTEGER);
-        CREATE TABLE items (id INTEGER, loot_quest_id INTEGER);
+        CREATE TABLE items (id INTEGER, loot_quest_id INTEGER, use_skill_id INTEGER);
         CREATE TABLE loots (id INTEGER, item_id INTEGER, drop_rate INTEGER,
             loot_pack_id INTEGER);
         CREATE TABLE loot_pack_dropping_npcs (id INTEGER, npc_id INTEGER, loot_pack_id INTEGER);
+        CREATE TABLE gain_loot_pack_item_effects (id INTEGER, loot_pack_id INTEGER);
+        CREATE TABLE special_effects (id INTEGER, special_effect_type_id INTEGER,
+            value1 INTEGER);
+        CREATE TABLE skill_products (id INTEGER, skill_id INTEGER, item_id INTEGER,
+            amount INTEGER);
         CREATE TABLE doodad_func_groups (id INTEGER, doodad_almighty_id INTEGER);
         CREATE TABLE doodad_funcs (id INTEGER, doodad_func_group_id INTEGER,
             actual_func_id INTEGER, actual_func_type TEXT);
@@ -386,7 +391,7 @@ class QuestPlanTests(unittest.TestCase):
             component(conn, 10, 1, 4)
             conn.execute("INSERT INTO quest_act_obj_item_gathers VALUES (1, 100, 2)")
             act(conn, 1, 10, 1, "QuestActObjItemGather")
-            conn.execute("INSERT INTO items VALUES (100, 61)")
+            conn.execute("INSERT INTO items VALUES (100, 61, 0)")
             conn.execute("INSERT INTO loots VALUES (1, 100, 5000000, 30)")
             conn.execute("INSERT INTO loot_pack_dropping_npcs VALUES (1, 500, 30)")
             spawns = {"npc": {500: [("main_world", 1.0, 2.0, 3.0)]}, "doodad": {}}
@@ -426,6 +431,145 @@ class QuestPlanTests(unittest.TestCase):
                              [{"item_id": 102, "sources": [{"type": "craft", "craft_ids": [250]}]}])
             self.assertEqual(steps[3]["item_sources"],
                              [{"item_id": 103, "sources": [{"type": "quest_supply", "act_id": 9}]}])
+
+    def test_item_open_from_gain_loot_pack_bundle(self):
+        with database() as conn:
+            quest(conn, 1)
+            component(conn, 9, 1, 2)
+            component(conn, 10, 1, 4)
+            conn.execute("INSERT INTO quest_act_obj_item_gathers VALUES (1, 100, 1)")
+            act(conn, 1, 10, 1, "QuestActObjItemGather")
+            # 100 is in loot pack 30, granted by the `GainLootPackItemEffect` of skill 77;
+            # 500 is the bundle item whose `use_skill_id` is 77.
+            conn.execute("INSERT INTO items VALUES (100, NULL, 0)")
+            conn.execute("INSERT INTO items VALUES (500, NULL, 77)")
+            conn.execute("INSERT INTO loots VALUES (1, 100, 10000000, 30)")
+            conn.execute("INSERT INTO gain_loot_pack_item_effects VALUES (200, 30)")
+            conn.execute("INSERT INTO effects VALUES (300, 200, 'GainLootPackItemEffect')")
+            conn.execute("INSERT INTO skill_effects VALUES (1, 77, 300)")
+            conn.execute("INSERT INTO skills VALUES (77)")
+            # The bundle itself drops from npc 600 (pack 40).
+            conn.execute("INSERT INTO loots VALUES (2, 500, 10000000, 40)")
+            conn.execute("INSERT INTO loot_pack_dropping_npcs VALUES (1, 600, 40)")
+            spawns = {"npc": {600: [("main_world", 1.0, 2.0, 3.0)]}, "doodad": {}}
+            result = plan(conn, spawns)
+            step = result["quests"][0]["steps"][0]
+            self.assertEqual(step["status"], "ok")
+            self.assertEqual(step["item_sources"], [{"item_id": 100, "sources": [
+                {"type": "npc_loot", "npc_ids": [], "loot_pack_id": 30,
+                 "chance": 10000000, "locations": []},
+                {"type": "item_open", "container_item_id": 500, "skill_id": 77,
+                 "loot_pack_id": 30, "chance": 10000000,
+                 "container_sources": [
+                     {"type": "npc_loot", "npc_ids": [600], "loot_pack_id": 40,
+                      "chance": 10000000,
+                      "locations": [{"world": "main_world", "x": 1.0, "y": 2.0,
+                                     "z": 3.0}]}]}]}])
+            self.assertEqual(result["summary"]["item_steps_with_item_open"], 1)
+            self.assertEqual(result["summary"]["unknown_item_source_steps"], 0)
+
+    def test_item_open_recursion_and_cycle_guard(self):
+        with database() as conn:
+            quest(conn, 1)
+            component(conn, 9, 1, 2)
+            component(conn, 10, 1, 4)
+            conn.execute("INSERT INTO quest_act_obj_item_gathers VALUES (1, 100, 1)")
+            act(conn, 1, 10, 1, "QuestActObjItemGather")
+            # 100 <- bundle 500 (skill 77, pack 30); 500 <- bundle 600 (skill 78, pack 31);
+            # 600 <- bundle 100 (skill 79, pack 32) closes the cycle.
+            conn.execute("INSERT INTO items VALUES (100, NULL, 79)")
+            conn.execute("INSERT INTO items VALUES (500, NULL, 77)")
+            conn.execute("INSERT INTO items VALUES (600, NULL, 78)")
+            for loot_id, item_id, pack in ((1, 100, 30), (2, 500, 31), (3, 600, 32)):
+                conn.execute("INSERT INTO loots VALUES (?, ?, 10000000, ?)",
+                             (loot_id, item_id, pack))
+            for effect_id, skill_id, pack in ((200, 77, 30), (201, 78, 31), (202, 79, 32)):
+                conn.execute("INSERT INTO gain_loot_pack_item_effects VALUES (?, ?)",
+                             (effect_id, pack))
+                conn.execute("INSERT INTO effects VALUES (?, ?, 'GainLootPackItemEffect')",
+                             (effect_id + 100, effect_id))
+                conn.execute("INSERT INTO skill_effects VALUES (?, ?, ?)",
+                             (effect_id, skill_id, effect_id + 100))
+                conn.execute("INSERT INTO skills VALUES (?)", (skill_id,))
+            step = plan(conn, {"npc": {}, "doodad": {}})["quests"][0]["steps"][0]
+            self.assertEqual(step["status"], "ok")
+            outer = [s for s in step["item_sources"][0]["sources"]
+                     if s["type"] == "item_open"]
+            self.assertEqual([s["container_item_id"] for s in outer], [500])
+            middle = [s for s in outer[0]["container_sources"] if s["type"] == "item_open"]
+            self.assertEqual([s["container_item_id"] for s in middle], [600])
+            # 600's only bundle source reopens 100, which is already on the chain: dropped.
+            self.assertEqual([s for s in middle[0]["container_sources"]
+                              if s["type"] == "item_open"], [])
+
+    def test_item_open_depth_limit(self):
+        with database() as conn:
+            quest(conn, 1)
+            component(conn, 9, 1, 2)
+            component(conn, 10, 1, 4)
+            conn.execute("INSERT INTO quest_act_obj_item_gathers VALUES (1, 100, 1)")
+            act(conn, 1, 10, 1, "QuestActObjItemGather")
+            # 100 <- 101 <- 102 <- 103 <- 104: one container more than ITEM_OPEN_DEPTH.
+            chain = [100, 101, 102, 103, 104]
+            conn.execute("INSERT INTO items VALUES (100, NULL, 0)")
+            for skill_id, item_id in enumerate(chain[1:], start=1):
+                conn.execute("INSERT INTO items VALUES (?, NULL, ?)", (item_id, skill_id))
+            for index, item_id in enumerate(chain[:-1]):  # pack 30+index holds item_id
+                pack = 30 + index
+                conn.execute("INSERT INTO loots VALUES (?, ?, 10000000, ?)",
+                             (index + 1, item_id, pack))
+                conn.execute("INSERT INTO gain_loot_pack_item_effects VALUES (?, ?)",
+                             (200 + index, pack))
+                conn.execute("INSERT INTO effects VALUES (?, ?, 'GainLootPackItemEffect')",
+                             (300 + index, 200 + index))
+                conn.execute("INSERT INTO skill_effects VALUES (?, ?, ?)",
+                             (index + 1, index + 1, 300 + index))
+                conn.execute("INSERT INTO skills VALUES (?)", (index + 1,))
+
+            def openings(sources):
+                return [s for s in sources if s["type"] == "item_open"]
+
+            step = plan(conn, {"npc": {}, "doodad": {}})["quests"][0]["steps"][0]
+            level1 = openings(step["item_sources"][0]["sources"])
+            self.assertEqual([s["container_item_id"] for s in level1], [101])
+            level2 = openings(level1[0]["container_sources"])
+            self.assertEqual([s["container_item_id"] for s in level2], [102])
+            level3 = openings(level2[0]["container_sources"])
+            self.assertEqual([s["container_item_id"] for s in level3], [103])
+            self.assertEqual(openings(level3[0]["container_sources"]), [])
+
+    def test_item_open_from_skill_gain_and_products(self):
+        with database() as conn:
+            quest(conn, 1)
+            component(conn, 9, 1, 2)
+            component(conn, 10, 1, 4)
+            conn.execute("INSERT INTO quest_act_supply_items VALUES (9, 500, 1)")
+            act(conn, 9, 9, 9, "QuestActSupplyItem")
+            conn.execute("INSERT INTO quest_act_obj_item_gathers VALUES (1, 100, 1)")
+            conn.execute("INSERT INTO quest_act_obj_item_gathers VALUES (2, 110, 1)")
+            act(conn, 1, 10, 1, "QuestActObjItemGather")
+            act(conn, 2, 10, 2, "QuestActObjItemGather")
+            conn.execute("INSERT INTO items VALUES (100, NULL, 0)")
+            conn.execute("INSERT INTO items VALUES (110, NULL, 0)")
+            conn.execute("INSERT INTO items VALUES (500, NULL, 77)")
+            conn.execute("INSERT INTO skills VALUES (77)")
+            # Skill 77 grants 100 through the `GainItem` special (value1) ...
+            conn.execute("INSERT INTO special_effects VALUES (400, 27, 100)")
+            conn.execute("INSERT INTO effects VALUES (300, 400, 'SpecialEffect')")
+            conn.execute("INSERT INTO skill_effects VALUES (1, 77, 300)")
+            # ... and 110 as a skill product; the container 500 is supplied by the quest.
+            conn.execute("INSERT INTO skill_products VALUES (1, 77, 110, 1)")
+            steps = plan(conn, {"npc": {}, "doodad": {}})["quests"][0]["steps"]
+            gain, product = steps[1], steps[2]
+            self.assertEqual(gain["item_sources"], [{"item_id": 100, "sources": [
+                {"type": "item_open", "container_item_id": 500, "skill_id": 77,
+                 "grant": "gain_item",
+                 "container_sources": [{"type": "quest_supply", "act_id": 9}]}]}])
+            self.assertEqual(product["item_sources"], [{"item_id": 110, "sources": [
+                {"type": "item_open", "container_item_id": 500, "skill_id": 77,
+                 "grant": "skill_product",
+                 "container_sources": [{"type": "quest_supply", "act_id": 9}]}]}])
+            self.assertEqual((gain["status"], product["status"]), ("ok", "ok"))
 
     def test_store_item_source(self):
         with database() as conn:

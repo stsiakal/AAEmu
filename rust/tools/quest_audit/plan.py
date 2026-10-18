@@ -12,10 +12,12 @@ gated on a game schedule / spawn-time window get "scheduled_spawn" (locations
 carry a `schedule` annotation); act types the plan cannot map are
 flagged "unsupported", never guessed. Quests without a Start component (auxiliary
 records) get status "auxiliary". Item targets carry `item_sources` (npc loot,
-doodad funcs, earlier quest supplies, crafts, stores) and a target without any
-source gets "unknown_item_source": it is reported but does not block the quest,
-because items also come from paths the plan does not model (skill effects, mail,
-other quests); the live runner decides. Each quest also carries the accept prerequisites
+doodad funcs, earlier quest supplies, crafts, stores, bundle items opened by
+use skills: `item_open` with the container's own sources in `container_sources`,
+depth-capped and cycle-guarded) and a target without any source gets
+"unknown_item_source": it is reported but does not block the quest, because items
+also come from paths the plan does not model (mail, other quests); the live
+runner decides. Each quest also carries the accept prerequisites
 (`unit_reqs` of its Start components, owner type "QuestComponent", the only quest
 owner type the accept path evaluates) plus `min_level` and `prereq_quests`. With
 `--spheres` the sphere steps (ObjSphere / ConAcceptSphere / CheckSphere) get their
@@ -53,6 +55,14 @@ ITEM_SOURCE_ACTS = {"QuestActObjItemGather", "QuestActObjItemUse", "QuestActConA
 # Act class -> supply detail table (the earlier-act `quest_supply` source).
 ITEM_SUPPLY_ACTS = {"QuestActSupplyItem": "quest_act_supply_items",
                     "QuestActSupplySelectiveItem": "quest_act_supply_selective_items"}
+# How many nested bundle openings (`item_open` -> `container_sources` -> ...) the plan
+# resolves before it stops expanding; a container already on the chain is never reopened.
+ITEM_OPEN_DEPTH = 3
+# The one `SpecialType` the item-use path grants item `value1` for: 27 `GainItem`
+# (`economy/bridges.rs` `special::GAIN_ITEM` -> `item_effects.rs::gain_item`). The
+# `GAIN_ITEM_SPECIALS` 32/45 are only read as item grants by the doodad-func skill-hit
+# path (`skills/bridges.rs`); on skill use 45 imprints a crest stamp instead.
+GAIN_ITEM_SPECIALS = {27}
 # The acts whose `quest_sign_sphere.g` component spheres are exported by the gated
 # `real_compact_db_quest_accounting` test (systems/quests/tests.rs).
 SPHERE_ACTS = {"QuestActObjSphere", "QuestActConAcceptSphere", "QuestActCheckSphere"}
@@ -448,14 +458,28 @@ def load_item_source_data(conn):
     * `doodad_func_loot_items` / `doodad_func_loot_packs` / `doodad_func_purchases` through
       `doodad_funcs` -> `doodad_func_groups` (`npcs/doodad/funcs/items.rs`: `loot_item`,
       `loot_pack`, `purchase`);
-    * `merchant_goods` -> `merchant_packs` / `merchants` for store vendors.
+    * `merchant_goods` -> `merchant_packs` / `merchants` for store vendors;
+    * bundle items opened by use skills (`item_open`): a `GainLootPackItemEffect`
+      (`economy/item_effects.rs::gain_loot_pack_item`, applied by
+      `economy/bridges.rs::apply_effect`) is an `effects` row (actual id =
+      `gain_loot_pack_item_effects.id`) of a skill (the `skill_effects` chain of
+      `skills/data/mod.rs`); the skill is the `items.use_skill_id` of the container item.
+      `GainItem` `SpecialEffect`s (`item_effects.rs::gain_item`) and `skill_products`
+      (`skills/skill.rs` acquires the products on skill use) grant items directly.
     """
     data = {"loot": defaultdict(list), "pack_npcs": defaultdict(list),
             "item_doodads": defaultdict(list), "item_crafts": defaultdict(list),
             "item_stores": defaultdict(list), "pack_vendors": defaultdict(list),
-            "item_quests": {row["id"]: row["loot_quest_id"]
-                            for row in query(conn, "SELECT id, loot_quest_id FROM items")
-                            if row["loot_quest_id"]}}
+            "pack_skills": defaultdict(list), "skill_gain_items": defaultdict(list),
+            "skill_product_items": defaultdict(list), "item_use_skills": defaultdict(list),
+            "item_quests": {}}
+    item_ids = set()
+    for row in query(conn, "SELECT id, loot_quest_id, use_skill_id FROM items"):
+        item_ids.add(row["id"])
+        if row["loot_quest_id"]:
+            data["item_quests"][row["id"]] = row["loot_quest_id"]
+        if row["use_skill_id"]:
+            data["item_use_skills"][row["use_skill_id"]].append(row["id"])
     for row in rows(conn, "loots"):
         data["loot"][row["item_id"]].append(row)
     for row in rows(conn, "loot_pack_dropping_npcs"):
@@ -491,6 +515,29 @@ def load_item_source_data(conn):
         data["pack_vendors"][row["id"]].append(row["owner_npc_id"])
     for row in rows(conn, "merchants"):
         data["pack_vendors"][row["merchant_pack_id"]].append(row["npc_id"])
+    # `skill_effect` -> `effects` -> `gain_loot_pack_item_effects` (the loot pack the
+    # effect grants); the skill must exist like the loader requires (`skills` join).
+    for row in query(conn,
+                     "SELECT se.skill_id, gl.loot_pack_id FROM effects ef"
+                     " JOIN skill_effects se ON se.effect_id = ef.id"
+                     " JOIN gain_loot_pack_item_effects gl ON gl.id = ef.actual_id"
+                     " JOIN skills s ON s.id = se.skill_id"
+                     " WHERE ef.actual_type = 'GainLootPackItemEffect'"):
+        data["pack_skills"][row["loot_pack_id"]].append(row["skill_id"])
+    specials = ",".join(str(t) for t in sorted(GAIN_ITEM_SPECIALS))
+    for row in query(conn,
+                     "SELECT se.skill_id, sp.value1 AS item_id FROM effects ef"
+                     " JOIN skill_effects se ON se.effect_id = ef.id"
+                     " JOIN special_effects sp ON sp.id = ef.actual_id"
+                     " JOIN skills s ON s.id = se.skill_id"
+                     " WHERE ef.actual_type = 'SpecialEffect'"
+                     f" AND sp.special_effect_type_id IN ({specials})"):
+        if row["item_id"] in item_ids:
+            data["skill_gain_items"][row["skill_id"]].append(row["item_id"])
+    for row in query(conn, "SELECT sp.skill_id, sp.item_id FROM skill_products sp"
+                           " JOIN skills s ON s.id = sp.skill_id"):
+        if row["item_id"] in item_ids:
+            data["skill_product_items"][row["skill_id"]].append(row["item_id"])
     return data
 
 
@@ -501,13 +548,19 @@ def bounded(ids, spawn_index, limit=5):
     return order[:limit]
 
 
-def item_sources(item_id, supplied, spawns, data):
+def item_sources(item_id, supplied, spawns, data, depth=0, chain=()):
     """Bounded candidate sources of one item id, location-backed first.
 
     `chance` is the raw `loots.drop_rate` (10,000,000 = 100%,
     `economy/loot.rs` divides by 10,000,000); `loot_quest_id` mirrors the
     `HasQuest` gate of `looting.rs::try_take_loot_locked` for quest-only drops;
     `locations` carry the `schedule` annotation of `load_spawns`.
+
+    `item_open` sources are bundle items opened by their `use_skill_id`: the item is in a
+    loot pack the skill's `GainLootPackItemEffect` grants, or the skill grants it directly
+    (`GainItem` special / `skill_products`). `container_sources` resolves the container
+    item's own sources down to `ITEM_OPEN_DEPTH`; `chain` holds the items already being
+    opened so a cycle is dropped instead of recursed into.
     """
     sources = []
     seen_packs = set()
@@ -542,7 +595,40 @@ def item_sources(item_id, supplied, spawns, data):
                           spawns["npc"])
         sources.append({"type": "store", "npc_ids": vendors, "pack_ids": packs,
                         "locations": location_dicts("npc", vendors, spawns)})
-    order = {"npc_loot": 0, "doodad": 1, "quest_supply": 2, "craft": 3, "store": 4}
+    if depth < ITEM_OPEN_DEPTH:
+        opened = []
+        seen_opens = set()
+        for loot in data["loot"].get(item_id, []):
+            pack = loot["loot_pack_id"]
+            for skill_id in sorted(set(data["pack_skills"].get(pack, []))):
+                for container in sorted(set(data["item_use_skills"].get(skill_id, []))):
+                    key = ("loot_pack", container, skill_id, pack)
+                    if key not in seen_opens:
+                        seen_opens.add(key)
+                        opened.append({"type": "item_open", "container_item_id": container,
+                                       "skill_id": skill_id, "loot_pack_id": pack,
+                                       "chance": loot["drop_rate"]})
+        for grant, skill_items in (("gain_item", data["skill_gain_items"]),
+                                   ("skill_product", data["skill_product_items"])):
+            for skill_id, granted in skill_items.items():
+                if item_id not in granted:
+                    continue
+                for container in sorted(set(data["item_use_skills"].get(skill_id, []))):
+                    key = (grant, container, skill_id, 0)
+                    if key not in seen_opens:
+                        seen_opens.add(key)
+                        opened.append({"type": "item_open", "container_item_id": container,
+                                       "skill_id": skill_id, "grant": grant})
+        for source in sorted(opened, key=lambda s: (s["container_item_id"], s["skill_id"],
+                                                    s.get("loot_pack_id", 0))):
+            if source["container_item_id"] in chain or source["container_item_id"] == item_id:
+                continue
+            source["container_sources"] = item_sources(
+                source["container_item_id"], supplied, spawns, data,
+                depth + 1, chain + (item_id,))
+            sources.append(source)
+    order = {"npc_loot": 0, "doodad": 1, "quest_supply": 2, "craft": 3, "store": 4,
+             "item_open": 5}
     by_type = Counter()
     kept = []
     for source in sorted(sources, key=lambda s: (order[s["type"]], not s.get("locations"),
@@ -856,6 +942,9 @@ def plan(conn, spawns, quest_filter=None, spheres=None):
                        for so in e["sources"]) for q in quests for s in q["steps"]),
                "item_steps_with_doodad_sources": sum(
                    any(so["type"] == "doodad" for e in s.get("item_sources", [])
+                       for so in e["sources"]) for q in quests for s in q["steps"]),
+               "item_steps_with_item_open": sum(
+                   any(so["type"] == "item_open" for e in s.get("item_sources", [])
                        for so in e["sources"]) for q in quests for s in q["steps"]),
                "requirement_kinds": dict(sorted(Counter(
                    r["kind"] for q in quests for r in q["requires"]).items())),
