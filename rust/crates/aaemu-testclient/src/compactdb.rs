@@ -7,7 +7,9 @@
 //! * the skill with an `InteractionEffect` of `WorldInteractionType.Use` (19) that casts on a
 //!   doodad (`systems/npcs/bridges.rs::interaction_effect`, `doodads::use_doodad`).
 
-use std::path::Path;
+use std::cell::OnceCell;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
 use anyhow::Context;
 
@@ -35,6 +37,9 @@ pub enum ItemUseSkill {
 /// Open `path` read-only; the connection is used for single-row lookups only.
 pub struct CompactDb {
     conn: rusqlite::Connection,
+    path: PathBuf,
+    /// `world_spawns.json` world name -> zone key, loaded once (`world_zone_key`).
+    worlds: OnceCell<HashMap<String, u32>>,
 }
 
 impl CompactDb {
@@ -42,7 +47,11 @@ impl CompactDb {
         let conn =
             rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
                 .with_context(|| format!("opening compact database {}", path.display()))?;
-        Ok(Self { conn })
+        Ok(Self {
+            conn,
+            path: path.to_path_buf(),
+            worlds: OnceCell::new(),
+        })
     }
 
     /// `items.use_skill_id` and, when the skill exists, its `target_type_id`
@@ -112,6 +121,120 @@ impl CompactDb {
             .optional()?;
         Ok(row)
     }
+
+    /// The default zone key of a plan world name, from the `world_spawns.json` next to the
+    /// database (`Data/Worlds/world_spawns.json`; the game's world spawn list). `None` when the
+    /// file or the world is missing.
+    pub fn world_zone_key(&self, world: &str) -> anyhow::Result<Option<u32>> {
+        if self.worlds.get().is_none() {
+            let loaded = load_world_spawns(&self.path)?;
+            let _ = self.worlds.set(loaded);
+        }
+        Ok(self
+            .worlds
+            .get()
+            .and_then(|worlds| worlds.get(&world.to_lowercase()))
+            .copied())
+    }
+
+    /// The doodad templates whose funcs enter the zone of `zone_key`
+    /// (`DoodadFuncEnterSysInstance` / `DoodadFuncEnterInstance`, resolved through
+    /// `doodad_funcs` -> `doodad_func_groups` -> `doodad_almighties`). Deterministic order
+    /// (func row, then template), deduplicated.
+    pub fn world_entrance_doodads(&self, zone_key: u32) -> anyhow::Result<Vec<u32>> {
+        let zone_id: Option<u32> = self
+            .conn
+            .query_row(
+                "SELECT id FROM zones WHERE zone_key = ?1 LIMIT 1",
+                [zone_key],
+                |r| r.get(0),
+            )
+            .optional()?;
+        let Some(zone_id) = zone_id else {
+            return Ok(Vec::new());
+        };
+        let mut out: Vec<u32> = Vec::new();
+        for func_type in ["DoodadFuncEnterSysInstance", "DoodadFuncEnterInstance"] {
+            let table = if func_type == "DoodadFuncEnterSysInstance" {
+                "doodad_func_enter_sys_instances"
+            } else {
+                "doodad_func_enter_instances"
+            };
+            let sql = format!(
+                "SELECT dfa.id \
+                 FROM {table} e \
+                 JOIN doodad_funcs df ON df.actual_func_id = e.id \
+                     AND df.actual_func_type = '{func_type}' \
+                 JOIN doodad_func_groups g ON g.id = df.doodad_func_group_id \
+                 JOIN doodad_almighties dfa ON dfa.id = g.doodad_almighty_id \
+                 WHERE e.zone_id = ?1 \
+                 ORDER BY df.id, dfa.id"
+            );
+            let mut stmt = self.conn.prepare(&sql)?;
+            let rows = stmt.query_map([zone_id], |r| r.get::<_, u32>(0))?;
+            for row in rows {
+                let template = row?;
+                if !out.contains(&template) {
+                    out.push(template);
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// A doodad template with an `DoodadFuncExitIndun` func that returns to the saved main
+    /// world position (`return_point_id` 0 / null; `funcs/world.rs::exit_indun`). The runner
+    /// spawns it inside an instance to leave.
+    pub fn exit_doodad(&self) -> anyhow::Result<Option<u32>> {
+        let row = self
+            .conn
+            .query_row(
+                "SELECT dfa.id \
+                 FROM doodad_func_exit_induns e \
+                 JOIN doodad_funcs df ON df.actual_func_id = e.id \
+                     AND df.actual_func_type = 'DoodadFuncExitIndun' \
+                 JOIN doodad_func_groups g ON g.id = df.doodad_func_group_id \
+                 JOIN doodad_almighties dfa ON dfa.id = g.doodad_almighty_id \
+                 WHERE e.return_point_id IS NULL OR e.return_point_id = 0 \
+                 ORDER BY df.id, dfa.id LIMIT 1",
+                [],
+                |r| r.get::<_, u32>(0),
+            )
+            .optional()?;
+        Ok(row)
+    }
+}
+
+/// `Data/Worlds/world_spawns.json` next to the database: `[{"Name", "SpawnPosition":
+/// {"ZoneId", ...}}]` -> lower-case name to zone key.
+fn load_world_spawns(db_path: &Path) -> anyhow::Result<HashMap<String, u32>> {
+    let Some(data_dir) = db_path.parent() else {
+        return Ok(HashMap::new());
+    };
+    let path = data_dir.join("Worlds").join("world_spawns.json");
+    if !path.exists() {
+        return Ok(HashMap::new());
+    }
+    let text = std::fs::read_to_string(&path)
+        .with_context(|| format!("reading world spawns {}", path.display()))?;
+    let value: serde_json::Value = serde_json::from_str(&text)
+        .with_context(|| format!("parsing world spawns {}", path.display()))?;
+    let mut out = HashMap::new();
+    if let Some(list) = value.as_array() {
+        for entry in list {
+            let (Some(name), Some(zone)) = (
+                entry.get("Name").and_then(|v| v.as_str()),
+                entry
+                    .get("SpawnPosition")
+                    .and_then(|s| s.get("ZoneId"))
+                    .and_then(|v| v.as_u64()),
+            ) else {
+                continue;
+            };
+            out.insert(name.to_lowercase(), zone as u32);
+        }
+    }
+    Ok(out)
 }
 
 use rusqlite::OptionalExtension as _;
@@ -161,5 +284,14 @@ mod tests {
         assert_eq!(db.mother_faction(101).unwrap(), Some(148));
         assert_eq!(db.mother_faction(109).unwrap(), Some(149));
         assert_eq!(db.mother_faction(0).unwrap(), None);
+        // The worlds next to the database map a plan world name to its default zone key; the
+        // entrance doodads of that zone are the ones the runner can spawn to enter
+        // (arche_mall_world -> zone 260 -> template 4894, the Mirage Isle portal).
+        assert_eq!(db.world_zone_key("arche_mall_world").unwrap(), Some(260));
+        assert_eq!(db.world_zone_key("instance_library").unwrap(), Some(296));
+        assert_eq!(db.world_zone_key("no_such_world").unwrap(), None);
+        assert!(db.world_entrance_doodads(260).unwrap().contains(&4894));
+        assert!(!db.world_entrance_doodads(296).unwrap().is_empty());
+        assert!(db.exit_doodad().unwrap().is_some());
     }
 }

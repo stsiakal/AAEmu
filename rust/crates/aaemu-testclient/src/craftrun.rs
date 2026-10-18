@@ -42,23 +42,31 @@ use crate::scenario::BotConfig;
 /// Packet-pump chunk used by every bounded wait.
 const PUMP: Duration = Duration::from_millis(250);
 /// Quiet window after a GM command's first reply.
-const COMMAND_QUIET: Duration = Duration::from_millis(500);
+const COMMAND_QUIET: Duration = Duration::from_millis(350);
 /// Default per-recipe timeout (`--step-timeout-secs`); the longest 1.2 craft cast is 30 s and
 /// the longest cooldown 1 s, so the default leaves plenty of room.
 pub const DEFAULT_STEP_TIMEOUT: Duration = Duration::from_secs(90);
 /// How long to wait for an item-give / labor / spawn to show its effect.
 const GM_EFFECT_WAIT: Duration = Duration::from_secs(5);
 /// Quiet window after the first craft completion signal (item task / cast end / error).
-const CRAFT_SETTLE_QUIET: Duration = Duration::from_millis(700);
+const CRAFT_SETTLE_QUIET: Duration = Duration::from_millis(350);
+/// Bag stacks that trigger a full bag trim at the next recipe (`destroy_templates` missed a
+/// destroy, or an earlier run was killed mid-recipe).
+const BAG_TRIM_THRESHOLD: usize = 35;
 /// How many expert-limit upgrades one recipe may trigger.
 const MAX_EXPERT_UPGRADES: usize = 40;
 /// `/item add` accepts at most this amount per command (`NumericSubCommandParameter` range).
 const MAX_ITEM_ADD_AMOUNT: i32 = 1000;
 /// `/labor` parses its amount as `i16` (`add_labor.rs`).
 const MAX_LABOR_AMOUNT: i32 = 32_000;
-/// A player-position distance under which an existing doodad of the required template is
-/// reused instead of spawning a new one.
-const DOODAD_REUSE_DISTANCE: f32 = 20.0;
+/// Labor power kept in reserve so one `/labor` covers many recipes (still below the i16 cap).
+const LABOR_HEADROOM: i32 = 20_000;
+/// Below this reserve (plus the recipe's cost) the labor is topped up again.
+const LABOR_REMAINING_MIN: i32 = 5_000;
+/// Doodads within this radius of the bot are considered leftovers of the sweep's own
+/// `/spawn doodad` calls and are removed at sweep start (they all land at the same 3 m spot
+/// and would block each other's line of sight, `skills/validation.rs::check` obstacle ray).
+const DOODAD_CLEANUP_RADIUS: f32 = 6.0;
 
 // -------------------------------------------------------------------------------------------
 // Compact database: craft plan data
@@ -92,6 +100,14 @@ pub struct PlanSkill {
     /// `unit_reqs` `Level` minimum of the skill (`kind_id` 1, `owner_type` `Skill`); 0 = none.
     /// The runner reaches it with `/level` (skill 16766, the Commerce craft skill, needs 10).
     pub level_min: i32,
+    /// `skills.target_type_id` (`SkillTargetType`): 8 = Doodad (normal crafts), 19 = Building
+    /// and 0 = none are not drivable by the sweep.
+    pub target_type: i32,
+    /// Whether any `skill_effects` row of the skill resolves to a `CraftEffect` (the effect
+    /// that calls `CharacterCraft.EndCraft`). Skills whose completion runs through another
+    /// effect (e.g. an `InteractionEffect` + doodad func, craft 2815/2816) cannot be driven
+    /// with `CSExecuteCraft`.
+    pub craft_effect: bool,
 }
 
 /// One `crafts` row with its materials, products and skill facts.
@@ -110,33 +126,37 @@ pub struct CraftPlan {
     pub products: Vec<PlanProduct>,
 }
 
-impl CraftPlan {
-    /// Whether the sweep can prepare and drive this recipe: every material / product id has an
-    /// `items` row (the server's `/item add` refuses templates that do not exist and
-    /// `EndCraft` would create them the same way), the craft has a skill and at most a few
-    /// rows (a 50-slot bag).
-    pub fn is_usable(&self, item_ids: &HashSet<u32>) -> bool {
-        self.skill_id != 0
-            && !self.is_pack
-            && !self.materials.is_empty()
-            && !self.products.is_empty()
-            && self.materials.len() <= 4
-            && self.products.len() <= 2
-            && self
-                .materials
-                .iter()
-                .all(|m| item_ids.contains(&m.item_id) && m.amount > 0)
-            && self
-                .products
-                .iter()
-                .all(|p| item_ids.contains(&p.item_id) && p.amount > 0)
-    }
+/// Whether the sweep can drive a recipe end to end. Only data gaps block a recipe; anything
+/// the runner itself can do (any number of material / product rows, trade packs that
+/// auto-equip, actability limits that need expert-limit steps) is allowed:
+///
+/// * the craft has a skill (`crafts.skill_id != 0`);
+/// * every `craft_materials.item_id` has an `items` row (the GM `/item add` refuses templates
+///   that do not exist; a craft without material rows passes);
+/// * every `craft_products.item_id` has an `items` row (`EndCraft` creates products the same
+///   way; a craft without product rows passes);
+/// * `crafts.req_doodad_id` has a `doodad_almighties` row (0 = portable, no station needed);
+/// * the skill's `actability_group_id` has an `actability_groups` row (0 = no proficiency).
+pub fn craft_is_usable(
+    plan: &CraftPlan,
+    item_ids: &HashSet<u32>,
+    doodad_ids: &HashSet<u32>,
+    actability_ids: &HashSet<u32>,
+) -> bool {
+    plan.skill_id != 0
+        && plan.materials.iter().all(|m| item_ids.contains(&m.item_id))
+        && plan.products.iter().all(|p| item_ids.contains(&p.item_id))
+        && (plan.req_doodad_id == 0 || doodad_ids.contains(&plan.req_doodad_id))
+        && (plan.skill.actability_group <= 0
+            || actability_ids.contains(&(plan.skill.actability_group as u32)))
 }
 
 /// Read-only access to the craft tables of `compact.sqlite3`.
 pub struct CraftDb {
     crafts: HashMap<u32, CraftPlan>,
     item_ids: HashSet<u32>,
+    doodad_ids: HashSet<u32>,
+    actability_ids: HashSet<u32>,
     /// `expert_limits.up_limit` in `ORDER BY up_limit ASC` (the server's step order).
     pub expert_caps: Vec<i32>,
     path: PathBuf,
@@ -157,7 +177,8 @@ impl CraftDb {
                  CASE WHEN EXISTS (SELECT 1 FROM craft_pack_crafts p WHERE p.craft_id = c.id) \
                       THEN 1 ELSE 0 END, \
                  COALESCE(s.consume_lp,0), COALESCE(s.actability_group_id,0), \
-                 COALESCE(s.casting_time,0), COALESCE(s.cooldown_time,0) \
+                 COALESCE(s.casting_time,0), COALESCE(s.cooldown_time,0), \
+                 COALESCE(s.target_type_id,0) \
                  FROM crafts c LEFT JOIN skills s ON s.id = c.skill_id",
             )?;
             let rows = stmt.query_map([], |r| {
@@ -177,6 +198,8 @@ impl CraftDb {
                         casting_time: r.get(9)?,
                         cooldown_time: r.get(10)?,
                         level_min: 0,
+                        target_type: r.get(11)?,
+                        craft_effect: false,
                     },
                     materials: Vec::new(),
                     products: Vec::new(),
@@ -236,6 +259,22 @@ impl CraftDb {
                 item_ids.insert(row?);
             }
         }
+        let mut doodad_ids = HashSet::new();
+        {
+            let mut stmt = conn.prepare("SELECT id FROM doodad_almighties")?;
+            let rows = stmt.query_map([], |r| r.get::<_, u32>(0))?;
+            for row in rows {
+                doodad_ids.insert(row?);
+            }
+        }
+        let mut actability_ids = HashSet::new();
+        {
+            let mut stmt = conn.prepare("SELECT id FROM actability_groups")?;
+            let rows = stmt.query_map([], |r| r.get::<_, u32>(0))?;
+            for row in rows {
+                actability_ids.insert(row?);
+            }
+        }
         let mut expert_caps = Vec::new();
         {
             let mut stmt =
@@ -257,14 +296,28 @@ impl CraftDb {
                 *entry = (*entry).max(level);
             }
         }
+        let mut craft_effect_skills = HashSet::new();
+        {
+            let mut stmt = conn.prepare(
+                "SELECT se.skill_id FROM skill_effects se JOIN effects ef ON ef.id = se.effect_id \
+                 WHERE ef.actual_type = 'CraftEffect'",
+            )?;
+            let rows = stmt.query_map([], |r| r.get::<_, u32>(0))?;
+            for row in rows {
+                craft_effect_skills.insert(row?);
+            }
+        }
         for plan in crafts.values_mut() {
             if let Some(level) = skill_levels.get(&plan.skill_id) {
                 plan.skill.level_min = *level;
             }
+            plan.skill.craft_effect = craft_effect_skills.contains(&plan.skill_id);
         }
         Ok(Self {
             crafts,
             item_ids,
+            doodad_ids,
+            actability_ids,
             expert_caps,
             path: path.to_path_buf(),
         })
@@ -290,8 +343,60 @@ impl CraftDb {
         self.item_ids.contains(&item_id)
     }
 
-    pub fn item_ids(&self) -> &HashSet<u32> {
-        &self.item_ids
+    pub fn doodad_exists(&self, doodad_id: u32) -> bool {
+        self.doodad_ids.contains(&doodad_id)
+    }
+
+    pub fn actability_exists(&self, group: u32) -> bool {
+        self.actability_ids.contains(&group)
+    }
+
+    /// [`craft_is_usable`] against this database's id sets.
+    pub fn is_usable(&self, plan: &CraftPlan) -> bool {
+        craft_is_usable(plan, &self.item_ids, &self.doodad_ids, &self.actability_ids)
+    }
+
+    /// Every craft the sweep can drive, in id order (the `--all` selection).
+    pub fn usable(&self) -> Vec<CraftPlan> {
+        let mut plans: Vec<CraftPlan> = self
+            .crafts
+            .values()
+            .filter(|p| self.is_usable(p))
+            .cloned()
+            .collect();
+        plans.sort_by_key(|p| p.id);
+        plans
+    }
+
+    /// The `--all` selection gate counts per stage, in evaluation order (the stages of
+    /// [`craft_is_usable`]). Printed at the start of a `--all` / `--sample` run so the data
+    /// gaps behind a smaller-than-expected set are visible.
+    pub fn filter_chain(&self) -> Vec<(&'static str, usize)> {
+        let mut current: Vec<CraftPlan> = self.all_crafts();
+        let mut out = Vec::new();
+        let mut stage = |name: &'static str, current: &mut Vec<CraftPlan>| {
+            out.push((name, current.len()));
+        };
+        stage("all crafts", &mut current);
+        current.retain(|p| p.skill_id != 0);
+        stage("crafts.skill_id != 0", &mut current);
+        current.retain(|p| p.materials.iter().all(|m| self.item_exists(m.item_id)));
+        stage("every craft_materials.item_id in items", &mut current);
+        current.retain(|p| p.products.iter().all(|p2| self.item_exists(p2.item_id)));
+        stage("every craft_products.item_id in items", &mut current);
+        current.retain(|p| p.req_doodad_id == 0 || self.doodad_exists(p.req_doodad_id));
+        stage(
+            "crafts.req_doodad_id in doodad_almighties (0 = pass)",
+            &mut current,
+        );
+        current.retain(|p| {
+            p.skill.actability_group <= 0 || self.actability_exists(p.skill.actability_group as u32)
+        });
+        stage(
+            "skills.actability_group_id in actability_groups (0 = pass)",
+            &mut current,
+        );
+        out
     }
 }
 
@@ -315,13 +420,14 @@ pub fn open_craft_db(compact_db: Option<&Path>) -> anyhow::Result<CraftDb> {
     )
 }
 
-/// A deterministic sample of `n` recipes spread over the actability groups: the usable plans
+/// A deterministic sample of `n` usable recipes spread over the actability groups: the plans
 /// are grouped by `skills.actability_group_id` (0 = none), groups and plans keep their id
 /// order, and groups are polled round-robin until `n` is reached.
-pub fn sample_spread(plans: &[CraftPlan], item_ids: &HashSet<u32>, n: usize) -> Vec<CraftPlan> {
+pub fn sample_spread(db: &CraftDb, n: usize) -> Vec<CraftPlan> {
+    let plans = db.all_crafts();
     let mut groups: BTreeMap<i32, Vec<&CraftPlan>> = BTreeMap::new();
-    for plan in plans {
-        if plan.is_usable(item_ids) {
+    for plan in &plans {
+        if db.is_usable(plan) {
             groups
                 .entry(plan.skill.actability_group.max(0))
                 .or_default()
@@ -755,18 +861,26 @@ pub struct EquippedItem {
     pub slot: u8,
 }
 
+/// Equipment-slot effects of one `SCItemTaskSuccessPacket`.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct EquipmentChanges {
+    pub created: Vec<EquippedItem>,
+    /// Slots whose item left the equipment container (`REMOVE` / `SEIZE` / a swap out).
+    pub removed_slots: Vec<u8>,
+}
+
 /// The equipment rows of an `SCItemTaskSuccessPacket`. Trade-pack products are auto-equipped
 /// (`craft.rs::hand_out_products` -> `inventory::try_equip_new_backpack`), so they never show
 /// up in the bag: the sweep reads their item ids off the tasks to report and clean them up.
 /// The walk mirrors `crate::inventory::apply_item_task_success` (kept separate because that
 /// helper only surfaces bag rows).
-pub fn equipment_created_tasks(body: &[u8]) -> anyhow::Result<Vec<EquippedItem>> {
+pub fn equipment_tasks(body: &[u8]) -> anyhow::Result<EquipmentChanges> {
     use aaemu_game::models::item_task::item_action;
     const SLOT_TYPE_EQUIPMENT: u8 = 1;
     let mut s = PacketStream::from_bytes(body.to_vec());
     let _action = s.read_u8()?;
     let count = s.read_u8()?;
-    let mut out = Vec::new();
+    let mut out = EquipmentChanges::default();
     for _ in 0..count {
         let action = s.read_u8()?;
         match action {
@@ -784,12 +898,11 @@ pub fn equipment_created_tasks(body: &[u8]) -> anyhow::Result<Vec<EquippedItem>>
                 s.read_u8()?;
             }
             item_action::ADD_STACK => {
-                let slot_type = s.read_u8()?;
+                let _slot_type = s.read_u8()?;
                 let _slot = s.read_u8()?;
                 s.read_u64()?;
                 s.read_i32()?;
                 s.read_u32()?;
-                let _ = slot_type;
             }
             item_action::CREATE | item_action::TAKE | item_action::CHANGE_OWNER => {
                 let slot_type = s.read_u8()?;
@@ -809,7 +922,7 @@ pub fn equipment_created_tasks(body: &[u8]) -> anyhow::Result<Vec<EquippedItem>>
                 s.read_i64()?;
                 s.read_i64()?;
                 if slot_type == SLOT_TYPE_EQUIPMENT {
-                    out.push(EquippedItem {
+                    out.created.push(EquippedItem {
                         item_id,
                         template_id,
                         slot,
@@ -817,19 +930,32 @@ pub fn equipment_created_tasks(body: &[u8]) -> anyhow::Result<Vec<EquippedItem>>
                 }
             }
             item_action::REMOVE => {
-                s.read_u8()?;
-                s.read_u8()?;
+                let slot_type = s.read_u8()?;
+                let slot = s.read_u8()?;
                 s.read_u64()?;
                 s.read_u32()?;
+                if slot_type == SLOT_TYPE_EQUIPMENT {
+                    out.removed_slots.push(slot);
+                }
             }
             item_action::SWAP_SLOT => {
-                s.read_u8()?;
-                s.read_u8()?;
-                s.read_u8()?;
-                s.read_u8()?;
-                s.read_u64()?;
-                s.read_u64()?;
+                let from_type = s.read_u8()?;
+                let from_slot = s.read_u8()?;
+                let to_type = s.read_u8()?;
+                let to_slot = s.read_u8()?;
+                let _from_id = s.read_u64()?;
+                let to_id = s.read_u64()?;
                 s.read_i32()?;
+                if from_type == SLOT_TYPE_EQUIPMENT {
+                    out.removed_slots.push(from_slot);
+                }
+                if to_type == SLOT_TYPE_EQUIPMENT {
+                    out.created.push(EquippedItem {
+                        item_id: to_id,
+                        template_id: 0,
+                        slot: to_slot,
+                    });
+                }
             }
             item_action::UPDATE_DETAIL => {
                 s.read_u8()?;
@@ -861,9 +987,12 @@ pub fn equipment_created_tasks(body: &[u8]) -> anyhow::Result<Vec<EquippedItem>>
                 s.read_u64()?;
             }
             item_action::SEIZE => {
-                s.read_u8()?;
-                s.read_u8()?;
+                let slot_type = s.read_u8()?;
+                let slot = s.read_u8()?;
                 s.read_u64()?;
+                if slot_type == SLOT_TYPE_EQUIPMENT {
+                    out.removed_slots.push(slot);
+                }
             }
             item_action::CHANGE_GRADE => {
                 s.read_u8()?;
@@ -956,6 +1085,12 @@ struct SessionState {
     actability_steps: HashMap<u32, u8>,
     /// Equipment items by `EquipmentItemSlot` index (26 = Backpack).
     equipment: HashMap<u8, EquippedItem>,
+    /// Object ids of the doodads the sweep spawned itself (`/spawn doodad`); they are removed
+    /// again so they never stack up at the spawn spot.
+    owned_doodads: Vec<u32>,
+    /// Item ids equipped when the session started (never the sweep's own auto-equipped
+    /// gliders / trade packs).
+    initial_equipment: HashSet<u64>,
 }
 
 impl SessionState {
@@ -968,8 +1103,11 @@ impl SessionState {
             }
         }
         if p.is_sc(sc::SCItemTaskSuccessPacket) {
-            if let Ok(rows) = equipment_created_tasks(&p.body) {
-                for row in rows {
+            if let Ok(changes) = equipment_tasks(&p.body) {
+                for slot in changes.removed_slots {
+                    self.equipment.remove(&slot);
+                }
+                for row in changes.created {
                     self.equipment.insert(row.slot, row);
                 }
             }
@@ -1006,6 +1144,24 @@ impl SessionState {
 
     fn step(&self, group: u32) -> u8 {
         self.actability_steps.get(&group).copied().unwrap_or(0)
+    }
+
+    /// Equipment items whose template is `template_id` (the server's material check counts
+    /// the whole inventory, `Inv::items_count` -> `all_items_by_template(None, ..)`).
+    fn equipped_count(&self, template_id: u32) -> i32 {
+        self.equipment
+            .values()
+            .filter(|item| item.template_id == template_id)
+            .count() as i32
+    }
+
+    /// Equipment items the sweep itself put into a slot (auto-equipped gliders / trade packs).
+    fn given_equipped(&self) -> Vec<EquippedItem> {
+        self.equipment
+            .values()
+            .filter(|item| !self.initial_equipment.contains(&item.item_id))
+            .copied()
+            .collect()
     }
 }
 
@@ -1177,6 +1333,11 @@ async fn setup_world(
             }
         }
     }
+    session.initial_equipment = session
+        .equipment
+        .values()
+        .map(|item| item.item_id)
+        .collect();
     if let Some(info) = game.state.self_info.clone() {
         character = RunCharacter {
             name: info.name,
@@ -1208,13 +1369,18 @@ async fn leave(game: &mut GameClient) {
 // GM command helpers
 // -------------------------------------------------------------------------------------------
 
-/// Sends a `/command` chat line, pumps packets through the session facts until the reply goes
-/// quiet, and returns the chat texts.
+/// Sends a `/command` chat line and pumps packets through the session facts until `done` has
+/// held for [`COMMAND_QUIET`] or `reply_wait` elapsed; returns the chat texts.
+///
+/// `done` matters because the area around the bot broadcasts world packets continuously, so a
+/// "packet-quiet" heuristic never fires and every command would burn the full `reply_wait`.
+/// A command without an observable effect waits `reply_wait` (used for `/level`).
 async fn run_command(
     game: &mut GameClient,
     session: &mut SessionState,
     command: &str,
     reply_wait: Duration,
+    mut done: impl FnMut(&GameState, &SessionState) -> bool,
 ) -> anyhow::Result<Vec<String>> {
     let text = format!(
         "{}{}",
@@ -1223,42 +1389,54 @@ async fn run_command(
     );
     game.chat(aaemu_game::systems::social::chat::chat_type::WHITE, &text)
         .await?;
-    let deadline = Instant::now() + reply_wait;
+    let started = Instant::now();
+    let deadline = started + reply_wait;
     let mut messages = Vec::new();
-    let mut last_packet: Option<Instant> = None;
-    while Instant::now() < deadline {
-        match game.recv_within(PUMP).await? {
-            Some(p) => {
-                session.observe(&p);
-                last_packet = Some(Instant::now());
-                if let Some(t) = chat_text(&p) {
-                    messages.push(t);
-                }
+    let mut done_since: Option<Instant> = None;
+    loop {
+        if Instant::now() >= deadline {
+            break;
+        }
+        if done_since.is_some_and(|t| t.elapsed() >= COMMAND_QUIET) {
+            break;
+        }
+        if let Some(p) = game.recv_within(PUMP).await? {
+            session.observe(&p);
+            if let Some(t) = chat_text(&p) {
+                messages.push(t);
             }
-            None => {
-                if last_packet.is_some_and(|t| t.elapsed() >= COMMAND_QUIET) {
-                    break;
-                }
+            if done_since.is_none() && done(&game.state, session) {
+                done_since = Some(Instant::now());
             }
         }
     }
+    tracing::debug!(
+        "/{command}: {} ms, {} chat",
+        started.elapsed().as_millis(),
+        messages.len()
+    );
     Ok(messages)
 }
 
-/// Waits (bounded) until `pred` holds over the game state, pumping packets through `session`.
+/// `reply_wait` for a command whose effect is observed directly (item give, labor, spawn):
+/// the success path breaks after [`COMMAND_QUIET`]; only a refusal waits the full window.
+const COMMAND_WAIT: Duration = Duration::from_secs(2);
+
+/// Waits (bounded) until `pred` holds over the game state and session facts, pumping packets
+/// through `session`.
 async fn wait_until(
     game: &mut GameClient,
     session: &mut SessionState,
     deadline: Instant,
-    mut pred: impl FnMut(&GameState) -> bool,
+    mut pred: impl FnMut(&GameState, &SessionState) -> bool,
 ) -> anyhow::Result<bool> {
     loop {
-        if pred(&game.state) {
+        if pred(&game.state, session) {
             return Ok(true);
         }
         let now = Instant::now();
         if now >= deadline {
-            return Ok(pred(&game.state));
+            return Ok(pred(&game.state, session));
         }
         let wait = PUMP.min(deadline - now);
         if let Some(p) = game.recv_within(wait).await? {
@@ -1279,7 +1457,10 @@ async fn ensure_material(
     item_id: u32,
     amount: i32,
 ) -> anyhow::Result<Result<(), String>> {
-    let count = game.state.bag_count(&[item_id]);
+    // The server's material check counts the whole inventory (`Inv::items_count` ->
+    // `all_items_by_template(None, ..)`), so an auto-equipped glider / trade pack (the GM give
+    // equips Backpack templates) satisfies the recipe as well.
+    let count = game.state.bag_count(&[item_id]) + session.equipped_count(item_id);
     if count >= amount {
         return Ok(Ok(()));
     }
@@ -1290,18 +1471,27 @@ async fn ensure_material(
             game,
             session,
             &format!("item add self {item_id} {chunk}"),
-            GM_EFFECT_WAIT,
+            COMMAND_WAIT,
+            |st, s| st.bag_count(&[item_id]) + s.equipped_count(item_id) >= amount,
         )
         .await?;
-        let deadline = Instant::now() + GM_EFFECT_WAIT;
-        let got = wait_until(game, session, deadline, |st| {
-            st.bag_count(&[item_id]) >= amount
-        })
-        .await?;
-        if got {
+        let mut after = game.state.bag_count(&[item_id]) + session.equipped_count(item_id);
+        if after >= amount {
             return Ok(Ok(()));
         }
-        let after = game.state.bag_count(&[item_id]);
+        if after <= count && messages.is_empty() {
+            // A silent give can still be in flight (server lag / save tick): give it one more
+            // command window before declaring it failed.
+            let deadline = Instant::now() + COMMAND_WAIT;
+            let _ = wait_until(game, session, deadline, |st, s| {
+                st.bag_count(&[item_id]) + s.equipped_count(item_id) > count
+            })
+            .await;
+            after = game.state.bag_count(&[item_id]) + session.equipped_count(item_id);
+        }
+        if after >= amount {
+            return Ok(Ok(()));
+        }
         if after <= count {
             return Ok(Err(format!(
                 "GM /item add created no {item_id} (had {count}, wanted {amount}; chat: {})",
@@ -1313,34 +1503,113 @@ async fn ensure_material(
     Ok(Ok(()))
 }
 
-/// Finds or spawns a doodad of `template_id` next to the bot; returns its object id.
+/// Removes every doodad the sweep spawned so far, spawns a fresh station of `template_id`
+/// next to the bot and returns its object id.
+///
+/// Spawned stations all land at the same 3 m spot in front of the bot; leaving them stacked
+/// makes the server's obstacle ray for later doodad casts hit a sibling station instead of the
+/// target (`skills/validation.rs::check`), which drops the cast silently. Only doodads the
+/// sweep spawned itself are reused or removed.
 async fn ensure_doodad(
     game: &mut GameClient,
     session: &mut SessionState,
     template_id: u32,
 ) -> anyhow::Result<Result<u32, String>> {
-    if let Some(doodad) = nearest_own_doodad(game, template_id) {
-        return Ok(Ok(doodad));
-    }
+    remove_owned_doodads(game, session).await;
+    let before: HashSet<u32> = game
+        .state
+        .doodads
+        .values()
+        .filter(|d| d.template_id == template_id)
+        .map(|d| d.obj_id)
+        .collect();
     let messages = run_command(
         game,
         session,
         &format!("spawn doodad {template_id}"),
-        GM_EFFECT_WAIT,
+        COMMAND_WAIT,
+        |st, _| {
+            st.doodads
+                .values()
+                .any(|d| d.template_id == template_id && !before.contains(&d.obj_id))
+        },
     )
     .await?;
-    let deadline = Instant::now() + GM_EFFECT_WAIT;
-    let _ = wait_until(game, session, deadline, |st| {
-        st.doodads.values().any(|d| d.template_id == template_id)
-    })
-    .await?;
-    match nearest_own_doodad(game, template_id) {
-        Some(obj_id) => Ok(Ok(obj_id)),
+    let me = game.state.self_pos;
+    let spawned = game
+        .state
+        .doodads
+        .values()
+        .filter(|d| d.template_id == template_id && !before.contains(&d.obj_id))
+        .map(|d| (d.obj_id, dist2(d.pos, me)))
+        .min_by(|a, b| a.1.total_cmp(&b.1))
+        .map(|(obj_id, _)| obj_id);
+    match spawned {
+        Some(obj_id) => {
+            session.owned_doodads.push(obj_id);
+            Ok(Ok(obj_id))
+        }
         None => Ok(Err(format!(
             "no doodad {template_id} after /spawn doodad (chat: {})",
             messages.join(" | ")
         ))),
     }
+}
+
+/// Removes the station the sweep spawned for a finished recipe.
+async fn remove_doodad(
+    game: &mut GameClient,
+    session: &mut SessionState,
+    obj_id: u32,
+) -> anyhow::Result<()> {
+    if !game.state.doodads.contains_key(&obj_id) {
+        session.owned_doodads.retain(|id| *id != obj_id);
+        return Ok(());
+    }
+    let _ = run_command(
+        game,
+        session,
+        &format!("spawn remove {obj_id}"),
+        COMMAND_WAIT,
+        move |st, _| !st.doodads.contains_key(&obj_id),
+    )
+    .await?;
+    session.owned_doodads.retain(|id| *id != obj_id);
+    Ok(())
+}
+
+async fn remove_owned_doodads(game: &mut GameClient, session: &mut SessionState) {
+    let owned = std::mem::take(&mut session.owned_doodads);
+    for obj_id in owned {
+        let _ = remove_doodad(game, session, obj_id).await;
+    }
+}
+
+/// Removes every doodad within [`DOODAD_CLEANUP_RADIUS`] of the bot (leftovers from an earlier
+/// sweep whose stations stack at the spawn spot). Run once at sweep start.
+async fn clear_nearby_doodads(
+    game: &mut GameClient,
+    session: &mut SessionState,
+) -> anyhow::Result<usize> {
+    let me = game.state.self_pos;
+    let radius2 = DOODAD_CLEANUP_RADIUS * DOODAD_CLEANUP_RADIUS;
+    let targets: Vec<u32> = game
+        .state
+        .doodads
+        .values()
+        .filter(|d| dist2(d.pos, me) <= radius2)
+        .map(|d| d.obj_id)
+        .collect();
+    for obj_id in &targets {
+        let _ = remove_doodad(game, session, *obj_id).await;
+    }
+    if !targets.is_empty() {
+        tracing::info!(
+            "craft sweep: removed {} leftover doodad(s) within {DOODAD_CLEANUP_RADIUS} m",
+            targets.len()
+        );
+    }
+    Ok(targets.len())
 }
 
 fn nearest_own_doodad(game: &GameClient, template_id: u32) -> Option<u32> {
@@ -1349,13 +1618,14 @@ fn nearest_own_doodad(game: &GameClient, template_id: u32) -> Option<u32> {
         .doodads
         .values()
         .filter(|d| d.template_id == template_id)
-        .map(|d| {
-            let (dx, dy, dz) = (d.pos.0 - me.0, d.pos.1 - me.1, d.pos.2 - me.2);
-            (d.obj_id, dx * dx + dy * dy + dz * dz)
-        })
-        .filter(|(_, dist)| *dist <= DOODAD_REUSE_DISTANCE * DOODAD_REUSE_DISTANCE)
+        .map(|d| (d.obj_id, dist2(d.pos, me)))
         .min_by(|a, b| a.1.total_cmp(&b.1))
         .map(|(obj_id, _)| obj_id)
+}
+
+fn dist2(a: (f32, f32, f32), b: (f32, f32, f32)) -> f32 {
+    let (dx, dy, dz) = (a.0 - b.0, a.1 - b.1, a.2 - b.2);
+    dx * dx + dy * dy + dz * dz
 }
 
 /// Raises the actability points of `group` to at least `limit` with `/labor` and the real
@@ -1396,9 +1666,9 @@ async fn ensure_actability(
                 body.write_u32(group).write_bool(false);
                 game.send_cs(cs::CSUpgradeExpertLimitPacket, body.as_bytes())
                     .await?;
-                let deadline = Instant::now() + GM_EFFECT_WAIT;
+                let deadline = Instant::now() + COMMAND_WAIT;
                 let mut upgraded = false;
-                while Instant::now() < deadline {
+                while Instant::now() < deadline && !upgraded {
                     let now = Instant::now();
                     let wait = PUMP.min(deadline.saturating_duration_since(now));
                     match game.recv_within(wait).await? {
@@ -1426,11 +1696,13 @@ async fn ensure_actability(
                 "actability {group} cannot advance from point {point} to {limit}"
             )));
         }
+        let before = session.labor;
         run_command(
             game,
             session,
             &format!("labor {add} {group}"),
-            GM_EFFECT_WAIT,
+            COMMAND_WAIT,
+            |_, s| s.labor != before,
         )
         .await?;
     }
@@ -1439,7 +1711,8 @@ async fn ensure_actability(
     )))
 }
 
-/// Tops up labor power to at least `needed` with a group-less `/labor` (no proficiency gain).
+/// Tops up labor power with a group-less `/labor` (no proficiency gain). The sweep keeps a
+/// large headroom so one command lasts many recipes instead of one per recipe.
 async fn ensure_labor(
     game: &mut GameClient,
     session: &mut SessionState,
@@ -1447,15 +1720,29 @@ async fn ensure_labor(
 ) -> anyhow::Result<()> {
     let Some(labor) = session.labor else {
         // The select snapshot did not decode: add the recipe's cost with a margin.
-        let add = (needed + 1000).clamp(1, MAX_LABOR_AMOUNT);
-        run_command(game, session, &format!("labor {add}"), GM_EFFECT_WAIT).await?;
+        let add = (needed + LABOR_HEADROOM).clamp(1, MAX_LABOR_AMOUNT);
+        run_command(
+            game,
+            session,
+            &format!("labor {add}"),
+            COMMAND_WAIT,
+            |_, s| s.labor.is_some(),
+        )
+        .await?;
         return Ok(());
     };
-    if labor >= needed + 20 {
+    if labor >= needed + LABOR_REMAINING_MIN {
         return Ok(());
     }
-    let add = (needed - labor + 500).clamp(1, MAX_LABOR_AMOUNT);
-    run_command(game, session, &format!("labor {add}"), GM_EFFECT_WAIT).await?;
+    let add = (needed + LABOR_HEADROOM - labor).clamp(1, MAX_LABOR_AMOUNT);
+    run_command(
+        game,
+        session,
+        &format!("labor {add}"),
+        COMMAND_WAIT,
+        |_, s| s.labor != Some(labor),
+    )
+    .await?;
     Ok(())
 }
 
@@ -1547,8 +1834,8 @@ async fn execute_craft(
             signal = true;
         }
         if p.is_sc(sc::SCItemTaskSuccessPacket) {
-            if let Ok(rows) = equipment_created_tasks(&p.body) {
-                attempt.equipped.extend(rows);
+            if let Ok(changes) = equipment_tasks(&p.body) {
+                attempt.equipped.extend(changes.created);
             }
             signal = true;
         }
@@ -1575,7 +1862,6 @@ enum Selected {
 }
 
 fn select_plans(db: &CraftDb, opts: &RunOptions) -> anyhow::Result<Vec<Selected>> {
-    let all = db.all_crafts();
     let mut selected: Vec<Selected> = if !opts.craft_ids.is_empty() {
         let mut seen = HashSet::new();
         let mut out = Vec::new();
@@ -1590,12 +1876,13 @@ fn select_plans(db: &CraftDb, opts: &RunOptions) -> anyhow::Result<Vec<Selected>
         }
         out
     } else if let Some(n) = opts.sample {
-        sample_spread(&all, db.item_ids(), n)
+        sample_spread(db, n)
             .into_iter()
             .map(|p| Selected::Plan(Box::new(p)))
             .collect()
     } else if opts.all || opts.limit.is_some() {
-        all.into_iter()
+        db.usable()
+            .into_iter()
             .map(|p| Selected::Plan(Box::new(p)))
             .collect()
     } else {
@@ -1605,6 +1892,32 @@ fn select_plans(db: &CraftDb, opts: &RunOptions) -> anyhow::Result<Vec<Selected>
         selected.truncate(limit);
     }
     Ok(selected)
+}
+
+/// Craft ids already recorded in an `--out` JSONL file (malformed lines are ignored), for
+/// resuming an interrupted sweep.
+pub fn parse_done_ids(text: &str) -> HashSet<u32> {
+    let mut done = HashSet::new();
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        if let Some(id) = value.get("craft_id").and_then(serde_json::Value::as_u64) {
+            if let Ok(id) = u32::try_from(id) {
+                done.insert(id);
+            }
+        }
+    }
+    done
+}
+
+/// [`parse_done_ids`] for an `--out` path (`None` when the file does not exist yet).
+pub fn read_done_ids(path: &Path) -> HashSet<u32> {
+    std::fs::read_to_string(path).map_or_else(|_| HashSet::new(), |text| parse_done_ids(&text))
 }
 
 fn emit(out: &mut Option<BufWriter<File>>, result: &CraftResult) -> anyhow::Result<()> {
@@ -1630,10 +1943,33 @@ fn window_messages(game: &GameClient, chat_start: u64) -> Vec<String> {
 }
 
 /// Runs the selected recipes; one JSON line per recipe goes to stdout and, when given, is
-/// appended to `opts.out`.
+/// appended to `opts.out`. An existing `--out` file makes the run resume: every craft id
+/// already present in it is skipped.
 pub async fn run(cfg: &BotConfig, opts: &RunOptions) -> anyhow::Result<RunReport> {
     let db = open_craft_db(opts.compact_db.as_deref())?;
-    let selected = select_plans(&db, opts)?;
+    if opts.all || opts.sample.is_some() {
+        println!("[craft] --all gate (counts per stage):");
+        for (stage, count) in db.filter_chain() {
+            println!("[craft]   {count:5}  {stage}");
+        }
+    }
+    let mut selected = select_plans(&db, opts)?;
+    if let Some(path) = &opts.out {
+        let done = read_done_ids(path);
+        if !done.is_empty() {
+            let before = selected.len();
+            selected.retain(|target| match target {
+                Selected::Plan(plan) => !done.contains(&plan.id),
+                Selected::Unknown(id) => !done.contains(id),
+            });
+            println!(
+                "[craft] resuming from {}: {} already recorded, {} to run",
+                path.display(),
+                before - selected.len(),
+                selected.len()
+            );
+        }
+    }
     let mut writer = match &opts.out {
         Some(path) => Some(BufWriter::new(
             OpenOptions::new()
@@ -1653,6 +1989,12 @@ pub async fn run(cfg: &BotConfig, opts: &RunOptions) -> anyhow::Result<RunReport
         session.labor.is_some(),
         "the select snapshot did not decode labor power"
     );
+
+    // Spawned stations all land at the same spot; leftovers from an earlier sweep block each
+    // other's line of sight.
+    if let Err(e) = clear_nearby_doodads(&mut game, &mut session).await {
+        tracing::warn!("could not clear leftover doodads: {e:#}");
+    }
 
     let mut raised_level = u32::from(character.start_level).max(1);
     let mut report = RunReport::default();
@@ -1776,6 +2118,33 @@ async fn run_one(
         finish(game, chat_start, start, &mut result);
         return result;
     }
+    if matches!(plan.skill.target_type, 19 | 0) {
+        // `systems/skills/skill.rs::initial_target`: `Building` resolves a house / shipyard
+        // (which the sweep cannot place), `None` logs NotSupportedException; both drop the
+        // cast silently. Crafts 276 / 2810..2813 (skill 11823) and 6277 (skill 25051).
+        result.result = CraftOutcome::Unsupported;
+        result.reason = format!(
+            "skill {} targets type {} (building / none): needs a house or shipyard target the \
+             sweep cannot place",
+            plan.skill_id, plan.skill.target_type
+        );
+        finish(game, chat_start, start, &mut result);
+        return result;
+    }
+    if !plan.skill.craft_effect {
+        // `CharacterCraft.EndCraft` only runs from a `CraftEffect` (`economy/bridges.rs`
+        // `craft_effect`); these skills complete through another effect (craft 2815/2816:
+        // `InteractionEffect` + a doodad func), so `CSExecuteCraft` only burns the cast and
+        // `Skill.EndSkill` charges the labor.
+        result.result = CraftOutcome::Unsupported;
+        result.reason = format!(
+            "skill {} has no CraftEffect (its completion runs through a doodad interaction the \
+             sweep does not drive)",
+            plan.skill_id
+        );
+        finish(game, chat_start, start, &mut result);
+        return result;
+    }
     let group = plan.skill.actability_group.max(0) as u32;
     let missing_item = plan
         .materials
@@ -1792,7 +2161,6 @@ async fn run_one(
         finish(game, chat_start, start, &mut result);
         return result;
     }
-
     // The skill's `Level` requirement (`unit_reqs` kind 1; skill 16766 wants 10).
     if plan.skill.level_min > 0 && u32::try_from(plan.skill.level_min).unwrap_or(1) > *raised_level
     {
@@ -1800,10 +2168,20 @@ async fn run_one(
             game,
             session,
             &format!("level {}", plan.skill.level_min),
-            GM_EFFECT_WAIT,
+            COMMAND_WAIT,
+            |_, _| false,
         )
         .await;
         *raised_level = plan.skill.level_min as u32;
+    }
+
+    // The sweep destroys what it creates; a missed destroy (or a killed earlier run) must not
+    // fill the 50-slot bag halfway through a long sweep.
+    if let Err(e) = trim_bag(game).await {
+        result.result = CraftOutcome::Error;
+        result.reason = format!("connection error while trimming the bag: {e:#}");
+        finish(game, chat_start, start, &mut result);
+        return result;
     }
 
     // Actability limit first (the /labor top-ups also raise labor power).
@@ -1823,6 +2201,12 @@ async fn run_one(
         }
     }
 
+    tracing::debug!(
+        "craft {}: level/actability/trim took {} ms",
+        plan.id,
+        start.elapsed().as_millis()
+    );
+
     // Materials.
     for material in &plan.materials {
         match ensure_material(game, session, material.item_id, material.amount).await {
@@ -1841,6 +2225,9 @@ async fn run_one(
             }
         }
     }
+
+    // Equipment items the material gives auto-equipped (gliders / trade packs).
+    let given_equipped = session.given_equipped();
 
     // Doodad.
     let mut doodad_obj = 0u32;
@@ -1862,6 +2249,12 @@ async fn run_one(
         }
     }
 
+    tracing::debug!(
+        "craft {}: materials/doodad took {} ms (doodad {})",
+        plan.id,
+        start.elapsed().as_millis(),
+        doodad_obj
+    );
     // Labor for the skill charge.
     result.labor_expected = labor_cost(plan.skill.consume_lp, session.step(group));
     if let Err(e) = ensure_labor(game, session, result.labor_expected).await {
@@ -1872,6 +2265,7 @@ async fn run_one(
     }
 
     let before = game.state.bag.clone();
+    let mut notes = String::new();
     let mut attempt = match execute_craft(game, session, plan, doodad_obj, opts.step_timeout).await
     {
         Ok(a) => a,
@@ -1905,7 +2299,7 @@ async fn run_one(
                     }
                 };
                 if result_is_clean(&attempt) {
-                    result.reason.push_str(" (backpack slot cleared first)");
+                    notes.push_str(" (backpack slot cleared first)");
                 }
             }
             Ok(false) => {}
@@ -1917,6 +2311,48 @@ async fn run_one(
             }
         }
     }
+    // A fully silent attempt (not a single packet) is retried: nothing was consumed, and a
+    // few crafts flake this way (a station's obstacle ray racing the previous removal, big
+    // station meshes crossing the ray). The second retry also relocates the bot so the fresh
+    // station has a different line of sight.
+    let retry_timeout = opts.step_timeout.min(Duration::from_secs(35));
+    if !attempt.responded {
+        let _ = game
+            .drain(Duration::from_millis(200), Duration::from_secs(1))
+            .await;
+        if let Ok(second) = execute_craft(game, session, plan, doodad_obj, retry_timeout).await {
+            attempt = second;
+            if result_is_clean(&attempt) {
+                notes.push_str(" (crafted on retry)");
+            }
+        }
+    }
+    if !attempt.responded && doodad_obj != 0 {
+        let (x, y, z) = game.state.self_pos;
+        let _ = run_command(
+            game,
+            session,
+            &format!("move {:.1} {:.1} {:.1}", x + 2.5, y + 1.5, z),
+            COMMAND_WAIT,
+            |_, _| false,
+        )
+        .await;
+        if let Ok(Ok(id)) = ensure_doodad(game, session, plan.req_doodad_id).await {
+            doodad_obj = id;
+        }
+        if let Ok(third) = execute_craft(game, session, plan, doodad_obj, retry_timeout).await {
+            attempt = third;
+            if result_is_clean(&attempt) {
+                notes.push_str(" (crafted after relocating)");
+            }
+        }
+    }
+    tracing::debug!(
+        "craft {}: execute took {} ms (cast {:?})",
+        plan.id,
+        start.elapsed().as_millis(),
+        attempt.cast_time_ms
+    );
     let after = game.state.bag.clone();
     let delta = bag_delta(&before, &after);
     result.materials_consumed = delta
@@ -1997,15 +2433,39 @@ async fn run_one(
         }
     }
 
+    // The station the sweep spawned for this recipe is not reused (stacking blocks later
+    // casts); remove it again.
+    if doodad_obj != 0 {
+        let _ = remove_doodad(game, session, doodad_obj).await;
+    }
+
     // Keep the bag clean for the next recipe: destroy what this recipe added (products and
     // any material the bot itself created that the craft did not consume). Materials that were
     // already in the bag (before count > 0) are left alone.
+    // A material the GM give auto-equipped is counted by `Craft()` but not consumed by
+    // `EndCraft` (it consumes from the bag only) -- worth naming in the record.
+    for item in &given_equipped {
+        if session
+            .equipment
+            .get(&item.slot)
+            .is_some_and(|current| current.item_id == item.item_id)
+        {
+            notes.push_str(&format!(
+                " (equipped material {} was not consumed: EndCraft consumes from the bag only)",
+                item.template_id
+            ));
+            break;
+        }
+    }
+
     if !opts.keep_products {
         // Free the backpack slot first: an equipped trade pack rejects every later craft
         // (`craft.rs` `can_replace_glider_in_backpack_slot`).
-        if destroy_equipped(game, &attempt.equipped).await.is_ok() {
-            for item in &attempt.equipped {
-                session.equipment.remove(&item.slot);
+        for items in [&attempt.equipped, &given_equipped] {
+            if destroy_equipped(game, session, items).await.is_ok() {
+                for item in items {
+                    session.equipment.remove(&item.slot);
+                }
             }
         }
         let mut destroy: HashSet<u32> = delta
@@ -2020,6 +2480,12 @@ async fn run_one(
         }
         destroy_templates(game, &destroy).await.ok();
     }
+    tracing::debug!(
+        "craft {}: destroy took {} ms",
+        plan.id,
+        start.elapsed().as_millis()
+    );
+    result.reason.push_str(&notes);
     finish(game, chat_start, start, &mut result);
     result
 }
@@ -2052,15 +2518,24 @@ async fn clear_backpack(game: &mut GameClient, session: &mut SessionState) -> an
         .write_i32(1);
     game.send_cs(cs::CSDestroyItemPacket, body.as_bytes())
         .await?;
-    game.drain(Duration::from_millis(300), Duration::from_secs(2))
-        .await?;
+    let deadline = Instant::now() + COMMAND_WAIT;
+    let _ = wait_until(game, session, deadline, |_, s| {
+        s.equipment
+            .get(&EQUIP_SLOT_BACKPACK)
+            .is_none_or(|current| current.item_id != item.item_id)
+    })
+    .await;
     session.equipment.remove(&EQUIP_SLOT_BACKPACK);
     Ok(true)
 }
 
 /// Destroys the equipment items a recipe created (`CSDestroyItemPacket` with the equipment
-/// slot type; trade packs the server auto-equipped).
-async fn destroy_equipped(game: &mut GameClient, items: &[EquippedItem]) -> anyhow::Result<()> {
+/// slot type; trade packs the server auto-equipped) and waits for the removal tasks.
+async fn destroy_equipped(
+    game: &mut GameClient,
+    session: &mut SessionState,
+    items: &[EquippedItem],
+) -> anyhow::Result<()> {
     if items.is_empty() {
         return Ok(());
     }
@@ -2074,8 +2549,15 @@ async fn destroy_equipped(game: &mut GameClient, items: &[EquippedItem]) -> anyh
         game.send_cs(cs::CSDestroyItemPacket, body.as_bytes())
             .await?;
     }
-    game.drain(Duration::from_millis(300), Duration::from_secs(2))
-        .await?;
+    let deadline = Instant::now() + COMMAND_WAIT;
+    let _ = wait_until(game, session, deadline, |_, s| {
+        items.iter().all(|item| {
+            s.equipment
+                .get(&item.slot)
+                .is_none_or(|current| current.item_id != item.item_id)
+        })
+    })
+    .await;
     Ok(())
 }
 
@@ -2084,6 +2566,21 @@ fn bag_template_count(bag: &Bag, template_id: u32) -> i32 {
         .filter(|i| i.template_id == template_id)
         .map(|i| i.count)
         .sum()
+}
+
+/// Destroys every bag stack when the bag grew past [`BAG_TRIM_THRESHOLD`] (the sweep owns the
+/// character's bag; this only catches destroys that failed or a killed earlier run).
+async fn trim_bag(game: &mut GameClient) -> anyhow::Result<()> {
+    if game.state.bag.len() <= BAG_TRIM_THRESHOLD {
+        return Ok(());
+    }
+    let templates: HashSet<u32> = game.state.bag.values().map(|i| i.template_id).collect();
+    tracing::info!(
+        "craft sweep: trimming {} bag stacks ({} templates)",
+        game.state.bag.len(),
+        templates.len()
+    );
+    destroy_templates(game, &templates).await
 }
 
 /// Destroys every bag stack of the given templates (`CSDestroyItemPacket`).
@@ -2109,7 +2606,7 @@ async fn destroy_templates(game: &mut GameClient, templates: &HashSet<u32>) -> a
     }
     let deadline = Instant::now() + GM_EFFECT_WAIT;
     let mut pump_state = SessionState::default();
-    let _ = wait_until(game, &mut pump_state, deadline, |st| {
+    let _ = wait_until(game, &mut pump_state, deadline, |st, _| {
         templates.iter().all(|id| st.bag_count(&[*id]) == 0)
     })
     .await;
@@ -2141,41 +2638,6 @@ mod tests {
     use crate::game::LEVEL_GAME;
     use crate::inventory::ItemInfo;
 
-    fn plan(id: u32, group: i32, mats: &[(u32, i32)], prods: &[(u32, i32)]) -> CraftPlan {
-        CraftPlan {
-            id,
-            title: format!("craft {id}"),
-            cast_delay_ms: 5000,
-            req_doodad_id: 0,
-            actability_limit: 0,
-            skill_id: id + 100_000,
-            is_pack: false,
-            skill: PlanSkill {
-                id: id + 100_000,
-                consume_lp: 10,
-                actability_group: group,
-                casting_time: 5000,
-                cooldown_time: 0,
-                level_min: 0,
-            },
-            materials: mats
-                .iter()
-                .map(|(item_id, amount)| PlanMaterial {
-                    item_id: *item_id,
-                    amount: *amount,
-                })
-                .collect(),
-            products: prods
-                .iter()
-                .map(|(item_id, amount)| PlanProduct {
-                    item_id: *item_id,
-                    amount: *amount,
-                    rate: 100,
-                })
-                .collect(),
-        }
-    }
-
     fn item(template_id: u32, item_id: u64, slot: u8, count: i32) -> ItemInfo {
         ItemInfo {
             item_id,
@@ -2199,34 +2661,159 @@ mod tests {
         s.into_bytes()
     }
 
+    /// A minimal `compact.sqlite3` shape for the craft loader (only the read tables).
+    fn write_test_db(path: &Path) {
+        let conn = rusqlite::Connection::open(path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE crafts (id INTEGER PRIMARY KEY, title TEXT, cast_delay INTEGER, \
+             req_doodad_id INTEGER, actability_limit INTEGER, skill_id INTEGER);
+             CREATE TABLE skills (id INTEGER PRIMARY KEY, consume_lp INTEGER, \
+             actability_group_id INTEGER, casting_time INTEGER, cooldown_time INTEGER, \
+             target_type_id INTEGER);
+             CREATE TABLE craft_materials (craft_id INTEGER, item_id INTEGER, amount INTEGER);
+             CREATE TABLE craft_products (craft_id INTEGER, item_id INTEGER, amount INTEGER, \
+             rate INTEGER);
+             CREATE TABLE craft_pack_crafts (craft_id INTEGER);
+             CREATE TABLE items (id INTEGER PRIMARY KEY);
+             CREATE TABLE doodad_almighties (id INTEGER PRIMARY KEY);
+             CREATE TABLE actability_groups (id INTEGER PRIMARY KEY);
+             CREATE TABLE expert_limits (up_limit INTEGER);
+             CREATE TABLE unit_reqs (owner_type TEXT, owner_id INTEGER, kind_id INTEGER, \
+             value1 INTEGER);
+             CREATE TABLE skill_effects (id INTEGER PRIMARY KEY, skill_id INTEGER, \
+             effect_id INTEGER);
+             CREATE TABLE effects (id INTEGER PRIMARY KEY, actual_type TEXT, actual_id INTEGER);",
+        )
+        .unwrap();
+        for id in 1..=100u32 {
+            conn.execute("INSERT INTO items VALUES (?1)", [id]).unwrap();
+        }
+        conn.execute("INSERT INTO doodad_almighties VALUES (568)", [])
+            .unwrap();
+        conn.execute("INSERT INTO actability_groups VALUES (4)", [])
+            .unwrap();
+        conn.execute("INSERT INTO actability_groups VALUES (11)", [])
+            .unwrap();
+        conn.execute("INSERT INTO expert_limits VALUES (10000)", [])
+            .unwrap();
+        fn add_craft(
+            conn: &rusqlite::Connection,
+            id: u32,
+            group: Option<i32>,
+            mats: &[(u32, i32)],
+            prods: &[(u32, i32)],
+            doodad: u32,
+            pack: bool,
+        ) {
+            conn.execute(
+                "INSERT INTO crafts VALUES (?1, ?2, 5000, ?3, 0, ?1)",
+                rusqlite::params![id, format!("craft {id}"), doodad],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO skills VALUES (?1, 10, ?2, 5000, 0, 8)",
+                rusqlite::params![id, group],
+            )
+            .unwrap();
+            // Every test skill completes through a CraftEffect.
+            conn.execute("INSERT INTO effects VALUES (?1, 'CraftEffect', 0)", [id])
+                .unwrap();
+            conn.execute("INSERT INTO skill_effects VALUES (?1, ?1, ?1)", [id])
+                .unwrap();
+            for (item, amount) in mats {
+                conn.execute(
+                    "INSERT INTO craft_materials VALUES (?1, ?2, ?3)",
+                    rusqlite::params![id, item, amount],
+                )
+                .unwrap();
+            }
+            for (item, amount) in prods {
+                conn.execute(
+                    "INSERT INTO craft_products VALUES (?1, ?2, ?3, 100)",
+                    rusqlite::params![id, item, amount],
+                )
+                .unwrap();
+            }
+            if pack {
+                conn.execute("INSERT INTO craft_pack_crafts VALUES (?1)", [id])
+                    .unwrap();
+            }
+        }
+        let add_craft = |id, group, mats: &[(u32, i32)], prods: &[(u32, i32)], doodad, pack| {
+            add_craft(&conn, id, group, mats, prods, doodad, pack);
+        };
+        add_craft(1, Some(4), &[(1, 1)], &[(2, 1)], 0, false);
+        add_craft(2, Some(4), &[(1, 1)], &[(2, 1)], 0, false);
+        add_craft(3, Some(4), &[(1, 1)], &[(2, 1)], 0, false);
+        add_craft(10, Some(11), &[(1, 1)], &[(2, 1)], 0, false);
+        add_craft(11, Some(11), &[(1, 1)], &[(2, 1)], 0, false);
+        add_craft(20, None, &[(1, 1)], &[(2, 1)], 0, false);
+        // A trade pack: usable (the product auto-equips and the sweep clears it).
+        add_craft(31, Some(4), &[(1, 1)], &[(2, 1)], 0, true);
+        // Data gaps: a missing item, a missing doodad template, a missing actability group.
+        add_craft(30, Some(4), &[(404, 1)], &[(2, 1)], 0, false);
+        add_craft(33, Some(4), &[(1, 1)], &[(2, 1)], 999, false);
+        add_craft(34, Some(99), &[(1, 1)], &[(2, 1)], 0, false);
+    }
+
+    fn test_db(name: &str) -> CraftDb {
+        let path =
+            std::env::temp_dir().join(format!("craftrun-{name}-{}.sqlite3", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        write_test_db(&path);
+        let db = CraftDb::open(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+        db
+    }
+
     #[test]
     fn sample_spread_round_robins_over_groups_in_id_order() {
-        let ids: HashSet<u32> = (1..=100).collect();
-        // Group 4: ids 1,2,3; group 11: ids 10,11; no group (0): id 20.
-        let mut pack = plan(31, 4, &[(1, 1)], &[(2, 1)]);
-        pack.is_pack = true;
-        let plans = vec![
-            plan(1, 4, &[(1, 1)], &[(2, 1)]),
-            plan(2, 4, &[(1, 1)], &[(2, 1)]),
-            plan(3, 4, &[(1, 1)], &[(2, 1)]),
-            plan(10, 11, &[(1, 1)], &[(2, 1)]),
-            plan(11, 11, &[(1, 1)], &[(2, 1)]),
-            plan(20, 0, &[(1, 1)], &[(2, 1)]),
-            // Unusable: a missing item and a trade pack.
-            plan(30, 4, &[(404, 1)], &[(2, 1)]),
-            pack,
-        ];
-
-        let sample = sample_spread(&plans, &ids, 4);
+        let db = test_db("sample");
+        let sample = sample_spread(&db, 4);
         let order: Vec<u32> = sample.iter().map(|p| p.id).collect();
         // Groups 0, 4, 11 in key order; the two smallest ids of group 4, then group 11.
         assert_eq!(order, vec![20, 1, 10, 2]);
-        // More than the pool: everything usable, once.
-        let all = sample_spread(&plans, &ids, 100);
+        // More than the pool: everything usable, once (the trade pack 31 included).
+        let all = sample_spread(&db, 100);
         let mut ids_all: Vec<u32> = all.iter().map(|p| p.id).collect();
         ids_all.sort_unstable();
-        assert_eq!(ids_all, vec![1, 2, 3, 10, 11, 20]);
-        assert!(sample_spread(&plans, &ids, 0).is_empty());
+        assert_eq!(ids_all, vec![1, 2, 3, 10, 11, 20, 31]);
+        assert!(sample_spread(&db, 0).is_empty());
+    }
+
+    #[test]
+    fn filter_chain_counts_each_stage_and_the_all_selection_is_the_usable_set() {
+        let db = test_db("chain");
+        let chain = db.filter_chain();
+        assert_eq!(
+            chain,
+            vec![
+                ("all crafts", 10),
+                ("crafts.skill_id != 0", 10),
+                ("every craft_materials.item_id in items", 9),
+                ("every craft_products.item_id in items", 9),
+                ("crafts.req_doodad_id in doodad_almighties (0 = pass)", 8),
+                (
+                    "skills.actability_group_id in actability_groups (0 = pass)",
+                    7
+                ),
+            ]
+        );
+        let usable: Vec<u32> = db.usable().iter().map(|p| p.id).collect();
+        assert_eq!(usable, vec![1, 2, 3, 10, 11, 20, 31]);
+    }
+
+    #[test]
+    fn resume_parser_reads_recorded_craft_ids() {
+        let text = "{\"craft_id\":5,\"result\":\"crafted\"}\n\
+                    \n\
+                    not json\n\
+                    {\"craft_id\":9}\n\
+                    {\"craft_id\":\"x\"}\n";
+        let done = parse_done_ids(text);
+        assert!(done.contains(&5) && done.contains(&9));
+        assert_eq!(done.len(), 2);
+        assert!(parse_done_ids("").is_empty());
     }
 
     #[test]
@@ -2443,12 +3030,15 @@ mod tests {
         }
         .write(&mut body);
         assert_eq!(
-            equipment_created_tasks(body.as_bytes()).unwrap(),
-            vec![EquippedItem {
-                item_id: 0x1234,
-                template_id: 24920,
-                slot: 26,
-            }]
+            equipment_tasks(body.as_bytes()).unwrap(),
+            EquipmentChanges {
+                created: vec![EquippedItem {
+                    item_id: 0x1234,
+                    template_id: 24920,
+                    slot: 26,
+                }],
+                removed_slots: Vec::new(),
+            }
         );
 
         // A bag row is not an equipment row.
@@ -2460,7 +3050,22 @@ mod tests {
             force_remove: vec![],
         }
         .write(&mut body);
-        assert!(equipment_created_tasks(body.as_bytes()).unwrap().is_empty());
+        let bag_row = equipment_tasks(body.as_bytes()).unwrap();
+        assert!(bag_row.created.is_empty() && bag_row.removed_slots.is_empty());
+
+        // A destroy of the equipped pack surfaces as a removal (the sweep waits for it).
+        it.slot_type = 1;
+        let mut body = PacketStream::new();
+        SCItemTaskSuccessPacket {
+            action: 9,
+            tasks: vec![ItemTask::remove(&it)],
+            force_remove: vec![],
+        }
+        .write(&mut body);
+        assert_eq!(
+            equipment_tasks(body.as_bytes()).unwrap().removed_slots,
+            vec![26]
+        );
     }
 
     #[test]
@@ -2601,12 +3206,28 @@ mod tests {
         // The Commerce craft skill 16766 demands level 10 (`unit_reqs` kind 1).
         assert_eq!(db.craft(2).unwrap().skill.level_min, 10);
         assert_eq!(db.craft(46).unwrap().skill.level_min, 0);
-        // The sample spread is deterministic and reaches several actability groups.
-        let sample = sample_spread(&db.all_crafts(), db.item_ids(), 40);
+        // Craft 2816's skill 12299 completes through an InteractionEffect, not a CraftEffect.
+        assert!(db.craft(46).unwrap().skill.craft_effect);
+        assert!(!db.craft(2816).unwrap().skill.craft_effect);
+        assert_eq!(db.craft(276).unwrap().skill.target_type, 19);
+        // The gate chain matches the data: thousands of usable recipes, no stage grows.
+        let chain = db.filter_chain();
+        assert_eq!(chain.first().unwrap().1, db.all_crafts().len());
+        assert!(chain.last().unwrap().1 > 2_500, "chain: {chain:?}");
+        for pair in chain.windows(2) {
+            assert!(pair[1].1 <= pair[0].1, "chain not monotonic: {chain:?}");
+        }
+        assert_eq!(
+            db.usable().len(),
+            db.all_crafts().iter().filter(|p| db.is_usable(p)).count()
+        );
+        // The sample spread is deterministic and reaches many actability groups (the fixed
+        // gate admits the groups the old <=4-materials / no-pack filters hid).
+        let sample = sample_spread(&db, 40);
         assert_eq!(sample.len(), 40);
         let mut groups: Vec<i32> = sample.iter().map(|p| p.skill.actability_group).collect();
         groups.sort_unstable();
         groups.dedup();
-        assert!(groups.len() >= 8, "groups: {groups:?}");
+        assert!(groups.len() >= 12, "groups: {groups:?}");
     }
 }

@@ -211,16 +211,28 @@ it logs in with the GM account, selects the character like `full` (or creates a 
 `CharacterNameRegex`; `--race nuian|elf|firran|harani` and `--gender m|f` pick race / gender,
 and a full account — 6 characters, the login server's `MaxCharactersPerAccount` — fails setup
 with a message to delete one), enables god mode (`/godmode true`), raises the level per quest
-to `min_level` (`/level`, which only adds the missing experience; a `Level` requirement counts
-too) and runs the selected quests in prerequisite order — explicit `--quest` lists and
-`--all-ok` alike; `--with-prereqs` pulls the prerequisite chains of the requested quests into
-the run. Each quest records one JSON result line (`completed`, `failed`, `stuck`, `rejected`,
-`prereq_missing`, `requirement_unmet`, `blocked_plan`, `auxiliary`, `no_starter`,
-`runner_unsupported`, `needs_trigger`, `error`) with the character name / race / gender /
-starting level (so lines of several bots can be merged), the per-step outcomes, the final quest
-status/objectives and the chat messages seen. A completed quest that the server dropped is
-reported with status `COMPLETED` (`SCQuestContextCompletedPacket` carries no status, so e.g.
-the prologue auto-completes no longer show the started row's status 0).
+to `min_level` (`/level`, which only adds the missing experience; a `Level` requirement and the
+level a `craft` source's recipe skill needs count too; the level never drops and is carried
+across the batch, and each line records the level it was raised to in `level_raised_to`) and
+runs the selected quests in prerequisite order — explicit `--quest` lists and
+`--all-ok` alike; within that order, ready quests are taken by lowest level demand first (ties
+by plan order), so the batch raises the bot as late as possible. `--with-prereqs` pulls the
+prerequisite chains of the requested quests into the run. Each quest records one JSON result
+line (`completed`, `failed`, `stuck`, `rejected`, `prereq_missing`, `requirement_unmet`,
+`blocked_plan`, `auxiliary`, `no_starter`, `runner_unsupported`, `needs_trigger`, `error`)
+with the character name / race / gender / starting level (so lines of several bots can be
+merged), the per-step outcomes, the final quest status/objectives and the chat messages seen. A
+completed quest that the server dropped is reported with status `COMPLETED`
+(`SCQuestContextCompletedPacket` carries no status, so e.g. the prologue auto-completes no
+longer show the started row's status 0). When a quest is still active at `READY` after its
+steps, the runner sends the object-free `CSCompleteQuestContextPacket` (the client's turn-in;
+`events.rs::on_report` runs an automatic `ConAutoComplete` / `ConReportJournal` Ready
+component). A quest the server cannot finish that way (no plan step at all — quests 1835 /
+5678 have act-less Ready components) is reported `runner_unsupported` with the code path named
+("no plan step finishes it and the server ignores the object-free turn-in"); the C#
+`QuestManagerEvents.DoReportEvents` moved object-free reports straight to the Reward step, so
+the port's `automatic_report` guard is the server-side gap. `QuestActConReportJournal` steps
+report the same way (object-free turn-in) instead of `runner_unsupported`.
 `auxiliary` plan records (no Start component) and
 `blocked` quests are recorded without running; a quest whose plan has no accept act at all (a
 Start component without acts, e.g. the prologue rewards) gets the implicit empty
@@ -258,8 +270,27 @@ bundle (`consume_source_item`) and grants its loot straight into the bag
 (`economy/loot.rs::give_loot_pack`; `gain_item` / `skill_product` variants grant directly), so
 the step repeats open -> loot -> re-obtain from the source's `container_sources` (recursively,
 depth <= 3 like `plan.py`) until the count or the step timeout, and notes
-`opened container N xK`. Gather
-sources walk every plan location and consume every visible doodad exactly once (phase changes
+`opened container N xK`. `craft` sources are made with the craft runner's flow: `/item add
+self` fills the recipe's materials, `/labor [group]` and the client's
+`CSUpgradeExpertLimitPacket` raise its actability to `crafts.actability_limit` (steps capped by
+`expert_limits.up_limit`), `/labor` tops up the labor power, `/spawn doodad` places
+`crafts.req_doodad_id` (stations within 20 m are reused) and
+`CSExecuteCraftPacket(craftId, doodadObjId, 1)` starts the craft; the recipe data comes from
+the same `--compact-db` through the craft runner's `CraftDb` (`crafts`, `craft_materials`,
+`craft_products`). Recipes that are trade packs, or whose materials / products / station / skill
+are missing from the 1.2 data, are skipped with a note. Steps whose locations name another
+world (e.g. `arche_mall_world`, `instance_library`) enter it first: the world's default zone
+comes from the `Data/Worlds/world_spawns.json` next to the compact database, its entrance
+doodads (`DoodadFuncEnterSysInstance` / `DoodadFuncEnterInstance` via `doodad_funcs` ->
+`doodad_func_groups` -> `doodad_almighties`) are spawned 3 m in front of the bot and used with
+the interaction skill, and the `SCLoadInstancePacket` answer is confirmed like the real client
+(`CSInstanceLoadedPacket` -> own `SCUnitStatePacket`; `worlds.rs::instance_loaded`); the
+closest instance is left through a `DoodadFuncExitIndun` doodad at the end of the quest
+(`indun::request_leave_instance` -> `worlds::return_to_main_world`). A world with no entrance
+data, or a failed load, fails the step with that reason (`runner_unsupported` / `timeout`)
+instead of a silent skip; the runner tracks the current world across quests. Gather
+sources walk every plan location (of the step's world) and consume every visible doodad exactly
+once (phase changes
 despawn them), the kill / use counts are in the step note, and a gather step succeeds when the
 bag count *or* the quest objective counter reaches the target (both are in the note). A hunt or
 loot step whose targets never appear waits for respawns until the step timeout, then
@@ -287,15 +318,20 @@ packets the 1.2 client sends:
 
 * `/item add self <id> <count>` fills every `craft_materials` row (a material / product template
   missing from the 1.2 `items` table is reported `unsupported`: the GM give could not create it
-  either);
+  either). A material that auto-equips (gliders / trade packs are `Backpack` templates) stays
+  equipped: the server's material check counts the whole inventory (`Inv::items_count` ->
+  `all_items_by_template(None, ..)`), while `EndCraft` consumes from the bag only, so the
+  runner notes "equipped material N was not consumed" and cleans the item up;
 * `/labor <amount> [actabilityGroupId]` tops up labor power and actability points; for a
   `crafts.actability_limit` above the current expert-limit cap it additionally walks the real
   `CSUpgradeExpertLimitPacket` -> `SCExpertLimitModifiedPacket` steps (the point clamps at the
   step's `expert_limits.up_limit`, `skills/progress.rs::change_labor_locked`);
 * a skill `Level` requirement (`unit_reqs` kind 1; the Commerce craft skill 16766 needs 10) is
   reached with `/level`;
-* `/spawn doodad <crafts.req_doodad_id>` places a required station 3 m in front (a doodad
-  already within 20 m is reused), then `CSExecuteCraftPacket(craftId, doodadObjId, count = 1)`
+* `/spawn doodad <crafts.req_doodad_id>` places a required station 3 m in front, and the
+  station is removed again after the recipe: they all land on the same spot and a leftover
+  station blocks the next cast's obstacle ray (`skills/validation.rs::check`). Leftovers within
+  6 m are cleared at sweep start. Then `CSExecuteCraftPacket(craftId, doodadObjId, count = 1)`
   starts the craft.
 
 The runner watches the cast (`SCSkillStarted` / `SCSkillFired` / `SCSkillEnded`,
@@ -310,25 +346,33 @@ the equipment item tasks into `products_equipped`), labor spent vs the skill's `
 window. After each recipe the created items (and a trade pack the server auto-equipped into the
 backpack slot) are destroyed again, so a 50-slot bag does not fill mid-sweep; a `148/315`
 (`BackpackOccupied`) rejection left over from an earlier session clears the backpack slot once
-and retries the recipe.
+and retries the recipe. A recipe with no response at all is retried once (and once more after
+the bot relocates 2.5 m so the fresh station has a clear line of sight); a craft the runner
+cannot drive is recorded `unsupported` first (`skills.target_type_id` 19 Building / 0 None, or
+a skill with no `CraftEffect` whose completion runs through a doodad interaction).
 
 ```sh
 $TC craft --config testclient.local.json --login 127.0.0.1:21237 \
           --compact-db rust/crates/aaemu-game/app/Data/compact.sqlite3 \
           --craft 153 --craft 5716 --out craft-audit.jsonl --summary
 $TC craft ... --sample 40           # 40 usable recipes spread over the actability groups
-$TC craft ... --all --limit 100     # the first 100 crafts in id order
+$TC craft ... --all                 # every usable recipe, in id order
 ```
 
 `--craft` selects single recipes (repeatable), `--sample N` a deterministic round-robin over the
-actability groups among the recipes whose materials and products all exist in the 1.2 data,
-`--all` every craft in id order; `--limit N` caps the list, `--new-character` / `--race` /
-`--gender` create a bot character like the quest runner, `--keep-products` leaves the bag deltas
-for inspection and `--summary` prints the result counts and top failure reasons. A craft whose
-server-side cast is dropped without any packet (failed skill requirement, GCD, insufficient
-labor) is recorded `timeout` naming that: `CraftHooks::start_craft_cast`
-(`systems/economy/bridges.rs`) discards `Skill.Use`'s result, so those rejections are silent
-where `CharacterCraft.Craft`'s own checks send `SCErrorMsg` pairs.
+actability groups, `--all` the whole usable set (the data-gap gate prints its counts per stage:
+7 010 crafts -> 7 005 with a skill -> 3 464 whose `craft_materials` all exist in `items` ->
+3 352 whose `craft_products` / `crafts.req_doodad_id` / actability group also resolve on this
+data). `--limit N` caps the list, `--new-character` / `--race` / `--gender` create a bot
+character like the quest runner, `--keep-products` leaves the bag deltas for inspection and
+`--summary` prints the result counts and top failure reasons. **Resume:** an existing `--out`
+file makes the run skip every craft id already recorded in it, so a long `--all` sweep can be
+run in chunks (`$TC craft ... --all --out craft-all.jsonl` again continues where it stopped).
+A craft whose server-side cast is dropped without any packet (failed skill requirement, GCD,
+insufficient labor, a station whose obstacle ray hits another station) is recorded `timeout`
+naming that: `CraftHooks::start_craft_cast` (`systems/economy/bridges.rs`) discards
+`Skill.Use`'s result, so those rejections are silent where `CharacterCraft.Craft`'s own checks
+send `SCErrorMsg` pairs.
 
 Run `login` last in a parity session: a world cookie that is never used leaves a pending entry
 on the game server, which makes the C# game server stop answering the login server (fixed in

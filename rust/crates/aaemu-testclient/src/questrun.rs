@@ -9,20 +9,22 @@
 //! step with `timeout` instead of hanging.
 
 use std::cmp::Reverse;
-use std::collections::{BTreeMap, BTreeSet, BinaryHeap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, BinaryHeap, HashMap, HashSet};
 use std::fs::{File, OpenOptions};
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-use aaemu_game::opcodes::{pp, sc};
+use aaemu_commons::PacketStream;
+use aaemu_game::opcodes::{cs, pp, sc};
 use aaemu_game::systems::skills::types::SkillCastTarget;
 use anyhow::{bail, Context};
 use futures::future::LocalBoxFuture;
 use serde::{Deserialize, Serialize};
 
 use crate::compactdb::{CompactDb, ItemUseSkill};
+use crate::craftrun::{self, CraftDb, CraftPlan};
 use crate::game::{DoodadInfo, GameClient, GameState, Packet, UnitInfo, LEVEL_PROXY};
 use crate::login::LoginClient;
 use crate::quest::{self, QuestInfo};
@@ -49,6 +51,11 @@ const LOOT_WAIT: Duration = Duration::from_secs(5);
 const USE_WAIT: Duration = Duration::from_secs(8);
 /// `plan.py::ITEM_OPEN_DEPTH`: how deep the runner follows nested `item_open` containers.
 const ITEM_OPEN_DEPTH: u32 = 3;
+/// How long an entrance / exit doodad use gets to answer with `SCLoadInstancePacket` (and the
+/// own unit state after the client's `CSInstanceLoadedPacket`).
+const WORLD_LOAD_WAIT: Duration = Duration::from_secs(8);
+/// Best-effort window for leaving an instance at the end of a quest.
+const WORLD_LEAVE_WINDOW: Duration = Duration::from_secs(15);
 /// The `/spawn` fallback window after a hunt / loot step exhausted its deadline.
 const GM_SPAWN_WINDOW: Duration = Duration::from_secs(30);
 /// Quiet / max drain after a step or teleport, to process removals and replies.
@@ -57,7 +64,7 @@ const SETTLE_MAX: Duration = Duration::from_secs(1);
 /// Quiet / max drain after the last step, before the result is recorded.
 const FINAL_QUIET: Duration = Duration::from_millis(500);
 const FINAL_MAX: Duration = Duration::from_secs(2);
-/// The world the bot spawns in; v1 only teleports within it.
+/// The main world the bot spawns in; other plan worlds are entered per step (`switch_world`).
 const MAIN_WORLD: &str = "main_world";
 /// The login server's `MaxCharactersPerAccount` (`aaemu-login/src/network/login.rs`).
 pub const MAX_CHARACTERS_PER_ACCOUNT: u32 = 6;
@@ -489,6 +496,9 @@ pub struct QuestResult {
     pub gender: u8,
     /// The character's level when the run started.
     pub start_level: u8,
+    /// The level this quest raised the character to (`/level`; never lowered, so the value
+    /// only grows across the batch). `None` when the quest ran at the level it found.
+    pub level_raised_to: Option<u32>,
     pub result: QuestOutcome,
     pub failed_step: Option<FailedStep>,
     pub steps: Vec<StepOutcome>,
@@ -552,6 +562,9 @@ pub enum StepAction {
     Report,
     /// Report a quest at a doodad (`CSCompleteQuestContextPacket` doodad field).
     ReportDoodad,
+    /// `QuestActConReportJournal`: report from the journal (object-free
+    /// `CSCompleteQuestContextPacket`; the server's automatic report runs the act).
+    ReportJournal,
     /// `QuestActObjInteraction`: use the doodad with an interaction skill.
     DoodadInteraction,
     /// `QuestActConAcceptItem`: start the quest by using the starter item.
@@ -613,6 +626,7 @@ pub fn step_action(step: &PlanStep) -> StepAction {
             }
         }
         "QuestActConReportDoodad" => StepAction::ReportDoodad,
+        "QuestActConReportJournal" => StepAction::ReportJournal,
         "QuestActObjInteraction" => StepAction::DoodadInteraction,
         "QuestActConAcceptItem" => StepAction::AcceptItem,
         "QuestActConAcceptComponent" => StepAction::AcceptComponent,
@@ -863,17 +877,20 @@ pub fn requirement_gate(quest: &PlanQuest, facts: &KnownFacts<'_>) -> Option<Str
     None
 }
 
-/// A stable topological order of the selected plan indices: prerequisites first, ties by plan
-/// order (independent of the order `selection` is given in). `cyclic` is the number of quests
-/// appended in plan order because prerequisite edges form a cycle.
+/// A stable topological order of the selected plan indices: prerequisites first, then by the
+/// quest's level demand (`level_demand`, lowest first) and plan order (independent of the order
+/// `selection` is given in). Low-level quests run before higher ones so the batch raises the
+/// bot's level as late as possible; a prerequisite always runs before its dependents.
+/// `cyclic` is the number of quests appended in plan order because prerequisite edges form a
+/// cycle.
 pub struct TopoOrder {
     pub order: Vec<usize>,
     pub cyclic: usize,
 }
 
 /// Stable topological order over the plan indices in `selection`. The input order does not
-/// matter: ready quests are always taken in plan order, so explicit `--quest` lists and
-/// `--all-ok` produce the same order for the same set.
+/// matter: ready quests are always taken by lowest level demand, then plan order, so explicit
+/// `--quest` lists and `--all-ok` produce the same order for the same set.
 pub fn topological_order(plan: &[PlanQuest], selection: &[usize]) -> TopoOrder {
     let mut selected: Vec<usize> = selection.to_vec();
     selected.sort_unstable();
@@ -891,19 +908,20 @@ pub fn topological_order(plan: &[PlanQuest], selection: &[usize]) -> TopoOrder {
             }
         }
     }
+    let key = |i: usize| (level_demand(&plan[i]), i);
     let mut ready = BinaryHeap::new();
     for &i in &selected {
         if in_degree[i] == 0 {
-            ready.push(Reverse(i));
+            ready.push(Reverse(key(i)));
         }
     }
     let mut order = Vec::with_capacity(selected.len());
-    while let Some(Reverse(i)) = ready.pop() {
+    while let Some(Reverse((_, i))) = ready.pop() {
         order.push(i);
         for &next in &dependents[i] {
             in_degree[next] -= 1;
             if in_degree[next] == 0 {
-                ready.push(Reverse(next));
+                ready.push(Reverse(key(next)));
             }
         }
     }
@@ -1140,11 +1158,15 @@ pub async fn run(
     // Validate / open the game data before the login handshake: a bad `--compact-db` path is an
     // operator error, not a run failure.
     let compact_db = open_compact_db(opts)?;
+    // The craft tables of the same database for the `craft` item sources (a missing database
+    // only makes those sources record `runner_unsupported`).
+    let craft_db = craftrun::open_craft_db(opts.compact_db.as_deref()).ok();
     let (mut game, character) = setup_world(cfg, &rec, opts).await?;
     // God mode keeps the bot alive while it stands in the spawns; `/level` is issued per quest.
     game.gm("godmode true", Duration::from_secs(1)).await.ok();
 
     let mut raised_level = u32::from(character.start_level).max(1);
+    let mut world_tracker = WorldTracker::default();
     let mut report = RunReport {
         ordering_cyclic,
         ..RunReport::default()
@@ -1168,7 +1190,9 @@ pub async fn run(
                     quest,
                     &character,
                     &mut raised_level,
+                    &mut world_tracker,
                     compact_db.as_ref(),
+                    craft_db.as_ref(),
                     opts.step_timeout,
                 )
                 .await
@@ -1225,6 +1249,7 @@ fn missing_quest_result(id: u32, character: &RunCharacter) -> QuestResult {
         race: character.race,
         gender: character.gender,
         start_level: character.start_level,
+        level_raised_to: None,
         result: QuestOutcome::BlockedPlan,
         failed_step: None,
         steps: Vec::new(),
@@ -1244,6 +1269,7 @@ fn disconnected_result(quest: &PlanQuest, character: &RunCharacter) -> QuestResu
         race: character.race,
         gender: character.gender,
         start_level: character.start_level,
+        level_raised_to: None,
         result: QuestOutcome::Error,
         failed_step: None,
         steps: Vec::new(),
@@ -1456,12 +1482,15 @@ async fn leave(game: &mut GameClient) {
 
 // ----- one quest -----
 
+#[allow(clippy::too_many_arguments)]
 async fn run_quest(
     game: &mut GameClient,
     quest: &PlanQuest,
     character: &RunCharacter,
     raised_level: &mut u32,
+    world_tracker: &mut WorldTracker,
     compact_db: Option<&CompactDb>,
+    craft_db: Option<&CraftDb>,
     step_timeout: Duration,
 ) -> QuestResult {
     let start = Instant::now();
@@ -1470,10 +1499,20 @@ async fn run_quest(
     let mut failed_step = None;
     let mut last_info = None;
     let mut outcome = None;
+    let mut level_raised_to = None;
 
     if let Some(gate) = plan_gate(quest) {
         return result_line(
-            game, quest, character, gate, None, steps, last_info, chat_start, start,
+            game,
+            quest,
+            character,
+            gate,
+            failed_step,
+            steps,
+            last_info,
+            level_raised_to,
+            chat_start,
+            start,
         );
     }
 
@@ -1497,19 +1536,23 @@ async fn run_quest(
             Some(gate_failed_step(reason)),
             steps,
             last_info,
+            level_raised_to,
             chat_start,
             start,
         );
     }
 
     // Meet the quest's level demand (`min_level` when present, else `level`; `Level`
-    // requirements included); `/level` only adds the missing experience, never lowers.
-    let demand = level_demand(quest);
+    // requirements and the level the quest's craft sources need included); `/level` only adds
+    // the missing experience, never lowers, and the ensured level carries over to the next
+    // quests. The raise (and the level it reached) is recorded in the result line.
+    let demand = level_demand(quest).max(craft_level_demand(quest, craft_db));
     if demand >= 2 && demand > *raised_level {
         game.gm(&format!("level {demand}"), Duration::from_secs(2))
             .await
             .ok();
         *raised_level = demand;
+        level_raised_to = Some(demand);
     }
 
     // `unit_reqs` the runner can decide (race / gender / level from the selected character,
@@ -1544,6 +1587,7 @@ async fn run_quest(
             Some(gate_failed_step(reason)),
             steps,
             last_info,
+            level_raised_to,
             chat_start,
             start,
         );
@@ -1566,6 +1610,7 @@ async fn run_quest(
                 Some(gate_failed_step(f.reason)),
                 steps,
                 last_info,
+                level_raised_to,
                 chat_start,
                 start,
             );
@@ -1576,7 +1621,44 @@ async fn run_quest(
     for (i, step) in quest.steps.iter().enumerate() {
         let t0 = Instant::now();
         let deadline = t0 + step_timeout;
-        let res: Result<(StepOutcomeKind, String), StepFailure> = match step_action(step) {
+        let action = step_action(step);
+        // Other worlds: enter the world this step targets (leaving one first when coming from
+        // another); the world is left again after the quest. Steps that run nothing (skip /
+        // passive) or fail before touching the world (unsupported / needs_trigger) stay where
+        // the bot is.
+        if !matches!(
+            action,
+            StepAction::Skip
+                | StepAction::Passive
+                | StepAction::Unsupported
+                | StepAction::NeedsTrigger
+        ) {
+            if let Err(f) = switch_world(
+                game,
+                world_tracker,
+                step_world(step).as_deref(),
+                compact_db,
+                deadline,
+            )
+            .await
+            {
+                steps.push(StepOutcome {
+                    act_id: step.act_id,
+                    act_type: step.act_type.clone(),
+                    outcome: f.step,
+                    note: f.reason.clone(),
+                    ms: t0.elapsed().as_millis() as u64,
+                });
+                outcome = Some(f.quest);
+                failed_step = Some(FailedStep {
+                    act_id: step.act_id,
+                    act_type: step.act_type.clone(),
+                    reason: f.reason,
+                });
+                break;
+            }
+        }
+        let res: Result<(StepOutcomeKind, String), StepFailure> = match action {
             StepAction::Skip => Ok((StepOutcomeKind::Skipped, String::new())),
             StepAction::Passive => Ok((StepOutcomeKind::Passive, String::new())),
             StepAction::Accept => step_accept(game, quest.quest_id, step, deadline).await,
@@ -1589,6 +1671,7 @@ async fn run_quest(
             StepAction::ReportDoodad => {
                 step_report_doodad(game, quest.quest_id, step, deadline).await
             }
+            StepAction::ReportJournal => step_report_journal(game, quest.quest_id, deadline).await,
             StepAction::DoodadInteraction => {
                 step_doodad_interaction(
                     game,
@@ -1601,16 +1684,34 @@ async fn run_quest(
                 .await
             }
             StepAction::Gather => {
-                step_gather(game, quest.quest_id, step, indices[i], compact_db, deadline).await
+                step_gather(
+                    game,
+                    quest.quest_id,
+                    step,
+                    indices[i],
+                    compact_db,
+                    craft_db,
+                    deadline,
+                )
+                .await
             }
             StepAction::AcceptItem => {
-                step_accept_item(game, quest.quest_id, step, compact_db, deadline).await
+                step_accept_item(game, quest.quest_id, step, compact_db, craft_db, deadline).await
             }
             StepAction::AcceptComponent => {
                 step_accept_component(game, quest.quest_id, deadline).await
             }
             StepAction::UseItem => {
-                step_use_item(game, quest.quest_id, step, indices[i], compact_db, deadline).await
+                step_use_item(
+                    game,
+                    quest.quest_id,
+                    step,
+                    indices[i],
+                    compact_db,
+                    craft_db,
+                    deadline,
+                )
+                .await
             }
             StepAction::Sphere => {
                 step_sphere(game, quest.quest_id, step, indices[i], deadline).await
@@ -1672,17 +1773,51 @@ async fn run_quest(
     let drain_failed = game.drain(FINAL_QUIET, FINAL_MAX).await.is_err();
     snapshot(game, quest.quest_id, &mut last_info);
 
+    // Still active at READY: the server waits for the client's turn-in. The object-free
+    // `CSCompleteQuestContextPacket` is the one trigger that moves an automatic Ready component
+    // (`ConAutoComplete` / `ConReportJournal`) on to the Reward step (`events.rs::on_report`).
+    if outcome.is_none()
+        && !quest_completed(game, quest.quest_id)
+        && !quest_failed(game, quest.quest_id)
+        && quest_ready(game, quest.quest_id)
+    {
+        let _ = game.complete_quest(quest.quest_id, 0, 0).await;
+        let _ = game.drain(FINAL_QUIET, FINAL_MAX).await;
+        snapshot(game, quest.quest_id, &mut last_info);
+    }
+
     let outcome = match outcome {
         Some(o) => o,
         None if quest_completed(game, quest.quest_id) => QuestOutcome::Completed,
         None if quest_failed(game, quest.quest_id) => QuestOutcome::Failed,
         None if drain_failed => QuestOutcome::Error,
+        None if quest_ready(game, quest.quest_id) && only_passive_steps(quest) => {
+            // No client trigger can finish it: the plan has no active step and the server
+            // ignores the object-free report for an act-less Ready component (see
+            // `unfinished_ready_reason`).
+            failed_step = Some(gate_failed_step(unfinished_ready_reason(quest)));
+            QuestOutcome::RunnerUnsupported
+        }
         None => {
             // A quest whose run produced no step failure must still carry a clear reason.
             failed_step = Some(stuck_failed_step(quest));
             QuestOutcome::Stuck
         }
     };
+
+    // Leave an instance the quest entered (best effort: the next quest starts in the main world
+    // through the tracker anyway).
+    if world_tracker.current.is_some() {
+        let _ = switch_world(
+            game,
+            world_tracker,
+            None,
+            compact_db,
+            Instant::now() + WORLD_LEAVE_WINDOW,
+        )
+        .await;
+    }
+
     result_line(
         game,
         quest,
@@ -1691,6 +1826,7 @@ async fn run_quest(
         failed_step,
         steps,
         last_info,
+        level_raised_to,
         chat_start,
         start,
     )
@@ -1705,6 +1841,7 @@ fn result_line(
     failed_step: Option<FailedStep>,
     steps: Vec<StepOutcome>,
     last_info: Option<QuestInfo>,
+    level_raised_to: Option<u32>,
     chat_start: u64,
     start: Instant,
 ) -> QuestResult {
@@ -1717,6 +1854,7 @@ fn result_line(
         race: character.race,
         gender: character.gender,
         start_level: character.start_level,
+        level_raised_to,
         result: outcome,
         failed_step,
         steps,
@@ -1775,6 +1913,44 @@ fn quest_completed(game: &GameClient, quest_id: u32) -> bool {
 /// Failure seen live in this session (the select snapshot can also carry `FAILED` rows).
 fn quest_failed(game: &GameClient, quest_id: u32) -> bool {
     game.state.last_failed == Some(quest_id)
+}
+
+/// The quest is still active at `READY` (the server waits for the client's turn-in).
+fn quest_ready(game: &GameClient, quest_id: u32) -> bool {
+    quest_ready_state(&game.state, quest_id)
+}
+
+/// [`quest_ready`] on a plain state (unit tests).
+fn quest_ready_state(state: &GameState, quest_id: u32) -> bool {
+    state
+        .quests
+        .get(&quest_id)
+        .is_some_and(|q| q.status == aaemu_game::systems::quests::model::status::READY)
+}
+
+/// The plan has no step that could finish the quest: no steps at all, or only passive/skipped
+/// ones. Quests 1835 (`(test)`) and 5678 (`orders`) have act-less Ready components: the server
+/// walks them to READY on accept and no client trigger finishes them.
+fn only_passive_steps(quest: &PlanQuest) -> bool {
+    quest
+        .steps
+        .iter()
+        .all(|s| matches!(step_action(s), StepAction::Passive | StepAction::Skip))
+}
+
+/// Why a READY quest the runner cannot finish stays open. The server ignores the object-free
+/// report when the Ready component has no `ConAutoComplete` / `ConReportJournal` act
+/// (`events.rs::on_report` `automatic_report`), and these quests have no act to drive at all.
+/// The C# `QuestManagerEvents.DoReportEvents` moved an object-free report straight to the
+/// Reward step (`quest.Step = QuestComponentKind.Reward`), so the port's guard is what leaves
+/// act-less quests unfinished — a server-side gap reported here with its code path.
+fn unfinished_ready_reason(quest: &PlanQuest) -> String {
+    format!(
+        "quest {} stays in READY: no plan step finishes it and the server ignores the \
+         object-free turn-in (events.rs::on_report needs a ConAutoComplete/ConReportJournal act \
+         in the Ready component; the C# moved object-free reports to the Reward step)",
+        quest.quest_id
+    )
 }
 
 fn objective_count(game: &GameClient, quest_id: u32, index: u8) -> i32 {
@@ -1876,33 +2052,236 @@ impl StepFailure {
     }
 }
 
-// ----- shared waits -----
+// ----- worlds -----
 
-/// The first main-world location of a step (v1 teleports nowhere else).
-fn step_location(step: &PlanStep) -> Result<(f32, f32, f32), StepFailure> {
-    if let Some(loc) = step
-        .locations
-        .iter()
-        .find(|l| l.world.eq_ignore_ascii_case(MAIN_WORLD))
-    {
-        return Ok((loc.x, loc.y, loc.z));
-    }
-    Err(match step.locations.first() {
-        Some(loc) => StepFailure::plan(
-            QuestOutcome::RunnerUnsupported,
-            StepOutcomeKind::Unsupported,
-            format!(
-                "target is in world '{}' (v1 only teleports within {MAIN_WORLD})",
-                loc.world
-            ),
-        ),
-        None => StepFailure::plan(
-            QuestOutcome::RunnerUnsupported,
-            StepOutcomeKind::Unsupported,
-            "step has no spawn location",
-        ),
-    })
+/// The plan world the bot is in (`None` = `main_world`), tracked by [`switch_world`]. The
+/// tracker persists across the whole run, so every quest starts in the world the previous one
+/// left it in.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct WorldTracker {
+    pub current: Option<String>,
 }
+
+/// The plan world a step targets: the world of its first location (a step without locations,
+/// e.g. a sphere act, falls back to its first sphere). `None` = `main_world` or no data.
+pub fn step_world(step: &PlanStep) -> Option<String> {
+    let world = step
+        .locations
+        .first()
+        .map(|l| l.world.as_str())
+        .or_else(|| {
+            step.spheres
+                .as_deref()
+                .and_then(|spheres| spheres.first())
+                .map(|sphere| sphere.world.as_str())
+        })?;
+    (!world.eq_ignore_ascii_case(MAIN_WORLD)).then(|| world.to_string())
+}
+
+/// The first location of a step (plan order). [`run_quest`] switched the bot into the step's
+/// world first ([`step_world`]), so the location is where the step's target lives.
+fn step_location(step: &PlanStep) -> Result<(f32, f32, f32), StepFailure> {
+    step.locations
+        .first()
+        .map(|loc| (loc.x, loc.y, loc.z))
+        .ok_or_else(|| {
+            StepFailure::plan(
+                QuestOutcome::RunnerUnsupported,
+                StepOutcomeKind::Unsupported,
+                "step has no spawn location",
+            )
+        })
+}
+
+/// Spawns a GM doodad of `template` next to the bot and waits for the new object (a doodad of
+/// the template that was visible before the spawn is not the new one). `/spawn doodad <id>`
+/// (`commands/scripts/spawn.rs`).
+async fn spawn_world_doodad(
+    game: &mut GameClient,
+    template: u32,
+    deadline: Instant,
+) -> Result<DoodadInfo, StepFailure> {
+    let before: HashSet<u32> = game
+        .state
+        .doodads
+        .values()
+        .filter(|d| d.template_id == template)
+        .map(|d| d.obj_id)
+        .collect();
+    let messages = game
+        .gm(
+            &format!("spawn doodad {template}"),
+            Duration::from_millis(1500),
+        )
+        .await
+        .map_err(StepFailure::io)?;
+    if messages
+        .iter()
+        .any(|m| m.contains("don't exist") || m.contains("parse error"))
+    {
+        return Err(StepFailure::unsupported_reason(format!(
+            "cannot spawn doodad {template}: {}",
+            messages.join("; ")
+        )));
+    }
+    let appear = (Instant::now() + APPEAR_WAIT).min(deadline);
+    loop {
+        if let Some(doodad) = game
+            .state
+            .doodads
+            .values()
+            .filter(|d| d.template_id == template && !before.contains(&d.obj_id))
+            .min_by(|a, b| {
+                dist2(a.pos, game.state.self_pos).total_cmp(&dist2(b.pos, game.state.self_pos))
+            })
+            .cloned()
+        {
+            return Ok(doodad);
+        }
+        let left = appear.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Err(StepFailure::timeout(format!(
+                "doodad {template} did not appear after /spawn doodad"
+            )));
+        }
+        game.recv_within(left.min(PUMP))
+            .await
+            .map_err(StepFailure::io)?;
+    }
+}
+
+/// Waits for the world-load answer of an entrance / exit use and confirms it like the real
+/// client: `SCLoadInstancePacket` -> `CSInstanceLoadedPacket` -> own `SCUnitStatePacket`
+/// (`systems/instances/worlds.rs::instance_loaded`). `Ok(false)` when no load arrived.
+async fn wait_world_load(game: &mut GameClient, deadline: Instant) -> Result<bool, StepFailure> {
+    let load = wait_for_packet(
+        game,
+        (Instant::now() + WORLD_LOAD_WAIT).min(deadline),
+        |p| p.is_sc(sc::SCLoadInstancePacket),
+    )
+    .await
+    .map_err(StepFailure::io)?;
+    if load.is_none() {
+        return Ok(false);
+    }
+    game.confirm_instance_loaded()
+        .await
+        .map_err(StepFailure::io)?;
+    let _ = wait_for_packet(
+        game,
+        (Instant::now() + WORLD_LOAD_WAIT).min(deadline),
+        |p| p.is_sc(sc::SCUnitStatePacket),
+    )
+    .await
+    .map_err(StepFailure::io)?;
+    settle(game, deadline).await;
+    Ok(true)
+}
+
+/// Enters the plan world `name`: the entrance doodad template of the world's default zone
+/// (`Data/Worlds/world_spawns.json` -> `zones` -> `DoodadFuncEnterSysInstance` /
+/// `DoodadFuncEnterInstance`) is spawned next to the bot and used with the interaction skill.
+async fn enter_world(
+    game: &mut GameClient,
+    name: &str,
+    compact_db: Option<&CompactDb>,
+    deadline: Instant,
+) -> Result<(), StepFailure> {
+    let Some(db) = compact_db else {
+        return Err(StepFailure::unsupported_reason(format!(
+            "entering world '{name}' needs --compact-db (game data)"
+        )));
+    };
+    let Some(zone_key) = db.world_zone_key(name).map_err(StepFailure::io)? else {
+        return Err(StepFailure::unsupported_reason(format!(
+            "no world '{name}' in the game data (Data/Worlds/world_spawns.json)"
+        )));
+    };
+    let entrances = db
+        .world_entrance_doodads(zone_key)
+        .map_err(StepFailure::io)?;
+    let Some(&template) = entrances.first() else {
+        return Err(StepFailure::unsupported_reason(format!(
+            "no entrance doodad for world '{name}' (zone key {zone_key}) in the game data"
+        )));
+    };
+    let Some(skill) = db.interaction_use_skill().map_err(StepFailure::io)? else {
+        return Err(StepFailure::unsupported_reason(
+            "the game data has no InteractionEffect Use skill",
+        ));
+    };
+    let doodad = spawn_world_doodad(game, template, deadline).await?;
+    game.use_doodad(skill, doodad.obj_id)
+        .await
+        .map_err(StepFailure::io)?;
+    if !wait_world_load(game, deadline).await? {
+        return Err(StepFailure::timeout(format!(
+            "no SCLoadInstancePacket after using entrance doodad {template} for world '{name}'"
+        )));
+    }
+    Ok(())
+}
+
+/// Leaves the current instance back to the saved main-world position
+/// (`DoodadFuncExitIndun` -> `indun::request_leave_instance` -> `worlds::return_to_main_world`).
+async fn exit_world(
+    game: &mut GameClient,
+    compact_db: Option<&CompactDb>,
+    deadline: Instant,
+) -> Result<(), StepFailure> {
+    let Some(db) = compact_db else {
+        return Err(StepFailure::unsupported_reason(
+            "leaving an instance needs --compact-db (game data)",
+        ));
+    };
+    let Some(template) = db.exit_doodad().map_err(StepFailure::io)? else {
+        return Err(StepFailure::unsupported_reason(
+            "no DoodadFuncExitIndun doodad in the game data",
+        ));
+    };
+    let Some(skill) = db.interaction_use_skill().map_err(StepFailure::io)? else {
+        return Err(StepFailure::unsupported_reason(
+            "the game data has no InteractionEffect Use skill",
+        ));
+    };
+    let doodad = spawn_world_doodad(game, template, deadline).await?;
+    game.use_doodad(skill, doodad.obj_id)
+        .await
+        .map_err(StepFailure::io)?;
+    if !wait_world_load(game, deadline).await? {
+        return Err(StepFailure::timeout(format!(
+            "no SCLoadInstancePacket after using the exit doodad {template}"
+        )));
+    }
+    Ok(())
+}
+
+/// Puts the bot into the plan world `world` (`None` = `main_world`) when it is not there yet:
+/// leaves the current instance first, then enters the target world. Used before every step that
+/// targets another world and, best effort, at the end of a quest.
+async fn switch_world(
+    game: &mut GameClient,
+    tracker: &mut WorldTracker,
+    world: Option<&str>,
+    compact_db: Option<&CompactDb>,
+    deadline: Instant,
+) -> Result<(), StepFailure> {
+    let target = world.map(str::to_string);
+    if tracker.current == target {
+        return Ok(());
+    }
+    if tracker.current.is_some() {
+        exit_world(game, compact_db, deadline).await?;
+        tracker.current = None;
+    }
+    if let Some(name) = &target {
+        enter_world(game, name, compact_db, deadline).await?;
+        tracker.current = target;
+    }
+    Ok(())
+}
+
+// ----- shared waits -----
 
 /// ~2 m beside a spawn point.
 fn near(pos: (f32, f32, f32)) -> (f32, f32, f32) {
@@ -2271,6 +2650,29 @@ async fn step_report_doodad(
     }
 }
 
+/// `QuestActConReportJournal`: report from the journal, no world object. The server's
+/// object-free `CSCompleteQuestContextPacket` (`events.rs::on_report`) runs the automatic report
+/// for a Ready component with a `ConReportJournal` act and completes the quest.
+async fn step_report_journal(game: &mut GameClient, quest_id: u32, deadline: Instant) -> StepRun {
+    game.complete_quest(quest_id, 0, 0)
+        .await
+        .map_err(StepFailure::io)?;
+    let found = wait_for_packet(game, deadline, |p| {
+        completed_for(p, quest_id) || p.is_sc(sc::SCErrorMsgPacket)
+    })
+    .await
+    .map_err(StepFailure::io)?;
+    match found {
+        Some(p) if completed_for(&p, quest_id) => Ok((StepOutcomeKind::Ok, "journal".into())),
+        Some(p) => Err(StepFailure::rejected(quest_id, "report", &p)),
+        None if quest_completed(game, quest_id) => Ok((StepOutcomeKind::Ok, "journal".into())),
+        None if quest_failed(game, quest_id) => Err(StepFailure::quest_failed(quest_id)),
+        None => Err(StepFailure::timeout(format!(
+            "no SCQuestContextCompleted for quest {quest_id} (journal report)"
+        ))),
+    }
+}
+
 /// `QuestActObjInteraction`: use the doodad with an interaction skill. `InteractionEffect`
 /// (`systems/npcs/bridges.rs`) -> `doodad.Use` -> the phase funcs, plus the quest
 /// `on_doodad_interaction` event.
@@ -2333,6 +2735,501 @@ async fn step_doodad_interaction(
     ))
 }
 
+// ----- crafting (craft item sources) -----
+
+/// How long a craft GM command's effect (item give / labor / doodad spawn) gets to show.
+const CRAFT_GM_WAIT: Duration = Duration::from_secs(5);
+/// Quiet window after a craft GM command's first reply.
+const CRAFT_COMMAND_QUIET: Duration = Duration::from_millis(350);
+/// `/item add` accepts at most this many per command (as in the craft runner).
+const CRAFT_ITEM_ADD_CHUNK: i32 = 1000;
+/// `/labor` takes an i16 amount (`scripts/add_labor.rs`).
+const CRAFT_LABOR_MAX: i32 = 32_000;
+/// Cap on expert-limit upgrades per craft attempt.
+const CRAFT_MAX_EXPERT_UPGRADES: usize = 40;
+/// A required craft station within this distance is reused instead of spawning a new one.
+const CRAFT_STATION_REUSE_DISTANCE: f32 = 20.0;
+
+/// The actability facts of one craft attempt (`SCCharacterLaborPowerChangedPacket`,
+/// `SCActabilityPacket`, `SCExpertLimitModifiedPacket`): the subset of the craft runner's
+/// `SessionState` this arm needs. [`craft_pump`] / [`craft_command`] decode the packets they
+/// pump, which the runner's plain command helpers would otherwise swallow.
+#[derive(Debug, Default)]
+struct CraftState {
+    points: HashMap<u32, i32>,
+    steps: HashMap<u32, u8>,
+    /// The last `SCErrorMsg` codes seen while casting (`e1`, `e2`).
+    last_error: Option<(i16, i16)>,
+}
+
+impl CraftState {
+    fn observe(&mut self, p: &Packet) {
+        if p.is_sc(sc::SCErrorMsgPacket) {
+            let mut s = p.stream();
+            if let (Ok(e1), Ok(e2)) = (s.read_i16(), s.read_i16()) {
+                self.last_error = Some((e1, e2));
+            }
+        }
+        if p.is_sc(sc::SCActabilityPacket) {
+            let mut s = p.stream();
+            if s.read_bool().is_ok() {
+                if let Ok(n) = s.read_u8() {
+                    for _ in 0..n {
+                        let (Ok(id), Ok(point), Ok(step)) =
+                            (s.read_u32(), s.read_i32(), s.read_u8())
+                        else {
+                            break;
+                        };
+                        self.points.insert(id, point);
+                        self.steps.insert(id, step);
+                    }
+                }
+            }
+        }
+        if p.is_sc(sc::SCCharacterLaborPowerChangedPacket) {
+            let mut s = p.stream();
+            let (Ok(_amount), Ok(action), Ok(point), Ok(step)) =
+                (s.read_i32(), s.read_i32(), s.read_i32(), s.read_u8())
+            else {
+                return;
+            };
+            if action > 0 && point != 0 {
+                *self.points.entry(action as u32).or_insert(0) += point;
+                if step > 0 {
+                    self.steps.insert(action as u32, step);
+                }
+            }
+        }
+        if p.is_sc(sc::SCExpertLimitModifiedPacket) {
+            let mut s = p.stream();
+            let (Ok(upgrade), Ok(id), Ok(step)) = (s.read_bool(), s.read_u32(), s.read_u8()) else {
+                return;
+            };
+            if upgrade {
+                self.steps.insert(id, step);
+            }
+        }
+    }
+
+    fn point(&self, group: u32) -> i32 {
+        self.points.get(&group).copied().unwrap_or(0)
+    }
+
+    fn step(&self, group: u32) -> u8 {
+        self.steps.get(&group).copied().unwrap_or(0)
+    }
+}
+
+/// Pumps packets (through [`CraftState`] and the game state) until `done` matches or the
+/// deadline passes; `Ok(false)` on the deadline. `done` sees the updated facts explicitly, so
+/// it never captures the state it inspects.
+async fn craft_pump(
+    game: &mut GameClient,
+    state: &mut CraftState,
+    deadline: Instant,
+    mut done: impl FnMut(&Packet, &CraftState, &GameState) -> bool,
+) -> Result<bool, StepFailure> {
+    loop {
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Ok(false);
+        }
+        let Some(p) = game
+            .recv_within(left.min(PUMP))
+            .await
+            .map_err(StepFailure::io)?
+        else {
+            continue;
+        };
+        state.observe(&p);
+        if done(&p, state, &game.state) {
+            return Ok(true);
+        }
+    }
+}
+
+/// Sends a `/command` chat line, pumps until its reply goes quiet and returns the chat texts
+/// (the craft runner's `run_command`; the packets also feed the [`CraftState`]).
+async fn craft_command(
+    game: &mut GameClient,
+    state: &mut CraftState,
+    command: &str,
+    reply_wait: Duration,
+) -> Result<Vec<String>, StepFailure> {
+    let text = format!(
+        "{}{}",
+        aaemu_game::systems::services::commands::COMMAND_PREFIX,
+        command
+    );
+    game.chat(aaemu_game::systems::social::chat::chat_type::WHITE, &text)
+        .await
+        .map_err(StepFailure::io)?;
+    let deadline = Instant::now() + reply_wait;
+    let mut messages = Vec::new();
+    let mut last_packet: Option<Instant> = None;
+    while Instant::now() < deadline {
+        match game.recv_within(PUMP).await.map_err(StepFailure::io)? {
+            Some(p) => {
+                state.observe(&p);
+                last_packet = Some(Instant::now());
+                if let Some(text) = crate::game::chat_text(&p) {
+                    messages.push(text);
+                }
+            }
+            None => {
+                if last_packet.is_some_and(|t| t.elapsed() >= CRAFT_COMMAND_QUIET) {
+                    break;
+                }
+            }
+        }
+    }
+    Ok(messages)
+}
+
+/// Every item source of the quest, including the nested `container_sources` of `item_open`.
+fn quest_item_sources(quest: &PlanQuest) -> Vec<&PlanItemSource> {
+    fn walk<'a>(source: &'a PlanItemSource, out: &mut Vec<&'a PlanItemSource>) {
+        out.push(source);
+        if let Some(nested) = &source.container_sources {
+            for child in nested {
+                walk(child, out);
+            }
+        }
+    }
+    let mut out = Vec::new();
+    for step in &quest.steps {
+        for entry in step.item_sources.iter().flatten() {
+            for source in &entry.sources {
+                walk(source, &mut out);
+            }
+        }
+    }
+    out
+}
+
+/// The level the quest's craft sources need (`PlanSkill.level_min`; the Commerce craft skill
+/// 16766 needs 10). `run_quest` adds it to the quest's demand, so its one `/level` covers the
+/// crafts and the level is never lowered afterwards.
+pub fn craft_level_demand(quest: &PlanQuest, craft_db: Option<&CraftDb>) -> u32 {
+    let Some(db) = craft_db else {
+        return 0;
+    };
+    let mut level = 0u32;
+    for source in quest_item_sources(quest) {
+        if source.kind != "craft" {
+            continue;
+        }
+        for &craft_id in &source.craft_ids {
+            if let Some(plan) = db.craft(craft_id) {
+                level = level.max(plan.skill.level_min.max(0) as u32);
+            }
+        }
+    }
+    level
+}
+
+/// The nearest visible craft station of `template_id` within [`CRAFT_STATION_REUSE_DISTANCE`].
+fn near_craft_station(game: &GameClient, template_id: u32) -> Option<u32> {
+    let me = game.state.self_pos;
+    game.state
+        .doodads
+        .values()
+        .filter(|d| d.template_id == template_id)
+        .map(|d| (d.obj_id, dist2(d.pos, me)))
+        .filter(|(_, d2)| *d2 <= CRAFT_STATION_REUSE_DISTANCE * CRAFT_STATION_REUSE_DISTANCE)
+        .min_by(|a, b| a.1.total_cmp(&b.1))
+        .map(|(obj_id, _)| obj_id)
+}
+
+/// Finds or spawns the recipe's required doodad (`crafts.req_doodad_id`; 0 = portable).
+async fn ensure_craft_doodad(
+    game: &mut GameClient,
+    state: &mut CraftState,
+    template_id: u32,
+    deadline: Instant,
+) -> Result<Result<u32, String>, StepFailure> {
+    if template_id == 0 {
+        return Ok(Ok(0));
+    }
+    if let Some(obj_id) = near_craft_station(game, template_id) {
+        return Ok(Ok(obj_id));
+    }
+    let messages = craft_command(
+        game,
+        state,
+        &format!("spawn doodad {template_id}"),
+        CRAFT_GM_WAIT,
+    )
+    .await?;
+    let until = (Instant::now() + CRAFT_GM_WAIT).min(deadline);
+    let _ = craft_pump(game, state, until, |_, _, st| {
+        near_craft_station_of(st, template_id).is_some()
+    })
+    .await?;
+    Ok(match near_craft_station(game, template_id) {
+        Some(obj_id) => Ok(obj_id),
+        None => Err(format!(
+            "no doodad {template_id} after /spawn doodad (chat: {})",
+            messages.join(" | ")
+        )),
+    })
+}
+
+/// [`near_craft_station`] on a plain state (pump predicates).
+fn near_craft_station_of(state: &GameState, template_id: u32) -> Option<u32> {
+    state
+        .doodads
+        .values()
+        .find(|d| d.template_id == template_id)
+        .map(|d| d.obj_id)
+}
+
+/// Fills the recipe's materials with `/item add self` until the bag holds them.
+async fn ensure_craft_materials(
+    game: &mut GameClient,
+    state: &mut CraftState,
+    plan: &CraftPlan,
+    deadline: Instant,
+) -> Result<Result<(), String>, StepFailure> {
+    for material in &plan.materials {
+        if material.amount <= 0 {
+            continue;
+        }
+        let mut have = game.state.bag_count(&[material.item_id]);
+        while have < material.amount {
+            let chunk = (material.amount - have).min(CRAFT_ITEM_ADD_CHUNK);
+            let messages = craft_command(
+                game,
+                state,
+                &format!("item add self {} {chunk}", material.item_id),
+                CRAFT_GM_WAIT,
+            )
+            .await?;
+            let until = (Instant::now() + CRAFT_GM_WAIT).min(deadline);
+            let _ = craft_pump(game, state, until, |_, _, st| {
+                st.bag_count(&[material.item_id]) > have
+            })
+            .await?;
+            let after = game.state.bag_count(&[material.item_id]);
+            if after <= have {
+                return Ok(Err(format!(
+                    "GM /item add created no {} (had {have}, wanted {}; chat: {})",
+                    material.item_id,
+                    material.amount,
+                    messages.join(" | ")
+                )));
+            }
+            have = after;
+        }
+    }
+    Ok(Ok(()))
+}
+
+/// Raises the recipe's actability points to its limit, upgrading the expert-limit step with the
+/// real client's `CSUpgradeExpertLimitPacket` when the step cap is reached (the craft runner's
+/// `ensure_actability`).
+async fn ensure_craft_actability(
+    game: &mut GameClient,
+    state: &mut CraftState,
+    plan: &CraftPlan,
+    expert_caps: &[i32],
+    deadline: Instant,
+) -> Result<Result<(), String>, StepFailure> {
+    let group = plan.skill.actability_group.max(0) as u32;
+    let limit = plan.actability_limit;
+    if limit <= 0 || group == 0 {
+        return Ok(Ok(()));
+    }
+    for _ in 0..CRAFT_MAX_EXPERT_UPGRADES {
+        let point = state.point(group);
+        if point >= limit {
+            return Ok(Ok(()));
+        }
+        let step = state.step(group);
+        let cap = expert_caps.get(usize::from(step)).copied();
+        let room = cap.map(|c| c.saturating_sub(point));
+        let add = match room {
+            Some(r) if r > 0 => (limit - point).min(r).min(CRAFT_LABOR_MAX),
+            _ => {
+                // At the step cap: the client's upgrade packet is the only way further.
+                let Some(cap) = cap else {
+                    return Ok(Err(format!(
+                        "actability {group} is at step {step} with no expert-limit cap (point \
+                         {point}, need {limit})"
+                    )));
+                };
+                if point < cap {
+                    return Ok(Err(format!(
+                        "actability {group} stuck at {point}/{cap} (step {step})"
+                    )));
+                }
+                let mut body = PacketStream::new();
+                body.write_u32(group).write_bool(false);
+                game.send_cs(cs::CSUpgradeExpertLimitPacket, body.as_bytes())
+                    .await
+                    .map_err(StepFailure::io)?;
+                let until = (Instant::now() + CRAFT_GM_WAIT).min(deadline);
+                if !craft_pump(game, state, until, |p, _, _| {
+                    p.is_sc(sc::SCExpertLimitModifiedPacket)
+                })
+                .await?
+                {
+                    return Ok(Err(format!(
+                        "expert-limit upgrade of actability {group} was not answered (step {step})"
+                    )));
+                }
+                continue;
+            }
+        };
+        if add <= 0 {
+            return Ok(Err(format!(
+                "actability {group} cannot advance from point {point} to {limit}"
+            )));
+        }
+        craft_command(game, state, &format!("labor {add} {group}"), CRAFT_GM_WAIT).await?;
+        let until = (Instant::now() + CRAFT_GM_WAIT).min(deadline);
+        let want = point + add;
+        let _ = craft_pump(game, state, until, |_, craft_state, _| {
+            craft_state.point(group) >= want
+        })
+        .await?;
+    }
+    Ok(Err(format!(
+        "actability {group} still below {limit} after {CRAFT_MAX_EXPERT_UPGRADES} upgrades"
+    )))
+}
+
+/// Tops up the labor power for one craft (`Skill.EndSkill` charges `consume_lp`).
+async fn ensure_craft_labor(
+    game: &mut GameClient,
+    state: &mut CraftState,
+    plan: &CraftPlan,
+    deadline: Instant,
+) -> Result<Result<(), String>, StepFailure> {
+    let group = plan.skill.actability_group.max(0) as u32;
+    let needed = craftrun::labor_cost(plan.skill.consume_lp, state.step(group)).max(1);
+    let add = needed.min(CRAFT_LABOR_MAX);
+    craft_command(game, state, &format!("labor {add}"), CRAFT_GM_WAIT).await?;
+    let _ = deadline;
+    Ok(Ok(()))
+}
+
+/// One attempt to make the recipe executable: materials, actability, labor. `Ok(Err(reason))`
+/// when the recipe cannot be prepared (the caller tries the next one).
+async fn ensure_craft_ready(
+    game: &mut GameClient,
+    state: &mut CraftState,
+    plan: &CraftPlan,
+    expert_caps: &[i32],
+    deadline: Instant,
+) -> Result<Result<(), String>, StepFailure> {
+    if let Err(reason) = ensure_craft_materials(game, state, plan, deadline).await? {
+        return Ok(Err(reason));
+    }
+    if let Err(reason) = ensure_craft_actability(game, state, plan, expert_caps, deadline).await? {
+        return Ok(Err(reason));
+    }
+    ensure_craft_labor(game, state, plan, deadline).await
+}
+
+/// `craft` item sources: make the item with the recipe's own flow (the craft runner's):
+/// `/item add self` for the materials, `/labor [group]` + `CSUpgradeExpertLimitPacket` for the
+/// actability, `/labor` for the labor, `/spawn doodad` for `crafts.req_doodad_id`, then
+/// `CSExecuteCraftPacket(craftId, doodadObjId, count)` (`systems/economy/craft.rs`; the cast's
+/// `CraftEffect` -> `EndCraft` consumes the materials and creates the products).
+#[allow(clippy::too_many_arguments)]
+async fn craft_source(
+    game: &mut GameClient,
+    quest_id: u32,
+    ids: &[u32],
+    want: i32,
+    objective: Option<u8>,
+    craft_ids: &[u32],
+    craft_db: Option<&CraftDb>,
+    deadline: Instant,
+) -> Result<Option<String>, StepFailure> {
+    let Some(db) = craft_db else {
+        return Ok(Some("craft (needs --compact-db game data)".into()));
+    };
+    let mut last_note = None;
+    for &craft_id in craft_ids {
+        let Some(plan) = db.craft(craft_id) else {
+            last_note = Some(format!("craft {craft_id} is not in the game data"));
+            continue;
+        };
+        if !db.is_usable(plan) {
+            last_note = Some(format!(
+                "craft {craft_id} ({}) has a data gap (materials / products / station missing)",
+                plan.title
+            ));
+            continue;
+        }
+        if plan.is_pack {
+            last_note = Some(format!(
+                "craft {craft_id} ({}) is a trade-pack recipe",
+                plan.title
+            ));
+            continue;
+        }
+        let mut state = CraftState::default();
+        let mut crafted = 0usize;
+        let mut failure: Option<String> = None;
+        while !gather_done(&game.state, ids, want, quest_id, objective) && Instant::now() < deadline
+        {
+            if let Err(reason) =
+                ensure_craft_ready(game, &mut state, plan, &db.expert_caps, deadline).await?
+            {
+                failure = Some(reason);
+                break;
+            }
+            let doodad =
+                match ensure_craft_doodad(game, &mut state, plan.req_doodad_id, deadline).await? {
+                    Ok(obj_id) => obj_id,
+                    Err(reason) => {
+                        failure = Some(reason);
+                        break;
+                    }
+                };
+            let before_bag = game.state.bag_count(ids);
+            let before_objective = objective.map(|i| objective_count(game, quest_id, i));
+            state.last_error = None;
+            let mut body = PacketStream::new();
+            body.write_u32(craft_id).write_bc(doodad).write_i32(1);
+            game.send_cs(cs::CSExecuteCraft, body.as_bytes())
+                .await
+                .map_err(StepFailure::io)?;
+            crafted += 1;
+            // The cast runs `cast_delay` and then `EndCraft` hands out the products; watch
+            // until they land (bag / objective), an error arrives, or the cast window closes.
+            let cast =
+                Duration::from_millis(plan.cast_delay_ms.max(0) as u64) + Duration::from_secs(2);
+            let until = (Instant::now() + cast).min(deadline);
+            let _ = craft_pump(game, &mut state, until, |p, _, st| {
+                p.is_sc(sc::SCErrorMsgPacket)
+                    || st.bag_count(ids) > before_bag
+                    || objective.is_some_and(|i| {
+                        objective_count_of(st, quest_id, i) > before_objective.unwrap_or(0)
+                    })
+            })
+            .await?;
+            if state.last_error.is_some() {
+                failure = Some(format!(
+                    "craft {craft_id} answered SCErrorMsg {:?}",
+                    state.last_error
+                ));
+                break;
+            }
+        }
+        if gather_done(&game.state, ids, want, quest_id, objective) {
+            return Ok(Some(format!("craft {craft_id} x{crafted}")));
+        }
+        last_note = Some(
+            failure.unwrap_or_else(|| format!("craft {craft_id} x{crafted} made no progress")),
+        );
+    }
+    Ok(last_note)
+}
+
 // ----- item steps -----
 
 /// Every item source of the step's target ids, in plan order.
@@ -2350,12 +3247,16 @@ fn gather_sources(step: &PlanStep) -> Vec<&PlanItemSource> {
     out
 }
 
-/// Main-world locations of a source entry.
-fn source_positions(source: &PlanItemSource) -> Vec<(f32, f32, f32)> {
+/// The locations of a source in the step's world (`world` = [`step_world`], `None` =
+/// `main_world`): the bot was switched there before the step ran.
+fn source_positions(source: &PlanItemSource, world: Option<&str>) -> Vec<(f32, f32, f32)> {
     source
         .locations
         .iter()
-        .filter(|l| l.world.eq_ignore_ascii_case(MAIN_WORLD))
+        .filter(|l| match world {
+            Some(w) => l.world.eq_ignore_ascii_case(w),
+            None => l.world.eq_ignore_ascii_case(MAIN_WORLD),
+        })
         .map(|l| (l.x, l.y, l.z))
         .collect()
 }
@@ -2425,6 +3326,7 @@ async fn step_gather(
     step: &PlanStep,
     objective: Option<u8>,
     compact_db: Option<&CompactDb>,
+    craft_db: Option<&CraftDb>,
     deadline: Instant,
 ) -> StepRun {
     let ids = &step.target.ids;
@@ -2454,7 +3356,7 @@ async fn step_gather(
     }
 
     let last_note = gather_from_sources(
-        game, quest_id, ids, want, objective, &sources, step, compact_db, deadline, 0,
+        game, quest_id, ids, want, objective, &sources, step, compact_db, craft_db, deadline, 0,
     )
     .await?
     .unwrap_or_else(|| String::from("no source produced the item"));
@@ -2564,6 +3466,7 @@ fn gather_from_sources<'a>(
     sources: &'a [&'a PlanItemSource],
     step: &'a PlanStep,
     compact_db: Option<&'a CompactDb>,
+    craft_db: Option<&'a CraftDb>,
     deadline: Instant,
     depth: u32,
 ) -> LocalBoxFuture<'a, Result<Option<String>, StepFailure>> {
@@ -2576,7 +3479,8 @@ fn gather_from_sources<'a>(
                 break;
             }
             match gather_source(
-                game, quest_id, ids, want, objective, source, step, compact_db, deadline, depth,
+                game, quest_id, ids, want, objective, source, step, compact_db, craft_db, deadline,
+                depth,
             )
             .await
             {
@@ -2604,6 +3508,7 @@ async fn gather_source(
     source: &PlanItemSource,
     step: &PlanStep,
     compact_db: Option<&CompactDb>,
+    craft_db: Option<&CraftDb>,
     deadline: Instant,
     depth: u32,
 ) -> Result<Option<String>, StepFailure> {
@@ -2620,7 +3525,7 @@ async fn gather_source(
             if source.npc_ids.is_empty() {
                 return Ok(None);
             }
-            let positions = source_positions(source);
+            let positions = source_positions(source, step_world(step).as_deref());
             let window = (Instant::now() + SOURCE_WINDOW).min(deadline);
             let mut kills = 0usize;
             while !gather_done(&game.state, ids, want, quest_id, objective)
@@ -2670,7 +3575,7 @@ async fn gather_source(
             let Some(skill) = db.interaction_use_skill().map_err(StepFailure::io)? else {
                 return Ok(Some("doodad (no interaction skill in the data)".into()));
             };
-            let positions = source_positions(source);
+            let positions = source_positions(source, step_world(step).as_deref());
             let mut used: HashSet<u32> = HashSet::new();
             let mut used_count = 0usize;
             let mut next_location = 0usize;
@@ -2756,6 +3661,7 @@ async fn gather_source(
                         &container_sources,
                         step,
                         compact_db,
+                        craft_db,
                         deadline,
                         depth + 1,
                     )
@@ -2818,7 +3724,20 @@ async fn gather_source(
                 _ => format!("opened container {container} x{opened}"),
             }))
         }
-        // `craft` and `store` need the crafting / store UI packet flows (later runner scope).
+        "craft" => {
+            craft_source(
+                game,
+                quest_id,
+                ids,
+                want,
+                objective,
+                &source.craft_ids,
+                craft_db,
+                deadline,
+            )
+            .await
+        }
+        // `store` needs the store UI packet flow (later runner scope).
         _ => Ok(Some(format!("{}(not driven)", source.kind))),
     }
 }
@@ -2870,10 +3789,18 @@ fn sphere_of(step: &PlanStep) -> Result<&PlanSphere, StepFailure> {
                 step.component_id
             ))
         })?;
-    if !sphere.world.eq_ignore_ascii_case(MAIN_WORLD) {
+    // The run loop switched the bot into `step_world`; a sphere of another world cannot fire
+    // there.
+    let step_world = step_world(step);
+    if !sphere
+        .world
+        .eq_ignore_ascii_case(step_world.as_deref().unwrap_or(MAIN_WORLD))
+    {
         return Err(StepFailure::unsupported_reason(format!(
-            "sphere component {} is in world '{}' (runner only teleports within {MAIN_WORLD})",
-            sphere.component_id, sphere.world
+            "sphere component {} is in world '{}' but the step targets {}",
+            sphere.component_id,
+            sphere.world,
+            step_world.as_deref().unwrap_or(MAIN_WORLD)
         )));
     }
     Ok(sphere)
@@ -3092,6 +4019,7 @@ async fn step_accept_item(
     quest_id: u32,
     step: &PlanStep,
     compact_db: Option<&CompactDb>,
+    craft_db: Option<&CraftDb>,
     deadline: Instant,
 ) -> StepRun {
     let ids = &step.target.ids;
@@ -3103,7 +4031,8 @@ async fn step_accept_item(
     }
     let mut gathered = None;
     if game.state.bag_count(ids) < want {
-        let (kind, note) = step_gather(game, quest_id, step, None, compact_db, deadline).await?;
+        let (kind, note) =
+            step_gather(game, quest_id, step, None, compact_db, craft_db, deadline).await?;
         gathered = Some(kind);
         if game.state.bag_count(ids) < want {
             return Err(StepFailure::timeout(format!(
@@ -3184,6 +4113,7 @@ async fn step_use_item(
     step: &PlanStep,
     objective: Option<u8>,
     compact_db: Option<&CompactDb>,
+    craft_db: Option<&CraftDb>,
     deadline: Instant,
 ) -> StepRun {
     let ids = &step.target.ids;
@@ -3195,8 +4125,10 @@ async fn step_use_item(
     }
     let mut gathered: Option<StepOutcomeKind> = None;
     if game.state.bag_count(ids) < want {
-        let (kind, note) =
-            step_gather(game, quest_id, step, objective, compact_db, deadline).await?;
+        let (kind, note) = step_gather(
+            game, quest_id, step, objective, compact_db, craft_db, deadline,
+        )
+        .await?;
         gathered = Some(kind);
         if game.state.bag_count(ids) < want {
             return Err(StepFailure::timeout(format!(
@@ -3690,6 +4622,7 @@ mod tests {
             race: 1,
             gender: 1,
             start_level: 1,
+            level_raised_to: None,
             result,
             failed_step: reason.map(|r| FailedStep {
                 act_id: 0,
@@ -3822,7 +4755,11 @@ mod tests {
             ("Reward", "QuestActSupplyItem", StepAction::Passive),
             ("Reward", "QuestActSupplyCopper", StepAction::Passive),
             ("Progress", "QuestActCheckTimer", StepAction::Passive),
-            ("Ready", "QuestActConReportJournal", StepAction::Unsupported),
+            (
+                "Ready",
+                "QuestActConReportJournal",
+                StepAction::ReportJournal,
+            ),
             ("Fail", "QuestActConAcceptNpc", StepAction::Skip),
             ("Drop", "QuestActObjMonsterHunt", StepAction::Skip),
         ];
@@ -3911,7 +4848,13 @@ mod tests {
         assert_eq!(sources[0].kind, "npc_loot");
         assert_eq!(sources[0].npc_ids, [721]);
         assert_eq!(sources[0].loot_pack_id, 6396);
-        assert_eq!(source_positions(sources[0]).len(), 1);
+        assert_eq!(source_positions(sources[0], None).len(), 1);
+        // The step world filters the locations: inside another world the main-world position is
+        // not usable (the gather arms teleport within the current world).
+        assert_eq!(
+            source_positions(sources[0], Some("arche_mall_world")).len(),
+            0
+        );
         assert_eq!(sources[1].kind, "doodad");
         assert_eq!(sources[1].func.as_deref(), Some("DoodadFuncLootItem"));
         assert_eq!(sources[2].kind, "quest_supply");
@@ -4047,6 +4990,47 @@ mod tests {
         assert_eq!(failed.act_type, "QuestActObjMonsterHunt");
     }
 
+    /// Quests 1835 / 5678: act-less Ready components. The runner sends the object-free turn-in
+    /// but the server ignores it (`events.rs::on_report`), so the line must carry the cited
+    /// server gap instead of the generic stuck reason.
+    #[test]
+    fn unfinished_ready_quests_report_the_server_gap() {
+        use crate::quest::QuestInfo;
+
+        // No steps at all (1835 / 5678): all-passive vacuously, READY after the turn-in.
+        let no_steps = quest(1835, "ok");
+        assert!(only_passive_steps(&no_steps));
+        let reason = unfinished_ready_reason(&no_steps);
+        assert!(reason.contains("quest 1835 stays in READY"), "{reason}");
+        assert!(reason.contains("events.rs::on_report"), "{reason}");
+        assert!(
+            reason.contains("moved object-free reports to the Reward step"),
+            "{reason}"
+        );
+
+        // A passive-only plan (prologue rewards) counts as well; an active step does not.
+        let mut passive = quest(3880, "ok");
+        passive.steps = vec![step("Reward", "QuestActSupplyExp")];
+        assert!(only_passive_steps(&passive));
+        let mut hunter = quest(10, "ok");
+        hunter.steps = vec![step("Progress", "QuestActObjMonsterHunt")];
+        assert!(!only_passive_steps(&hunter));
+
+        // `quest_ready` only fires for a live READY row.
+        let mut state = GameState::default();
+        assert!(!quest_ready_state(&state, 1835));
+        state.quests.insert(
+            1835,
+            QuestInfo {
+                template_id: 1835,
+                status: aaemu_game::systems::quests::model::status::READY,
+                objectives: [0; 5],
+            },
+        );
+        assert!(quest_ready_state(&state, 1835));
+        assert!(!quest_ready_state(&state, 1836));
+    }
+
     #[test]
     fn sphere_steps_without_geometry_report_the_stable_reason() {
         let without = step("Progress", "QuestActObjSphere");
@@ -4066,19 +5050,79 @@ mod tests {
         }]);
         assert_eq!(sphere_of(&with).unwrap().radius, 30.0);
 
-        // Other worlds (instances) are not reachable over `/move`.
+        // A sphere in another world is reachable: the run loop enters plan worlds, and the
+        // sphere itself sets the step's world when there are no locations.
         let mut instance = step("Progress", "QuestActObjSphere");
         instance.spheres = Some(vec![PlanSphere {
             world: "instance_burntcastle_armory".into(),
             radius: 10.0,
             ..PlanSphere::default()
         }]);
-        let failure = sphere_of(&instance).unwrap_err();
+        assert_eq!(sphere_of(&instance).unwrap().radius, 10.0);
+
+        // A sphere world that disagrees with the step's locations stays unsupported: the run
+        // loop switches to the locations' world, where the sphere cannot fire.
+        let mut mismatch = step("Progress", "QuestActObjSphere");
+        mismatch.locations = vec![PlanLocation {
+            world: "main_world".into(),
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        }];
+        mismatch.spheres = instance.spheres.clone();
+        let failure = sphere_of(&mismatch).unwrap_err();
         assert!(
             failure.reason.contains("instance_burntcastle_armory"),
             "{}",
             failure.reason
         );
+    }
+
+    /// v8 worlds: a step's world comes from its first location (a sphere step falls back to the
+    /// sphere); the location helper keeps plan order and the run loop switched the bot there.
+    #[test]
+    fn step_world_comes_from_the_first_location_or_sphere() {
+        let mut s = step("Progress", "QuestActObjMonsterHunt");
+        assert_eq!(step_world(&s), None); // no locations: the main world
+        s.locations = vec![
+            PlanLocation {
+                world: "arche_mall_world".into(),
+                x: 1.0,
+                y: 2.0,
+                z: 3.0,
+            },
+            PlanLocation {
+                world: "racing_test_world".into(),
+                x: 4.0,
+                y: 5.0,
+                z: 6.0,
+            },
+        ];
+        assert_eq!(step_world(&s).as_deref(), Some("arche_mall_world"));
+        assert_eq!(step_location(&s).unwrap(), (1.0, 2.0, 3.0));
+
+        let mut main = step("Progress", "QuestActObjMonsterHunt");
+        main.locations = vec![PlanLocation {
+            world: "main_world".into(),
+            x: 7.0,
+            y: 8.0,
+            z: 9.0,
+        }];
+        assert_eq!(step_world(&main), None);
+        assert_eq!(step_location(&main).unwrap(), (7.0, 8.0, 9.0));
+
+        let mut sphere = step("Progress", "QuestActObjSphere");
+        sphere.spheres = Some(vec![PlanSphere {
+            world: "instance_library".into(),
+            ..PlanSphere::default()
+        }]);
+        assert_eq!(step_world(&sphere).as_deref(), Some("instance_library"));
+
+        let empty = step("Progress", "QuestActConReportNpc");
+        assert!(step_location(&empty)
+            .unwrap_err()
+            .reason
+            .contains("no spawn location"));
     }
 
     #[test]
@@ -4171,6 +5215,21 @@ mod tests {
         assert_eq!(topo.cyclic, 0);
     }
 
+    /// v8 ordering: among ready quests the lowest `min_level` runs first (ties by plan order),
+    /// but a prerequisite always runs before its dependents, whatever its level.
+    #[test]
+    fn run_order_prefers_lower_min_level_and_keeps_prerequisites_first() {
+        let mut plan = vec![quest(10, "ok"), quest(11, "ok"), quest(12, "ok")];
+        plan[0].min_level = Some(30); // first in the plan, highest level demand
+        plan[1].min_level = Some(5);
+        plan[2].min_level = Some(10);
+        assert_eq!(topological_order(&plan, &[0, 1, 2]).order, vec![1, 2, 0]);
+        // 11 (level 5) now requires 10 (level 30): the prerequisite still runs first, and the
+        // ready level-10 quest (12) goes before the level-30 prerequisite.
+        plan[1].prereq_quests = vec![10];
+        assert_eq!(topological_order(&plan, &[0, 1, 2]).order, vec![2, 0, 1]);
+    }
+
     #[test]
     fn topological_order_falls_back_on_cycles() {
         let mut plan = vec![quest(10, "ok"), quest(11, "ok")];
@@ -4210,6 +5269,59 @@ mod tests {
         // `MaxLevel` is a cap, not a demand.
         quest.requires.push(requirement(0x45, "MaxLevel", 30, 0));
         assert_eq!(level_demand(&quest), 20);
+    }
+
+    /// `craft` sources raise the quest's level demand by their recipe skill's minimum (the
+    /// Commerce craft skill 16766 needs 10); the gated part runs only where the game data is
+    /// present.
+    #[test]
+    fn craft_sources_raise_the_level_demand() {
+        // No craft database: nothing to add.
+        let mut q = quest(5308, "ok");
+        q.steps = vec![step("Progress", "QuestActObjItemGather")];
+        assert_eq!(craft_level_demand(&q, None), 0);
+
+        let path = Path::new(crate::compactdb::DEFAULT_COMPACT_DB);
+        if !path.exists() {
+            return;
+        }
+        let db = crate::craftrun::open_craft_db(Some(path)).unwrap();
+        // A recipe without a skill level requirement adds nothing (the doll bundle craft 5568).
+        let mut step_ = step("Progress", "QuestActObjItemGather");
+        step_.item_sources = Some(vec![PlanItemSources {
+            item_id: 27_669,
+            sources: vec![PlanItemSource {
+                kind: "craft".into(),
+                craft_ids: vec![5568],
+                ..PlanItemSource::default()
+            }],
+        }]);
+        let mut q = quest(5308, "ok");
+        q.steps = vec![step_];
+        assert_eq!(craft_level_demand(&q, Some(&db)), 0);
+        // The deepest requirement of the quest's crafts becomes the demand.
+        let Some(plan) = db
+            .all_crafts()
+            .into_iter()
+            .find(|plan| plan.skill.level_min > 0)
+        else {
+            return;
+        };
+        let mut step_ = step("Progress", "QuestActObjItemGather");
+        step_.item_sources = Some(vec![PlanItemSources {
+            item_id: 1,
+            sources: vec![PlanItemSource {
+                kind: "craft".into(),
+                craft_ids: vec![plan.id],
+                ..PlanItemSource::default()
+            }],
+        }]);
+        let mut q = quest(5309, "ok");
+        q.steps = vec![step_];
+        assert_eq!(
+            craft_level_demand(&q, Some(&db)),
+            plan.skill.level_min.max(0) as u32
+        );
     }
 
     #[test]
@@ -4445,6 +5557,7 @@ mod tests {
             race: 6,
             gender: 2,
             start_level: 5,
+            level_raised_to: Some(14),
             result: QuestOutcome::RunnerUnsupported,
             failed_step: Some(FailedStep {
                 act_id: 13979,
@@ -4481,6 +5594,7 @@ mod tests {
                 "race": 6,
                 "gender": 2,
                 "start_level": 5,
+                "level_raised_to": 14,
                 "result": "runner_unsupported",
                 "failed_step": {
                     "act_id": 13979,

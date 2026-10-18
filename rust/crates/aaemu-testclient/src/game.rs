@@ -121,6 +121,11 @@ pub struct GameState {
     pub selected_char: u32,
     pub self_obj: u32,
     pub self_pos: (f32, f32, f32),
+    /// The world instance the last `SCLoadInstancePacket` reported (0 = the main world); every
+    /// unit / doodad seen before it is stale (the observer clears them).
+    pub world_instance: u32,
+    /// The zone key of that world load (`SCLoadInstancePacket.zone_id`).
+    pub world_zone: u32,
     pub units: HashMap<u32, UnitInfo>,
     /// Doodads in view (`SCDoodadCreatedPacket` / `SCDoodadsCreatedPacket` /
     /// `SCDoodadsRemovedPacket`), by object id.
@@ -605,6 +610,23 @@ pub(crate) fn observe_into(st: &mut GameState, p: &Packet) -> anyhow::Result<()>
                 u.pos = pos;
             }
         }
+    } else if p.is_sc(sc::SCLoadInstancePacket) {
+        // The server moved the character to another world instance (portal, an enter-instance
+        // doodad, a dungeon / system instance or a return to the main world;
+        // `systems/instances/dungeon.rs::move_character`, `worlds.rs::return_to_main_world`).
+        // Everything the bot knew about the old world is stale; the position comes from the
+        // packet and the real client answers with `CSInstanceLoadedPacket`.
+        let instance_id = s.read_u32()?;
+        let zone_id = s.read_u32()?;
+        let pos = (s.read_f32()?, s.read_f32()?, s.read_f32()?);
+        s.read_f32()?; // ang_x
+        s.read_f32()?; // ang_y
+        s.read_f32()?; // ang_z
+        st.world_instance = instance_id;
+        st.world_zone = zone_id;
+        st.self_pos = pos;
+        st.units.clear();
+        st.doodads.clear();
     }
     Ok(())
 }
@@ -912,6 +934,13 @@ impl GameClient {
             SkillCastTarget::Doodad(doodad_obj),
         )
         .await
+    }
+
+    /// The real client's answer to `SCLoadInstancePacket`: an empty `CSInstanceLoadedPacket`.
+    /// The server then sends the own `SCUnitStatePacket` (and the time of day) and clears its
+    /// `disabled_set_position` (`systems/instances/worlds.rs::instance_loaded`).
+    pub async fn confirm_instance_loaded(&mut self) -> anyhow::Result<()> {
+        self.send_cs(cs::CSInstanceLoadedPacket, &[]).await
     }
 
     /// Uses a bag item with its `use_skill_id`: `CSStartSkillPacket` with a `SkillItem` caster
@@ -1401,6 +1430,50 @@ mod body_tests {
                 faction: 113,
             })
         );
+    }
+
+    /// `SCLoadInstancePacket`: the server moved the character to another world instance; the
+    /// old world's units / doodads are stale and the packet carries the new position.
+    #[test]
+    fn load_instance_packet_resets_the_world_view() {
+        let mut st = GameState::default();
+        st.units.insert(
+            7,
+            UnitInfo {
+                obj_id: 7,
+                name: "Old world npc".into(),
+                unit_type: 1,
+                id: 100,
+                pos: (1.0, 2.0, 3.0),
+            },
+        );
+        st.doodads.insert(
+            9,
+            DoodadInfo {
+                obj_id: 9,
+                template_id: 200,
+                pos: (0.0, 0.0, 0.0),
+            },
+        );
+        let mut body = PacketStream::new();
+        body.write_u32(1) // instance id (arche_mall_world)
+            .write_u32(260) // zone key
+            .write_f32(3680.5)
+            .write_f32(4572.25)
+            .write_f32(156.0)
+            .write_f32(0.0)
+            .write_f32(0.0)
+            .write_f32(0.0);
+        observe_into(
+            &mut st,
+            &packet(sc::SCLoadInstancePacket, body.into_bytes()),
+        )
+        .unwrap();
+        assert_eq!(st.world_instance, 1);
+        assert_eq!(st.world_zone, 260);
+        assert_eq!(st.self_pos, (3680.5, 4572.25, 156.0));
+        assert!(st.units.is_empty());
+        assert!(st.doodads.is_empty());
     }
 
     #[test]
