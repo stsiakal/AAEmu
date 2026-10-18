@@ -60,6 +60,8 @@ const GM_EFFECT_WAIT: Duration = Duration::from_secs(4);
 /// flat wait is enough because the next cast is seconds away anyway.
 const RESETCD_WAIT: Duration = Duration::from_millis(700);
 /// Quiet window after the first cast completion signal.
+/// A cast that gets no SkillStarted/Fired/Ended/error packet within this window is a silent drop.
+const SILENT_DROP_WAIT: Duration = Duration::from_secs(6);
 const SETTLE_QUIET: Duration = Duration::from_millis(400);
 /// Default per-skill timeout (`--step-timeout-secs`); the longest channel is 60 s, so the
 /// default covers it plus setup and settle.
@@ -187,6 +189,8 @@ pub struct SkillPlan {
     pub offhand_tool_id: u32,
     pub target_dead: bool,
     pub or_unit_reqs: bool,
+    /// `skills.plot_id` (0 = none): plot skills answer with `SCPlotEvent` packets.
+    pub plot_id: u32,
     pub effects: EffectSummary,
     pub reqs: Vec<ReqRow>,
 }
@@ -261,7 +265,9 @@ impl SkillPlan {
 
     /// Whether the cast target is the dummy (`Target::Obj` of the spawned NPC).
     pub fn targets_dummy(&self) -> bool {
-        matches!(self.target_type, 4 | 6) && self.target_relation != 0
+        self.target_type == 4
+            || self.target_relation == 4
+            || (self.target_type == 6 && self.target_relation != 0)
     }
 
     /// The holdable `EquipmentItemSlot` indices the skill's `unit_reqs` demand.
@@ -315,7 +321,8 @@ impl SkillDb {
                  COALESCE(active_weapon_id,0), COALESCE(mainhand_tool_id,0), \
                  COALESCE(offhand_tool_id,0), \
                  CASE WHEN target_dead='t' THEN 1 ELSE 0 END, \
-                 CASE WHEN or_unit_reqs='t' THEN 1 ELSE 0 END \
+                 CASE WHEN or_unit_reqs='t' THEN 1 ELSE 0 END, \
+                 COALESCE(plot_id,0) \
                  FROM skills WHERE ability_id BETWEEN 1 AND 10",
             )?;
             let rows = stmt.query_map([], |r| {
@@ -348,6 +355,7 @@ impl SkillDb {
                     offhand_tool_id: r.get(25)?,
                     target_dead: r.get::<_, i64>(26)? != 0,
                     or_unit_reqs: r.get::<_, i64>(27)? != 0,
+                    plot_id: r.get(28)?,
                     effects: EffectSummary::default(),
                     reqs: Vec::new(),
                 })
@@ -644,6 +652,7 @@ pub struct SkillResult {
     pub buffs_created_target: Vec<u32>,
     pub buffs_removed_caster: Vec<u32>,
     pub buffs_removed_target: Vec<u32>,
+    pub plot_events: u32,
     pub unit_points_updates_caster: u32,
     pub unit_points_updates_target: u32,
     /// The immediate second cast's `SkillResult` (8 = cooldown as expected); 0 = accepted,
@@ -996,6 +1005,48 @@ fn parse_skill_stopped(p: &Packet) -> Option<(u32, u32)> {
     }
     let mut s = p.stream();
     Some((s.read_bc().ok()?, s.read_u32().ok()?))
+}
+
+/// `SCPlotEventPacket` -> `(tl, skill_id)`: plot skills (`skills.plot_id`) announce their steps
+/// with it instead of `SCSkillStarted` / `SCSkillFired`.
+fn parse_plot_event(p: &Packet) -> Option<(u16, u32)> {
+    let mut s;
+    if p.level == crate::game::LEVEL_COMPRESSED {
+        // The server batches plot events into `CompressedGamePackets`; the inflated payload is
+        // `[u16 0][u16 opcode][body]` per packet without lengths, so only the first inner
+        // packet can be read without knowing every body size.
+        if p.body.len() < 4 || p.body[..2] != [0, 0] {
+            return None;
+        }
+        if u16::from_le_bytes([p.body[2], p.body[3]]) != sc::SCPlotEventPacket {
+            return None;
+        }
+        s = aaemu_commons::PacketStream::from_bytes(p.body[4..].to_vec());
+    } else {
+        if !p.is_sc(sc::SCPlotEventPacket) {
+            return None;
+        }
+        s = p.stream();
+    }
+    let tl = s.read_u16().ok()?;
+    let _event = s.read_u32().ok()?;
+    Some((tl, s.read_u32().ok()?))
+}
+
+/// `SCPlotEndedPacket` -> `tl`.
+fn parse_plot_ended(p: &Packet) -> Option<u16> {
+    if !p.is_sc(sc::SCPlotEndedPacket) {
+        return None;
+    }
+    p.stream().read_u16().ok()
+}
+
+/// `SCPlotCastingStoppedPacket` / `SCPlotChannelingStoppedPacket` -> `tl`.
+fn parse_plot_stopped(p: &Packet) -> Option<u16> {
+    if !p.is_sc(sc::SCPlotCastingStoppedPacket) && !p.is_sc(sc::SCPlotChannelingStoppedPacket) {
+        return None;
+    }
+    p.stream().read_u16().ok()
 }
 
 /// `SCCastingStoppedPacket` -> `tl`.
@@ -1725,6 +1776,28 @@ impl<'a> Sweep<'a> {
     }
 
     /// `/resetcd`: clears the per-skill cooldowns (the next cast must not inherit them).
+    /// Removes every buff `obj` currently carries with the `/buff -<id>` GM command (the
+    /// command acts on the selected target).
+    async fn clear_buffs(&mut self, obj: u32) -> anyhow::Result<()> {
+        let ids: Vec<u32> = self
+            .game
+            .state
+            .buffs
+            .get(&obj)
+            .map(|b| b.values().map(|i| i.buff_id).collect())
+            .unwrap_or_default();
+        if ids.is_empty() {
+            return Ok(());
+        }
+        self.game.change_target(obj).await?;
+        for id in ids {
+            let _ = self
+                .cmd(&format!("buff -{id}"), Duration::from_secs(1), Done::Never)
+                .await?;
+        }
+        Ok(())
+    }
+
     async fn reset_cooldowns(&mut self) -> anyhow::Result<()> {
         let _ = self.cmd("resetcd", RESETCD_WAIT, Done::Never).await?;
         Ok(())
@@ -1765,6 +1838,13 @@ impl<'a> Sweep<'a> {
             if now >= deadline {
                 break;
             }
+            // A cast the server drops silently never answers; do not wait out the step timeout.
+            if our_tl.is_none()
+                && !attempt.responded
+                && now.duration_since(sent_at) >= SILENT_DROP_WAIT
+            {
+                break;
+            }
             if done_at.is_some_and(|done| now.duration_since(done) >= SETTLE_QUIET) {
                 break;
             }
@@ -1794,6 +1874,28 @@ impl<'a> Sweep<'a> {
                     attempt.fired_delay_ms = Some(fired.delay_ms);
                     attempt.fired_channel_ms = Some(fired.channel_ms);
                     attempt.responded = true;
+                }
+            }
+            if let Some((tl, skill_id)) = parse_plot_event(&p) {
+                if skill_id == plan.id {
+                    our_tl = Some(tl);
+                    attempt.plot_events += 1;
+                    attempt.responded = true;
+                    if attempt.started_ms.is_none() {
+                        attempt.started_ms = Some(sent_at.elapsed().as_millis() as u64);
+                    }
+                }
+            }
+            if let Some(tl) = parse_plot_ended(&p) {
+                if Some(tl) == our_tl {
+                    attempt.ended_ms = Some(sent_at.elapsed().as_millis() as u64);
+                    signal = true;
+                }
+            }
+            if let Some(tl) = parse_plot_stopped(&p) {
+                if Some(tl) == our_tl {
+                    attempt.casting_stopped = true;
+                    signal = true;
                 }
             }
             if let Some(tl) = parse_skill_ended(&p) {
@@ -1919,6 +2021,15 @@ impl<'a> Sweep<'a> {
             return out;
         }
 
+        if plan.target_dead && plan.target_relation != 4 && plan.target_type != 4 {
+            // A friendly resurrect needs a dead friendly player; the sweep drives one bot and
+            // its training dummy is hostile and despawns once dead.
+            out.result = SkillOutcome::Unsupported;
+            out.reason = "target_dead skill with a friendly target: needs a dead friendly player (the sweep has one character)".to_string();
+            out.elapsed_ms = start.elapsed().as_millis() as u64;
+            return out;
+        }
+
         // Ability, level, learning.
         match self.ensure_ability(plan.ability_id).await {
             Ok(swapped) => out.ability_swapped = swapped,
@@ -2002,7 +2113,7 @@ impl<'a> Sweep<'a> {
                             obj_id: 0,
                             x: pos.0,
                             y: pos.1,
-                            z: pos.2,
+                            z: pos.2 + 1.0,
                             pitch: 0.0,
                         };
                         out.target = format!("position at npc {DUMMY_TEMPLATE}#{obj}");
@@ -2019,8 +2130,15 @@ impl<'a> Sweep<'a> {
                                 return out;
                             }
                         }
-                        target = SkillCastTarget::Unit(obj);
-                        out.target = format!("npc {DUMMY_TEMPLATE}#{obj}");
+                        if plan.target_type == 4 {
+                            target = SkillCastTarget::Unit(obj);
+                            out.target = format!("npc {DUMMY_TEMPLATE}#{obj}");
+                        } else {
+                            // Self-centred area skill with a hostile relation: cast on the
+                            // bot, the dummy stands inside the area.
+                            out.target =
+                                format!("self ({self_obj}), npc {DUMMY_TEMPLATE}#{obj} nearby");
+                        }
                     }
                     self.game.change_target(obj).await.ok();
                     if plan.target_dead && !self.game.state.dead_units.contains(&obj) {
@@ -2094,6 +2212,26 @@ impl<'a> Sweep<'a> {
             return out;
         }
 
+        // Buffs left by earlier skills (stuns, roots, refreshed buffs) would reject the cast or
+        // hide the buff creation this skill is checked for.
+        if let Err(e) = self.clear_buffs(self_obj).await {
+            out.result = SkillOutcome::Error;
+            out.reason = format!("connection error while clearing caster buffs: {e:#}");
+            self.finish(chat_start, start, &mut out);
+            return out;
+        }
+        if compare_obj != self_obj && !self.game.state.dead_units.contains(&compare_obj) {
+            if let Err(e) = self.clear_buffs(compare_obj).await {
+                out.result = SkillOutcome::Error;
+                out.reason = format!("connection error while clearing target buffs: {e:#}");
+                self.finish(chat_start, start, &mut out);
+                return out;
+            }
+        }
+        if compare_obj != self_obj {
+            self.game.change_target(compare_obj).await.ok();
+        }
+
         let mp_before = self
             .game
             .state
@@ -2150,6 +2288,7 @@ impl<'a> Sweep<'a> {
                 out.buffs_removed_target.push(*buff);
             }
         }
+        out.plot_events = attempt.plot_events;
         out.unit_points_updates_caster = attempt.points_self;
         out.unit_points_updates_target = attempt.points_compare;
         out.started_after_ms = attempt.started_ms;
@@ -2185,11 +2324,20 @@ impl<'a> Sweep<'a> {
                 out.reason.push_str(&format!(", uint {}", out.result_uint));
             }
         } else if !attempt.responded && out.server_errors.is_empty() {
-            out.result = SkillOutcome::Timeout;
-            out.reason = format!(
-                "no cast response within {} s (silent drop: GCD / state / requirement)",
-                self.opts.step_timeout.as_secs()
-            );
+            if plan.plot_id != 0 {
+                out.result = SkillOutcome::Rejected;
+                out.reason = format!(
+                    "plot {} emitted no SCPlotEvent within {} s (the server sends nothing when the first plot event's conditions fail)",
+                    plan.plot_id,
+                    SILENT_DROP_WAIT.as_secs()
+                );
+            } else {
+                out.result = SkillOutcome::Timeout;
+                out.reason = format!(
+                    "no cast response within {} s (silent drop: GCD / state / requirement)",
+                    SILENT_DROP_WAIT.as_secs()
+                );
+            }
         } else if attempt.fired_ms.is_none() && attempt.ended_ms.is_none() {
             out.result = SkillOutcome::Rejected;
             out.reason = if out.server_errors.is_empty() {
@@ -2309,13 +2457,21 @@ impl<'a> Sweep<'a> {
             .chain(out.buffs_created_target.iter())
             .copied()
             .collect();
-        for buff in &expected_buffs {
-            if !applied.contains(buff) {
-                let on_caster = plan.effects.buff_caster.contains(buff);
+        // `skill_effects` lists every buff row of the skill: level-tier variants (e.g. 402 / 403 /
+        // 404) and chance or condition-gated rows apply one at a time, so a side is only a
+        // mismatch when none of its expected buffs showed up.
+        for (side, buffs) in [
+            ("caster", &plan.effects.buff_caster),
+            ("target", &plan.effects.buff_target),
+        ] {
+            let wanted: Vec<u32> = expected_buffs
+                .iter()
+                .copied()
+                .filter(|b| buffs.contains(b))
+                .collect();
+            if !wanted.is_empty() && wanted.iter().all(|b| !applied.contains(b)) {
                 out.mismatches.push(format!(
-                    "expected buff {} ({}) not applied during the cast",
-                    buff,
-                    if on_caster { "caster" } else { "target" }
+                    "none of the expected {side} buffs {wanted:?} was applied during the cast"
                 ));
             }
         }
@@ -2340,7 +2496,8 @@ impl<'a> Sweep<'a> {
                     damage_rows, delta
                 ));
             }
-            if damage_rows == 0 && heal_rows == 0 && delta != 0 {
+            // Plot skills run their effects from the plot tree (`plot_effects`), not `skill_effects`.
+            if damage_rows == 0 && heal_rows == 0 && delta != 0 && plan.plot_id == 0 {
                 out.mismatches.push(format!(
                     "target HP delta {} without a damage_effects / heal_effects row",
                     delta
@@ -2418,6 +2575,7 @@ impl<'a> Sweep<'a> {
             expected_buffs: plan.effects.expected_buffs(),
             damage_rows: plan.effects.damage_rows.clone(),
             heal_rows: plan.effects.heal_rows.clone(),
+            plot_events: 0,
             ticks_expected: None,
             started_after_ms: None,
             fired_after_ms: None,
@@ -2463,6 +2621,7 @@ struct CastAttempt {
     ended_ms: Option<u64>,
     stopped: bool,
     casting_stopped: bool,
+    plot_events: u32,
     fired_delay_ms: Option<i32>,
     fired_channel_ms: Option<i32>,
     real_cast_ms: Option<u32>,
@@ -2665,6 +2824,7 @@ pub async fn run(cfg: &BotConfig, opts: &RunOptions) -> anyhow::Result<RunReport
                     offhand_tool_id: 0,
                     target_dead: false,
                     or_unit_reqs: false,
+                    plot_id: 0,
                     effects: EffectSummary::default(),
                     reqs: Vec::new(),
                 },
@@ -2707,6 +2867,38 @@ mod tests {
             opcode: sc::SCSkillStartedPacket,
             body: body.into_bytes(),
         }
+    }
+
+    #[test]
+    fn plot_packets_parse_tl_and_skill() {
+        let ev = Packet {
+            level: crate::game::LEVEL_GAME,
+            opcode: sc::SCPlotEventPacket,
+            body: vec![7, 0, 1, 0, 0, 0, 0x9e, 0x2b, 0, 0],
+        };
+        assert_eq!(parse_plot_event(&ev), Some((7, 11166)));
+        for (op, f) in [
+            (
+                sc::SCPlotEndedPacket,
+                parse_plot_ended as fn(&Packet) -> Option<u16>,
+            ),
+            (sc::SCPlotCastingStoppedPacket, parse_plot_stopped),
+            (sc::SCPlotChannelingStoppedPacket, parse_plot_stopped),
+        ] {
+            let p = Packet {
+                level: crate::game::LEVEL_GAME,
+                opcode: op,
+                body: vec![9, 0, 0, 0, 0, 0, 0],
+            };
+            assert_eq!(f(&p), Some(9));
+        }
+        assert_eq!(parse_plot_ended(&ev), None);
+        let batch = Packet {
+            level: crate::game::LEVEL_COMPRESSED,
+            opcode: 2,
+            body: vec![0, 0, 0xae, 0, 7, 0, 1, 0, 0, 0, 0x9e, 0x2b, 0, 0],
+        };
+        assert_eq!(parse_plot_event(&batch), Some((7, 11166)));
     }
 
     #[test]
@@ -2785,6 +2977,7 @@ mod tests {
             offhand_tool_id: 0,
             target_dead: false,
             or_unit_reqs: false,
+            plot_id: 0,
             effects: EffectSummary::default(),
             reqs: Vec::new(),
         };
@@ -2826,6 +3019,7 @@ mod tests {
             offhand_tool_id: 0,
             target_dead: false,
             or_unit_reqs: false,
+            plot_id: 0,
             effects: EffectSummary::default(),
             reqs: Vec::new(),
         };
