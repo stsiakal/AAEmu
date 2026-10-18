@@ -88,8 +88,9 @@ const fn m(
 ///   uses these keys for the character-info window; the live client table keys match them.
 /// * Server getters: `rust/crates/aaemu-game/src/systems/skills/stats.rs` (`CharStats::get`),
 ///   served by `/getattribute` (`systems/services/commands/scripts/get_attribute.rs`).
-/// * Live equality observed on 2026-10-18 (level-1 client, one entry in the tool's first run);
-///   mismatches are printed by the tool, not hidden here.
+/// * Live equality observed on 2026-10-18 (levels 1/10/20/30/40/50/55 and the persistent-regen
+///   buffs `Warmth of the Campfire` 5872 and `Dragon's Energy` 4698); mismatches found by that
+///   data were fixed in `stats.rs` and are re-checked by the tool, not hidden here.
 ///
 /// The `*_mul` / `casting_time_mul` client keys are percent *deltas* (`0` = unchanged, shown as
 /// `%.1f%%` by `GetAddModifierText`, `baselib/tooltip/tooltip.alb:36`), while the server getters
@@ -156,37 +157,39 @@ pub const MAPPINGS: &[Mapping] = &[
         "X2Unit:UnitMaxMana; live 670 == 670",
     ),
     // ---- regeneration ----
+    // The client's `health_regen`/`mana_regen` are the truncated base formula plus the
+    // (fractional) persistent regen; both may be fractional (`stats.rs::composed_regen`).
     m(
         "unit_info.health_regen",
         "HealthRegen",
-        Kind::Int,
+        Kind::Float,
         1.0,
         0.0,
-        "same quantity; live 53 vs 52 - mismatch reported",
+        "client = trunc(formula) + persistent; L1..55 data + buffs 5872/4698",
     ),
     m(
         "unit_info.mana_regen",
         "ManaRegen",
-        Kind::Int,
+        Kind::Float,
         1.0,
         0.0,
-        "same quantity; live 18 == 18",
+        "no spi/10: pre-fix client 37 vs server 47 at L50 (21/23 L10, 47/62 L55); + persistent",
     ),
     m(
         "unit_info.persistent_health_regen",
         "PersistentHealthRegen",
-        Kind::Int,
+        Kind::Float,
         1.0,
         0.0,
-        "same quantity; live 1 == 1",
+        "client tooltip.alb:36 divides by 5; L1..55 match; buff 5872 -> 13",
     ),
     m(
         "unit_info.persistent_mana_regen",
         "PersistentManaRegen",
-        Kind::Int,
+        Kind::Float,
         1.0,
         0.0,
-        "same quantity; live 1 vs 5 - mismatch reported",
+        "client buff 4698 -> 1.4 (7/5); server fixed to divide after bonuses",
     ),
     // ---- defense ----
     m(
@@ -447,7 +450,7 @@ pub const MAPPINGS: &[Mapping] = &[
         Kind::Float,
         0.01,
         1.0,
-        "client computes it; server getter does not exist (NotFound) - parity gap",
+        "client computes it; server getter added (attr 149 used by 9 buff unit_modifiers)",
     ),
     // ---- global cooldown (both sides in percent) ----
     m(

@@ -1109,6 +1109,16 @@ servers (see `rust/LIVE-TESTING.md`). Fixed porting bugs are in the git history 
   same (lowest free) connection id to the next client. C# then throws in `AddAccount` and stops
   answering the login server (every later enter-world is denied, the world shows as inactive).
   Rust replaces the stale entry and answers.
+* Regen stats follow the retail client (oracle `aaemu-clientdriver oracle stats`, 2026-10-18:
+  levels 1-55 plus the persistent-regen buffs 5872 / 4698). `HealthRegen` / `ManaRegen` are
+  `trunc(base formula + bonuses) + Persistent(raw) / 5` (client 47.4000015 at L55 with buff
+  4698). The C# `+ Spi / 10` in `ManaRegen` is removed: the client never has it (pre-fix server
+  47 vs client 37 at L50, 23 / 21 at L10, 62 / 47 at L55). `PersistentManaRegen` divides the
+  bonus-inclusive value by 5 like `PersistentHpRegen` (pre-fix a +5 modifier read 5 instead of
+  1); both keep their fraction, and `/getattribute` prints the four regen kinds as floats. The
+  out-of-battle `RegenTick` (`regen.rs:141`) adds the composed value truncated; the in-battle /
+  post-cast branches are unchanged. Added the missing `IncomingSiegeDamageMul` getter
+  (attribute used by 9 buff `unit_modifiers` rows).
 
 Parity status of the scripted scenarios: `login`, `lobby` and `full` (fresh character) produce
 the same S->C traffic as the C# servers after id / time normalisation (0 findings); a second
