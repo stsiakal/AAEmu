@@ -97,6 +97,21 @@ impl CompactDb {
             .optional()?;
         Ok(row)
     }
+
+    /// `system_factions.mother_id` of a faction, as the server resolves it
+    /// (`quests/engine.rs` `mother_faction_id`; `data/world_data.rs::FactionData::load`).
+    /// `None` when the faction has no row.
+    pub fn mother_faction(&self, faction_id: u32) -> anyhow::Result<Option<u32>> {
+        let row = self
+            .conn
+            .query_row(
+                "SELECT mother_id FROM system_factions WHERE id = ?1",
+                [faction_id],
+                |r| r.get::<_, u32>(0),
+            )
+            .optional()?;
+        Ok(row)
+    }
 }
 
 use rusqlite::OptionalExtension as _;
@@ -141,5 +156,10 @@ mod tests {
                 ..
             }
         ));
+        // Race faction mothers: Nuian 101 -> 148 (Nuia), Harani 109 -> 149 (Haranya). Quest
+        // 2302 requires `mother_faction` 149, so the runner can decide it before the sphere.
+        assert_eq!(db.mother_faction(101).unwrap(), Some(148));
+        assert_eq!(db.mother_faction(109).unwrap(), Some(149));
+        assert_eq!(db.mother_faction(0).unwrap(), None);
     }
 }

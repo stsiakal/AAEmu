@@ -218,7 +218,10 @@ the run. Each quest records one JSON result line (`completed`, `failed`, `stuck`
 `prereq_missing`, `requirement_unmet`, `blocked_plan`, `auxiliary`, `no_starter`,
 `runner_unsupported`, `needs_trigger`, `error`) with the character name / race / gender /
 starting level (so lines of several bots can be merged), the per-step outcomes, the final quest
-status/objectives and the chat messages seen. `auxiliary` plan records (no Start component) and
+status/objectives and the chat messages seen. A completed quest that the server dropped is
+reported with status `COMPLETED` (`SCQuestContextCompletedPacket` carries no status, so e.g.
+the prologue auto-completes no longer show the started row's status 0).
+`auxiliary` plan records (no Start component) and
 `blocked` quests are recorded without running; a quest whose plan has no accept act at all (a
 Start component without acts, e.g. the prologue rewards) gets the implicit empty
 `CSStartQuestContextPacket` (the server accepts those from any source,
@@ -235,7 +238,11 @@ tick see the entry (`spheres.rs::tick` -> `on_enter_quest_starter_sphere`). Sphe
 `z`, `radius`) the same way; a step without it records `runner_unsupported` "no sign sphere for
 component N" (the geometry lives in the client pak's `quest_sign_sphere.g`). `prereq_quests`
 that are neither in the select snapshot nor completed during the run skip with
-`prereq_missing`. A target that only exists after a `SpawnEffect` skill cannot be driven for
+`prereq_missing`. `FactionMatch` / `MotherFaction` requirements are decided from the select
+snapshot head's faction id and the compact database's `system_factions.mother_id` (quest 2302
+wants the Haranya `mother_faction` 149; the Nuian bot's faction 101 resolves to mother 148, so
+the gate reports `requirement_unmet` naming it before any sphere teleport). A target that only
+exists after a `SpawnEffect` skill cannot be driven for
 the accept / talk / report acts (`needs_trigger`), but hunts attempt it; hunts kill with
 `/kill`, which credits the bot as the killer through the normal death path
 (`systems/services/commands/scripts/kill.rs`). Item steps use the plan's `item_sources`: the
@@ -245,7 +252,13 @@ bag is tracked from `SCCharacterInvenContentsPacket` + `SCItemTaskSuccessPacket`
 doodads are used with an `InteractionEffect` skill (`CSStartSkillPacket`, doodad target), and
 item-use acts cast the item's `use_skill_id` with a `SkillItem` caster (the game data for both
 lookups comes from `--compact-db`, defaulting to the game's `compact.sqlite3`; an item whose
-`use_skill_id` has no `skills` row is reported `runner_unsupported` with that id). Gather
+`use_skill_id` has no `skills` row is reported `runner_unsupported` with that id). `item_open`
+sources open bundle items the same way: the open skill's `GainLootPackItemEffect` consumes the
+bundle (`consume_source_item`) and grants its loot straight into the bag
+(`economy/loot.rs::give_loot_pack`; `gain_item` / `skill_product` variants grant directly), so
+the step repeats open -> loot -> re-obtain from the source's `container_sources` (recursively,
+depth <= 3 like `plan.py`) until the count or the step timeout, and notes
+`opened container N xK`. Gather
 sources walk every plan location and consume every visible doodad exactly once (phase changes
 despawn them), the kill / use counts are in the step note, and a gather step succeeds when the
 bag count *or* the quest objective counter reaches the target (both are in the note). A hunt or

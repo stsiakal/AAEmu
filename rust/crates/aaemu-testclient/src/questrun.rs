@@ -19,6 +19,7 @@ use std::time::{Duration, Instant};
 use aaemu_game::opcodes::{pp, sc};
 use aaemu_game::systems::skills::types::SkillCastTarget;
 use anyhow::{bail, Context};
+use futures::future::LocalBoxFuture;
 use serde::{Deserialize, Serialize};
 
 use crate::compactdb::{CompactDb, ItemUseSkill};
@@ -46,6 +47,8 @@ const SOURCE_WINDOW: Duration = Duration::from_secs(20);
 const LOOT_WAIT: Duration = Duration::from_secs(5);
 /// How long one item / doodad use gets to move the objective before it is retried.
 const USE_WAIT: Duration = Duration::from_secs(8);
+/// `plan.py::ITEM_OPEN_DEPTH`: how deep the runner follows nested `item_open` containers.
+const ITEM_OPEN_DEPTH: u32 = 3;
 /// The `/spawn` fallback window after a hunt / loot step exhausted its deadline.
 const GM_SPAWN_WINDOW: Duration = Duration::from_secs(30);
 /// Quiet / max drain after a step or teleport, to process removals and replies.
@@ -306,6 +309,22 @@ pub struct PlanItemSource {
     pub craft_ids: Vec<u32>,
     #[serde(default)]
     pub pack_ids: Vec<u32>,
+    /// `item_open`: the bundle item to use; its `use_skill_id` opens it and consumes it
+    /// (`gain_loot_pack_item_effects.consume_source_item`).
+    #[serde(default)]
+    pub container_item_id: u32,
+    /// `item_open`: the open skill (matches the container's `use_skill_id`; the server rejects
+    /// a cast with a different skill, `systems/skills/handlers.rs`).
+    #[serde(default)]
+    pub skill_id: u32,
+    /// `item_open`: `"gain_item"` / `"skill_product"` when the skill grants the item directly
+    /// (absent when a `GainLootPackItemEffect` grants `loot_pack_id` instead).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grant: Option<String>,
+    /// `item_open`: the container's own sources (`plan.py::item_sources`, depth <= 3), used to
+    /// obtain the next container after the open consumed it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub container_sources: Option<Vec<PlanItemSource>>,
 }
 
 /// The act's target ids (kind-specific extras are ignored).
@@ -644,6 +663,12 @@ pub struct KnownFacts<'a> {
     /// Race / gender when the bot created the character (`None` = unknown, attempt anyway).
     pub race: Option<u8>,
     pub gender: Option<u8>,
+    /// Own faction id (`unit.faction_id` from the select snapshot head, e.g. 101 Nuian) when
+    /// known.
+    pub faction: Option<u32>,
+    /// Own mother faction (`system_factions.mother_id` of `faction`; `None` = not resolved, so
+    /// `MotherFaction` stays undecided).
+    pub mother_faction: Option<u32>,
     /// Completed quests (select snapshot + live completions).
     pub completed: &'a BTreeSet<u32>,
 }
@@ -662,6 +687,12 @@ const REQ_RACE: u32 = 0x03;
 const REQ_GENDER: u32 = 0x04;
 const REQ_COMPLETE_QUEST_CONTEXT: u32 = 0x1F;
 const REQ_EXCEPT_COMPLETE_QUEST_CONTEXT: u32 = 0x24;
+const REQ_FACTION_MATCH: u32 = 0x28;
+const REQ_MOTHER_FACTION: u32 = 0x2A;
+const REQ_FACTION_MATCH_ONLY: u32 = 0x37;
+const REQ_MOTHER_FACTION_ONLY: u32 = 0x38;
+const REQ_FACTION_MATCH_ONLY_NOT: u32 = 0x3A;
+const REQ_MOTHER_FACTION_ONLY_NOT: u32 = 0x3B;
 const REQ_MAX_LEVEL: u32 = 0x45;
 
 /// The `kind` name without case, spaces or underscores (`"CompleteQuestContext"` ->
@@ -686,8 +717,8 @@ pub fn level_demand(quest: &PlanQuest) -> u32 {
 }
 
 /// Checks one requirement against the facts. Level uses `known >= value1` (and the `value2`
-/// cap as an upper bound); race / gender only when the bot created the character (Nuian male);
-/// quest contexts use the completed set.
+/// cap as an upper bound); race / gender / faction only when the bot knows them (a faction the
+/// DB cannot resolve stays undecided); quest contexts use the completed set.
 pub fn requirement_state(req: &PlanRequirement, facts: &KnownFacts<'_>) -> ReqState {
     let key = kind_key(&req.kind);
     let (v1, v2) = (req.value1, req.value2);
@@ -717,6 +748,42 @@ pub fn requirement_state(req: &PlanRequirement, facts: &KnownFacts<'_>) -> ReqSt
     if req.kind_id == REQ_GENDER || key == "gender" {
         return match facts.gender {
             Some(gender) if i64::from(gender) == v1 => ReqState::Met,
+            Some(_) => ReqState::Unmet,
+            None => ReqState::Unknown,
+        };
+    }
+    if req.kind_id == REQ_FACTION_MATCH
+        || key == "factionmatch"
+        || req.kind_id == REQ_FACTION_MATCH_ONLY
+        || key == "factionmatchonly"
+    {
+        return match facts.faction {
+            Some(faction) if i64::from(faction) == v1 => ReqState::Met,
+            Some(_) => ReqState::Unmet,
+            None => ReqState::Unknown,
+        };
+    }
+    if req.kind_id == REQ_FACTION_MATCH_ONLY_NOT || key == "factionmatchonlynot" {
+        return match facts.faction {
+            Some(faction) if i64::from(faction) != v1 => ReqState::Met,
+            Some(_) => ReqState::Unmet,
+            None => ReqState::Unknown,
+        };
+    }
+    if req.kind_id == REQ_MOTHER_FACTION
+        || key == "motherfaction"
+        || req.kind_id == REQ_MOTHER_FACTION_ONLY
+        || key == "motherfactiononly"
+    {
+        return match facts.mother_faction {
+            Some(mother) if i64::from(mother) == v1 => ReqState::Met,
+            Some(_) => ReqState::Unmet,
+            None => ReqState::Unknown,
+        };
+    }
+    if req.kind_id == REQ_MOTHER_FACTION_ONLY_NOT || key == "motherfactiononlynot" {
+        return match facts.mother_faction {
+            Some(mother) if i64::from(mother) != v1 => ReqState::Met,
             Some(_) => ReqState::Unmet,
             None => ReqState::Unknown,
         };
@@ -1446,12 +1513,26 @@ async fn run_quest(
     }
 
     // `unit_reqs` the runner can decide (race / gender / level from the selected character,
-    // quest contexts). Unknown kinds do not block: the accept attempt lets the server decide
-    // and a silent rejection shows up as `rejected` / "no answer from server".
+    // faction / mother faction, quest contexts). Unknown kinds do not block: the accept attempt
+    // lets the server decide and a silent rejection shows up as `rejected` / "no answer from
+    // server". Quest 2302's sphere accept needs `mother_faction` 149 (Haranya); the Nuian bot's
+    // faction 101 resolves to mother 148, so the gate reports it before the sphere teleport.
+    let faction = game
+        .state
+        .self_info
+        .as_ref()
+        .map(|info| info.faction)
+        .filter(|faction| *faction != 0);
+    let mother_faction = match (faction, compact_db) {
+        (Some(faction), Some(db)) => db.mother_faction(faction).ok().flatten(),
+        _ => None,
+    };
     let facts = KnownFacts {
         level: (*raised_level).max(u32::from(character.start_level)),
         race: Some(character.race),
         gender: Some(character.gender),
+        faction,
+        mother_faction,
         completed: &game.state.completed_quests,
     };
     if let Some(reason) = requirement_gate(quest, &facts) {
@@ -1627,12 +1708,8 @@ fn result_line(
     chat_start: u64,
     start: Instant,
 ) -> QuestResult {
-    let final_info = game
-        .state
-        .quests
-        .get(&quest.quest_id)
-        .cloned()
-        .or(last_info);
+    let live = game.state.quests.get(&quest.quest_id);
+    let final_info = live.cloned().or(last_info);
     QuestResult {
         quest_id: quest.quest_id,
         name: quest.name.clone(),
@@ -1643,10 +1720,29 @@ fn result_line(
         result: outcome,
         failed_step,
         steps,
-        final_status: final_info.as_ref().map(|q| q.status),
+        final_status: final_status_of(
+            outcome,
+            live.map(|q| q.status),
+            final_info.as_ref().map(|q| q.status),
+        ),
         final_objectives: final_info.as_ref().map(|q| q.objectives),
         messages: window_messages(game, chat_start),
         elapsed_ms: start.elapsed().as_millis() as u64,
+    }
+}
+
+/// The honest final status of a run. The live row wins while the quest is still active. A
+/// completed quest is dropped by the server and the `SCQuestContextCompletedPacket` carries no
+/// status, so the completion itself is reported instead of the stale status of the last update
+/// (quests 3880 / 6038 / 6217 auto-complete (`ConAutoComplete`) and were reported with the
+/// `INVALID` of the started row); every other outcome keeps the last seen row.
+pub fn final_status_of(outcome: QuestOutcome, live: Option<u8>, last: Option<u8>) -> Option<u8> {
+    match live {
+        Some(status) => Some(status),
+        None if outcome == QuestOutcome::Completed => {
+            Some(aaemu_game::systems::quests::model::status::COMPLETED)
+        }
+        None => last,
     }
 }
 
@@ -2357,33 +2453,16 @@ async fn step_gather(
         )));
     }
 
-    let mut last_note = String::from("no source produced the item");
-    for source in &sources {
-        if gather_done(&game.state, ids, want, quest_id, objective) || Instant::now() >= deadline {
-            break;
-        }
-        match gather_source(
-            game, quest_id, ids, want, objective, source, compact_db, deadline,
-        )
-        .await
-        {
-            Ok(Some(note)) => {
-                last_note = note;
-                if gather_done(&game.state, ids, want, quest_id, objective) {
-                    return Ok((
-                        StepOutcomeKind::Ok,
-                        gather_note(&game.state, ids, want, quest_id, objective, &last_note),
-                    ));
-                }
-            }
-            Ok(None) => {}
-            Err(f) => {
-                if f.quest != QuestOutcome::Stuck {
-                    return Err(f);
-                }
-                last_note = f.reason;
-            }
-        }
+    let last_note = gather_from_sources(
+        game, quest_id, ids, want, objective, &sources, step, compact_db, deadline, 0,
+    )
+    .await?
+    .unwrap_or_else(|| String::from("no source produced the item"));
+    if gather_done(&game.state, ids, want, quest_id, objective) {
+        return Ok((
+            StepOutcomeKind::Ok,
+            gather_note(&game.state, ids, want, quest_id, objective, &last_note),
+        ));
     }
 
     // Wait out the rest of the step: respawns / delayed supplies may still arrive.
@@ -2471,6 +2550,49 @@ async fn step_gather(
     )))
 }
 
+/// Tries the sources in plan order ([`gather_source`] each) until the gather goal is reached or
+/// the deadline passes. `Ok(Some(note))` is the note of the last source that may have changed
+/// the bag, `Ok(None)` when no source was attempted. `item_open` recurses through here for the
+/// container's own sources (`container_sources`), so the future is boxed.
+#[allow(clippy::too_many_arguments)]
+fn gather_from_sources<'a>(
+    game: &'a mut GameClient,
+    quest_id: u32,
+    ids: &'a [u32],
+    want: i32,
+    objective: Option<u8>,
+    sources: &'a [&'a PlanItemSource],
+    step: &'a PlanStep,
+    compact_db: Option<&'a CompactDb>,
+    deadline: Instant,
+    depth: u32,
+) -> LocalBoxFuture<'a, Result<Option<String>, StepFailure>> {
+    Box::pin(async move {
+        let mut last_note = None;
+        for &source in sources {
+            if gather_done(&game.state, ids, want, quest_id, objective)
+                || Instant::now() >= deadline
+            {
+                break;
+            }
+            match gather_source(
+                game, quest_id, ids, want, objective, source, step, compact_db, deadline, depth,
+            )
+            .await
+            {
+                Ok(note) => last_note = note.or(last_note),
+                Err(f) => {
+                    if f.quest != QuestOutcome::Stuck {
+                        return Err(f);
+                    }
+                    last_note = Some(f.reason);
+                }
+            }
+        }
+        Ok(last_note)
+    })
+}
+
 /// One attempt at one item source; `Ok(Some(note))` when it may have changed the bag.
 #[allow(clippy::too_many_arguments)]
 async fn gather_source(
@@ -2480,8 +2602,10 @@ async fn gather_source(
     want: i32,
     objective: Option<u8>,
     source: &PlanItemSource,
+    step: &PlanStep,
     compact_db: Option<&CompactDb>,
     deadline: Instant,
+    depth: u32,
 ) -> Result<Option<String>, StepFailure> {
     match source.kind.as_str() {
         "quest_supply" => {
@@ -2592,6 +2716,107 @@ async fn gather_source(
                 "doodad {} x{used_count} (last template {last_template})",
                 source.func.as_deref().unwrap_or("")
             )))
+        }
+        "item_open" => {
+            let container = source.container_item_id;
+            if container == 0 {
+                return Ok(Some("item_open without container_item_id".into()));
+            }
+            if depth >= ITEM_OPEN_DEPTH {
+                return Ok(Some(format!("item_open {container} (depth limit)")));
+            }
+            let empty: Vec<PlanItemSource> = Vec::new();
+            let container_sources: Vec<&PlanItemSource> = source
+                .container_sources
+                .as_deref()
+                .unwrap_or(&empty)
+                .iter()
+                .collect();
+            let mut opened = 0usize;
+            let mut last_note: Option<String> = None;
+            loop {
+                if gather_done(&game.state, ids, want, quest_id, objective)
+                    || Instant::now() >= deadline
+                {
+                    break;
+                }
+                // The open consumes the bundle (`consume_source_item`), so top the bag up from
+                // the container's own sources first; `container_sources` is empty for the base
+                // items the plan could not resolve.
+                if game.state.bag_count(&[container]) == 0 {
+                    if container_sources.is_empty() {
+                        break;
+                    }
+                    last_note = gather_from_sources(
+                        game,
+                        quest_id,
+                        &[container],
+                        1,
+                        None,
+                        &container_sources,
+                        step,
+                        compact_db,
+                        deadline,
+                        depth + 1,
+                    )
+                    .await?
+                    .or(last_note);
+                    if game.state.bag_count(&[container]) == 0 {
+                        break;
+                    }
+                }
+                let Some(item) = game
+                    .state
+                    .bag
+                    .values()
+                    .find(|i| i.template_id == container)
+                    .copied()
+                else {
+                    break;
+                };
+                let Some(db) = compact_db else {
+                    return Ok(Some(format!("item_open {container} (needs --compact-db)")));
+                };
+                let (skill, target_type) = match db.item_use_skill(container) {
+                    Ok(ItemUseSkill::Known {
+                        skill_id,
+                        target_type,
+                    }) => (skill_id, target_type),
+                    Ok(ItemUseSkill::MissingSkill { skill_id }) => {
+                        // Same data gap as item-use steps: the server drops the cast.
+                        return Err(StepFailure::unsupported_reason(format!(
+                            "container {container} use_skill_id {skill_id} has no skills row in \
+                             the game data (the server drops the use cast)"
+                        )));
+                    }
+                    Ok(ItemUseSkill::None) => {
+                        return Err(StepFailure::unsupported_reason(format!(
+                            "container {container} has no use_skill_id"
+                        )));
+                    }
+                    Err(e) => return Err(StepFailure::io(e)),
+                };
+                // The open skill's `GainLootPackItemEffect` (or `GainItem` / `skill_product`)
+                // grants the loot straight into the bag (`economy/loot.rs::give_loot_pack`),
+                // so the bag / objective counters move from the real packets.
+                let target = use_item_target(game, target_type, step)?;
+                game.use_item(item.item_id, container, skill, target)
+                    .await
+                    .map_err(StepFailure::io)?;
+                opened += 1;
+                last_note = Some(format!("opened container {container} x{opened}"));
+                let until = (Instant::now() + USE_WAIT).min(deadline);
+                let _ = wait_for_gather(game, quest_id, ids, want, objective, until)
+                    .await
+                    .map_err(StepFailure::io)?;
+            }
+            Ok(Some(match opened {
+                0 => format!(
+                    "item_open {container} not opened ({})",
+                    last_note.unwrap_or_else(|| String::from("container not obtained"))
+                ),
+                _ => format!("opened container {container} x{opened}"),
+            }))
         }
         // `craft` and `store` need the crafting / store UI packet flows (later runner scope).
         _ => Ok(Some(format!("{}(not driven)", source.kind))),
@@ -3660,7 +3885,17 @@ mod tests {
                   {"type": "doodad", "doodad_ids": [322], "func": "DoodadFuncLootItem",
                    "locations": []},
                   {"type": "quest_supply", "act_id": 42},
-                  {"type": "store", "npc_ids": [0], "pack_ids": [218], "locations": []}
+                  {"type": "store", "npc_ids": [0], "pack_ids": [218], "locations": []},
+                  {"type": "item_open", "container_item_id": 27496, "skill_id": 21706,
+                   "loot_pack_id": 7751, "chance": 10000000,
+                   "container_sources": [
+                     {"type": "npc_loot", "npc_ids": [], "loot_pack_id": 8300,
+                      "chance": 500000, "locations": []},
+                     {"type": "item_open", "container_item_id": 30542, "skill_id": 24250,
+                      "loot_pack_id": 8300, "chance": 500000, "container_sources": []}
+                   ]},
+                  {"type": "item_open", "container_item_id": 31688, "skill_id": 24664,
+                   "grant": "gain_item"}
                 ]
               }, {
                 "item_id": 9999,
@@ -3672,7 +3907,7 @@ mod tests {
         assert_eq!(plan_step.target, target("item", &[8017], 2));
         let sources = gather_sources(&plan_step);
         // The sources of another item id are ignored.
-        assert_eq!(sources.len(), 4);
+        assert_eq!(sources.len(), 6);
         assert_eq!(sources[0].kind, "npc_loot");
         assert_eq!(sources[0].npc_ids, [721]);
         assert_eq!(sources[0].loot_pack_id, 6396);
@@ -3682,6 +3917,22 @@ mod tests {
         assert_eq!(sources[2].kind, "quest_supply");
         assert_eq!(sources[2].act_id, Some(42));
         assert_eq!(sources[3].kind, "store");
+        // `item_open`: the container, its open skill and the container's own sources (plan.py).
+        assert_eq!(sources[4].kind, "item_open");
+        assert_eq!(sources[4].container_item_id, 27496);
+        assert_eq!(sources[4].skill_id, 21706);
+        assert_eq!(sources[4].loot_pack_id, 7751);
+        let nested = sources[4].container_sources.as_ref().unwrap();
+        assert_eq!(nested.len(), 2);
+        assert_eq!(nested[0].kind, "npc_loot");
+        assert_eq!(nested[0].loot_pack_id, 8300);
+        assert_eq!(nested[1].container_item_id, 30542);
+        assert!(nested[1].container_sources.as_ref().unwrap().is_empty());
+        // The direct-grant variants carry `grant` and no loot pack.
+        assert_eq!(sources[5].kind, "item_open");
+        assert_eq!(sources[5].grant.as_deref(), Some("gain_item"));
+        assert_eq!(sources[5].loot_pack_id, 0);
+        assert!(sources[5].container_sources.is_none());
 
         // A step without `item_sources` has no sources (old plans).
         assert!(gather_sources(&step("Progress", "QuestActObjItemGather")).is_empty());
@@ -3968,6 +4219,8 @@ mod tests {
             level: 14,
             race: Some(1),
             gender: Some(1),
+            faction: Some(101),
+            mother_faction: Some(148),
             completed: &completed,
         };
 
@@ -4003,6 +4256,49 @@ mod tests {
         let q = quest_with(&[], vec![requirement(2, "Ability", 1, 50)], None);
         assert!(requirement_gate(&q, &facts).is_none());
 
+        // Faction / mother faction (2302: the Nuian bot's mother 148 != Haranya 149 blocks;
+        // an unresolved mother faction stays undecided).
+        let q = quest_with(&[], vec![requirement(0x28, "FactionMatch", 101, 0)], None);
+        assert!(requirement_gate(&q, &facts).is_none());
+        let q = quest_with(&[], vec![requirement(0x28, "FactionMatch", 109, 0)], None);
+        assert!(requirement_gate(&q, &facts)
+            .unwrap()
+            .contains("FactionMatch"));
+        let q = quest_with(&[], vec![requirement(0x2A, "MotherFaction", 149, 0)], None);
+        assert!(requirement_gate(&q, &facts)
+            .unwrap()
+            .contains("MotherFaction"));
+        let q = quest_with(&[], vec![requirement(0x2A, "MotherFaction", 148, 0)], None);
+        assert!(requirement_gate(&q, &facts).is_none());
+        let q = quest_with(
+            &[],
+            vec![requirement(0x38, "MotherFactionOnly", 149, 0)],
+            None,
+        );
+        assert!(requirement_gate(&q, &facts)
+            .unwrap()
+            .contains("MotherFactionOnly"));
+        let q = quest_with(
+            &[],
+            vec![requirement(0x3A, "FactionMatchOnlyNot", 101, 0)],
+            None,
+        );
+        assert!(requirement_gate(&q, &facts)
+            .unwrap()
+            .contains("FactionMatchOnlyNot"));
+        let unknown = KnownFacts {
+            mother_faction: None,
+            ..facts
+        };
+        let q = quest_with(&[], vec![requirement(0x2A, "MotherFaction", 149, 0)], None);
+        assert!(requirement_gate(&q, &unknown).is_none());
+        let unknown = KnownFacts {
+            faction: None,
+            ..facts
+        };
+        let q = quest_with(&[], vec![requirement(0x28, "FactionMatch", 109, 0)], None);
+        assert!(requirement_gate(&q, &unknown).is_none());
+
         // A level cap the ensured level is already above blocks; one above it stays unknown.
         let q = quest_with(&[], vec![requirement(1, "Level", 1, 10)], None);
         assert!(requirement_gate(&q, &facts).unwrap().contains("Level"));
@@ -4017,6 +4313,8 @@ mod tests {
             level: 5,
             race: Some(1),
             gender: Some(1),
+            faction: Some(101),
+            mother_faction: Some(148),
             completed: &completed,
         };
         let mut unmet = requirement(3, "Race", 2, 0);
@@ -4115,6 +4413,27 @@ mod tests {
             text.contains("prerequisite cycles: kept plan order for 1 quest(s)"),
             "{text}"
         );
+    }
+
+    /// Quests 3880 / 6038 / 6217: the server auto-completes (`ConAutoComplete`), drops the row
+    /// and sends `SCQuestContextCompletedPacket`, which carries no status. The stale `INVALID`
+    /// of the last update must not be reported as the final status.
+    #[test]
+    fn final_status_reports_the_completion_when_the_row_is_gone() {
+        let completed = aaemu_game::systems::quests::model::status::COMPLETED;
+        let progress = aaemu_game::systems::quests::model::status::PROGRESS;
+        assert_eq!(
+            final_status_of(QuestOutcome::Completed, None, Some(0)),
+            Some(completed)
+        );
+        // A live row still wins (a daily quest that restarted).
+        assert_eq!(
+            final_status_of(QuestOutcome::Completed, Some(progress), Some(0)),
+            Some(progress)
+        );
+        // Every other outcome keeps the last seen row.
+        assert_eq!(final_status_of(QuestOutcome::Stuck, None, Some(0)), Some(0));
+        assert_eq!(final_status_of(QuestOutcome::Stuck, None, None), None);
     }
 
     #[test]

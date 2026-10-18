@@ -74,6 +74,9 @@ pub struct CharInfo {
     pub race: u8,
     pub gender: u8,
     pub level: u8,
+    /// `unit.faction_id` (the race faction, e.g. 101 Nuian / 109 Harani); the quest runner
+    /// checks `FactionMatch` / `MotherFaction` requirements against it.
+    pub faction: u32,
 }
 
 /// A unit seen in `SCUnitStatePacket`.
@@ -638,20 +641,26 @@ pub fn chat_text(p: &Packet) -> Option<String> {
     s.read_string().ok()
 }
 
-/// The fixed head of `Character.Write` (`models/character.rs`): id, name, race, gender, level.
-/// The equipment / model data after it is variable and irrelevant to the runner.
+/// The fixed head of `Character.Write` (`models/character.rs`): id, name, race, gender, level,
+/// hp, mp, zone, faction. The equipment / model data after it is variable and irrelevant to the
+/// runner.
 fn read_character_head(s: &mut PacketStream) -> anyhow::Result<CharInfo> {
     let id = s.read_u32()?;
     let name = s.read_string()?;
     let race = s.read_u8()?;
     let gender = s.read_u8()?;
     let level = s.read_u8()?;
+    s.read_i32()?; // hp
+    s.read_i32()?; // mp
+    s.read_u32()?; // zone id
+    let faction = s.read_u32()?;
     Ok(CharInfo {
         id,
         name,
         race,
         gender,
         level,
+        faction,
     })
 }
 
@@ -1270,7 +1279,8 @@ mod body_tests {
     #[test]
     fn character_list_head_carries_count_and_race_gender_level() {
         // `SCCharacterListPacket::write`: [last][u8 count], then `Character.Write` rows of
-        // which only the head is needed (id, name, race, gender, level; `models/character.rs`).
+        // which only the head is needed (id, name, race, gender, level, hp, mp, zone, faction;
+        // `models/character.rs`).
         let mut st = GameState::default();
         let mut body = PacketStream::new();
         body.write_bool(true)
@@ -1279,7 +1289,11 @@ mod body_tests {
             .write_str("Tester")
             .write_u8(4)
             .write_u8(2)
-            .write_u8(7);
+            .write_u8(7)
+            .write_i32(1200)
+            .write_i32(300)
+            .write_u32(2)
+            .write_u32(101);
         observe_into(
             &mut st,
             &packet(sc::SCCharacterListPacket, body.into_bytes()),
@@ -1294,6 +1308,7 @@ mod body_tests {
                 race: 4,
                 gender: 2,
                 level: 7,
+                faction: 101,
             }]
         );
         assert!(st.char_list_done);
@@ -1306,7 +1321,11 @@ mod body_tests {
             .write_str("A")
             .write_u8(1)
             .write_u8(1)
-            .write_u8(3); // the second row is not decoded (variable data follows)
+            .write_u8(3)
+            .write_i32(120)
+            .write_i32(30)
+            .write_u32(1)
+            .write_u32(101); // the second row is not decoded (variable data follows)
         observe_into(
             &mut st,
             &packet(sc::SCCharacterListPacket, body.into_bytes()),
@@ -1324,7 +1343,11 @@ mod body_tests {
             .write_str("NewBot")
             .write_u8(5)
             .write_u8(1)
-            .write_u8(1);
+            .write_u8(1)
+            .write_i32(500)
+            .write_i32(100)
+            .write_u32(1)
+            .write_u32(109);
         let mut st = GameState::default();
         observe_into(
             &mut st,
@@ -1339,6 +1362,7 @@ mod body_tests {
                 race: 5,
                 gender: 1,
                 level: 1,
+                faction: 109,
             }]
         );
     }
@@ -1355,7 +1379,11 @@ mod body_tests {
             .write_str("Me")
             .write_u8(6)
             .write_u8(2)
-            .write_u8(14);
+            .write_u8(14)
+            .write_i32(2000)
+            .write_i32(800)
+            .write_u32(184)
+            .write_u32(113);
         let mut st = GameState::default();
         observe_into(
             &mut st,
@@ -1370,6 +1398,7 @@ mod body_tests {
                 race: 6,
                 gender: 2,
                 level: 14,
+                faction: 113,
             })
         );
     }
