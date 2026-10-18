@@ -1194,6 +1194,30 @@ impl GameClient {
         .await
     }
 
+    /// `CSBuyItemsPacket`: buy `count` of `item_id` from merchant `npc_obj` (or purchase doodad
+    /// `doodad_obj` when `npc_obj` is 0), money currency. The server checks the pack, the 3 m
+    /// distance and the price (`systems/economy/store.rs`).
+    pub async fn buy_item(
+        &mut self,
+        npc_obj: u32,
+        doodad_obj: u32,
+        item_id: u32,
+        count: i32,
+    ) -> anyhow::Result<()> {
+        let mut s = PacketStream::new();
+        s.write_bc(npc_obj)
+            .write_bc(doodad_obj)
+            .write_u32(0) // unk id
+            .write_u8(1) // buy count
+            .write_u8(0) // buy-back count
+            .write_u32(item_id)
+            .write_u8(0) // grade
+            .write_i32(count)
+            .write_u8(0) // currency: money
+            .write_bool(false); // use AA point
+        self.send_cs(cs::CSBuyItemsPacket, s.as_bytes()).await
+    }
+
     /// `CSLootOpenBagPacket` with `lootAll`: the server `OpenBag(.., true)` auto-takes every
     /// loot entry into the bag (`systems/economy/looting.rs`).
     pub async fn loot_all(&mut self, owner_obj: u32) -> anyhow::Result<()> {

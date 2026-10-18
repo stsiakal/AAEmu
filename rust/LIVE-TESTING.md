@@ -210,9 +210,9 @@ fox, which fights back; logout then takes the 5-minute in-combat timer), `load` 
 create, select, spawn, move, chat, leave). `parity` exits with 2 when there are findings,
 `load` when a bot failed.
 
-The `quest` subcommand audits the quest engine against a `rust/tools/quest_audit/plan.py` plan:
-it logs in with the GM account, selects the character like `full` (or creates a fresh one with
-`--new-character`, named `<config character>+hex suffix` under the server's
+The `quest` subcommand audits the quest engine against a `rust/tools/quest_audit/plan.py`
+plan: it logs in with the GM account, selects the character like `full` (or creates a fresh one
+with `--new-character`, named `<config character>+hex suffix` under the server's
 `CharacterNameRegex`; `--race nuian|elf|firran|harani` and `--gender m|f` pick race / gender,
 and a full account — 6 characters, the login server's `MaxCharactersPerAccount` — fails setup
 with a message to delete one), enables god mode (`/godmode true`), raises the level per quest
@@ -221,94 +221,97 @@ level a `craft` source's recipe skill needs count too; the level never drops and
 across the batch, and each line records the level it was raised to in `level_raised_to`) and
 runs the selected quests in prerequisite order — explicit `--quest` lists and
 `--all-ok` alike; within that order, ready quests are taken by lowest level demand first (ties
-by plan order), so the batch raises the bot as late as possible. `--with-prereqs` pulls the
-prerequisite chains of the requested quests into the run. Each quest records one JSON result
-line (`completed`, `failed`, `stuck`, `rejected`, `prereq_missing`, `requirement_unmet`,
-`blocked_plan`, `auxiliary`, `no_starter`, `runner_unsupported`, `needs_trigger`, `error`)
-with the character name / race / gender / starting level (so lines of several bots can be
-merged), the per-step outcomes, the final quest status/objectives and the chat messages seen. A
-completed quest that the server dropped is reported with status `COMPLETED`
-(`SCQuestContextCompletedPacket` carries no status, so e.g. the prologue auto-completes no
-longer show the started row's status 0). When a quest is still active at `READY` after its
-steps, the runner sends the object-free `CSCompleteQuestContextPacket` (the client's turn-in;
-`events.rs::on_report` runs an automatic `ConAutoComplete` / `ConReportJournal` Ready
-component). A quest the server cannot finish that way (no plan step at all — quests 1835 /
-5678 have act-less Ready components) is reported `runner_unsupported` with the code path named
-("no plan step finishes it and the server ignores the object-free turn-in"); the C#
-`QuestManagerEvents.DoReportEvents` moved object-free reports straight to the Reward step, so
-the port's `automatic_report` guard is the server-side gap. `QuestActConReportJournal` steps
-report the same way (object-free turn-in) instead of `runner_unsupported`.
-`auxiliary` plan records (no Start component) and
-`blocked` quests are recorded without running; a quest whose plan has no accept act at all (a
-Start component without acts, e.g. the prologue rewards) gets the implicit empty
-`CSStartQuestContextPacket` (the server accepts those from any source,
-`engine.rs::starter_accepts` `conditions.is_empty()`) and is `no_starter` with the reason when
-the server refuses or stays silent. An accept answers within 5 s (`SCErrorMsg` decoded, e.g.
-`QuestDailyLimit`) or the step ends as `rejected` / "no answer from server" — the server
-ignores duplicate ids, failed start requirements and wrong acceptors silently
-(`systems/quests/engine.rs::add_quest`). Quest-start acts: NPC / doodad acceptors and the
-starter item (`QuestActConAcceptItem`, the item's use skill carries the `AcceptQuestEffect`);
-`QuestActConAcceptComponent` is accepted without a world object; sphere starts
-(`QuestActConAcceptSphere`) teleport into the sphere centre and let the server's 500 ms sphere
-tick see the entry (`spheres.rs::tick` -> `on_enter_quest_starter_sphere`). Sphere objectives
+by plan order). `--with-prereqs` pulls the prerequisite chains of the requested quests into the
+run. Each quest records one JSON result line (`completed`, `failed`, `stuck`, `rejected`,
+`prereq_missing`, `requirement_unmet`, `blocked_plan`, `auxiliary`, `no_starter`,
+`runner_unsupported`, `needs_trigger`, `error`) with the character name / race / gender /
+starting level (so lines of several bots can be merged), the per-step outcomes, the final quest
+status/objectives and the chat messages seen.
+
+**Every line says whose fault it is.** `blocker: {class, reason, code}` is always present
+(`none` on a clean run) with `class` one of `runner_gap` (the runner cannot drive it yet),
+`server_bug` (the server misbehaves; `code` names the `file:line`), `data_gap` (the 1.2 data
+lacks the source / NPC / doodad / skill), `requirement` (race / faction / level / quest state
+the bot cannot meet — expected). `fallbacks: [{kind, target, reason}]` lists every GM shortcut
+actually taken (`gm_item`, `gm_spawn`, `forced_complete`), each with the concrete reason the
+real path failed (e.g. "loot pack 6459 rolled nothing in 5 kills", "doodad 2552 used 3 times
+gave none of item 15985", "the merchants table lists npc 1196 but npcs.merchant is false").
+`--summary` groups results, blocker classes and their top reasons, and prints how many quests
+completed without any fallback, with fallbacks, and forced.
+
+**Items escalate through real sources, GM add last.** For every `QuestActConAcceptItem`,
+`QuestActObjItemGather` / `EtcItemObtain` / `ConAcceptItemGain`, `QuestActObjItemUse` and
+`OwnItem` requirement the runner tries, in order: quest supply
+(`quest_act_supply_items`), doodad loot (`DoodadFuncLootItem` / `LootPack` / `Purchase`),
+NPC drops (kill the dropper and loot the corpse), merchants (`CSBuyItemsPacket` with GM gold,
+`shop_info` checks `npcs.merchant`), crafting (the craft runner), containers (`item_open`,
+opened and re-obtained recursively), and reports other quests' rewards
+(`quest_act_supply_items` reverse lookup, report-only). Only when every real source failed does
+`/item add self <id> <count>` run, marked as a `gm_item` fallback; the start requirement items
+(`OwnItem`) are fetched the same way *before* the accept (quests 18 / 2239). Targets the plan
+flagged `unknown_item_source` get the same reverse lookups straight from `compact.sqlite3`
+(`loot_pack_dropping_npcs`, `doodad_func_loot_items` / `_packs`, `merchant_goods`,
+`craft_products`, `skill_effects` -> `gain_loot_pack_item_effects` / `special_effects` /
+`skill_products`). Doodads are used at their **current** position (the interaction skill's
+~4 m range check), a failed loot roll leaves the doodad intact and is retried up to three times
+(`funcs/items.rs::loot_item` does not advance the phase), and a `DoodadFuncLootPack` whose pack
+drops the item at an effectively zero rate is reported `data_gap` with the rate.
+
+**NPCs / doodads: real spawn first, `/spawn` fallback marked.** Accept / talk / report /
+interaction steps find the nearest visible target, teleport next to it and interact; when the
+natural spawn is missing, `/spawn npc` / `/spawn doodad` is used and recorded as a `gm_spawn`
+fallback (with the wait that failed). `QuestActConAcceptNpcKill` / `ConAcceptNpcEmotion` are
+accepted **at** the NPC (treating them as hunts left 61 quests unaccepted in the v8 run), and
+group hunts retry every target template with `/spawn`, skip corpses ("already dead" replies do
+not count as kills) and report the objective state when the fallback window closes. A
+let-it-done / score quest that reaches `READY` before its counters are full stops the step and
+turns in (quest 266 leaves its Progress step at 5/20 because `score` is reached).
+
+**`QuestActObjAggro`** needs the quest accepted from its engage-combat NPC
+(`npcs.engage_combat_give_quest_id`); the runner accepts from that NPC (GM-spawned when absent,
+marked) and kills it with the configured combat skill first — the real hit fills the NPC's aggro
+table, then `/kill` raises the kill event that the act ranks (`events.rs::kill_unit` reads
+`npc_aggro_rating_percent`). `QuestActObjLevel` raises the character to the act's level
+(`quest_act_obj_levels`) and waits for the server's evaluation. Sphere objectives
 (`QuestActObjSphere` / `QuestActCheckSphere`) use the `--spheres` plan data (`world`, `x`, `y`,
-`z`, `radius`) the same way; a step without it records `runner_unsupported` "no sign sphere for
-component N" (the geometry lives in the client pak's `quest_sign_sphere.g`). `prereq_quests`
-that are neither in the select snapshot nor completed during the run skip with
-`prereq_missing`. `FactionMatch` / `MotherFaction` requirements are decided from the select
-snapshot head's faction id and the compact database's `system_factions.mother_id` (quest 2302
-wants the Haranya `mother_faction` 149; the Nuian bot's faction 101 resolves to mother 148, so
-the gate reports `requirement_unmet` naming it before any sphere teleport). A target that only
-exists after a `SpawnEffect` skill cannot be driven for
-the accept / talk / report acts (`needs_trigger`), but hunts attempt it; hunts kill with
-`/kill`, which credits the bot as the killer through the normal death path
-(`systems/services/commands/scripts/kill.rs`). Item steps use the plan's `item_sources`: the
-bag is tracked from `SCCharacterInvenContentsPacket` + `SCItemTaskSuccessPacket`
-(`ItemCountUpdate` carries deltas: loot stacking counts the full amount), loot drops from
-`/kill`ed NPCs are taken with `CSLootOpenBagPacket(lootAll)` / `CSLootCloseBagPacket`, loot
-doodads are used with an `InteractionEffect` skill (`CSStartSkillPacket`, doodad target), and
-item-use acts cast the item's `use_skill_id` with a `SkillItem` caster (the game data for both
-lookups comes from `--compact-db`, defaulting to the game's `compact.sqlite3`; an item whose
-`use_skill_id` has no `skills` row is reported `runner_unsupported` with that id). `item_open`
-sources open bundle items the same way: the open skill's `GainLootPackItemEffect` consumes the
-bundle (`consume_source_item`) and grants its loot straight into the bag
-(`economy/loot.rs::give_loot_pack`; `gain_item` / `skill_product` variants grant directly), so
-the step repeats open -> loot -> re-obtain from the source's `container_sources` (recursively,
-depth <= 3 like `plan.py`) until the count or the step timeout, and notes
-`opened container N xK`. `craft` sources are made with the craft runner's flow: `/item add
-self` fills the recipe's materials, `/labor [group]` and the client's
-`CSUpgradeExpertLimitPacket` raise its actability to `crafts.actability_limit` (steps capped by
-`expert_limits.up_limit`), `/labor` tops up the labor power, `/spawn doodad` places
-`crafts.req_doodad_id` (stations within 20 m are reused) and
-`CSExecuteCraftPacket(craftId, doodadObjId, 1)` starts the craft; the recipe data comes from
-the same `--compact-db` through the craft runner's `CraftDb` (`crafts`, `craft_materials`,
-`craft_products`). Recipes that are trade packs, or whose materials / products / station / skill
-are missing from the 1.2 data, are skipped with a note. Steps whose locations name another
-world (e.g. `arche_mall_world`, `instance_library`) enter it first: the world's default zone
-comes from the `Data/Worlds/world_spawns.json` next to the compact database, its entrance
-doodads (`DoodadFuncEnterSysInstance` / `DoodadFuncEnterInstance` via `doodad_funcs` ->
-`doodad_func_groups` -> `doodad_almighties`) are spawned 3 m in front of the bot and used with
-the interaction skill, and the `SCLoadInstancePacket` answer is confirmed like the real client
-(`CSInstanceLoadedPacket` -> own `SCUnitStatePacket`; `worlds.rs::instance_loaded`); the
-closest instance is left through a `DoodadFuncExitIndun` doodad at the end of the quest
-(`indun::request_leave_instance` -> `worlds::return_to_main_world`). A world with no entrance
-data, or a failed load, fails the step with that reason (`runner_unsupported` / `timeout`)
-instead of a silent skip; the runner tracks the current world across quests. Gather
-sources walk every plan location (of the step's world) and consume every visible doodad exactly
-once (phase changes
-despawn them), the kill / use counts are in the step note, and a gather step succeeds when the
-bag count *or* the quest objective counter reaches the target (both are in the note). A hunt or
-loot step whose targets never appear waits for respawns until the step timeout, then
-`/spawn`s the template next to the bot and reports `ok_gm_spawn` (never silently; every step
-note names the source/path that succeeded). `--quest` selects single quest ids (repeatable),
-`--all-ok` every plan quest with status `ok`, `--summary` prints the result counts and top
-failure reasons; the lines are printed and appended to `--out`:
+`z`, `radius`); a step without it records `runner_unsupported` "no sign sphere for component N"
+as `data_gap` (the geometry lives in the client pak's `quest_sign_sphere.g`; the export's
+`missing_sphere_components` names the components 1.2 never shipped). `prereq_quests` that are
+neither in the select snapshot nor completed during the run skip with `prereq_missing`.
+`FactionMatch` / `MotherFaction` requirements are decided from the select snapshot head's
+faction id and the compact database's `system_factions.mother_id`; `OwnItem` from the bag,
+`CompleteQuestContext` / `PreCompleteQuestContext` from the completed / active sets (an
+undecided start requirement explains a silently ignored accept in the blocker). A target that
+only exists after a `SpawnEffect` skill cannot be driven for the accept / talk / report acts
+(`needs_trigger`), but hunts attempt it.
+
+**Force-blocked last resort.** `--force-blocked` (`/quest add <id>` + `/quest step <id>
+Reward`, `commands/scripts/quest_cmd.rs`) is **on by default for `--all-ok`** and disabled with
+`--no-force`; explicit `--quest` lists opt in explicitly. A forced quest keeps its real result
+and failed step, adds `forced_complete: true` and a `forced_complete` fallback with the original
+reason, so its dependents still run; later quests list the forced prerequisite ids in
+`forced_prereqs`. A quest whose forcing the server refuses keeps the failure reason in the
+blocker.
+
+Items / hunts use the plan's `item_sources` / `locations`; the bag is tracked from
+`SCCharacterInvenContentsPacket` + `SCItemTaskSuccessPacket` (`ItemCountUpdate` deltas), kills
+credit through `/kill` (`systems/services/commands/scripts/kill.rs`), loot corpses are taken
+with `CSLootOpenBagPacket(lootAll)` / `CSLootCloseBagPacket`, `craft` sources use the craft
+runner's flow (materials, `/labor`, `CSUpgradeExpertLimitPacket`, `/spawn doodad`,
+`CSExecuteCraftPacket`), and world steps enter / leave instances through their entrance / exit
+doodads (`Data/Worlds/world_spawns.json`, `DoodadFuncEnterSysInstance` / `DoodadFuncExitIndun`).
+`item_open` sources open bundle items; the open skill's `GainLootPackItemEffect` consumes the
+bundle and grants its loot (`economy/loot.rs::give_loot_pack`; `gain_item` / `skill_product`
+variants grant directly). `--quest` selects single quest ids (repeatable), `--all-ok` every
+plan quest with status `ok`, `--summary` prints the grouped counts above; the lines are printed
+and appended to `--out`:
 
 ```sh
 $TC quest --config testclient.local.json --login 127.0.0.1:21237 \
           --plan rust/tools/quest_audit/plan.json --quest 330 --quest 331 --out quest-audit.jsonl
+$TC quest --config testclient.local.json --plan rust/tools/quest_audit/plan.json --all-ok \
+          --race elf --compact-db crates/aaemu-game/app/Data/compact.sqlite3 --summary
 ```
-=======
 `questitem` (`full`'s login/create/select/spawn, then GM setup and a quest-item cast loop) uses
 the Detection Orb (item 17594, use skill 16881) of quest 2394 "Searching for Answers" on the
 Soulreath "Field of Honor Participant" / "Fighter Participant" NPCs (7824 / 7823) three times and

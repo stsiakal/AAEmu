@@ -15,6 +15,7 @@
 //! aaemu-testclient quest  [--config F] [--login H:P] --plan plan.json
 //!                         (--quest ID...|--all-ok) [--with-prereqs] [--new-character]
 //!                         [--race name|id] [--gender m|f] [--compact-db path]
+//!                         [--force-blocked|--no-force]
 //!                         [--out results.jsonl] [--step-timeout-secs N] [--summary]
 //! aaemu-testclient craft  [--config F] [--login H:P] (--craft ID...|--sample N|--all)
 //!                         [--limit N] [--new-character] [--race name|id] [--gender m|f]
@@ -302,6 +303,11 @@ async fn main() -> anyhow::Result<()> {
                 ),
                 compact_db: args.get("compact-db").map(PathBuf::from),
                 out: args.get("out").map(PathBuf::from),
+                // On by default for the full sweep, off with `--no-force`; explicit lists opt in
+                // with `--force-blocked`.
+                force_blocked: args.has("force-blocked")
+                    || (args.has("all-ok") && !args.has("no-force")),
+                combat_skill: cfg.skill_id,
             };
             let report = questrun::run(&cfg, &plan, &requested, &opts).await?;
             let completed = report
