@@ -2169,3 +2169,18 @@ from the unpacked 1.2 client here.
   from two separate `OnceLock<Instant>` origins; the client maps battlefield timers through
   the Pong samples (per Bevy RE notes, `TimeKeeper::AddSample`), so they were skewed by the
   difference of the first uses. Both now use `packets::proxy::tick_count`.
+- **Ability-tree skills need an active ability and a learned skill (deviation).** The C#
+  `CSStartSkill` handler fell through to a catch-all that cast any skill id. The 1.2 client
+  refuses unlearned / inactive-tree skills locally (`URK_TRAINED_SKILL`, per Bevy RE notes), so
+  only other clients could cast them. `handlers::class_skill_denial` now refuses a client cast of
+  a skill with `ability_id != 0` when that ability is not one of the three active ones
+  (`SkillResult` `INACTIVE_ABILITY`) or, for `need_learn` skills, when neither the skill nor a
+  same-ability-level variant is learned (`INVALID_SKILL`). Mount, item, default/common and
+  auto-attack casts are decided before the check, ability-less skills (doodad / quest /
+  buff-granted) are unaffected, and GM commands cast through the server skill API. The exact
+  result codes are our choice (the client only needs a non-success `SCSkillStarted`).
+- **Keep-alive grace (deviation).** The 30 s dead-connection sweep (`accounts::remove_dead_connections`)
+  closed a registered connection that had not pinged yet at the next sweep (C#: `LastPing =
+  MinValue`). It now measures such a connection from when it connected. The Bevy client pings
+  every 3 s from the moment the TCP connection opens, so a healthy client always stays well
+  inside the 30 s window; the grace only covers a sweep that lands right after registration.
