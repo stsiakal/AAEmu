@@ -37,6 +37,10 @@
 //!                         [--compact-db path] [--out report.json] [--capture capture.jsonl]
 //!                         [--acquire-timeout-secs N] [--step-timeout-secs N]
 //!                         [--run-timeout-secs N]
+//! aaemu-testclient ai     [--config F] [--login H:P] [--test s1..s10...|--all]
+//!                         [--arena x,y,z] [--compact-db path] [--out results.jsonl]
+//!                         [--new-character] [--race name|id] [--gender m|f]
+//!                         [--keep-npcs] [--summary]
 //! ```
 //!
 //! Settings come from `--config` (JSON, see `testclient.example.json`), then the flags. Keep
@@ -46,6 +50,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use aaemu_testclient::aisweep;
 use aaemu_testclient::craftrun;
 use aaemu_testclient::diff::{self, DiffConfig};
 use aaemu_testclient::fight;
@@ -603,9 +608,38 @@ async fn main() -> anyhow::Result<()> {
                 bail!("fight run aborted");
             }
         }
+        "ai" => {
+            let cfg = bot_config(&args)?;
+            let race = match args.get("race") {
+                Some(value) => questrun::parse_race(value)?,
+                None => 1,
+            };
+            let gender = match args.get("gender") {
+                Some(value) => questrun::parse_gender(value)?,
+                None => 1,
+            };
+            let opts = aisweep::RunOptions {
+                tests: args.get_all("test").iter().map(|v| v.to_string()).collect(),
+                all: args.has("all") || !args.has("test"),
+                compact_db: args.get("compact-db").map(PathBuf::from),
+                spawns: args.get("spawns").map(PathBuf::from),
+                out: args.get("out").map(PathBuf::from),
+                summary: args.has("summary"),
+                new_character: args.has("new-character"),
+                race,
+                gender,
+                arena: match args.get("arena") {
+                    Some(value) => Some(parse_point(value)?),
+                    None => None,
+                },
+                keep_npcs: args.has("keep-npcs"),
+            };
+            let report = aisweep::run(&cfg, &opts).await?;
+            println!("[ai] {} result line(s)", report.lines.len());
+        }
         _ => {
             println!(
-                "usage: aaemu-testclient run|parity|diff|load|quest|craft|skill|fight [--flags]; see the crate docs"
+                "usage: aaemu-testclient run|parity|diff|load|quest|craft|skill|fight|ai [--flags]; see the crate docs"
             );
         }
     }

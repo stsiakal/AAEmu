@@ -355,6 +355,25 @@ impl AiParams {
         }))
     }
 
+    /// The `alertDuration` / `alertSafeTargetRememberTime` of a parameter row of an AI type that
+    /// has no typed parameters (roaming, hold position, default, ...): the 1.2 Lua reads both
+    /// from `entity.AI.param` for every character (`alert.lua`, `default.lua`), defaults 3.0 /
+    /// 5.0 (`default.lua`).
+    pub fn parse_alert_only(data: &str) -> PResult<(f32, f32)> {
+        let l = Self::run(data)?;
+        let mut duration = 3.0;
+        let mut remember = 5.0;
+        if l.get_object_from_path("data.alertDuration").is_some() {
+            duration = l.get_number("data.alertDuration")? as f32;
+        }
+        if l.get_object_from_path("data.alertSafeTargetRememberTime")
+            .is_some()
+        {
+            remember = l.get_number("data.alertSafeTargetRememberTime")? as f32;
+        }
+        Ok((duration, remember))
+    }
+
     /// `using var aiParams = new AiLua(); aiParams.DoString($"data = {{\n{data}\n}}")`.
     fn run(data: &str) -> PResult<LuaState> {
         let mut l = LuaState::with_globals(&AI_LUA_CONSTANTS);

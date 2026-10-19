@@ -191,6 +191,8 @@ pub struct BehaviorSlot {
     pub greeted: BTreeMap<u32, i64>,
     /// `HoldPositionBehavior._lastSkillCheck`.
     pub last_skill_check: i64,
+    /// Last idle-position leash check (hold position, roaming, alert; unix ms).
+    pub last_pos_check: i64,
     /// `HoldPositionBehavior._isFollowingNpc`.
     pub following_npc: bool,
     /// `AlertBehavior._oldRotation` (radians).
@@ -200,14 +202,22 @@ pub struct BehaviorSlot {
     /// `RoamingBehavior._targetRoamPosition` / `_nextRoaming`.
     pub roam_target: Vec3,
     pub next_roaming: i64,
+    /// Time spent in the spawn effect window (AI tick time, ms).
+    pub spawn_elapsed_ms: i64,
     /// `SpawningBehavior._usedSpawnSkills`.
     pub used_spawn_skills: bool,
     /// `ArcherAttackBehavior.Phase` / `MakeAGapCount`.
     pub archer_phase: ArcherPhase,
     pub make_a_gap_count: i32,
+    /// Start of the current make-a-gap backoff (unix ms, 0 = not backing off).
+    pub make_a_gap_start: i64,
     /// `WildBoarAttackBehavior._currHealth` / `_combatStartSkill`.
     pub curr_health: f32,
     pub combat_start_skill: bool,
+    /// `wild_boar_attack.lua` `healthPercentage` (previous HP%, `None` = not sampled yet) and
+    /// `spurtSkills` (queued, not yet cast).
+    pub prev_health: Option<f32>,
+    pub spurt_queue: Vec<u32>,
     /// `FlytrapAttackBehavior._aiParams` / `AlmightyAttackBehavior._aiParams`.
     pub ai_params: Option<Arc<AiParams>>,
 }
@@ -254,9 +264,14 @@ pub struct NpcAi {
     transitions: BTreeMap<BehaviorKind, Vec<(TransitionEvent, BehaviorKind)>>,
     current: Option<BehaviorKind>,
     default: Option<BehaviorKind>,
-    /// `_nextAlertCheckTime` / `_alertEndTime` (unix ms, 0 = `MinValue`).
-    pub next_alert_check_time: i64,
+    /// `_alertEndTime` (unix ms, 0 = `MinValue`).
     pub alert_end_time: i64,
+    /// Where the current fight started (first combat tick) and when it last ticked.
+    pub combat_start_pos: Option<Vec3>,
+    pub combat_last_tick: i64,
+    /// `NpcAddAlertSafeTarget`: target obj id -> unix ms until which it cannot raise an alert
+    /// again (1.2 `alert.lua`, per-target memory instead of C#'s single `_nextAlertCheckTime`).
+    pub alert_safe_targets: HashMap<u32, i64>,
     /// `AiCommandsQueue`, `AiCurrentCommand`, `AiCurrentCommandStartTime`,
     /// `AiCurrentCommandRunTime` (ms, may be negative).
     pub commands_queue: VecDeque<AiCommands>,
@@ -308,8 +323,10 @@ impl NpcAi {
             transitions: BTreeMap::new(),
             current: None,
             default: None,
-            next_alert_check_time: 0,
             alert_end_time: 0,
+            combat_start_pos: None,
+            combat_last_tick: 0,
+            alert_safe_targets: HashMap::new(),
             commands_queue: VecDeque::new(),
             current_command: None,
             current_command_start_time: 0,

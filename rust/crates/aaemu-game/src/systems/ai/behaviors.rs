@@ -111,7 +111,7 @@ pub fn tick(c: &mut AiCtx<'_>, k: BehaviorKind, delta_ms: i64) {
         B::ReturnState => return_state_tick(c, k, delta_ms),
         B::Roaming => roaming_tick(c, k, delta_ms),
         B::RunCommandSet => run_command_set_tick(c, delta_ms),
-        B::Spawning => spawning_tick(c, k),
+        B::Spawning => spawning_tick(c, k, delta_ms),
         B::Talk => talk_tick(c, k),
         B::ArcherAttack => archer_attack_tick(c, k, delta_ms),
         B::BigMonsterAttack => big_monster_attack_tick(c, k, delta_ms),
@@ -498,6 +498,7 @@ fn scan_for_enemy(
     gap_fly: f32,
     gap_ground: f32,
     near_mul: f32,
+    skip_alert_safe: bool,
 ) -> Option<WorldObject> {
     let t = template_scalars(c);
     let (can_fly, scale) = {
@@ -509,6 +510,9 @@ fn scan_for_enemy(
     for (unit, range) in units_by_distance(c, radius) {
         if unit_dead(&unit) {
             continue; // not counting dead Npc
+        }
+        if skip_alert_safe && c.ai.alert_safe_targets.contains_key(&unit.obj_id()) {
+            continue; // `NpcAddAlertSafeTarget`: cannot raise an alert for now
         }
         // Arbitrary value
         let max_height_gap = if can_fly {
@@ -542,7 +546,7 @@ pub fn check_aggression(c: &mut AiCtx<'_>, _k: BehaviorKind) -> bool {
     if !t.aggression {
         return false;
     }
-    match scan_for_enemy(c, t.attack_start_range_scale * 10.0, 3.5, 1.5, 1.5) {
+    match scan_for_enemy(c, t.attack_start_range_scale * 10.0, 3.5, 1.5, 1.5, false) {
         Some(unit) => {
             on_enemy_seen(c, &unit);
             true
@@ -551,30 +555,59 @@ pub fn check_aggression(c: &mut AiCtx<'_>, _k: BehaviorKind) -> bool {
     }
 }
 
-/// `Behavior.OnEnemyAlert(target)`.
-fn on_enemy_alert(c: &mut AiCtx<'_>, target: &WorldObject) {
-    let now = now_ms();
-    c.ai.alert_end_time = now + 5000;
-    c.ai.next_alert_check_time = now + 7000;
+/// `entity.AI.param.alertDuration` / `alertSafeTargetRememberTime` in seconds. An NPC without
+/// an `npc_ai_params` row runs on the character defaults (`default.lua`: 3.0 / 5.0).
+fn alert_params(c: &AiCtx<'_>) -> (f32, f32) {
+    if let Some(p) = template_ai_params(c) {
+        return (p.alert_duration, p.alert_safe_target_remember_time);
+    }
+    let id = template_scalars(c).npc_ai_param_id;
+    c.server
+        .game_data
+        .systems
+        .ai
+        .ai
+        .alert_only_for_id(id as u32)
+        .unwrap_or((3.0, 5.0))
+}
+
+/// `NpcAddAlertSafeTarget(target, alertSafeTargetRememberTime)`.
+fn add_alert_safe_target(c: &mut AiCtx<'_>, target: &WorldObject) {
+    let (_, remember) = alert_params(c);
+    let until = now_ms() + (f64::from(remember) * 1000.0) as i64;
+    c.ai.alert_safe_targets.insert(target.obj_id(), until);
+}
+
+/// `default.lua` `OnAlertTargetChanged` (1.2, line 1753) + `alert.lua` `Constructor`.
+/// Returns whether the NPC left its idle behavior.
+fn on_enemy_alert(c: &mut AiCtx<'_>, target: &WorldObject) -> bool {
+    let (duration, _) = alert_params(c);
+    if duration < 0.1 {
+        // "I don't want to use the alert state": aggressive species attack at once,
+        // non-aggressive ones do nothing.
+        if template_scalars(c).aggression {
+            on_enemy_seen(c, target);
+            return true;
+        }
+        return false;
+    }
+    c.ai.alert_end_time = now_ms() + (f64::from(duration) * 1000.0) as i64;
     set_target(c, Some(target));
     c.go_to_alert();
+    true
 }
 
 /// `Behavior.CheckAlert()`.
 pub fn check_alert(c: &mut AiCtx<'_>, _k: BehaviorKind) -> bool {
-    if c.ai.next_alert_check_time > now_ms() {
-        return false;
-    }
     // Don't do alerts if already in combat
     if c.npc.data().unit.is_in_battle {
         return false;
     }
+    let now = now_ms();
+    c.ai.alert_safe_targets.retain(|_, until| *until > now);
     let t = template_scalars(c);
-    match scan_for_enemy(c, t.sight_range_scale * 15.0, 4.0, 1.75, 2.0) {
-        Some(unit) => {
-            on_enemy_alert(c, &unit);
-            true
-        }
+    match scan_for_enemy(c, t.sight_range_scale * 15.0, 4.0, 1.75, 2.0, true) {
+        Some(unit) => on_enemy_alert(c, &unit),
         None => false,
     }
 }
@@ -711,33 +744,44 @@ fn can_use_skill(c: &mut AiCtx<'_>, k: BehaviorKind) -> bool {
     now >= delay_end && gcd <= now
 }
 
-/// `BaseCombatBehavior.ShouldReturn`.
-fn should_return(c: &AiCtx<'_>) -> bool {
+/// `BaseCombatBehavior.ShouldReturn`: the NPC gave up the whole fight.
+///
+/// `npcs.absolute_return_distance` is the distance from the position of the first aggro of the
+/// fight beyond which the whole aggro table is dropped; `0` disables the check (10.x
+/// `NpcAggroTable::ProcessReturn`, AI-ORACLE section 2.4; the 1.2 column carries the same name
+/// and meaning). The per-target `return_distance` rule lives in [`target_beyond_return_distance`].
+fn should_return(c: &mut AiCtx<'_>) -> bool {
     // Never trigger return while a SkillController is actively driving the NPC.
     if npc::skill_controller_running(&c.obj) {
         return false;
     }
-    let t = template_scalars(c);
-    let mut return_distance = 50.0f32;
-    let mut absolute_return_distance = 200.0f32;
-    if t.return_distance > 0.0 {
-        return_distance = t.return_distance;
-    }
-    if t.absolute_return_distance > 0.0 {
-        absolute_return_distance = t.absolute_return_distance;
-    }
-    let Some(target) = current_target(c) else {
+    if current_target(c).is_none() {
         return true; // no target, returning
-    };
-    let me = owner_pos(c);
-    let distance_to_target = calculate_distance(me, npc::world_pos(c.server, &target), true);
-    let distance_to_idle = calculate_distance(me, c.ai.idle_position, true);
-    let mut res = distance_to_target > return_distance || distance_to_idle > return_distance;
-    if res {
-        // if it's greater, then we need a teleport to the spawn point
-        res = distance_to_idle <= absolute_return_distance;
     }
-    res
+    let t = template_scalars(c);
+    let me = owner_pos(c);
+    let now = now_ms();
+    // A fight that has been quiet for a while is over: the next aggro starts a new one.
+    if now - c.ai.combat_last_tick > COMBAT_START_RESET_MS {
+        c.ai.combat_start_pos = None;
+    }
+    c.ai.combat_last_tick = now;
+    let start = *c.ai.combat_start_pos.get_or_insert(me);
+    t.absolute_return_distance > 0.0
+        && calculate_distance(me, start, true) > t.absolute_return_distance
+}
+
+/// A fight with no tick for this long is over (the start position is forgotten).
+const COMBAT_START_RESET_MS: i64 = 5000;
+
+/// Per-target drop rule: the target is farther from the NPC than `npcs.return_distance` (`0`
+/// disables it). The 10.x zone additionally waits 3 s since the target's last hit; the 1.2 data
+/// does not define that grace, so it is a recorded open suspect (PORTING.md).
+fn target_beyond_return_distance(c: &AiCtx<'_>, target: &WorldObject) -> bool {
+    let return_distance = template_scalars(c).return_distance;
+    return_distance > 0.0
+        && calculate_distance(owner_pos(c), npc::world_pos(c.server, target), true)
+            > return_distance
 }
 
 fn geo_data_mode(c: &AiCtx<'_>) -> bool {
@@ -752,6 +796,10 @@ fn update_target(c: &mut AiCtx<'_>) -> bool {
     let abusers = sorted_abusers(c);
     for abuser in abusers {
         let Some(abuser) = abuser else { continue };
+        if target_beyond_return_distance(c, &abuser) {
+            clear_aggro_of_unit(c.server, &c.obj, &abuser);
+            continue;
+        }
         if geo_data_mode(c) {
             if npc::unit_is_visible(c.server, &c.obj, &abuser) && !npc::is_dead(&abuser) {
                 let current_aggro = c.npc.data().current_aggro_target;
@@ -1213,19 +1261,41 @@ fn alert_tick(c: &mut AiCtx<'_>, k: BehaviorKind) {
         let tp = npc::world_pos(c.server, &t);
         npc::look_towards(c.server, &c.npc, tp, 4);
     }
+    // `alert.lua` `UpdateAlert` (1 s): more than 15 m (`IsOutOfIdleArea`) from home teleports back.
+    check_idle_leash(c, k, 1000, 15.0, None);
     let skill_task = c.npc.data().unit.skill_state.skill_task.is_some();
+    let target = current_target(c).filter(|t| !unit_dead(t));
+    if target.is_none() {
+        // `OnAITimeEvent` / `UpdateAlert`: the attention target is gone -> back to the command set.
+        leave_alert(c, k);
+        return;
+    }
     if now_ms() > c.ai.alert_end_time && !skill_task {
-        let (x, y, z) = c.st(k).old_rotation;
-        c.obj.with_transform(|t| {
-            t.rot_x = x;
-            t.rot_y = y;
-            t.rot_z = z;
-        });
-        set_target(c, None);
-        c.go_to_idle();
+        // `alert.lua` `OnAITimeEvent`: an aggressive species attacks the attention target,
+        // anything else remembers it as alert-safe and leaves.
+        if let (true, Some(t)) = (template_scalars(c).aggression, target.as_ref()) {
+            on_enemy_seen(c, t);
+            return;
+        }
+        if let Some(t) = target {
+            add_alert_safe_target(c, &t);
+        }
+        leave_alert(c, k);
         return;
     }
     check_aggression(c, k);
+}
+
+/// Restore the heading and return to the idle behavior.
+fn leave_alert(c: &mut AiCtx<'_>, k: BehaviorKind) {
+    let (x, y, z) = c.st(k).old_rotation;
+    c.obj.with_transform(|t| {
+        t.rot_x = x;
+        t.rot_y = y;
+        t.rot_z = z;
+    });
+    set_target(c, None);
+    c.go_to_idle();
 }
 
 fn almighty_attack_enter(c: &mut AiCtx<'_>, k: BehaviorKind) {
@@ -1483,6 +1553,41 @@ fn follow_unit_tick(c: &mut AiCtx<'_>, k: BehaviorKind, delta_ms: i64) {
     c.ai.idle_position = owner_pos(c);
 }
 
+/// The Lua idle-position leash: farther than `teleport_dist` from the idle position the NPC is
+/// teleported there; farther than `return_dist` (if any) it walks back via `ReturnToIdlePos`.
+/// Returns whether the behavior changed.
+///
+/// 1.2 `hold_position.lua` `UpdateHoldPosition` (7 m / 3 m, 2 s), `roaming.lua` `UpdateIdleEnd`
+/// and `alert.lua` `UpdateAlert` (`X2AI:IsOutOfIdleArea`, 15 m).
+fn check_idle_leash(
+    c: &mut AiCtx<'_>,
+    k: BehaviorKind,
+    interval_ms: i64,
+    teleport_dist: f32,
+    return_dist: Option<f32>,
+) -> bool {
+    let now = now_ms();
+    if now - c.st(k).last_pos_check < interval_ms {
+        return false;
+    }
+    c.st(k).last_pos_check = now;
+    let idle = c.ai.idle_position;
+    if idle.x == 0.0 && idle.y == 0.0 && idle.z == 0.0 {
+        return false; // never set
+    }
+    let dist = calculate_distance(owner_pos(c), idle, true);
+    if dist >= teleport_dist {
+        npc_move_towards(c, idle, 1_000_000.0, 4, 1.0);
+        npc::stop_movement(c.server, &c.npc);
+        return false;
+    }
+    if return_dist.is_some_and(|r| dist >= r) {
+        c.transition(super::framework::TransitionEvent::ReturnToIdlePos);
+        return true;
+    }
+    false
+}
+
 fn hold_position_enter(c: &mut AiCtx<'_>, k: BehaviorKind) {
     npc::set_game_stance(&c.npc, GameStanceType::RELAXED);
     npc::set_alertness(&c.npc, MoveTypeAlertness::IDLE);
@@ -1514,6 +1619,11 @@ fn hold_position_tick(c: &mut AiCtx<'_>, k: BehaviorKind) {
     }
     if check_alert(c, k) {
         c.st(k).following_npc = false;
+        return;
+    }
+    // 1b. `hold_position.lua` `UpdateHoldPosition` (every 2 s): 7 m or more from the idle position
+    // teleports home, 3 m or more walks home through the return state.
+    if !c.st(k).following_npc && check_idle_leash(c, k, 2000, 7.0, Some(3.0)) {
         return;
     }
     // 2. Try to use idle self-skills (1 s between tries)
@@ -1574,7 +1684,7 @@ fn idle_tick(c: &mut AiCtx<'_>, k: BehaviorKind) {
     if check_aggression(c, k) {
         c.go_to_combat();
     } else if check_alert(c, k) {
-        c.go_to_alert();
+        // `check_alert` already switched to the alert (or, without an alert state, combat).
     } else if check_follow_path(c) {
         c.go_to_follow_path();
     } else {
@@ -1589,6 +1699,7 @@ fn idle_tick(c: &mut AiCtx<'_>, k: BehaviorKind) {
 }
 
 fn return_state_enter(c: &mut AiCtx<'_>, k: BehaviorKind) {
+    c.ai.combat_start_pos = None;
     if !c.npc.data().unit.skill_state.aggro_table.is_empty() {
         combat::npc_clear_all_aggro(c);
     }
@@ -1693,6 +1804,11 @@ fn roaming_tick(c: &mut AiCtx<'_>, k: BehaviorKind, delta_ms: i64) {
     if !check_aggression(c, k) {
         check_alert(c, k);
     }
+    if c.ai.current_behavior() != Some(B::Roaming) {
+        return;
+    }
+    // `roaming.lua` `UpdateIdleEnd`: more than 15 m from the idle position teleports home.
+    check_idle_leash(c, k, 2000, 15.0, None);
     let zero = |v: Vec3| v.x == 0.0 && v.y == 0.0 && v.z == 0.0;
     if zero(c.st(k).roam_target) && now_ms() > c.st(k).next_roaming {
         let next = calc_next_roaming_position(c);
@@ -1859,10 +1975,15 @@ fn spawning_enter(c: &mut AiCtx<'_>, k: BehaviorKind) {
             }
         }
     }
+    // `spawning.lua`: `spawningEffectTime` (set by the zone, 1.2 data has none) is at least 0.1 s.
+    c.st(k).spawn_elapsed_ms = 0;
     c.st(k).enter = true;
 }
 
-fn spawning_tick(c: &mut AiCtx<'_>, k: BehaviorKind) {
+/// `spawning.lua` minimum `spawningEffectTime` (0.1 s).
+const SPAWNING_EFFECT_TIME_MS: i64 = 100;
+
+fn spawning_tick(c: &mut AiCtx<'_>, k: BehaviorKind, delta_ms: i64) {
     if !c.st(k).enter {
         return;
     }
@@ -1880,7 +2001,15 @@ fn spawning_tick(c: &mut AiCtx<'_>, k: BehaviorKind) {
             }
         }
     }
-    // This follows the game's way of doing it.
+    // `spawning.lua` `OnAITimeEvent`: wait out the spawn effect, then run the command set.
+    let elapsed = {
+        let s = c.st(k);
+        s.spawn_elapsed_ms += delta_ms;
+        s.spawn_elapsed_ms
+    };
+    if elapsed < SPAWNING_EFFECT_TIME_MS {
+        return;
+    }
     c.go_to_run_command_set();
 }
 
@@ -2074,6 +2203,26 @@ fn archer_attack_enter(c: &mut AiCtx<'_>, k: BehaviorKind) {
     c.st(k).enter = true;
 }
 
+/// The point `dist` metres from `me` on the line from `from` through `me` (a `backoff` away
+/// from `from`); an arbitrary direction when both coincide.
+fn point_away_from(me: Vec3, from: Vec3, dist: f32) -> Vec3 {
+    let (dx, dy) = (me.x - from.x, me.y - from.y);
+    let len = (dx * dx + dy * dy).sqrt();
+    let (ux, uy) = if len > 0.001 {
+        (dx / len, dy / len)
+    } else {
+        (1.0, 0.0)
+    };
+    Vec3 {
+        x: me.x + ux * dist,
+        y: me.y + uy * dist,
+        z: me.z,
+    }
+}
+
+/// `backoff` time of the `archerAttack_MakeAGap` pipe.
+const MAKE_A_GAP_BACKOFF_MS: i64 = 3000;
+
 fn archer_attack_tick(c: &mut AiCtx<'_>, k: BehaviorKind, delta_ms: i64) {
     if !c.st(k).enter {
         return;
@@ -2092,18 +2241,28 @@ fn archer_attack_tick(c: &mut AiCtx<'_>, k: BehaviorKind, delta_ms: i64) {
         return;
     }
     if c.st(k).archer_phase == ArcherPhase::NeedMakeAGap {
-        let idle = c.ai.idle_position;
+        // `archer_attack.lua` `archerAttack_MakeAGap`: `backoff` from the target until
+        // `preferedCombatDist` away, for at most 3 s.
+        let now = now_ms();
+        let started = {
+            let s = c.st(k);
+            if s.make_a_gap_start == 0 {
+                s.make_a_gap_start = now;
+            }
+            s.make_a_gap_start
+        };
         let me = owner_pos(c);
-        let abuser = current_target(c).map_or(Vec3::default(), |t| npc::world_pos(c.server, &t));
+        let abuser = current_target(c).map_or(me, |t| npc::world_pos(c.server, &t));
+        let away = point_away_from(me, abuser, 10.0);
         let mut move_speed = npc::real_movement_speed(&c.obj, f64::from(base_move_speed(c)));
         let move_flags = npc::real_movement_flags(move_speed);
         move_speed *= delta_seconds(delta_ms);
-        npc_move_towards(c, idle, move_speed as f32, move_flags, 1.0);
-        let dist = calculate_distance(me, idle, true);
-        let dist2 = calculate_distance(me, abuser, true);
-        if dist < 1.0 || dist2 > params.prefered_combat_dist {
+        npc_move_towards(c, away, move_speed as f32, move_flags, 1.0);
+        let dist2 = calculate_distance(owner_pos(c), abuser, true);
+        if dist2 >= params.prefered_combat_dist || now - started >= MAKE_A_GAP_BACKOFF_MS {
             npc::stop_movement(c.server, &c.npc);
             let s = c.st(k);
+            s.make_a_gap_start = 0;
             s.make_a_gap_count += 1;
             s.archer_phase = ArcherPhase::TryingRangedDefSkill;
         } else {
@@ -2437,7 +2596,24 @@ fn wild_boar_attack_enter(c: &mut AiCtx<'_>, k: BehaviorKind) {
     broadcast_posture(c, false);
     super::npc_events::on_combat_started(c);
     set_in_battle(c.server, &c.obj, true);
-    c.st(k).enter = true;
+    let s = c.st(k);
+    // `healthPercentage` is sampled on entry, `spurtSkills = {}`.
+    s.prev_health = None;
+    s.spurt_queue.clear();
+    s.enter = true;
+}
+
+/// The spurt skills whose `healthCondition` the HP% crossed downward (`curr < cond <= prev`).
+fn spurt_skills_crossed(
+    spurt: &[super::params::WildBoarAiSpurtSkill],
+    prev: f32,
+    curr: f32,
+) -> Vec<u32> {
+    spurt
+        .iter()
+        .filter(|d| curr < d.health_condition as f32 && d.health_condition as f32 <= prev)
+        .map(|d| d.skill_type)
+        .collect()
 }
 
 fn wild_boar_attack_tick(c: &mut AiCtx<'_>, k: BehaviorKind, delta_ms: i64) {
@@ -2492,34 +2668,33 @@ fn wild_boar_attack_tick(c: &mut AiCtx<'_>, k: BehaviorKind, delta_ms: i64) {
         return;
     };
     let target_dist = npc::distance_to(c.server, &c.obj, &target, false);
-    if on_spurt_skills.is_empty() {
-        pick_skill_and_use_it(c, k, SkillUseConditionKind::InCombat, &target, target_dist);
-        return;
+    // `wild_boar_attack.lua` `OnAITimeEvent`: a spurt skill is queued when the HP% crosses its
+    // `healthCondition` downward (`curr < cond <= prev`), and only while nothing is queued.
+    let curr = c.st(k).curr_health;
+    let prev = c.st(k).prev_health.unwrap_or(curr);
+    c.st(k).prev_health = Some(curr);
+    if c.st(k).spurt_queue.is_empty() {
+        c.st(k).spurt_queue = spurt_skills_crossed(on_spurt_skills, prev, curr);
     }
-    for skill_data in on_spurt_skills {
-        if c.st(k).curr_health < skill_data.health_condition as f32 {
-            let Some(skill) = ai_skills::new_skill(c, skill_data.skill_type) else {
-                continue;
-            };
-            if target_dist >= skill.template.min_range as f32
-                && target_dist <= skill.template.max_range as f32
-            {
-                set_weapon_range(c, k, &skill, &target);
-                let result = use_skill(c, k, skill, Some(&target), 0.0);
-                if result == skill_result::COOLDOWN_TIME {
-                    pick_skill_and_use_it(
-                        c,
-                        k,
-                        SkillUseConditionKind::InCombat,
-                        &target,
-                        target_dist,
-                    );
-                }
+    // Cast the queued spurt skill (kept until it is in range, like the Lua's pending list).
+    let queued = c.st(k).spurt_queue.clone();
+    for skill_type in queued {
+        let Some(skill) = ai_skills::new_skill(c, skill_type) else {
+            c.st(k).spurt_queue.retain(|s| *s != skill_type);
+            continue;
+        };
+        if target_dist >= skill.template.min_range as f32
+            && target_dist <= skill.template.max_range as f32
+        {
+            set_weapon_range(c, k, &skill, &target);
+            let result = use_skill(c, k, skill, Some(&target), 0.0);
+            if result != skill_result::COOLDOWN_TIME {
+                c.st(k).spurt_queue.clear();
+                return;
             }
-        } else {
-            pick_skill_and_use_it(c, k, SkillUseConditionKind::InCombat, &target, target_dist);
         }
     }
+    pick_skill_and_use_it(c, k, SkillUseConditionKind::InCombat, &target, target_dist);
 }
 
 #[cfg(test)]
@@ -2608,6 +2783,49 @@ mod tests {
     fn delta_uses_the_millisecond_component() {
         assert_eq!(delta_seconds(120), 0.12);
         assert_eq!(delta_seconds(1120), 0.12);
+    }
+
+    #[test]
+    fn spurt_skills_fire_once_per_downward_crossing() {
+        use super::super::params::WildBoarAiSpurtSkill as S;
+        let spurt = [
+            S {
+                skill_type: 1,
+                health_condition: 70,
+            },
+            S {
+                skill_type: 2,
+                health_condition: 50,
+            },
+        ];
+        // above both thresholds: nothing
+        assert!(spurt_skills_crossed(&spurt, 100.0, 90.0).is_empty());
+        // crosses 70 only
+        assert_eq!(spurt_skills_crossed(&spurt, 75.0, 65.0), vec![1]);
+        // already below it: no new crossing while the HP stays or keeps falling inside the band
+        assert!(spurt_skills_crossed(&spurt, 65.0, 60.0).is_empty());
+        assert!(spurt_skills_crossed(&spurt, 40.0, 40.0).is_empty());
+        // both in one step
+        assert_eq!(spurt_skills_crossed(&spurt, 80.0, 40.0), vec![1, 2]);
+        // healing back above and falling again crosses again
+        assert!(spurt_skills_crossed(&spurt, 60.0, 80.0).is_empty());
+        assert_eq!(spurt_skills_crossed(&spurt, 80.0, 69.0), vec![1]);
+        // exactly on the condition counts as not yet crossed (`curr < cond`)
+        assert!(spurt_skills_crossed(&spurt, 80.0, 70.0).is_empty());
+    }
+
+    #[test]
+    fn make_a_gap_backs_away_from_the_target() {
+        let me = Vec3::new(10.0, 0.0, 5.0);
+        let target = Vec3::new(7.0, 0.0, 5.0);
+        let p = point_away_from(me, target, 10.0);
+        assert!((p.x - 20.0).abs() < 1e-4 && p.y.abs() < 1e-4 && (p.z - 5.0).abs() < 1e-4);
+        // the diagonal keeps its direction
+        let p = point_away_from(Vec3::new(1.0, 1.0, 0.0), Vec3::new(0.0, 0.0, 0.0), 2.0);
+        assert!((p.x - (1.0 + 2.0 / 2f32.sqrt())).abs() < 1e-4 && (p.x - p.y).abs() < 1e-4);
+        // standing on the target picks some direction instead of NaN
+        let p = point_away_from(me, me, 10.0);
+        assert!(p.x.is_finite() && p.y.is_finite());
     }
 }
 

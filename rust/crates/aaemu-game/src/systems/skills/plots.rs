@@ -1127,7 +1127,7 @@ fn apply_plot_effect(
         tracing::error!("PlotEventEffect: invalid source {}", eff.source_id);
         return;
     };
-    for new_target in &ti.effected {
+    for (rank, new_target) in ti.effected.iter().enumerate() {
         let Some(target) = plot_target(eff.target_id, state, ti, new_target) else {
             tracing::error!("PlotEventEffect: invalid target {}", eff.target_id);
             return;
@@ -1151,7 +1151,13 @@ fn apply_plot_effect(
                 event_id: event.id,
                 skill_id: state.skill.template.id,
             },
-            source: EffectSource::from_skill(state.skill.clone()),
+            source: EffectSource {
+                // `aoe_diminishings`: the n-th target of a diminishing area event takes the
+                // n-th rate (positions are not targets of the diminishing).
+                aoe_diminishing: (event.aoe_diminishing && target.as_obj().is_some())
+                    .then(|| data.aoe_diminishing_multiplier(rank as u32 + 1)),
+                ..EffectSource::from_skill(state.skill.clone())
+            },
             skill_object: &state.ctx.skill_object,
         };
         effects::apply(server, kind, template, &args, None);
