@@ -21,6 +21,7 @@ except Exception:  # pragma: no cover - optional dependency
     LuaRuntime = None
 
 import build  # noqa: E402
+import package_addon  # noqa: E402
 from test_build import make_fixture  # noqa: E402
 
 VERSION = "0.1.0"
@@ -97,6 +98,48 @@ class PackageTests(unittest.TestCase):
         first_folder = self.first / "aaemu_quest_guide"
         second_folder = self.second / "aaemu_quest_guide"
         self.assertEqual(file_bytes(first_folder), file_bytes(second_folder))
+
+    def test_user_files_survive_rebuild_but_are_not_zipped(self):
+        output = self.root / "preserve"
+        build.run_build(self.db, self.worlds, output, code_commit="preserve")
+        folder = output / "aaemu_quest_guide"
+        zip_path = output / ("aaemu_quest_guide-%s.zip" % VERSION)
+        before = zip_path.read_bytes()
+        recording = folder / "observations" / "user-record.lua"
+        recording.write_text("return {private='recording'}\n", encoding="utf-8")
+        notes = folder / "private-notes.txt"
+        notes.write_text("do not delete\n", encoding="utf-8")
+
+        build.run_build(self.db, self.worlds, output, code_commit="preserve")
+        self.assertEqual(recording.read_text(encoding="utf-8"),
+                         "return {private='recording'}\n")
+        self.assertEqual(notes.read_text(encoding="utf-8"), "do not delete\n")
+        self.assertEqual(zip_path.read_bytes(), before)
+        with zipfile.ZipFile(zip_path) as archive:
+            names = archive.namelist()
+        self.assertNotIn("aaemu_quest_guide/observations/user-record.lua", names)
+        self.assertNotIn("aaemu_quest_guide/private-notes.txt", names)
+        self.assertIn("aaemu_quest_guide/observations/README.txt", names)
+
+    def test_standalone_validates_version_overlap_and_manifest_paths(self):
+        with self.assertRaises(package_addon.PackageError):
+            package_addon.package_addon(TOOL / "inside-source", TOOL)
+        with self.assertRaises(package_addon.PackageError):
+            package_addon.package_addon(self.first, TOOL, version="../evil")
+
+        output = self.root / "manifest-path"
+        build.run_build(self.db, self.worlds, output, code_commit="paths")
+        manifest_path = output / "manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["files"].append({
+            "path": "aaemu_quest_guide/data/../../../outside.lua",
+            "sha256": "0" * 64,
+            "bytes": 1,
+        })
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+        (self.root / "outside.lua").write_text("return {}", encoding="utf-8")
+        with self.assertRaises(package_addon.PackageError):
+            package_addon.package_addon(output, TOOL)
 
     def test_data_only_leaves_no_runtime_or_zip(self):
         output = self.root / "data-only"
