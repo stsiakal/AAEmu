@@ -1729,6 +1729,22 @@ impl GameClient {
         self.send_cs(cs::CSStartSkillPacket, &body).await
     }
 
+    /// `CSStartSkillPacket` from our unit on ourselves carrying a skill object (the type byte and
+    /// body, e.g. the portal book's `PortalInfo` / `SavePortalInfo`).
+    pub async fn start_skill_with_object(
+        &mut self,
+        skill_id: u32,
+        object: &[u8],
+    ) -> anyhow::Result<()> {
+        let me = self.state.self_obj;
+        let mut s = PacketStream::new();
+        s.write_u32(skill_id);
+        SkillCaster::Unit(me).write(&mut s);
+        SkillCastTarget::Unit(me).write(&mut s);
+        s.write_raw(object);
+        self.send_cs(cs::CSStartSkillPacket, s.as_bytes()).await
+    }
+
     /// Uses a doodad with an interaction skill: `CSStartSkillPacket` with our unit as the caster
     /// and the doodad as the target (the server's `InteractionEffect` -> `doodad.Use`).
     pub async fn use_doodad(&mut self, skill_id: u32, doodad_obj: u32) -> anyhow::Result<()> {
