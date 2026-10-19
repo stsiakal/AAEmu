@@ -2241,6 +2241,12 @@ weapon sets 393-395 (buffs only; weapon models), Auroria class sets (no set rows
 (socket tables reshaped, loader check). The Dawnsdrop/Hellforged sets use emulator-custom ids
 (>= 9,000,000) and are refused by the tool. A proc engine is the prerequisite for the 57 item procs.
 
+## PvP bot fixes (duel disconnect, GM faction, quit relog)
+
+* **Duel participant leaves** (`DuelManager::on_participant_leave`, called first in `session::save_and_remove_from_world`): the C# had no handling, so the opponent stayed in the Red / Blue faction with the duel registered until the end timer, and `DuelAccepted` answered "already started". A started duel now ends as a surrender of the leaver (`SCDuelEndedPacket` with `det` 2, the packet of running away from the flag) and restores both factions; a pending request is dropped. No 1.2 oracle for the retail result code; the surrender code is the closest existing one.
+* **`/setfaction` is persistent** (`faction::set_faction_persistent`): a GM change goes through the `Character.SetFaction` effects (housing, guild, party) and ends any temporary faction, so `characters.faction_id` stores it. Only duel and battlefield factions are temporary.
+* **Quit game frees the account** (`leave_world_task`, target 0): the C# kept the connection and the `AccountManager` entry until the client closed the socket or the 30-60 s dead-connection sweep did, so a relog right after quit got "enter world denied, reason 1" (`already_connected`). The server now unregisters the account and closes the connection after `SCLeaveWorldGranted`; `AccountManager::remove_if_owned` makes a late close of the old connection leave a newer login of the same account alone. Saves are unchanged (still under the transaction lock, all-or-nothing).
+* **Rotate-winner and bind-on-pickup rolls** (checked, no change): with the party rule `ROTATE_WINNER` and more than one eligible player, `TryTakeLootLocked` hands the item to the round-robin winner before the `rollMandatory` check, so `RollForBindOnPickup` and `MinimumGrade` never roll under that rule (a mirrored C# order). Rolls happen under `FREE_FOR_ALL` and `LOOT_MASTER`.
 ## Bevy protocol audit (October 19, 2026)
 
 The Bevy 1.2 client (`AABevy1.2`) is the main client; its reverse-engineering notes
