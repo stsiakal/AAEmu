@@ -145,6 +145,10 @@ struct Inner {
     npc_index: HashMap<u32, usize>,
     /// `NpcMemberAndSpawnerTemplateIds`.
     member_spawners: HashMap<u32, Vec<u32>>,
+    /// `npc_group_members` rows (`NpcGroup` spawner members), by group id in table order.
+    /// The C# `SpawnNpcGroup` was `SpawnNpc` (it spawned the group id as an NPC template); the
+    /// authored table is used here so group spawners spawn their members.
+    group_members: HashMap<u32, Vec<u32>>,
 }
 
 /// `NpcGameData` spawner tables (`server.game_data.systems.npcs.npc_spawners`).
@@ -212,6 +216,16 @@ impl NpcSpawnerData {
         let mut data = Self::from_parts(templates, npcs)?;
         data.transfer_template_ids = id_set(conn, "transfers")?;
         data.slave_template_ids = id_set(conn, "slaves")?;
+        for_each_row(conn, "SELECT * FROM npc_group_members", [], |r| {
+            data.inner
+                .get_mut()
+                .expect("npc spawner data poisoned")
+                .group_members
+                .entry(r.u32("npc_group_id")?)
+                .or_default()
+                .push(r.u32("npc_id")?);
+            Ok(())
+        })?;
         Ok(data)
     }
 
@@ -282,6 +296,16 @@ impl NpcSpawnerData {
     /// `GetNpcSpawnerTemplate(id)`.
     pub fn get_npc_spawner_template(&self, id: u32) -> Option<Arc<NpcSpawnerTemplate>> {
         self.read().templates.get(&id).cloned()
+    }
+
+    /// The `npc_group_members` NPC ids of a `NpcGroup` spawner member.
+    pub fn group_member_ids(&self, group_id: u32) -> Option<Vec<u32>> {
+        self.read().group_members.get(&group_id).cloned()
+    }
+
+    /// Installs `npc_group_members` rows (tests; `load_from` fills them from the compact DB).
+    pub fn set_group_members(&self, members: HashMap<u32, Vec<u32>>) {
+        self.write().group_members = members;
     }
 
     /// `GetNpcSpawnerNpc(spawnerId)`: the first member row of the spawner template.
