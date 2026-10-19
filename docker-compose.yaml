@@ -17,7 +17,8 @@ services:
         environment:
             MYSQL_ROOT_PASSWORD: ${DB_PASSWORD}
         ports:
-            - ${DB_PORT:-3306}:3306
+            # loopback only: the host-side `cargo xtask dev` servers reach it, the network does not
+            - 127.0.0.1:${DB_PORT:-3306}:3306
         healthcheck:
             test: ["CMD-SHELL", "mysqladmin ping -h localhost -u root -p${DB_PASSWORD}" ]
             interval: 5s
@@ -26,13 +27,15 @@ services:
 
     adminer:
         image: adminer
+        # not started by default: `docker compose --profile tools up`
+        profiles: ["tools"]
         restart: unless-stopped
         environment:
             ADMINER_DEFAULT_DB_DRIVER: mysql
             ADMINER_DEFAULT_DB_HOST: db
             ADMINER_DESIGN: nette
         ports:
-            - 8080:8080
+            - 127.0.0.1:8080:8080
         depends_on:
             db:
               condition: service_healthy
@@ -54,6 +57,9 @@ services:
             GameServers__0__Name: AAEmu.Game
             GameServers__0__Host: 127.0.0.1
             GameServers__0__Port: 1239
+            # the game container reaches the internal port over the compose network; it is never published
+            InternalNetwork__Host: "*"
+            AutoAccount: ${AAEMU_AUTO_ACCOUNT:-false}
         ports:
             - 1237:1237
         develop:

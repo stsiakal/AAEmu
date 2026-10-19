@@ -458,6 +458,8 @@ fn dev(args: &[String]) -> Result<()> {
             ("GameServers__0__Name", "AAEmu.Game".into()),
             ("GameServers__0__Host", "127.0.0.1".into()),
             ("GameServers__0__Port", "1239".into()),
+            // local development convenience; the shipped default is off
+            ("AutoAccount", "true".into()),
         ],
     )?;
     let internal = SocketAddr::from(([127, 0, 0, 1], LOGIN_INTERNAL_PORT));

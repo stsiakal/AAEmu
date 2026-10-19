@@ -6,10 +6,10 @@
 		}
 	},
 	"SecretKey": "test",
-	"AutoAccount": true,
+	"AutoAccount": false,
 	"SkipHostResolve": false,
 	"InternalNetwork": {
-		"Host": "*",
+		"Host": "127.0.0.1",
 		"Port": 1234
 	},
 	"Network": {
