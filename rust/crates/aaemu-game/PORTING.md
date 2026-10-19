@@ -1566,6 +1566,13 @@ and in NPC wandering / buff remaining times.
   owner). The client is the source of the request and `CanAccept` already warns with the cause.
 * systems::economy: `BindType.HasFlag(...)` on the plain `ItemBindType` enum is a bit test
   (`BindOnUnpack` matches 4..7, `BindOnEquip` matches 3 and 7); mirrored.
+* systems::economy: loot dice are won by the highest roll (the C# sorted the rolled values
+  ascending and took the first positive one, so the lowest bidder won). The 1.2 client presents
+  the roll as an item bid and only reports values: `ui_texts` 4305 `loot_dice_roll` = "Roll"
+  (입찰), 4318 `loot_dice_title` = "Item Bid" (아이템 입찰), 2412 `msg_dice_value` = "$1 rolled a
+  $2 on the dice. (1-$3)"; its `loot_dice.alb` bytecode only calls `X2Loot.DoDiceAction` /
+  `RequestNextDiceItem`, so the winner is the server's decision and a bid over 1-100 is won by
+  the highest value.
 * systems::economy: taking loot releases the item id it allocates for the grant checks once
   `AcquireDefaultItem` created its own item (the C# leaked one id per non-coin, non-trade-pack
   loot grant).
@@ -1578,8 +1585,7 @@ and in NPC wandering / buff remaining times.
 * systems::economy: `CSBuyItems` refuses only when money, honor *and* vocation are all short;
   `ExpandExpert` adds the vocation cost; craft / backpack / weapon booleans read as numbers are
   false for `'t'` texts; `Specialty.VendorExist` reads the `id` column.
-* systems::economy: loot dice pick the lowest positive roll; `ItemProc` `ignoreRoll` never
-  procs; `HDps` uses the magic DPS grade value;
+* systems::economy: `ItemProc` `ignoreRoll` never procs; `HDps` uses the magic DPS grade value;
   fish conversion only uses the first pack.
 * systems::economy: auction — the "ExpireDate" sort still uses PostDate and a buyout
   sends no SCAuctionBidPacket. Original cancellation-copy and missing balance checks
