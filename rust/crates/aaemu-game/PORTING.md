@@ -2110,3 +2110,43 @@ The achievement subsystem has no 1.2 C# manager; the behaviour follows `rust/doc
 * **GET_ITEM_TYPE (k29), KILL_SLAVE (k26), MY_DISHONORABLE_POINT (k49), siege results (k57-60)** stay
   unwired (see the audit for why). `SCAchievementResetedPacket` (0x1ff) has no 1.2 trigger and is
   deliberately never sent.
+
+## Later-version gear backport (opt-in tooling, `rust/tools/version_gaps/backport.py`)
+
+Not part of the shipped data: the tool reads the 1.2 `compact.sqlite3` and the 3.0.4.2 reference
+read-only and writes a SQL patch plus a patched copy; nothing changes unless the operator drops the
+patched copy in as the server's `compact.sqlite3`. Evidence for Crazed Wizard/Hermit/Slaver
+(items 38877-38897, equip sets 396-398): 3.0.4.2 rows (10.x-era, so a suspect for retail numbers),
+the 1.2 client reading the rows back (set name, bonus text and the proc text came out of the
+client's own tooltip code), and the live server applying the set bonus buffs.
+
+Per family the tool follows `item_armors.eiset_id` -> `equip_item_sets` -> `equip_item_set_bonuses`
+-> bonus buffs (+ `unit_modifiers`, `skill_modifiers`, `tagged_buffs`) and bonus `item_procs` (+
+proc skills/effects/buffs), plus items, looks (new ids above the custom range, as for obsidian),
+icons, upgrade crafts, materials and English texts. Deviations:
+
+- **Set bonus 4 of each Crazed set is omitted** (buff 18408, 3.0 PvE damage reduction, unit
+  attribute 199): 1.2 unit attributes end at 186, nothing implements it. Reported as
+  `set_bonuses_omitted`; unit modifiers above the 1.2 range are never copied.
+- **Item procs do not fire.** The set procs (124-126, chance kind 18/3/13) are data only: the C#
+  `ItemProc` never ran (see `apply_equip_item_set_bonuses`), so the Rust server has no proc
+  engine. The client shows the proc text. Chance kind 18 is also unused by any 1.2 proc row.
+- **No source for the base pieces.** The 3.0 data holds only the Heroic/Unique/Relic upgrade crafts
+  (they consume the same piece at grade 4/5/6); the base crafts (8595, 8599, ...) have products and
+  materials but no `crafts` row, and no loot/vendor row gives the pieces. The backport copies the
+  63 upgrade crafts and reports the base crafts as `orphan_crafts_in_3_0`; where the base piece
+  comes from (authored recipe, boss drop, vendor) is a design decision still open.
+- Armor looks of 3.0 mean other looks in 1.2, so 15 new armor looks (60 new item_assets, 185 files
+  not in the 1.2 pak incl. dwarf/warborn variants) come from the 10.x pak; `patch-client` writes
+  them into a pak copy (2 specular textures of the unused dwarf/warborn cloth look are absent from
+  the 10.x pak).
+- Client side: `patch-client` into a client copy; a client reading the server `compact.sqlite3`
+  (Bevy client) needs only the patched server db plus a pak containing the 185 new files.
+
+Next families, in order (all need the same tool; blockers in brackets): Hardy/Heartless 3-piece
+class sets 387-392 (proc only, no engine; 18 items, base-piece source open), Distorted Whispers 386
+(not craftable, bonuses 3/5 + proc), Hexbane/Talisman/Tempting/Enchanting Melody 414-417 (lvl 53,
+no crafts), Soulforged/Maliceforged weapons and Bane's Bolt/Bloodmist/Abyssal Destroyer 2-piece
+weapon sets 393-395 (buffs only; weapon models), Auroria class sets (no set rows), then lunagems
+(socket tables reshaped, loader check). The Dawnsdrop/Hellforged sets use emulator-custom ids
+(>= 9,000,000) and are refused by the tool. A proc engine is the prerequisite for the 57 item procs.
