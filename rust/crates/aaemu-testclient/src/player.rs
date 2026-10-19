@@ -842,8 +842,10 @@ mod tests {
 
     #[test]
     fn summary_lists_the_blocker_and_fallbacks() {
-        let mut cp = Checkpoint::default();
-        cp.character = "Botty".into();
+        let mut cp = Checkpoint {
+            character: "Botty".into(),
+            ..Checkpoint::default()
+        };
         cp.blocker = Some(RunBlocker {
             quest_id: 330,
             name: "q".into(),
