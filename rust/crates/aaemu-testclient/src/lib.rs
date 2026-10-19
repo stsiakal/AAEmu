@@ -5,6 +5,7 @@
 pub mod compactdb;
 pub mod craftrun;
 pub mod diff;
+pub mod fight;
 pub mod game;
 pub mod inventory;
 pub mod load;
