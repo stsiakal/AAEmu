@@ -1384,7 +1384,8 @@ is no longer mirrored (see "Known deviations", dead NPC returned and healed).
   unused / exhaustions / replaced / leaked-over-10-min counters (`TlIdStats`), shown on the Web
   API `/status` page and in the every-500-gets debug line. Covered by
   `skills/tasks.rs` unit tests and `skills/tl_id_flow_tests.rs` (a 250-iteration sweep of instant,
-  interrupted, completed, cancelled, failed, item-reagent and plot casts asserting the pool
+  interrupted, completed and channelled casts, plus failed validation, item-reagent rejection,
+  refused / treeless plots, a replaced reuse and an exhausted pool; every case asserts the pool
   returns to baseline).
 
 * systems::skills log noise (2026-10-16): `CSStopCasting` with `tl == 0` and a plot tl for a plot
