@@ -587,6 +587,25 @@ pub enum Behavior {
     BallisticLeap(LeapArc),
     Dash(LinearMove),
     Rotate(RotateMove),
+    Anchor(AnchorMove),
+}
+
+/// `AnchorSkillController` (10.x `X2::AnchorSkillController`, "land on the ground" for the flying
+/// monster skills 22268 / 23103): descends to the ground under the owner at the stage speed
+/// (`value2`, mm/s) until it arrives or the stage times out (`value3`, ms), then fires the
+/// template's `end_skill_id` on the owner ("Anchor skill controller has FIRED END SKILL").
+///
+/// Only the vertical landing is ported: the native controller walks a list of stages whose
+/// targets are ground-collider doodads (`_GetGroundEntity`), which this server does not model;
+/// the stage kinds in `value1` / `value4` / `value7` are not interpreted.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AnchorMove {
+    /// Descent speed in m/s.
+    pub speed: f32,
+    pub timeout_ms: f32,
+    pub elapsed_ms: f32,
+    pub end_skill_id: u32,
+    start_z: f32,
 }
 
 /// Native RotateSkillController (0x3924E1D0 / tick 0x392315C0).
@@ -775,6 +794,29 @@ pub fn create(
                 elapsed_ms: 0.0,
             }),
         )),
+        Some(SkillControllerKind::Anchor) => {
+            let speed = if template.value[1] > 0 {
+                template.value[1] as f32 / 1000.0
+            } else {
+                10.0
+            };
+            Some(new_ref(
+                Some(template),
+                owner,
+                target,
+                Behavior::Anchor(AnchorMove {
+                    speed,
+                    timeout_ms: if template.value[2] > 0 {
+                        template.value[2] as f32
+                    } else {
+                        f32::INFINITY
+                    },
+                    elapsed_ms: 0.0,
+                    end_skill_id: template.end_skill_id,
+                    start_z: owner.transform().z,
+                }),
+            ))
+        }
         _ => {
             tracing::trace!(
                 "SkillController: create defaultSkillController kind={}",
@@ -950,7 +992,8 @@ impl SkillControllerRef {
             Behavior::Leap(_)
             | Behavior::BallisticLeap(_)
             | Behavior::Dash(_)
-            | Behavior::Rotate(_) => self.subscribe(server),
+            | Behavior::Rotate(_)
+            | Behavior::Anchor(_) => self.subscribe(server),
         }
     }
 
@@ -1062,6 +1105,17 @@ impl SkillControllerRef {
                     Next::End
                 } else {
                     self.wandering_tick(server, w, dt)
+                }
+            }
+            Behavior::Anchor(mut anchor) => {
+                if !present || self.owner_dead() {
+                    Next::FinalEnd
+                } else {
+                    anchor.elapsed_ms += dt * 1000.0;
+                    if let Behavior::Anchor(saved) = &mut self.lock().behavior {
+                        saved.elapsed_ms = anchor.elapsed_ms;
+                    }
+                    self.anchor_tick(server, &anchor, dt)
                 }
             }
             Behavior::Rotate(mut rotation) => {
@@ -1208,6 +1262,7 @@ impl SkillController {
             Behavior::BallisticLeap(_) => SkillControllerKind::Leap,
             Behavior::Dash(_) => SkillControllerKind::Dash,
             Behavior::Rotate(_) => SkillControllerKind::Rotate,
+            Behavior::Anchor(_) => SkillControllerKind::Anchor,
         }
     }
 
@@ -1536,6 +1591,55 @@ impl SkillController {
         let new_z = (cur.z - fall_speed * dt).max(ground_z);
         self.vertical_move(server, cur, new_z, -127);
         Next::Continue
+    }
+
+    /// `AnchorSkillController` step: descend to the ground; on arrival (or the stage timeout)
+    /// fire the end skill on the owner.
+    fn anchor_tick(&self, server: &GameServer, a: &AnchorMove, dt: f32) -> Next {
+        let cur = self.local_pos();
+        let ground_z = ground_height(server, &self.owner, a.start_z);
+        if cur.z <= ground_z + 0.1 || a.elapsed_ms >= a.timeout_ms {
+            if cur.z > ground_z {
+                self.owner.with_transform(|t| t.set_height(ground_z));
+            }
+            tracing::debug!(
+                "AnchorSC: owner={} landed at Z={ground_z:.1}, firing end skill {}",
+                self.owner.obj_id(),
+                a.end_skill_id
+            );
+            self.final_end(true);
+            super::on_landed(server, &self.owner);
+            if self.owner.as_npc().is_some() {
+                npc_stop_movement(server, &self.owner);
+            }
+            self.fire_end_skill(server, a.end_skill_id);
+            return Next::Continue;
+        }
+        let new_z = (cur.z - a.speed * dt).max(ground_z);
+        self.vertical_move(server, cur, new_z, -127);
+        Next::Continue
+    }
+
+    /// "Anchor skill controller has FIRED END SKILL": the owner uses `skill_id` on itself.
+    fn fire_end_skill(&self, server: &GameServer, skill_id: u32) {
+        if skill_id == 0 {
+            return;
+        }
+        let Some(template) = server.game_data.systems.skills.skill(skill_id).cloned() else {
+            tracing::error!("AnchorSC: end skill {skill_id} has no template");
+            return;
+        };
+        let skill = super::state::SkillRun::new(template, 1);
+        let mut target = super::types::SkillCastTarget::Unit(self.owner.obj_id());
+        super::skill::use_skill(
+            server,
+            &skill,
+            &self.owner,
+            super::types::SkillCaster::Unit(self.owner.obj_id()),
+            &mut target,
+            Some(super::types::SkillObject::None),
+            true,
+        );
     }
 
     /// The lift / fall step: only Z changes, actor flags 5, vertical delta movement.

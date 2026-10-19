@@ -217739,5 +217739,585 @@
             "Z": 188.081,
             "Yaw": 120
         }
+    },
+    {
+        "UnitId": 4197,
+        "Title": "1.2 client npc_map (e_falcony_plateau)",
+        "Position": {
+            "X": 22873.16,
+            "Y": 9368.23,
+            "Z": 589.997,
+            "Yaw": 0
+        }
+    },
+    {
+        "UnitId": 4197,
+        "Title": "1.2 client npc_map (e_falcony_plateau)",
+        "Position": {
+            "X": 22892.359,
+            "Y": 9471.32,
+            "Z": 548.735,
+            "Yaw": 0
+        }
+    },
+    {
+        "UnitId": 4208,
+        "Title": "1.2 client npc_map (e_falcony_plateau)",
+        "Position": {
+            "X": 23817.99,
+            "Y": 9082.07,
+            "Z": 610.77,
+            "Yaw": 0
+        }
+    },
+    {
+        "UnitId": 4208,
+        "Title": "1.2 client npc_map (e_falcony_plateau)",
+        "Position": {
+            "X": 23829.801,
+            "Y": 8344.74,
+            "Z": 590.52,
+            "Yaw": 0
+        }
+    },
+    {
+        "UnitId": 4227,
+        "Title": "1.2 client npc_map (e_falcony_plateau)",
+        "Position": {
+            "X": 22920.461,
+            "Y": 9429.53,
+            "Z": 562.285,
+            "Yaw": 0
+        }
+    },
+    {
+        "UnitId": 4227,
+        "Title": "1.2 client npc_map (e_falcony_plateau)",
+        "Position": {
+            "X": 22937.59,
+            "Y": 9438.55,
+            "Z": 550.375,
+            "Yaw": 0
+        }
+    },
+    {
+        "UnitId": 5756,
+        "Title": "1.2 client npc_map (e_falcony_plateau)",
+        "Position": {
+            "X": 23683.48,
+            "Y": 9084.53,
+            "Z": 591.221,
+            "Yaw": 0
+        }
+    },
+    {
+        "UnitId": 5756,
+        "Title": "1.2 client npc_map (e_falcony_plateau)",
+        "Position": {
+            "X": 23679.439,
+            "Y": 9090.73,
+            "Z": 591.645,
+            "Yaw": 0
+        }
+    },
+    {
+        "UnitId": 6603,
+        "Title": "1.2 client npc_map (e_falcony_plateau)",
+        "Position": {
+            "X": 22873.24,
+            "Y": 9431.48,
+            "Z": 588.21,
+            "Yaw": 0
+        }
+    },
+    {
+        "UnitId": 10790,
+        "Title": "1.2 client npc_map (e_falcony_plateau)",
+        "Position": {
+            "X": 23803.42,
+            "Y": 9014,
+            "Z": 601.587,
+            "Yaw": 0
+        }
+    },
+    {
+        "UnitId": 10790,
+        "Title": "1.2 client npc_map (e_falcony_plateau)",
+        "Position": {
+            "X": 23808.289,
+            "Y": 9012.29,
+            "Z": 600.798,
+            "Yaw": 0
+        }
+    },
+    {
+        "UnitId": 12464,
+        "Title": "1.2 client npc_map (e_falcony_plateau)",
+        "Position": {
+            "X": 23766.359,
+            "Y": 9071.42,
+            "Z": 633.408,
+            "Yaw": 0
+        }
+    },
+    {
+        "UnitId": 1343,
+        "Title": "1.2 client npc_map (e_lokas_checkers)",
+        "Position": {
+            "X": 24765.631,
+            "Y": 10956.939,
+            "Z": 768.077,
+            "Yaw": 0
+        }
+    },
+    {
+        "UnitId": 2614,
+        "Title": "1.2 client npc_map (e_mahadevi)",
+        "Position": {
+            "X": 19224.1,
+            "Y": 8433.66,
+            "Z": 206.352,
+            "Yaw": 0
+        }
+    },
+    {
+        "UnitId": 5705,
+        "Title": "1.2 client npc_map (e_rainbow_field)",
+        "Position": {
+            "X": 19949.689,
+            "Y": 7620.89,
+            "Z": 180.053,
+            "Yaw": 0
+        }
+    },
+    {
+        "UnitId": 5705,
+        "Title": "1.2 client npc_map (e_rainbow_field)",
+        "Position": {
+            "X": 19943.23,
+            "Y": 7629.4,
+            "Z": 180.332,
+            "Yaw": 0
+        }
+    },
+    {
+        "UnitId": 5711,
+        "Title": "1.2 client npc_map (e_rainbow_field)",
+        "Position": {
+            "X": 20028.439,
+            "Y": 7618.78,
+            "Z": 179.299,
+            "Yaw": 0
+        }
+    },
+    {
+        "UnitId": 11298,
+        "Title": "1.2 client npc_map (e_rainbow_field)",
+        "Position": {
+            "X": 20029.92,
+            "Y": 7616.75,
+            "Z": 179.189,
+            "Yaw": 0
+        }
+    },
+    {
+        "UnitId": 10343,
+        "Title": "1.2 client npc_map (e_singing_land)",
+        "Position": {
+            "X": 20997.16,
+            "Y": 10464.28,
+            "Z": 137.24,
+            "Yaw": 0
+        }
+    },
+    {
+        "UnitId": 966,
+        "Title": "1.2 client npc_map (e_steppe_belt)",
+        "Position": {
+            "X": 25762.682,
+            "Y": 7194.015,
+            "Z": 334.427,
+            "Yaw": 0
+        }
+    },
+    {
+        "UnitId": 966,
+        "Title": "1.2 client npc_map (e_steppe_belt)",
+        "Position": {
+            "X": 26076.127,
+            "Y": 7017.676,
+            "Z": 334.556,
+            "Yaw": 0
+        }
+    },
+    {
+        "UnitId": 966,
+        "Title": "1.2 client npc_map (e_steppe_belt)",
+        "Position": {
+            "X": 26229.5,
+            "Y": 7322.748,
+            "Z": 335.433,
+            "Yaw": 0
+        }
+    },
+    {
+        "UnitId": 8939,
+        "Title": "1.2 client npc_map (e_steppe_belt)",
+        "Position": {
+            "X": 25762.682,
+            "Y": 7194.015,
+            "Z": 334.427,
+            "Yaw": 0
+        }
+    },
+    {
+        "UnitId": 8939,
+        "Title": "1.2 client npc_map (e_steppe_belt)",
+        "Position": {
+            "X": 26076.127,
+            "Y": 7017.676,
+            "Z": 334.556,
+            "Yaw": 0
+        }
+    },
+    {
+        "UnitId": 8939,
+        "Title": "1.2 client npc_map (e_steppe_belt)",
+        "Position": {
+            "X": 26229.5,
+            "Y": 7322.748,
+            "Z": 335.433,
+            "Yaw": 0
+        }
+    },
+    {
+        "UnitId": 502,
+        "Title": "1.2 client npc_map (e_sunrise_peninsula)",
+        "Position": {
+            "X": 16952.109,
+            "Y": 7879.15,
+            "Z": 161.872,
+            "Yaw": 0
+        }
+    },
+    {
+        "UnitId": 3359,
+        "Title": "1.2 client npc_map (e_tiger_spine_mountains)",
+        "Position": {
+            "X": 21184.738,
+            "Y": 8374.552,
+            "Z": 388.454,
+            "Yaw": 0
+        }
+    },
+    {
+        "UnitId": 3360,
+        "Title": "1.2 client npc_map (e_tiger_spine_mountains)",
+        "Position": {
+            "X": 21184.738,
+            "Y": 8374.552,
+            "Z": 388.454,
+            "Yaw": 0
+        }
+    },
+    {
+        "UnitId": 3361,
+        "Title": "1.2 client npc_map (e_tiger_spine_mountains)",
+        "Position": {
+            "X": 21184.738,
+            "Y": 8374.552,
+            "Z": 388.454,
+            "Yaw": 0
+        }
+    },
+    {
+        "UnitId": 1429,
+        "Title": "1.2 client npc_map (e_ynystere)",
+        "Position": {
+            "X": 20689.871,
+            "Y": 13232.59,
+            "Z": 125.506,
+            "Yaw": 0
+        }
+    },
+    {
+        "UnitId": 8036,
+        "Title": "1.2 client npc_map (e_ynystere)",
+        "Position": {
+            "X": 22128.48,
+            "Y": 12506.63,
+            "Z": 211.968,
+            "Yaw": 0
+        }
+    },
+    {
+        "UnitId": 8242,
+        "Title": "1.2 client npc_map (e_ynystere)",
+        "Position": {
+            "X": 20739.391,
+            "Y": 13286.07,
+            "Z": 105.698,
+            "Yaw": 0
+        }
+    },
+    {
+        "UnitId": 8242,
+        "Title": "1.2 client npc_map (e_ynystere)",
+        "Position": {
+            "X": 20772.471,
+            "Y": 13258.42,
+            "Z": 105.659,
+            "Yaw": 0
+        }
+    },
+    {
+        "UnitId": 8607,
+        "Title": "1.2 client npc_map (s_freedom_island)",
+        "Position": {
+            "X": 21146,
+            "Y": 19587,
+            "Z": 76,
+            "Yaw": 0
+        }
+    },
+    {
+        "UnitId": 10820,
+        "Title": "1.2 client npc_map (s_silent_sea)",
+        "Position": {
+            "X": 20852.01,
+            "Y": 15677.6,
+            "Z": 90.846,
+            "Yaw": 0
+        }
+    },
+    {
+        "UnitId": 849,
+        "Title": "1.2 client npc_map (w_garangdol_plains)",
+        "Position": {
+            "X": 11363.174,
+            "Y": 13258.629,
+            "Z": 151.136,
+            "Yaw": 0
+        }
+    },
+    {
+        "UnitId": 849,
+        "Title": "1.2 client npc_map (w_garangdol_plains)",
+        "Position": {
+            "X": 11373.249,
+            "Y": 13344.98,
+            "Z": 155.943,
+            "Yaw": 0
+        }
+    },
+    {
+        "UnitId": 10481,
+        "Title": "1.2 client npc_map (w_golden_plains)",
+        "Position": {
+            "X": 8356.35,
+            "Y": 10562.29,
+            "Z": 227.891,
+            "Yaw": 0
+        }
+    },
+    {
+        "UnitId": 10481,
+        "Title": "1.2 client npc_map (w_golden_plains)",
+        "Position": {
+            "X": 8375.5,
+            "Y": 10573.54,
+            "Z": 237.126,
+            "Yaw": 0
+        }
+    },
+    {
+        "UnitId": 10481,
+        "Title": "1.2 client npc_map (w_golden_plains)",
+        "Position": {
+            "X": 8390.83,
+            "Y": 10619.061,
+            "Z": 227.668,
+            "Yaw": 0
+        }
+    },
+    {
+        "UnitId": 10481,
+        "Title": "1.2 client npc_map (w_golden_plains)",
+        "Position": {
+            "X": 8392.91,
+            "Y": 10427.17,
+            "Z": 227.395,
+            "Yaw": 0
+        }
+    },
+    {
+        "UnitId": 10481,
+        "Title": "1.2 client npc_map (w_golden_plains)",
+        "Position": {
+            "X": 8322.59,
+            "Y": 10431.4,
+            "Z": 229.625,
+            "Yaw": 0
+        }
+    },
+    {
+        "UnitId": 10481,
+        "Title": "1.2 client npc_map (w_golden_plains)",
+        "Position": {
+            "X": 8354.04,
+            "Y": 10427.46,
+            "Z": 229.752,
+            "Yaw": 0
+        }
+    },
+    {
+        "UnitId": 10488,
+        "Title": "1.2 client npc_map (w_golden_plains)",
+        "Position": {
+            "X": 8390.83,
+            "Y": 10619.061,
+            "Z": 227.668,
+            "Yaw": 0
+        }
+    },
+    {
+        "UnitId": 1904,
+        "Title": "1.2 client npc_map (w_gweonid_forest)",
+        "Position": {
+            "X": 10441.162,
+            "Y": 15109.521,
+            "Z": 217.907,
+            "Yaw": 0
+        }
+    },
+    {
+        "UnitId": 3672,
+        "Title": "1.2 client npc_map (w_gweonid_forest)",
+        "Position": {
+            "X": 10562.96,
+            "Y": 14706.487,
+            "Z": 379.934,
+            "Yaw": 0
+        }
+    },
+    {
+        "UnitId": 7883,
+        "Title": "1.2 client npc_map (w_gweonid_forest)",
+        "Position": {
+            "X": 10068.47,
+            "Y": 15224.244,
+            "Z": 245.706,
+            "Yaw": 0
+        }
+    },
+    {
+        "UnitId": 10857,
+        "Title": "1.2 client npc_map (w_gweonid_forest)",
+        "Position": {
+            "X": 10748.91,
+            "Y": 14890.094,
+            "Z": 299.744,
+            "Yaw": 0
+        }
+    },
+    {
+        "UnitId": 1881,
+        "Title": "1.2 client npc_map (w_lilyut_meadow)",
+        "Position": {
+            "X": 13352.45,
+            "Y": 16336.95,
+            "Z": 281.929,
+            "Yaw": 0
+        }
+    },
+    {
+        "UnitId": 1881,
+        "Title": "1.2 client npc_map (w_lilyut_meadow)",
+        "Position": {
+            "X": 13288.17,
+            "Y": 16322.97,
+            "Z": 295.89,
+            "Yaw": 0
+        }
+    },
+    {
+        "UnitId": 1881,
+        "Title": "1.2 client npc_map (w_lilyut_meadow)",
+        "Position": {
+            "X": 13290.05,
+            "Y": 16357.17,
+            "Z": 299.734,
+            "Yaw": 0
+        }
+    },
+    {
+        "UnitId": 10586,
+        "Title": "1.2 client npc_map (w_lilyut_meadow)",
+        "Position": {
+            "X": 13618.689,
+            "Y": 15857.93,
+            "Z": 190.957,
+            "Yaw": 0
+        }
+    },
+    {
+        "UnitId": 10586,
+        "Title": "1.2 client npc_map (w_lilyut_meadow)",
+        "Position": {
+            "X": 13550.26,
+            "Y": 15928.72,
+            "Z": 172.836,
+            "Yaw": 0
+        }
+    },
+    {
+        "UnitId": 11279,
+        "Title": "1.2 client npc_map (w_marianople)",
+        "Position": {
+            "X": 10707.908,
+            "Y": 12134.648,
+            "Z": 118.612,
+            "Yaw": 0
+        }
+    },
+    {
+        "UnitId": 918,
+        "Title": "1.2 client npc_map (w_solzreed)",
+        "Position": {
+            "X": 15385.51,
+            "Y": 13819.652,
+            "Z": 165.331,
+            "Yaw": 0
+        }
+    },
+    {
+        "UnitId": 3626,
+        "Title": "1.2 client npc_map (w_solzreed)",
+        "Position": {
+            "X": 15187,
+            "Y": 13632,
+            "Z": 106.551,
+            "Yaw": 0
+        }
+    },
+    {
+        "UnitId": 11999,
+        "Title": "1.2 client npc_map (w_solzreed)",
+        "Position": {
+            "X": 15547.53,
+            "Y": 14808.13,
+            "Z": 136.535,
+            "Yaw": 0
+        }
+    },
+    {
+        "UnitId": 14667,
+        "Title": "1.2 client npc_map (w_solzreed)",
+        "Position": {
+            "X": 15170.808,
+            "Y": 14061.974,
+            "Z": 154.872,
+            "Yaw": 0
+        }
     }
 ]

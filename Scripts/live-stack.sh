@@ -93,9 +93,10 @@ cmd_sync() {
   rm -rf "$LIVE/rs-game/Configurations" "$LIVE/rs-game/Scripts"
   cp -r "$app/Configurations" "$app/Scripts" "$LIVE/rs-game/"
   cp -r "$app/Data/." "$LIVE/rs-game/Data/"   # includes the git-ignored compact.sqlite3
-  # a fresh lane worktree has no compact.sqlite3 (git-ignored): use the shared copy
-  if [ ! -f "$LIVE/rs-game/Data/compact.sqlite3" ]; then
-    if [ -f "$COMPACT" ]; then cp "$COMPACT" "$LIVE/rs-game/Data/"
+  # a fresh lane worktree has no compact.sqlite3 (git-ignored), or an empty one that something
+  # created by opening the path with SQLite: use the shared copy instead (never an empty file)
+  if [ ! -s "$LIVE/rs-game/Data/compact.sqlite3" ]; then
+    if [ -s "$COMPACT" ]; then cp "$COMPACT" "$LIVE/rs-game/Data/"
     else echo "WARNING: no compact.sqlite3 (set AAEMU_COMPACT_DB)"; fi
   fi
   [ -n "$LANE" ] && lane_configs

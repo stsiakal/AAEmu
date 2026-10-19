@@ -71,6 +71,11 @@ pub struct Data {
     pub buff_tags: HashMap<u32, Vec<u32>>,
     /// `_taggedBuffs`: tag id -> buff ids.
     pub tagged_buffs: HashMap<u32, Vec<u32>>,
+    /// `buff_breakers`: buff id -> the buff tags whose arrival ends it (the 10.x zone loads
+    /// `SELECT buff_id, buff_tag_id FROM buff_breakers` into the buff desc; the C# ignored it).
+    pub buff_breakers: HashMap<u32, Vec<u32>>,
+    /// `aoe_diminishings`: id (1-based hit rank) -> damage rate in percent.
+    pub aoe_diminishings: HashMap<u32, f32>,
     /// `_skillTags`.
     pub skill_tags: HashMap<u32, Vec<u32>>,
     /// `_taggedSkills`.
@@ -296,6 +301,24 @@ impl Data {
             d.tagged_buffs.entry(tag).or_default().push(buff);
             Ok(())
         })?;
+        for_each_row(
+            conn,
+            "SELECT buff_id, buff_tag_id FROM buff_breakers",
+            [],
+            |r| {
+                let (buff, tag) = (r.u32("buff_id")?, r.u32("buff_tag_id")?);
+                let tags = d.buff_breakers.entry(buff).or_default();
+                if !tags.contains(&tag) {
+                    tags.push(tag);
+                }
+                Ok(())
+            },
+        )?;
+        for_each_row(conn, "SELECT id, rate FROM aoe_diminishings", [], |r| {
+            d.aoe_diminishings
+                .insert(r.u32("id")?, r.f64("rate")? as f32);
+            Ok(())
+        })?;
         for_each_row(conn, "SELECT * FROM skill_modifiers", [], |r| {
             let attr = r.u32("skill_attribute_id")? as u8;
             let Some(skill_attribute) = SkillAttribute::from_u8(attr) else {
@@ -466,6 +489,25 @@ impl Data {
     /// `GetBuffTags(buffId)`.
     pub fn buff_tags(&self, buff_id: u32) -> &[u32] {
         self.buff_tags.get(&buff_id).map_or(&[], Vec::as_slice)
+    }
+
+    /// The tags that break `buff_id` (`buff_breakers`; empty = unbreakable).
+    pub fn buff_breakers(&self, buff_id: u32) -> &[u32] {
+        self.buff_breakers.get(&buff_id).map_or(&[], Vec::as_slice)
+    }
+
+    /// The `aoe_diminishings` damage multiplier of the `rank`-th (1-based) target of a diminishing
+    /// area hit: the table row, the last row beyond it, 1.0 for rank 0 or an empty table.
+    pub fn aoe_diminishing_multiplier(&self, rank: u32) -> f32 {
+        if rank == 0 {
+            return 1.0;
+        }
+        let Some(max) = self.aoe_diminishings.keys().max().copied() else {
+            return 1.0;
+        };
+        self.aoe_diminishings
+            .get(&rank.min(max))
+            .map_or(1.0, |rate| rate / 100.0)
     }
 
     /// `GetBuffsByTagId(tagId)` (`None` = null in C#).

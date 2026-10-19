@@ -30,6 +30,12 @@ const HELPER_OBJ: u32 = 0x201;
 const NPC_TEMPLATE: u32 = 7000;
 const PASSIVE_TEMPLATE: u32 = 7001;
 const HELPER_TEMPLATE: u32 = 7002;
+const ALERT_TEMPLATE: u32 = 7003;
+const CALM_ALERT_TEMPLATE: u32 = 7004;
+const SHORT_LEASH_TEMPLATE: u32 = 7005;
+const NO_LEASH_TEMPLATE: u32 = 7006;
+const NO_ALERT_TEMPLATE: u32 = 7007;
+const CALM_NO_ALERT_TEMPLATE: u32 = 7008;
 const MODEL: u32 = 900;
 const HIT_SKILL: u32 = 10_001;
 const HIT_DAMAGE: i32 = 40;
@@ -181,6 +187,9 @@ fn data() -> GameData {
         attack_start_range_scale: 2.0,
         sight_range_scale: 1.0,
         sight_fov_scale: 2.0,
+        // the usual retail values (50 m per target, 200 m from the pull position)
+        return_distance: 50.0,
+        absolute_return_distance: 200.0,
         base_skill_id: HIT_SKILL as i32,
         base_skill_delay: 0.2,
         ai_file_id: 15, // HoldPosition
@@ -202,6 +211,52 @@ fn data() -> GameData {
         sight_range_scale: 0.0,
         ..base.clone()
     };
+    // sees farther (22.5 m) than it attacks (5 m); aggressive or not
+    let watcher = NpcTemplate {
+        id: ALERT_TEMPLATE,
+        attack_start_range_scale: 0.5,
+        sight_range_scale: 1.5,
+        ..base.clone()
+    };
+    let calm_watcher = NpcTemplate {
+        id: CALM_ALERT_TEMPLATE,
+        aggression: false,
+        ..watcher.clone()
+    };
+    // `alertDuration = 0` (npc_ai_params row 8000): no alert state
+    let no_alert = NpcTemplate {
+        id: NO_ALERT_TEMPLATE,
+        npc_ai_param_id: 8000,
+        ..watcher.clone()
+    };
+    let calm_no_alert = NpcTemplate {
+        id: CALM_NO_ALERT_TEMPLATE,
+        aggression: false,
+        ..no_alert.clone()
+    };
+    data.systems.ai.ai.alert_only.insert(8000, (0.0, 5.0));
+    // a short absolute leash, and no leash at all (0 disables both checks)
+    let short_leash = NpcTemplate {
+        id: SHORT_LEASH_TEMPLATE,
+        absolute_return_distance: 30.0,
+        ..base.clone()
+    };
+    let no_leash = NpcTemplate {
+        id: NO_LEASH_TEMPLATE,
+        return_distance: 0.0,
+        absolute_return_distance: 0.0,
+        ..base.clone()
+    };
+    for t in [
+        watcher,
+        calm_watcher,
+        no_alert,
+        calm_no_alert,
+        short_leash,
+        no_leash,
+    ] {
+        data.systems.npcs.npc.templates.insert(t.id, t);
+    }
     data.systems.npcs.npc.templates.insert(NPC_TEMPLATE, base);
     data.systems
         .npcs
@@ -1455,4 +1510,246 @@ async fn guard_kill_while_the_mob_ai_is_busy_keeps_the_mob_dead() {
         .aggro_table
         .contains_key(&MOB_OBJ));
     assert_ne!(behavior(&server, NPC_OBJ), Some(B::Attack));
+}
+
+fn template_fixture(template: u32, player_x: f32) -> Fixture {
+    let server = server();
+    let client = TestClient::new(&server, 1, 1);
+    let mut c = test_character(1, "Runner", player_x, 100.0);
+    c.unit.hp = 1000;
+    c.unit.max_hp = 1000;
+    let player = spawn_player(&server, &client, c, PLAYER_OBJ);
+    let npc = spawn_npc(
+        &server,
+        NPC_OBJ,
+        template,
+        100.0,
+        100.0,
+        AiKind::HoldPosition,
+    );
+    Fixture {
+        server,
+        client,
+        player,
+        npc,
+    }
+}
+
+fn alert_ms_left(server: &GameServer) -> i64 {
+    server
+        .systems
+        .ai
+        .ais
+        .inspect(NPC_OBJ, |a| a.alert_end_time - crate::world::now_ms())
+        .expect("ai")
+}
+
+async fn wait_for(server: &Arc<GameServer>, b: B, max: usize) -> bool {
+    tick_until(server, 100, 20, max, || {
+        behavior(server, NPC_OBJ) == Some(b)
+    })
+    .await
+}
+
+/// 1.2 `alert.lua`: an aggressive NPC without `alertDuration` params alerts for the default 3 s
+/// and then attacks the attention target (it used to alert for a fixed 5 s and go back idle).
+#[tokio::test]
+async fn aggressive_npc_alerts_for_the_default_duration_then_attacks() {
+    // the player stands 15 m away: outside the 5 m aggression radius, inside the 22.5 m sight
+    let f = template_fixture(ALERT_TEMPLATE, 115.0);
+    let server = f.server.clone();
+    assert!(
+        wait_for(&server, B::Alert, 60).await,
+        "never alerted: {:?}",
+        behavior(&server, NPC_OBJ)
+    );
+    let left = alert_ms_left(&server);
+    assert!(
+        (2000..=3000).contains(&left),
+        "alert lasts 3 s, {left} ms left"
+    );
+    // still alerting (no attack) before the duration has passed
+    tick_all(&server, 100);
+    assert_eq!(behavior(&server, NPC_OBJ), Some(B::Alert));
+    // expire the alert: the aggressive species attacks
+    post(&server, NPC_OBJ, |c| c.ai.alert_end_time = 1);
+    assert!(
+        wait_for(&server, B::Attack, 30).await,
+        "no attack: {:?}",
+        behavior(&server, NPC_OBJ)
+    );
+    assert!(f
+        .npc
+        .data()
+        .unit
+        .skill_state
+        .aggro_table
+        .contains_key(&PLAYER_OBJ));
+}
+
+/// A non-aggressive NPC leaves the alert and remembers the target as alert-safe: no new alert
+/// for it until `alertSafeTargetRememberTime` (5 s default) has passed (per target, not the
+/// former global 7 s cooldown).
+#[tokio::test]
+async fn calm_npc_remembers_the_alert_safe_target() {
+    let f = template_fixture(CALM_ALERT_TEMPLATE, 115.0);
+    let server = f.server.clone();
+    assert!(wait_for(&server, B::Alert, 60).await);
+    post(&server, NPC_OBJ, |c| c.ai.alert_end_time = 1);
+    tick_all(&server, 100);
+    assert_ne!(behavior(&server, NPC_OBJ), Some(B::Alert));
+    assert_ne!(behavior(&server, NPC_OBJ), Some(B::Attack));
+    let until = server
+        .systems
+        .ai
+        .ais
+        .inspect(NPC_OBJ, |a| a.alert_safe_targets.get(&PLAYER_OBJ).copied())
+        .flatten()
+        .expect("alert-safe entry");
+    let left = until - crate::world::now_ms();
+    assert!(
+        (3500..=5000).contains(&left),
+        "remembered for 5 s: {left} ms"
+    );
+    // within the memory the NPC does not alert again
+    for _ in 0..10 {
+        tick_all(&server, 100);
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert_ne!(behavior(&server, NPC_OBJ), Some(B::Alert));
+    }
+}
+
+/// `default.lua` `OnAlertTargetChanged`: `alertDuration` below 0.1 means no alert state; an
+/// aggressive species attacks at once from sight range, a calm one does nothing.
+#[tokio::test]
+async fn zero_alert_duration_attacks_on_sight_or_ignores() {
+    for (template, expect_attack) in [(NO_ALERT_TEMPLATE, true), (CALM_NO_ALERT_TEMPLATE, false)] {
+        let f = template_fixture(template, 115.0);
+        let server = f.server.clone();
+        let saw_alert = std::cell::Cell::new(false);
+        let attacked = tick_until(&server, 100, 20, 120, || {
+            saw_alert.set(saw_alert.get() || behavior(&server, NPC_OBJ) == Some(B::Alert));
+            behavior(&server, NPC_OBJ) == Some(B::Attack)
+        })
+        .await;
+        assert_eq!(
+            attacked,
+            expect_attack,
+            "template {template}: {:?}",
+            behavior(&server, NPC_OBJ)
+        );
+        assert!(!saw_alert.get(), "no alert state with alertDuration 0");
+    }
+}
+
+/// Per-target leash: the NPC keeps fighting a target within `return_distance` of itself even
+/// when it is far (here 100 m) from home; it used to give up 50 m from home.
+#[tokio::test]
+async fn npc_chases_a_close_target_beyond_fifty_metres_from_home() {
+    let f = fixture(115.0);
+    let server = f.server.clone();
+    assert!(wait_for(&server, B::Attack, 50).await);
+    // fight 100 m from home with the player right next to the NPC
+    f.npc.data().unit.transform.set_xyz(200.0, 100.0, 100.0);
+    move_player(&server, &f.player, 203.0, 100.0);
+    for _ in 0..8 {
+        tick_all(&server, 100);
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert_eq!(
+            behavior(&server, NPC_OBJ),
+            Some(B::Attack),
+            "still fighting"
+        );
+    }
+}
+
+/// `absolute_return_distance`: far from the position of the first aggro the NPC gives up and
+/// returns even with the target next to it.
+#[tokio::test]
+async fn npc_gives_up_beyond_the_absolute_return_distance_of_the_pull_position() {
+    let f = template_fixture(SHORT_LEASH_TEMPLATE, 115.0);
+    let server = f.server.clone();
+    assert!(wait_for(&server, B::Attack, 50).await);
+    tick_all(&server, 100); // records the pull position
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    // dragged 40 m (> 30 m) from the pull position, the target stays next to it
+    let p = npc_pos(&f.npc);
+    f.npc.data().unit.transform.set_xyz(p.x + 40.0, p.y, p.z);
+    move_player(&server, &f.player, p.x + 43.0, p.y);
+    let returned = tick_until(&server, 100, 20, 20, || {
+        behavior(&server, NPC_OBJ) != Some(B::Attack)
+    })
+    .await;
+    assert!(returned, "still attacking at {:?}", npc_pos(&f.npc));
+}
+
+/// A distance of 0 disables the checks (no 50 / 200 m substitution): the target 70 m away from
+/// the NPC is not dropped.
+#[tokio::test]
+async fn zero_return_distance_disables_the_leash() {
+    let f = template_fixture(NO_LEASH_TEMPLATE, 115.0);
+    let server = f.server.clone();
+    assert!(wait_for(&server, B::Attack, 50).await);
+    f.npc.data().unit.transform.set_xyz(100.0, 100.0, 100.0);
+    move_player(&server, &f.player, 170.0, 100.0);
+    for _ in 0..6 {
+        tick_all(&server, 100);
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert_eq!(behavior(&server, NPC_OBJ), Some(B::Attack));
+    }
+}
+
+/// 1.2 `hold_position.lua`: displaced 7 m or more the NPC teleports to its idle position,
+/// 3 m or more it walks home through the return state, less than 3 m it stays.
+#[tokio::test]
+async fn hold_position_npc_returns_to_its_idle_position() {
+    for (dx, expect) in [(8.0f32, 0u8), (4.0, 1), (2.0, 2)] {
+        let server = server();
+        let client = TestClient::new(&server, 1, 1);
+        let c = test_character(1, "Watcher", 130.0, 100.0);
+        let _player = spawn_player(&server, &client, c, PLAYER_OBJ);
+        let npc = spawn_npc(
+            &server,
+            NPC_OBJ,
+            PASSIVE_TEMPLATE,
+            100.0,
+            100.0,
+            AiKind::HoldPosition,
+        );
+        assert!(wait_for(&server, B::HoldPosition, 150).await);
+        npc.data().unit.transform.set_xyz(100.0 + dx, 100.0, 100.0);
+        post(&server, NPC_OBJ, |c| {
+            c.st(B::HoldPosition).last_pos_check = 0
+        });
+        tick_all(&server, 100);
+        let p = npc_pos(&npc);
+        match expect {
+            0 => assert!((p.x - 100.0).abs() < 1.0, "teleported home: {p:?}"),
+            1 => assert_eq!(behavior(&server, NPC_OBJ), Some(B::ReturnState)),
+            _ => {
+                assert_eq!(behavior(&server, NPC_OBJ), Some(B::HoldPosition));
+                assert!((p.x - 102.0).abs() < 0.5, "stays: {p:?}");
+            }
+        }
+    }
+}
+
+/// 1.2 `spawning.lua`: the NPC waits out the spawn effect (at least 0.1 s) in the Spawning
+/// behavior before running its command set.
+#[tokio::test]
+async fn spawning_behavior_waits_out_the_spawn_effect_time() {
+    let server = server();
+    let _npc = spawn_npc(
+        &server,
+        NPC_OBJ,
+        PASSIVE_TEMPLATE,
+        100.0,
+        100.0,
+        AiKind::HoldPosition,
+    );
+    tick_all(&server, 10); // Enter
+    tick_all(&server, 10);
+    assert_eq!(behavior(&server, NPC_OBJ), Some(B::Spawning));
+    tick_all(&server, 150);
+    assert_ne!(behavior(&server, NPC_OBJ), Some(B::Spawning));
 }

@@ -259,4 +259,30 @@ mod tests {
         let (_, out) = harness::run(&server, &gm.p, "spawn npc x").await;
         assert_eq!(out, [harness::error("spawn", "<unitId> parse error")]);
     }
+
+    /// `/spawn npc <template>` for a template that also has a natural spawner in the game data
+    /// spawns the NPC at the command position (it used to log "template is null" and spawn
+    /// nothing at the GM's position).
+    #[tokio::test]
+    async fn spawn_npc_with_a_natural_spawner_spawns_the_template() {
+        use crate::systems::npcs::npc::spawner_data::NpcSpawnerTemplate;
+        let server = ts::server();
+        let gm = harness::pc(&server, 1, "Gm", 100.0, 100.0);
+        let world = server.world.world(0).unwrap();
+        let sd = &server.game_data.systems.npcs.npc_spawners;
+        let tpl = NpcSpawnerTemplate::with_member(5000, ts::NPC);
+        assert!(sd.add_npc_spawner_npc(tpl.npcs[0].clone()));
+        sd.add_member_and_spawner_template_ids(&tpl.npcs[0]);
+        assert!(sd.add_npc_spawner(tpl));
+        let (_, _) = harness::run(&server, &gm.p, &format!("spawn npc {}", ts::NPC)).await;
+        crate::systems::npcs::spawn_manager::active_region_tick(&server);
+        let npcs = world.all_npcs();
+        assert_eq!(npcs.len(), 1, "the template is spawned once");
+        assert_eq!(npcs[0].data().unit.template_id, ts::NPC);
+        let t = npcs[0].data().unit.transform;
+        assert!(
+            (t.x - 100.0).abs() < 1.0 && (t.y - 103.0).abs() < 1.0,
+            "at the GM: {t:?}"
+        );
+    }
 }
