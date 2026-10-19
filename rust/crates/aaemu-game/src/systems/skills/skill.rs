@@ -713,6 +713,16 @@ pub fn cast(server: &GameServer, skill: &SkillRef, ctx: &CastCtx) {
     let ready = super::validation::check(server, skill, caster, &ctx.target)
         .and_then(|()| super::validation::check_resources(server, skill, caster));
     if let Err((result, value)) = ready {
+        let character = caster.with_base_unit(|b| b.name().to_string());
+        tracing::warn!(
+            character = %character,
+            skill = skill.id,
+            target = ctx.target.obj_id(),
+            result,
+            result_key = super::unit_reqs::skill_result_key(result),
+            value,
+            "Skill failed at fire time"
+        );
         if let Some(player) = caster.as_player() {
             let mut packet = SCSkillStartedPacket::new(
                 skill.id,

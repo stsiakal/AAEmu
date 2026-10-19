@@ -933,6 +933,30 @@ is no longer mirrored (see "Known deviations", dead NPC returned and healed).
   fabricated. Historical RedeemBuff/ExplodeBuff formulas, recipe/account/cinema placeholders,
   several other special actions and generic Anchor/Flowgraph still need authoritative behavior
   or protocol evidence. Passing covered tests does not certify every data-defined skill.
+* systems::skills (2026-10-19, `check_obstacle`): the C# tree had no obstacle check at all
+  (`git show a2ab80abd^:AAEmu.Game/Models/Game/Skills/Skill.cs`), but the 1.2 skills data has
+  the retail column. The **1.2 client is the primary oracle** (unpacked `x2game.dll`, Ghidra
+  `aa12u`; full notes `D:/aaemu-audits/research/oracle/obstacle-ray-1.2.md`):
+  `FUN_390B5650` shortens `to` by the target radius and **casts no ray when `dist <= radius`**,
+  then `FUN_390B5540` calls `RayWorldIntersection(Game)` with objtypes **7** (static +
+  sleeping rigid + rigid), or **0x107** when `check_terrain` is set, and ray flags **0x2048F**
+  (colltype-any, collision class 2, ignore back faces, pierceability 15), one hit max.
+  Unit targets (`FUN_390B5C60` -> `FUN_3989C0D0`) run at unit position height (no eye offset)
+  from the source to the target surface and skip the source and target physics objects;
+  position (ground) targets (`FUN_390B5A30` -> `FUN_390B5790`) use radius **0.5** and skip
+  only the source. The order is TOO_CLOSE, TOO_FAR, height, angle, then OBSTACLE. The 10.x
+  client confirms the same rule (`X2::Unit::ValidateLocation` 0x3923C370; `ClientRaycaster`
+  callback 0x3923C5A0 -> `sub_3923B970`; unit path 0x39B8E360). Not modelled: the 1.2
+  multi-part target variant `FUN_3989DAE0` (loops the target's sub-shapes and passes if any
+  part passes). The former Rust ray was 1 m above both ends, used static+terrain (0x101) and
+  the default collision class; it rejected ground-anchored doodad interactions through nearby
+  doodad colliders (entrance doodad template 3674 / skill 10999, exit 4535 / skill 16560) and
+  re-checked at fire time with the same wrong rule. `check_terrain`, the radius gate and the
+  0.5 m position-target radius are now enforced. Rejections are logged at `warn` with
+  character, skill, target and result key. Live: the entrance 10999 and instance exit 16560
+  casts succeed with no `skill_obstacle` rejections (2026-10-19 lane run); the flow tests in
+  `cast_validation_tests.rs` prove a class-2 static wall still blocks and cover the radius
+  gate and position radius.
 * systems::skills: the labor margin requirement uses `GetMaxLabor(Payment.PremiumState)`; every
   connection has the default C# `AccountPayment` (premium until 2030), so the cap is 5000.
 * systems::skills: `Character.DoDie` is complete (exp / durability loss, escalating respawn timer,

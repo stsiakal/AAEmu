@@ -11,6 +11,18 @@ fn fail(key: &str) -> Result<(), (u8, u32)> {
     Err((skill_result_for_key(key), 0))
 }
 
+/// The physics collider kind of a world object (matches the keys `ai::collision` registers).
+fn collision_kind(obj: &WorldObject) -> crate::systems::ai::collision::world::ObjKind {
+    use crate::systems::ai::collision::world::ObjKind;
+    match obj {
+        WorldObject::Doodad(_) => ObjKind::Doodad,
+        WorldObject::House(_) => ObjKind::House,
+        WorldObject::Slave(_) | WorldObject::Shipyard(_) => ObjKind::Ship,
+        WorldObject::Gimmick(_) => ObjKind::Gimmick,
+        _ => ObjKind::Unit,
+    }
+}
+
 fn in_water(server: &GameServer, target: &Target) -> bool {
     if target
         .as_obj()
@@ -202,38 +214,62 @@ pub(super) fn check(
         return fail("skill_too_far_range");
     }
     if template.check_obstacle && !target.as_obj().is_some_and(|o| o.same(caster)) {
-        // Doodad transforms anchor crops/furniture at the ground. A ray ending at that
-        // anchor hits the terrain itself and prevents normal harvesting and recovery.
-        let end_z = if target
-            .as_obj()
-            .is_some_and(|o| o.is_unit() || o.as_doodad().is_some())
-        {
-            destination.z + 1.0
-        } else {
-            destination.z
+        // 1.2 client `FUN_390B5650` (radius shortening; no ray at all when
+        // `dist <= radius`) -> `FUN_390B5540` (RayWorldIntersection(Game), objtypes 7 or
+        // 0x107 with check_terrain, flags 0x2048F). Unit targets: `FUN_390B5C60` ->
+        // `FUN_3989C0D0` (target position minus its radius, source+target colliders
+        // skipped). Position (ground) targets: `FUN_390B5A30` -> `FUN_390B5790` (radius
+        // 0.5, source collider skipped; there is no target collider). 10.x confirmation:
+        // `X2::Unit::ValidateLocation` 0x3923C370 -> 0x39B8E360.
+        let dx = destination.x - source.x;
+        let dy = destination.y - source.y;
+        let dz = destination.z - source.z;
+        let len = (dx * dx + dy * dy + dz * dz).sqrt();
+        let (target_radius, skip_target) = match target {
+            Target::Pos(_) => (0.5, false),
+            Target::Obj(_) => (super::geometry::model_size(server, target), true),
         };
-        let ignored: Vec<_> = target
-            .as_obj()
-            .and_then(WorldObject::as_doodad)
-            .map(|d| {
-                (
-                    crate::systems::ai::collision::world::ObjKind::Doodad,
-                    d.obj_id,
-                )
-            })
-            .into_iter()
-            .collect();
-        if let Some(Some(hit)) = crate::systems::ai::collision::raycast_ignoring_objects(
-            server,
-            caster.transform().instance_id,
-            [source.x, source.y, source.z + 1.0],
-            [destination.x, destination.y, end_z],
-            crate::systems::ai::collision::query::mask::STATIC_TERRAIN,
-            crate::systems::ai::collision::query::ray_flags::DEFAULT,
-            &ignored,
-        ) {
-            tracing::debug!(skill = template.id, from = ?source, to = ?destination, ?hit, "Skill line of sight blocked");
-            return fail("skill_obstacle");
+        if len > target_radius {
+            let mut to = [destination.x, destination.y, destination.z];
+            if len > 0.0 && target_radius > 0.0 {
+                to[0] -= dx / len * target_radius;
+                to[1] -= dy / len * target_radius;
+                to[2] -= dz / len * target_radius;
+            }
+            let mut ignored = vec![(collision_kind(caster), caster.obj_id())];
+            if skip_target {
+                if let Some(obj) = target.as_obj() {
+                    ignored.push((collision_kind(obj), obj.obj_id()));
+                }
+            }
+            let objtypes = if template.check_terrain {
+                crate::systems::ai::collision::query::mask::SOLID_TERRAIN
+            } else {
+                crate::systems::ai::collision::query::mask::SOLID
+            };
+            if let Some(Some(hit)) = crate::systems::ai::collision::raycast_ignoring_objects(
+                server,
+                caster.transform().instance_id,
+                [source.x, source.y, source.z],
+                to,
+                objtypes,
+                crate::systems::ai::collision::query::ray_flags::SKILL_OBSTACLE,
+                &ignored,
+            ) {
+                let character = caster.with_base_unit(|b| b.name().to_string());
+                tracing::warn!(
+                    character = %character,
+                    skill = template.id,
+                    target = target.obj_id(),
+                    result_key = "skill_obstacle",
+                    check_terrain = template.check_terrain,
+                    from = ?source,
+                    to = ?to,
+                    ?hit,
+                    "Skill line of sight blocked"
+                );
+                return fail("skill_obstacle");
+            }
         }
     }
     Ok(())
