@@ -11,6 +11,7 @@ from player_order import (
     level_for_xp,
     load_quest_supplies,
     load_quest_xp,
+    load_reward_act_quests,
     load_spawns,
     neighbours_of,
     quest_state,
@@ -272,7 +273,8 @@ class PlayerOrderTests(unittest.TestCase):
             component(conn, 1000, 10)
             accept_npc(conn, 1, 1000, 800)
             component(conn, 1001, 10, kind=8)
-            # let_it_done quest with an immediate act XP that is not scaled.
+            # let_it_done quest with an immediate Reward act XP that is not
+            # scaled and replaces the level supply.
             quest(conn, 20, "let it done", 4, 2, zone=9, let_it_done=True)
             component(conn, 2000, 20)
             accept_npc(conn, 2, 2000, 801)
@@ -282,6 +284,12 @@ class PlayerOrderTests(unittest.TestCase):
             quest(conn, 30, "no reward", 4, 2, zone=9)
             component(conn, 3000, 30)
             accept_npc(conn, 4, 3000, 802)
+            # A supply act outside the Reward component does not replace it.
+            quest(conn, 40, "start act", 4, 2, zone=9)
+            component(conn, 4000, 40)
+            accept_npc(conn, 5, 4000, 803)
+            supply_xp(conn, 6, 4000, 50)
+            component(conn, 4001, 40, kind=8)
 
             spawn_data = spawns((800, (0.0, 0.0, 0.0)),
                                 (801, (1.0, 1.0, 0.0)),
@@ -290,14 +298,17 @@ class PlayerOrderTests(unittest.TestCase):
             ctxs = {r["id"]: dict(r) for r in conn.execute("SELECT * FROM quest_contexts")}
             self.assertEqual(orderer._quest_xp(ctxs[10]), (1001, {
                 "act": 0, "supply": 1001, "ratio": 1.0}))
-            # act 100 + round_even(1001 * 0.3) = 100 + 300
-            self.assertEqual(orderer._quest_xp(ctxs[20]), (400, {
-                "act": 100, "supply": 300, "ratio": 0.3}))
+            # The Reward act 100 replaces round_even(1001 * 0.3) = 300.
+            self.assertEqual(orderer._quest_xp(ctxs[20]), (100, {
+                "act": 100, "supply": 0, "ratio": 1.0}))
             self.assertEqual(orderer._quest_xp(ctxs[30]), (0, {
                 "act": 0, "supply": 0, "ratio": 1.0}))
+            # Non-reward act 50 + the level supply 1001.
+            self.assertEqual(orderer._quest_xp(ctxs[40]), (1051, {
+                "act": 50, "supply": 1001, "ratio": 1.0}))
 
             over = make_orderer(conn, spawn_data, let_it_done_ratio=1.2)
-            self.assertEqual(over._quest_xp(ctxs[20])[0], 1301)  # 100 + 1201
+            self.assertEqual(over._quest_xp(ctxs[20])[0], 100)  # act only
             double = make_orderer(conn, spawn_data, exp_rate=2.0)
             self.assertEqual(double._quest_xp(ctxs[10])[0], 2002)
 
@@ -477,6 +488,8 @@ class PlayerOrderTests(unittest.TestCase):
             conn.execute("INSERT INTO quest_act_supply_exps VALUES (8, 500)")
             act(conn, 2, 1000, 8, "QuestActSupplyExp")
             self.assertEqual(load_quest_xp(conn).get(10), 500)
+            self.assertEqual(load_reward_act_quests(conn, "QuestActSupplyExp"),
+                             {10})
 
     def test_zone_neighbours_and_box_distance(self):
         with database() as conn:
