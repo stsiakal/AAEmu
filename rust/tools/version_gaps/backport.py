@@ -43,7 +43,12 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from gaps import CUSTOM_ID_MIN, Db, camel_to_snake, names_compatible
 
 MONEY_ITEM_ID = 500
-NAMED_SETS = {"obsidian-armor": list(range(35581, 35626))}
+NAMED_SETS = {
+    "obsidian-armor": list(range(35581, 35626)),
+    # Crazed Wizard / Hermit / Slaver (equip sets 396-398): the level 50 craftable
+    # cloth, leather and plate sets with set bonuses at 3/4/7 pieces and a proc at 5.
+    "crazed-sets": list(range(38877, 38898)),
+}
 
 TABLE_ORDER = (
     "items",
@@ -62,7 +67,13 @@ TABLE_ORDER = (
     "item_summon_mates",
     "item_summon_slaves",
     "item_backpacks",
+    "equip_item_sets",
+    "equip_item_set_bonuses",
+    "item_procs",
+    "item_proc_bindings",
     "buffs",
+    "skill_modifiers",
+    "tagged_buffs",
     "buff_tick_effects",
     "dynamic_unit_modifiers",
     "equip_item_attr_modifiers",
@@ -112,7 +123,14 @@ def resolve_item_set(spec):
     ids = []
     for part in spec.replace(";", ",").split(","):
         part = part.strip()
-        if part:
+        if not part:
+            continue
+        if part in NAMED_SETS:
+            ids.extend(NAMED_SETS[part])
+        elif "-" in part:
+            low, high = part.split("-", 1)
+            ids.extend(range(int(low), int(high) + 1))
+        else:
             ids.append(int(part))
     if not ids:
         raise ValueError(f"empty item set: {spec!r}")
@@ -190,6 +208,8 @@ class Borrower:
             "craft_pack_crafts_semantics": None,
         }
         self._buff_effect_buff_ids = set()
+        self.seen_sets = set()
+        self._max_unit_attribute = None
         self.armor_asset_map = {}
         self.item_asset_map = {}
         self.icon_map = {}
@@ -553,6 +573,19 @@ class Borrower:
                 f'select * from "{table}" where {where} order by rowid', (item_id,)
             ):
                 self.plan_row(table, row)
+        for table in ITEM_CLASS_TABLES:
+            for row in self.rows.get(table, []):
+                if row.get("item_id") != item_id:
+                    continue
+                set_id = row.get("eiset_id") or 0
+                if set_id:
+                    self.borrow_equip_set(set_id)
+        if self.ref.has("item_proc_bindings") and self.base.has("item_proc_bindings"):
+            for row in self.ref.rows(
+                "select * from item_proc_bindings where item_id = ? order by id", (item_id,)
+            ):
+                if self.plan_row("item_proc_bindings", row) is not None:
+                    self.borrow_item_proc(row["proc_id"])
         buff_id = ref_row.get("buff_id") or 0
         if buff_id > 0:
             self.borrow_buff(buff_id, source="item", item_id=item_id)
@@ -613,7 +646,30 @@ class Borrower:
                 " order by unit_attribute_id, unit_modifier_type_id, value",
                 (buff_id,),
             ):
+                if self.unknown_unit_attribute(row):
+                    self.report.setdefault("unit_modifiers_unknown_in_1_2", []).append(
+                        {
+                            "buff_id": buff_id,
+                            "unit_attribute_id": row.get("unit_attribute_id"),
+                            "value": row.get("value"),
+                        }
+                    )
+                    continue
                 self.plan_row("unit_modifiers", row)
+        if self.ref.has("skill_modifiers") and self.base.has("skill_modifiers"):
+            for row in self.ref.rows(
+                "select * from skill_modifiers where owner_type = 'Buff' and owner_id = ?"
+                " order by rowid",
+                (buff_id,),
+            ):
+                self._check_skill_modifier_refs(row)
+                self.plan_row("skill_modifiers", row)
+        if self.ref.has("tagged_buffs") and self.base.has("tagged_buffs"):
+            for row in self.ref.rows(
+                "select * from tagged_buffs where buff_id = ? order by rowid", (buff_id,)
+            ):
+                self._check_tag(row.get("tag_id"), "tagged_buffs", buff_id)
+                self.plan_row("tagged_buffs", row)
         if self.ref.has("buff_tick_effects"):
             for row in self.ref.rows(
                 "select * from buff_tick_effects where buff_id = ? order by id", (buff_id,)
@@ -628,6 +684,127 @@ class Borrower:
         if source == "buff_effect":
             self._buff_effect_buff_ids.add(buff_id)
 
+    def max_unit_attribute(self):
+        """Highest unit attribute any 1.2 unit_modifiers row uses (the 1.2 client's range)."""
+        if self._max_unit_attribute is None:
+            row = self.base.row("select max(unit_attribute_id) as m from unit_modifiers")
+            # an empty base table gives no range to enforce
+            self._max_unit_attribute = (row["m"] if row else 0) or 10**9
+        return self._max_unit_attribute
+
+    def unknown_unit_attribute(self, row):
+        return (row.get("unit_attribute_id") or 0) > self.max_unit_attribute()
+
+    def buff_has_only_unknown_modifiers(self, buff_id):
+        """True when the buff's only effect is unit modifiers 1.2 has no attribute for."""
+        if not self.ref.has("unit_modifiers"):
+            return False
+        mods = self.ref.rows(
+            "select unit_attribute_id from unit_modifiers"
+            " where owner_type = 'Buff' and owner_id = ?",
+            (buff_id,),
+        )
+        if not mods or not all(self.unknown_unit_attribute(m) for m in mods):
+            return False
+        for table, column in (
+            ("skill_modifiers", "owner_id"),
+            ("buff_tick_effects", "buff_id"),
+            ("dynamic_unit_modifiers", "buff_id"),
+        ):
+            if self.ref.has(table) and self.ref.row(
+                f'select 1 from "{table}" where "{column}" = ?'
+                + (" and owner_type = 'Buff'" if table == "skill_modifiers" else ""),
+                (buff_id,),
+            ):
+                return False
+        return True
+
+    def _check_tag(self, tag_id, table, owner_id):
+        if not tag_id or not self.base.has("tags"):
+            return
+        if tag_id not in self.base.ids("tags"):
+            self.report["refused"]["missing_references"].append(
+                {"table": "tags", "id": tag_id, "needed_by": f"{table}:{owner_id}"}
+            )
+
+    def _check_skill_modifier_refs(self, row):
+        self._check_tag(row.get("tag_id"), "skill_modifiers", row.get("owner_id"))
+        skill_id = row.get("skill_id") or 0
+        if skill_id and skill_id not in self.base.ids("skills"):
+            self.report["refused"]["missing_references"].append(
+                {
+                    "table": "skills",
+                    "id": skill_id,
+                    "needed_by": f"skill_modifiers:buff {row.get('owner_id')}",
+                }
+            )
+
+    def borrow_equip_set(self, set_id):
+        """equip_item_sets row, its bonuses, bonus buffs and bonus procs."""
+        if set_id in self.seen_sets:
+            return
+        self.seen_sets.add(set_id)
+        if not (self.ref.has("equip_item_sets") and self.base.has("equip_item_sets")):
+            return
+        if set_id in self.base.ids("equip_item_sets"):
+            self.report["already_present"].append({"table": "equip_item_sets", "id": set_id})
+            return
+        ref_row = self.ref.row("select * from equip_item_sets where id = ?", (set_id,))
+        if ref_row is None:
+            self.report["refused"]["missing_references"].append(
+                {"table": "equip_item_sets", "id": set_id}
+            )
+            return
+        self._plan_row("equip_item_sets", ref_row, set_id)
+        for bonus in self.ref.rows(
+            "select * from equip_item_set_bonuses where equip_item_set_id = ?"
+            " order by num_pieces, id",
+            (set_id,),
+        ):
+            buff_id = bonus.get("buff_id") or 0
+            if buff_id and self.buff_has_only_unknown_modifiers(buff_id):
+                # e.g. the 3.0 PvE damage reduction attribute: 1.2 has no such stat, so the
+                # bonus would list an effect nothing implements.
+                self.report.setdefault("set_bonuses_omitted", []).append(
+                    {
+                        "set_id": set_id,
+                        "num_pieces": bonus.get("num_pieces"),
+                        "buff_id": buff_id,
+                        "reason": "only unit attributes 1.2 does not have",
+                    }
+                )
+                continue
+            self.plan_row("equip_item_set_bonuses", bonus)
+            if buff_id:
+                self.borrow_buff(buff_id, source="set_bonus")
+            proc_id = bonus.get("proc_id") or 0
+            if proc_id:
+                self.borrow_item_proc(proc_id)
+
+    def borrow_item_proc(self, proc_id):
+        if proc_id in self.seen_ids.get("item_procs", set()):
+            return
+        if proc_id in self.base.ids("item_procs"):
+            self.report["already_present"].append({"table": "item_procs", "id": proc_id})
+            return
+        ref_row = self.ref.row("select * from item_procs where id = ?", (proc_id,))
+        if ref_row is None:
+            self.report["refused"]["missing_references"].append(
+                {"table": "item_procs", "id": proc_id}
+            )
+            return
+        self._plan_row("item_procs", ref_row, proc_id)
+        kinds = self.report.setdefault("proc_chance_kinds", {})
+        kind = ref_row.get("chance_kind_id")
+        base_kinds = {
+            r["chance_kind_id"]
+            for r in self.base.rows("select distinct chance_kind_id from item_procs")
+        }
+        kinds[str(proc_id)] = {"chance_kind_id": kind, "kind_used_in_1_2": kind in base_kinds}
+        skill_id = ref_row.get("skill_id") or 0
+        if skill_id:
+            self.borrow_craft_skill(skill_id)
+
     def borrow_craft(self, craft_id):
         existing = self.base.row("select id from crafts where id = ?", (craft_id,))
         if existing is not None:
@@ -638,9 +815,9 @@ class Borrower:
             return
         ref_row = self.ref.row("select * from crafts where id = ?", (craft_id,))
         if ref_row is None:
-            self.report["refused"]["missing_references"].append(
-                {"table": "crafts", "id": craft_id}
-            )
+            # 3.0 keeps the products/materials of some crafts whose crafts row is gone
+            # (the base recipe of the Crazed sets): nothing a loader could start.
+            self.report.setdefault("orphan_crafts_in_3_0", []).append(craft_id)
             return
         self._plan_row("crafts", ref_row, craft_id)
         for table in ("craft_products", "craft_materials", "craft_pack_crafts"):
@@ -795,6 +972,8 @@ class Borrower:
         ("buffs", ("name", "desc")),
         ("crafts", ("title", "desc")),
         ("skills", ("name", "desc", "web_desc")),
+        ("equip_item_sets", ("name",)),
+        ("item_procs", ("description",)),
     )
 
     def borrow_localized_extra(self):
@@ -821,6 +1000,9 @@ class Borrower:
                     )
                     if not ref_row or not (ref_row.get("en_us") or "").strip():
                         missing.append([table, column, row_id, "no en_us in 3.0"])
+                        continue
+                    if "DO NOT TRANSLATE" in ref_row["en_us"]:
+                        missing.append([table, column, row_id, "3.0 placeholder text"])
                         continue
                     row = {
                         "id": self.next_synth_id("localized_texts"),
@@ -1005,7 +1187,7 @@ def build_backport(base, ref, item_ids):
 
 def render_patch(rows, base_path, ref_path, command, base_sha, ref_sha):
     lines = [
-        "-- version_gaps backport: obsidian armor",
+        "-- version_gaps backport: borrowed gear",
         f"-- base: {base_path} (sha256 {base_sha})",
         f"-- source: {ref_path} (sha256 {ref_sha})",
         f"-- command: {command}",
@@ -1286,7 +1468,7 @@ def run_backport(
             "ref": str(ref_path),
             "items": items_spec,
         }
-        report["title"] = "obsidian armor backport"
+        report["title"] = f"gear backport: {items_spec}"
         report["sha256"] = {"base": base_sha, "ref": ref_sha}
         report["closure"] = {
             "item_count": len(closure["items"]),

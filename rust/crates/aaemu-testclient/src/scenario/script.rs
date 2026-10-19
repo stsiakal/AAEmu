@@ -21,6 +21,10 @@
 //! icast <skill> <item template> <npc template|self>
 //!                                    cast from the remembered item stack
 //! bag                                list the bag contents (slot / id / template / count)
+//! equip <template> <equip slot>      `/item add self`, then the client's bag -> equipment move
+//!                                    (equipment slot index: head 0, chest 2, waist 3, legs 4,
+//!                                    hands 5, feet 6, arms 7)
+//! buffs                              the buffs our unit carries (from SCBuffCreated / Removed)
 //! split <from slot> <to slot> <count>
 //!                                    `CSSplitBagItemPacket` for the bag item in `from slot`
 //! swap <from slot> <to slot>         `CSSwapItemsPacket` between two bag slots
@@ -445,6 +449,35 @@ pub(super) async fn run(
                     show_quiet(game, 0.8).await?;
                 }
                 println!("    mate walked to {at:?}");
+            }
+            "equip" => {
+                let tpl: u32 = num(&parts, 0)?;
+                let equip_slot: u8 = num(&parts, 1)?;
+                let reply = gm_command(game, &format!("item add self {tpl} 1")).await?;
+                show(&reply);
+                let item = game
+                    .state
+                    .bag
+                    .values()
+                    .copied()
+                    .find(|i| i.template_id == tpl)
+                    .with_context(|| format!("item {tpl} not in the bag after /item add"))?;
+                game.equip_item(item.item_id, item.slot, equip_slot).await?;
+                let got = game
+                    .drain(Duration::from_millis(1500), Duration::from_secs(6))
+                    .await?;
+                show(&got);
+            }
+            "buffs" => {
+                let own = game.state.self_obj;
+                let mut ids: Vec<u32> = game
+                    .state
+                    .buffs
+                    .get(&own)
+                    .map(|b| b.values().map(|i| i.buff_id).collect())
+                    .unwrap_or_default();
+                ids.sort_unstable();
+                println!("    buffs on self ({}): {ids:?}", ids.len());
             }
             "bag" => {
                 let mut slots: Vec<(u8, crate::inventory::ItemInfo)> = game
