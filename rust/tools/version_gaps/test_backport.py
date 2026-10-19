@@ -322,7 +322,7 @@ class BackportTests(unittest.TestCase):
                 conn.close()
             self.assertEqual(items, [(10,), (11,), (12,), (1000,)])
             self.assertEqual(crafts, [(20,), (21,)])
-            self.assertIn("obsidian armor", json.dumps(report, ensure_ascii=False))
+            self.assertIn("gear backport", json.dumps(report, ensure_ascii=False))
 
     def test_weapons_comparison(self):
         base, ref = base_db(), ref_db()
@@ -541,6 +541,119 @@ class ClientPatchTest(unittest.TestCase):
                 refuse_protected_client("D:/AA1.2")
             with self.assertRaises(SystemExit):
                 refuse_protected_client(tmp)  # no game_pak
+
+
+class EquipSetTests(unittest.TestCase):
+    """Equip sets: set rows, bonuses, bonus buffs (+ skill modifiers, tags) and procs."""
+
+    SET_SCHEMA_BASE = """
+    ALTER TABLE item_armors ADD COLUMN eiset_id INTEGER;
+    CREATE TABLE equip_item_sets (id INTEGER PRIMARY KEY, name TEXT, description TEXT);
+    CREATE TABLE equip_item_set_bonuses (id INTEGER PRIMARY KEY, equip_item_set_id INTEGER,
+        num_pieces INTEGER, buff_id INTEGER, proc_id INTEGER);
+    CREATE TABLE item_procs (id INTEGER PRIMARY KEY, name TEXT, description TEXT,
+        skill_id INTEGER, chance_kind_id INTEGER, chance_rate INTEGER);
+    CREATE TABLE item_proc_bindings (id INTEGER PRIMARY KEY, item_id INTEGER, proc_id INTEGER);
+    CREATE TABLE skill_modifiers (id INTEGER PRIMARY KEY, owner_id INTEGER, owner_type TEXT,
+        tag_id INTEGER, skill_id INTEGER, value INTEGER);
+    CREATE TABLE tagged_buffs (id INTEGER PRIMARY KEY, tag_id INTEGER, buff_id INTEGER);
+    CREATE TABLE tags (id INTEGER PRIMARY KEY, name TEXT);
+    INSERT INTO tags VALUES (565, 'set');
+    INSERT INTO item_procs VALUES (1, 'old', '', 500, 1, 100);
+    """
+    SET_SCHEMA_REF = """
+    ALTER TABLE item_armors ADD COLUMN eiset_id INTEGER;
+    CREATE TABLE equip_item_sets (id INTEGER PRIMARY KEY, name TEXT);
+    CREATE TABLE equip_item_set_bonuses (id INTEGER PRIMARY KEY, buff_id INTEGER,
+        equip_item_set_id INTEGER, num_pieces INTEGER, proc_id INTEGER);
+    CREATE TABLE item_procs (id INTEGER PRIMARY KEY, chance_kind_id INTEGER,
+        chance_rate INTEGER, skill_id INTEGER, trigger_skill_id INTEGER);
+    CREATE TABLE item_proc_bindings (id INTEGER PRIMARY KEY, item_id INTEGER, proc_id INTEGER);
+    CREATE TABLE skill_modifiers (id INTEGER PRIMARY KEY, owner_id INTEGER, owner_type TEXT,
+        tag_id INTEGER, skill_id INTEGER, value INTEGER);
+    CREATE TABLE tagged_buffs (id INTEGER PRIMARY KEY, tag_id INTEGER, buff_id INTEGER);
+    UPDATE item_armors SET eiset_id = 300 WHERE item_id = 10;
+    INSERT INTO equip_item_sets VALUES (300, 'Test Set');
+    INSERT INTO equip_item_set_bonuses VALUES (3000, 50, 300, 3, 0);
+    INSERT INTO equip_item_set_bonuses VALUES (3001, 0, 300, 5, 31);
+    INSERT INTO item_procs VALUES (31, 18, 100, 900, 77);
+    INSERT INTO skill_modifiers VALUES (4000, 50, 'Buff', 565, 0, -7);
+    INSERT INTO tagged_buffs VALUES (5000, 565, 50);
+    INSERT INTO localized_texts VALUES ('equip_item_sets', 'name', 300, 'Test Set EN');
+    INSERT INTO localized_texts VALUES ('buffs', 'name', 50, '388 DO NOT TRANSLATE');
+    INSERT INTO localized_texts VALUES ('buffs', 'desc', 50, 'Cuts cooldowns');
+    """
+
+    def dbs(self):
+        base, ref = base_db(), ref_db()
+        base.conn.executescript(self.SET_SCHEMA_BASE)
+        ref.conn.executescript(self.SET_SCHEMA_REF)
+        return Db(conn=base.conn), Db(conn=ref.conn)
+
+    def test_set_bonuses_buffs_modifiers_and_procs_follow_the_items(self):
+        base, ref = self.dbs()
+        _, rows, report = build_backport(base, ref, [10])
+        self.assertEqual([r["id"] for r in rows["equip_item_sets"]], [300])
+        self.assertEqual(
+            sorted((r["num_pieces"], r["buff_id"], r["proc_id"]) for r in rows["equip_item_set_bonuses"]),
+            [(3, 50, 0), (5, 0, 31)],
+        )
+        self.assertEqual([r["id"] for r in rows["item_procs"]], [31])
+        self.assertEqual([r["id"] for r in rows["skill_modifiers"]], [4000])
+        self.assertEqual([r["id"] for r in rows["tagged_buffs"]], [5000])
+        self.assertIn(900, [r["id"] for r in rows["skills"]])
+        self.assertEqual(report["proc_chance_kinds"]["31"]["kind_used_in_1_2"], False)
+        dropped = report["columns_dropped_from_3_0"]["item_procs"]
+        self.assertIn("trigger_skill_id", dropped)
+
+    def test_set_texts_skip_placeholders(self):
+        base, ref = self.dbs()
+        _, rows, report = build_backport(base, ref, [10])
+        keys = {(r["tbl_name"], r["tbl_column_name"], r["idx"]): r["en_us"] for r in rows["localized_texts"]}
+        self.assertEqual(keys[("equip_item_sets", "name", 300)], "Test Set EN")
+        self.assertEqual(keys[("buffs", "desc", 50)], "Cuts cooldowns")
+        self.assertNotIn(("buffs", "name", 50), keys)
+
+    def test_existing_set_is_not_borrowed_again(self):
+        base, ref = self.dbs()
+        base.conn.execute("INSERT INTO equip_item_sets VALUES (300, 'old', '')")
+        _, rows, report = build_backport(base, ref, [10])
+        self.assertNotIn("equip_item_sets", rows)
+        self.assertNotIn("equip_item_set_bonuses", rows)
+
+    def test_missing_tag_is_reported(self):
+        base, ref = self.dbs()
+        base.conn.execute("DELETE FROM tags")
+        _, _, report = build_backport(base, ref, [10])
+        self.assertIn(
+            {"table": "tags", "id": 565, "needed_by": "skill_modifiers:50"},
+            report["refused"]["missing_references"],
+        )
+
+    def test_bonus_with_unknown_unit_attribute_is_omitted(self):
+        base, ref = self.dbs()
+        base.conn.execute("INSERT INTO unit_modifiers VALUES (1, 'Item', 1, 186, 0, 1, 0)")
+        ref.conn.execute("INSERT INTO buffs VALUES (51, 'pve', 0, 0)")
+        ref.conn.execute("INSERT INTO unit_modifiers VALUES ('Buff', 51, 199, 0, -70, 0)")
+        ref.conn.execute("INSERT INTO equip_item_set_bonuses VALUES (3002, 51, 300, 4, 0)")
+        _, rows, report = build_backport(base, ref, [10])
+        self.assertEqual(
+            sorted(r["num_pieces"] for r in rows["equip_item_set_bonuses"]), [3, 5]
+        )
+        self.assertEqual(report["set_bonuses_omitted"][0]["buff_id"], 51)
+        self.assertNotIn(51, [r["id"] for r in rows["buffs"]])
+
+    def test_orphan_craft_is_reported_not_borrowed(self):
+        base, ref = self.dbs()
+        ref.conn.execute("INSERT INTO craft_products VALUES (210, 99, 10, 1)")
+        _, rows, report = build_backport(base, ref, [10])
+        self.assertEqual(report["orphan_crafts_in_3_0"], [99])
+        self.assertNotIn(99, [r["id"] for r in rows["crafts"]])
+
+    def test_ranges_and_named_sets(self):
+        self.assertEqual(resolve_item_set("5-7"), [5, 6, 7])
+        self.assertEqual(resolve_item_set("crazed-sets"), list(range(38877, 38898)))
+        self.assertEqual(resolve_item_set("9,crazed-sets")[0], 9)
 
 
 class ClientNullNormalizationTest(unittest.TestCase):
