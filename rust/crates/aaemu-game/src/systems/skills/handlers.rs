@@ -286,7 +286,15 @@ pub fn start_skill(server: &GameServer, conn: &mut GameConnection, p: CSStartSki
         value = v;
     }
     if result != skill_result::SUCCESS {
-        tracing::debug!(skill_id, result, value, "Client skill failed");
+        tracing::warn!(
+            character = %player.data().unit.name,
+            skill_id,
+            target = target.obj_id(),
+            result,
+            result_key = super::unit_reqs::skill_result_key(result),
+            value,
+            "Client skill failed"
+        );
         let mut pkt = SCSkillStartedPacket::new(skill_id, 0, p.caster, target, p.skill_object);
         pkt.set_skill_result(result).set_result_uint(value);
         player.send(pkt);

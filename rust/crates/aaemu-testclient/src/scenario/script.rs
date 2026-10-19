@@ -26,6 +26,12 @@
 //! deposit|withdraw <amount>          `CSDepositMoneyPacket` / `CSWithdrawMoneyPacket`
 //! expand [slot type]                 `CSExpandSlotsPacket` (default 2 = inventory)
 //! sell <slot> <npc template>         sell the bag item to the nearest merchant NPC
+//! others                             the other player units in sight (the first is the trade peer)
+//! tstart                             CSCanStartTrade (the invitation) to the trade peer
+//! taccept                            wait (60 s) for SCCanStartTrade and answer CSStartTrade
+//! tput <slot type> <slot> <amount>   CSPutupTradeItem
+//! tmoney <amount>                    CSPutupTradeMoney
+//! tlock <0|1>  /  tok  /  tcancel    CSTradeLock / CSTradeOk / CSCancelTrade
 //! ```
 
 use std::collections::HashMap;
@@ -73,6 +79,7 @@ fn show(packets: &[Packet]) {
             || name.contains("Death")
             || name.contains("Teleport")
             || name.contains("Mail")
+            || name.contains("Trade")
             || name.contains("Gold")
         {
             let hex: String = p.body.iter().take(48).map(|b| format!("{b:02x}")).collect();
@@ -550,6 +557,69 @@ pub(super) async fn run(
                     .await?;
                 let got = game
                     .drain(Duration::from_millis(1500), Duration::from_secs(8))
+                    .await?;
+                show(&got);
+            }
+            "others" => {
+                let me = game.state.self_obj;
+                for u in game
+                    .state
+                    .units
+                    .values()
+                    .filter(|u| u.unit_type == 0 && u.obj_id != me)
+                {
+                    println!("    player '{}' obj {} char {}", u.name, u.obj_id, u.id);
+                }
+            }
+            "tstart" | "taccept" | "tput" | "tmoney" | "tlock" | "tok" | "tcancel" => {
+                use aaemu_game::opcodes::cs;
+                let mut b = aaemu_commons::PacketStream::new();
+                let op = match cmd {
+                    "tstart" => {
+                        let me = game.state.self_obj;
+                        let peer = game
+                            .state
+                            .units
+                            .values()
+                            .find(|u| u.unit_type == 0 && u.obj_id != me)
+                            .context("no other player in sight")?
+                            .obj_id;
+                        b.write_bc(peer);
+                        cs::CSCanStartTradePacket
+                    }
+                    "taccept" => {
+                        let p = game
+                            .wait_for("SCCanStartTradePacket", |p| {
+                                p.is_sc(sc::SCCanStartTradePacket)
+                            })
+                            .await?;
+                        let obj = p.stream().read_bc()?;
+                        b.write_bc(obj);
+                        cs::CSStartTradePacket
+                    }
+                    "tput" => {
+                        b.write_u8(num(&parts, 0)?)
+                            .write_u8(num(&parts, 1)?)
+                            .write_i32(num(&parts, 2)?);
+                        cs::CSPutupTradeItemPacket
+                    }
+                    "tmoney" => {
+                        b.write_i32(num(&parts, 0)?);
+                        cs::CSPutupTradeMoneyPacket
+                    }
+                    "tlock" => {
+                        b.write_bool(num::<u8>(&parts, 0)? != 0);
+                        cs::CSTradeLockPacket
+                    }
+                    "tok" => cs::CSTradeOkPacket,
+                    _ => {
+                        b.write_i32(0);
+                        cs::CSCancelTradePacket
+                    }
+                };
+                game.send_cs(op, b.as_bytes()).await?;
+                let got = game
+                    .drain(Duration::from_millis(1000), Duration::from_secs(4))
                     .await?;
                 show(&got);
             }

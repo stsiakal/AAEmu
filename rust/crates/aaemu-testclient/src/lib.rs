@@ -5,6 +5,7 @@
 pub mod compactdb;
 pub mod craftrun;
 pub mod diff;
+pub mod fight;
 pub mod game;
 pub mod inventory;
 pub mod load;
@@ -15,3 +16,5 @@ pub mod record;
 pub mod scenario;
 pub mod skillrun;
 pub mod stream;
+pub mod valuecheck;
+pub mod walk;

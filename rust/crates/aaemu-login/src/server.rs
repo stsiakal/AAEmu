@@ -135,6 +135,21 @@ pub async fn run(config: AppConfig, shutdown: CancellationToken) -> anyhow::Resu
     server.requests.initialize();
     server.games.load(&server.config).await;
 
+    let internal_host = server.config.internal_network.host.as_str();
+    let internal_loopback = internal_host.is_empty()
+        || internal_host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback());
+    if !internal_loopback && server.config.secret_key == "test" {
+        tracing::warn!(
+            "InternalNetwork listens on {internal_host} with the default SecretKey: set a private SecretKey (login and game) or bind 127.0.0.1"
+        );
+    }
+    if server.config.auto_account {
+        tracing::warn!(
+            "AutoAccount is on: anyone who can reach the login port can create accounts"
+        );
+    }
     let internal_listener = internal::bind(
         &server.config.internal_network.host,
         server.config.internal_network.port,

@@ -35,6 +35,16 @@ environment variables, then command-line arguments (`--Section:Key=value`).
 Use `Config.Local.json` (gitignored) for machine-specific overrides;
 `ExampleConfig.Local.json` is a starting point.
 
+### Hosting-related keys
+
+- `SecretKey` (login and game, must match): the only credential of the internal game-server
+  link. Replace the shipped `test`.
+- `InternalNetwork.Host` (login): `127.0.0.1` by default; `*` only behind a firewall.
+- `AutoAccount` (login): `false` by default.
+- `WebApiNetwork.Token` (game): required by every web API route except `/status`.
+
+See [Hosting safely](Installation-&-Setup#hosting-safely).
+
 ### `GameServers` schema
 
 `GameServers` is a list of server entries with this shape:

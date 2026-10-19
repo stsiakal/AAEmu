@@ -340,6 +340,7 @@ mod tests {
                 name: "Me".into(),
                 unit_type: 0,
                 id: 7,
+                level: 10,
                 pos: (1.0, 2.0, 3.0),
                 tl_id: 0,
             },
