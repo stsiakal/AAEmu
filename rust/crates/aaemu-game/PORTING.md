@@ -2011,6 +2011,37 @@ See Docs/wiki/Quest-Audit.md and Docs/wiki/Mail-Audit.md.
 | Zones whose origin differs between the 1.2 and 10.x `world.xml` (190, 192, 193, 200, 227, 251, 266, 281, 286, 287) | same | data | The content sits at the 10.x position (zone origin x 1024 + local): the 1.2 origin never fits the 1.2 heightmap (0 of 154 editor candidates with unclipped terrain), the 10.x frame does (many points within 0.1 m). Z values above the 1024 m ceiling cannot be verified. Candidates whose terrain differs by tens of metres (10.x-only zones such as 157, parts of 190/281) were rejected. |
 | `NpcSpawner.SelectSpawnerId` for NORMAL multi-member spawners | `systems/npcs/npc/spawner.rs` (`select_spawner_id`) | matches the C# | Not changed. A JSON entry clones every game-data spawner that has its unit as a member and (memberwise clone) shares one `NpcSpawnerIds` list, so with more than one spawner only an AUTOCREATED unscheduled one or a scheduled one is ever selected: a unit that has no JSON entry of its own and is only a sibling of a NORMAL group spawner (Vicious/Silent Treant 3105/3106, Goblin Fighter 527, ...) never spawns. The 13 audit findings of this kind are all `ConAcceptNpcKill` starters, which `starter_accepts` evaluates as an OR over the component's acts, and in every one of the 7 quests other listed NPCs spawn, so no quest is blocked; the data would need real positions for these units (the 10.x editor has no placement of those group spawners). |
 
+### Later-version spawn fill (October 19, 2026)
+
+A deliberate fill from the 10.x client pak (`10.0.2.13`, r575): positions come from
+`game/worlds/*/level_design/zone/*/zone_server/npc_spawners.g`, world metres are
+`world.xml origin * 1024 + local`. Only zones whose 1.2 and 10.x origin are identical are used
+(ten moved zones excluded), and templates / NPC members must exist in the 1.2
+`compact.sqlite3`; 10.x-only templates and worlds absent from 1.2 are skipped. Z is re-snapped
+to the 1.2 heightmap (`|dz| <= 5 m`); interiors keep the authored Z when an existing spawn is
+within 40 m / 8 m or the ground is clipped, like the October 17 import. The shipped event
+entries show the same >50 m terrain differences in instances (Howling Abyss), so unverified
+dungeon placements keep their authored Z instead of being dropped.
+
+* **Summon/despawn effects**: 2,901 event entries for 1,214 event spawner ids
+  (`NpcSpawnerIds`), one per NPC member per placement. 1,456 of the 2,006 dangling spawn rows
+  are now placeable, including all 162 boss and all 34 player-item rows.
+* **Unplaced ambient/dungeon/schedule spawners**: 653 ordinary entries for 106 spawner
+  templates, pinned with `SpawnerId`; the remaining 3 of the audit's 109 are covered by an
+  event entry of the same NPC at the same point. `NpcGroup` spawner members are expanded from
+  `npc_group_members` (the C# `SpawnNpcGroup` spawned the group id as an NPC and usually
+  failed).
+* **Resolver fix**: `SpawnManager::GetNpcSpawner` now falls back to ordinary `NpcSpawners`
+  after the event spawners, so the 16 shipped effect rows that reference normal spawner ids
+  resolve. Ordinary spawn entries with an authored `SpawnerId` pin that template; event entries
+  are no longer dropped by the UnitId/position duplicate filter (several waves can share an
+  anchor and each id must stay registered for `GetNpcSpawner`).
+
+Data only where the source is reliable: no 2014 coordinates, no disabled ("비활성") or
+memberless spawners, and no invented positions for the 543 effect rows with no placement in any
+client. The tool, reproduction commands and parser tests are in `rust/tools/spawn_import/`;
+generated entries carry a `Title` naming the 10.x source (the loader ignores it).
+
 ## Achievement producers (live wiring)
 
 The achievement subsystem has no 1.2 C# manager; the behaviour follows `rust/docs/achievement-hook-audit.txt`
