@@ -861,12 +861,30 @@ pub struct EquippedItem {
     pub slot: u8,
 }
 
+/// One `ItemMove` task (action 8): the item `from_item_id` moves from (`from_slot_type`,
+/// `from_slot`) to (`to_slot_type`, `to_slot`); `to_item_id` is the item that was in the target
+/// slot (0 when it was empty). The task carries no templates, so the caller resolves them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EquipmentMove {
+    pub from_slot_type: u8,
+    pub from_slot: u8,
+    pub from_item_id: u64,
+    pub to_slot_type: u8,
+    pub to_slot: u8,
+    pub to_item_id: u64,
+}
+
 /// Equipment-slot effects of one `SCItemTaskSuccessPacket`.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct EquipmentChanges {
     pub created: Vec<EquippedItem>,
     /// Slots whose item left the equipment container (`REMOVE` / `SEIZE` / a swap out).
     pub removed_slots: Vec<u8>,
+    /// `ItemMove` tasks (a plain slot swap; the templates must be resolved by the caller).
+    pub moves: Vec<EquipmentMove>,
+    /// (item id, template id) of every create / take / change-owner row, in any container: the
+    /// caller's item id -> template map for the template-less `ItemMove` tasks.
+    pub templates: Vec<(u64, u32)>,
 }
 
 /// The equipment rows of an `SCItemTaskSuccessPacket`. Trade-pack products are auto-equipped
@@ -921,6 +939,7 @@ pub fn equipment_tasks(body: &[u8]) -> anyhow::Result<EquipmentChanges> {
                 s.read_u8()?;
                 s.read_i64()?;
                 s.read_i64()?;
+                out.templates.push((item_id, template_id));
                 if slot_type == SLOT_TYPE_EQUIPMENT {
                     out.created.push(EquippedItem {
                         item_id,
@@ -943,19 +962,22 @@ pub fn equipment_tasks(body: &[u8]) -> anyhow::Result<EquipmentChanges> {
                 let from_slot = s.read_u8()?;
                 let to_type = s.read_u8()?;
                 let to_slot = s.read_u8()?;
-                let _from_id = s.read_u64()?;
-                let to_id = s.read_u64()?;
+                let from_item_id = s.read_u64()?;
+                let to_item_id = s.read_u64()?;
                 s.read_i32()?;
                 if from_type == SLOT_TYPE_EQUIPMENT {
                     out.removed_slots.push(from_slot);
                 }
-                if to_type == SLOT_TYPE_EQUIPMENT {
-                    out.created.push(EquippedItem {
-                        item_id: to_id,
-                        template_id: 0,
-                        slot: to_slot,
-                    });
-                }
+                // The task carries no templates; the caller resolves the moved / displaced
+                // items (`SkillSession` keeps an item id -> template map).
+                out.moves.push(EquipmentMove {
+                    from_slot_type: from_type,
+                    from_slot,
+                    from_item_id,
+                    to_slot_type: to_type,
+                    to_slot,
+                    to_item_id,
+                });
             }
             item_action::UPDATE_DETAIL => {
                 s.read_u8()?;
@@ -3038,10 +3060,12 @@ mod tests {
                     slot: 26,
                 }],
                 removed_slots: Vec::new(),
+                moves: Vec::new(),
+                templates: vec![(0x1234, 24920)],
             }
         );
 
-        // A bag row is not an equipment row.
+        // A bag row is not an equipment row, but its template is still surfaced.
         it.slot_type = SLOT_TYPE_INVENTORY;
         let mut body = PacketStream::new();
         SCItemTaskSuccessPacket {
@@ -3052,6 +3076,7 @@ mod tests {
         .write(&mut body);
         let bag_row = equipment_tasks(body.as_bytes()).unwrap();
         assert!(bag_row.created.is_empty() && bag_row.removed_slots.is_empty());
+        assert_eq!(bag_row.templates, vec![(0x1234, 24920)]);
 
         // A destroy of the equipped pack surfaces as a removal (the sweep waits for it).
         it.slot_type = 1;
