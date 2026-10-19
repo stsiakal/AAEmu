@@ -1505,6 +1505,21 @@ The 1.2 C# never answered `CSRankCharacterPacket` (empty, log-only) and has no `
 - **Period close.** A once-a-minute task (first tick at start-up) mails every closed, unpaid period: place -> `rank_scope_links` band -> `rank_rewards` item (count and grade as authored) as a `SYS_EXPRESS` letter (offline winners included), then `SCRankRewardMailPacket` to online winners. The period is marked paid before the letters are built, inside the economy operation gate; a crash between the letters and the next save can therefore lose (never duplicate) the mark. `rank_rewards.weeks` (how long the reward lasts) and appellation rewards (none authored) are not applied.
 - **Not sent.** `SCRankAlarmPacket` (0x205): only the fishing contest authors alarms (`start_time_alarm` -5 / `end_time_alarm` 0 and message strings), that board ended in 2014 and the packet's `kind` / `rank_alarm_kind` values are unresolved, so no trigger is invented.
 
+### Hosting hardening (Rust only, RPA-19/20)
+
+Security deviations from the C# servers (no retail oracle needed; the C# had none of these):
+
+- Login internal port: only `GLRegisterGameServer` with the shared `SecretKey` is honoured from
+  an unregistered peer; any other packet closes the connection. A bad secret closes it after the
+  error reply. Unregistered peers: 10 s handshake window, at most 8 at once. `GLPlayerEnter` and
+  `GLPlayerReconnect` are bound to the registered game server (or its mirrors). Shipped
+  `InternalNetwork.Host` is `127.0.0.1`, `AutoAccount` is `false` (`cargo xtask dev` sets it).
+- Web API: every route except `/status` needs `WebApiNetwork.Token` (`Authorization: Bearer` or
+  `X-Api-Key`); no token configured = those routes answer 403. An empty host binds loopback.
+- Level-0 commands are pinned to `help`, `online`, `soloparty`, `dungeon`, `collectdominion`,
+  `joinsiege`, `leavesiege` by a shipped-config test (`/fly`, `/teleport` are 50).
+- Compose: MySQL published on `127.0.0.1` only, Adminer behind `--profile tools`.
+
 ### Startup warnings (Rust only)
 
 - **`FamilyIdManager` and family 0.** `characters.family` is 0 for a character without a family. The C# `FamilyIdManager` passes `Exclude = []`, so every start logged "Object ID 0 in DB is less than 1". `IdManagerSpec` now carries the C# `_exclude` list (checked before the first-id warning, as in `IdManager.Initialize`) and `FAMILY_ID` excludes 0. Every other manager keeps an empty list and still warns about ids below its first id.

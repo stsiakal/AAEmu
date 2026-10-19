@@ -4,6 +4,7 @@
 use std::net::{IpAddr, SocketAddr};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use aaemu_commons::net::FrameCodec;
 use dashmap::DashMap;
@@ -56,6 +57,19 @@ impl InternalConnection {
         *self.game_server.lock().unwrap() = Some(gs_id);
     }
 
+    /// Whether this (registered) peer may act for `gs_id`: it is that game server or one of its
+    /// mirrors. An unregistered peer may not act for anyone.
+    pub fn may_act_for(
+        &self,
+        games: &crate::controllers::game::GameController,
+        gs_id: GameServerId,
+    ) -> bool {
+        match self.game_server() {
+            Some(gs) => gs == gs_id || games.try_get_parent_id(gs_id) == Some(gs),
+            None => false,
+        }
+    }
+
     pub fn send_packet<P: OutgoingPacket>(&self, packet: &P) {
         if self.block.load(Ordering::Relaxed) {
             return;
@@ -88,15 +102,30 @@ impl InternalConnectionTable {
         self.connections.get(&id).map(|c| c.clone())
     }
 
+    /// Connections that have not registered (authenticated) yet.
+    pub fn unregistered_count(&self) -> usize {
+        self.connections
+            .iter()
+            .filter(|c| c.game_server().is_none())
+            .count()
+    }
+
     pub fn remove(&self, id: u32) -> Option<Arc<InternalConnection>> {
         self.connections.remove(&id).map(|(_, c)| c)
     }
 }
 
+/// How long a peer may stay connected without registering with the shared secret.
+pub const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+/// Connections that may be unregistered at the same time; further peers are refused.
+pub const MAX_UNREGISTERED: usize = 8;
+
 /// Binds the internal listener. `*` binds all IPv4 interfaces (the C# server uses a dual-mode
-/// IPv6 socket).
+/// IPv6 socket); an empty host binds loopback (Rust deviation: the shipped default).
 pub async fn bind(host: &str, port: u16) -> std::io::Result<TcpListener> {
-    let addr: SocketAddr = if host == "*" {
+    let addr: SocketAddr = if host.is_empty() {
+        SocketAddr::from(([127, 0, 0, 1], port))
+    } else if host == "*" {
         SocketAddr::from(([0, 0, 0, 0], port))
     } else {
         let ip: IpAddr = host
@@ -115,6 +144,10 @@ pub async fn run(server: Arc<LoginServer>, listener: TcpListener, shutdown: Canc
             _ = shutdown.cancelled() => break,
             accepted = listener.accept() => match accepted {
                 Ok((stream, addr)) => {
+                    if server.internal_connections.unregistered_count() >= MAX_UNREGISTERED {
+                        tracing::warn!("InternalNetwork: too many unregistered peers, refusing {}", addr.ip());
+                        continue;
+                    }
                     let server = server.clone();
                     let shutdown = shutdown.clone();
                     tokio::spawn(async move { handle_connection(server, stream, addr, shutdown).await });
@@ -168,10 +201,21 @@ async fn handle_connection(
         }
     });
 
+    let handshake = tokio::time::sleep(HANDSHAKE_TIMEOUT);
+    tokio::pin!(handshake);
+    let mut awaiting_handshake = true;
     loop {
         let frame = tokio::select! {
             _ = closed.cancelled() => break,
             _ = shutdown.cancelled() => break,
+            _ = &mut handshake, if awaiting_handshake => {
+                if connection.game_server().is_none() {
+                    tracing::warn!("InternalNetwork: {} did not register in time, closing", addr.ip());
+                    break;
+                }
+                awaiting_handshake = false;
+                continue;
+            }
             frame = reader.next() => frame,
         };
         let payload = match frame {

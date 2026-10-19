@@ -185,9 +185,37 @@ In a published build, run `Tools/aaemu-launcher.exe` with the same arguments.
   `--password PW`, `--password-file FILE` or the `AAEMU_PASSWORD` environment
   variable.
 
-If auto-account creation is enabled (`AutoAccount`, default), accounts are
-created on first login. More options and details: [Client](Client#launcher-aaemu-launcher).
+If auto-account creation is enabled (`AutoAccount`; off in the shipped config,
+on under `cargo xtask dev`), accounts are created on first login. More options and details: [Client](Client#launcher-aaemu-launcher).
 The public AAEmu Launcher also works as an alternative.
+
+## Hosting safely
+
+Before friends or the internet can reach your machine:
+
+- **Expose only three ports**: login public `1237`, game `1239` and stream `1250`.
+  Everything else stays on the host (firewall / router: do not forward it).
+- **Login internal port `1234`**: the game server registers here with the shared
+  `SecretKey`. The shipped login config binds it to `127.0.0.1`; only the registered game
+  server (proved by `SecretKey`) is believed, any other peer is dropped. Set a private
+  `SecretKey` (same value in the login and game `Config.Local.json`) instead of the
+  shipped `test`. If login and game run on different machines, bind `InternalNetwork.Host`
+  to the private interface and firewall it to the game host.
+- **Web API `1280`**: binds `127.0.0.1`. Every route except `/status` needs the token
+  `WebApiNetwork.Token` (set it in `Config.Local.json`) sent as
+  `Authorization: Bearer <token>` or `X-Api-Key: <token>`; with no token set those routes are
+  refused. Do not bind it to a public address (the token travels in clear text).
+- **Accounts**: `AutoAccount` is off in the shipped login config, so unknown names are
+  rejected. Turn it on only while your friends register, or create accounts in the
+  database. `cargo xtask dev` turns it on for local development.
+- **MySQL (3306) and Adminer (8080)**: never forward them. Docker Compose binds MySQL to
+  `127.0.0.1` and starts Adminer only with `docker compose --profile tools up`.
+- **GM commands**: only seven commands are level 0 (everyone): `help`, `online`,
+  `soloparty`, `dungeon` (own dungeon bindings), `collectdominion`, `joinsiege`,
+  `leavesiege` (siege participation). Movement, spawn and item commands are level 50 or
+  100 (`Configurations/AccessLevels.json`; unlisted commands default to 100). The first
+  account and character are created with level 100 (`Account.AccessLevelFirstAccount`);
+  lower it for a public server.
 
 ## Docker workflow
 
