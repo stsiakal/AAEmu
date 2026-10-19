@@ -53,6 +53,8 @@ mod buff_tests;
 #[cfg(test)]
 mod cast_validation_tests;
 #[cfg(test)]
+mod cc_rules_tests;
+#[cfg(test)]
 mod effect_task_manager_tests;
 #[cfg(test)]
 mod handler_permission_tests;
