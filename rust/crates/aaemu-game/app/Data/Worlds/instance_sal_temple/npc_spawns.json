@@ -1770,5 +1770,16 @@
       "Yaw": 151.875
     },
     "Scale": 1.5
+  },
+  {
+    "UnitId": 14079,
+    "Title": "spawn-fill: 10.x event spawner 129227 (member 14079)",
+    "NpcSpawnerIds": [ 129227 ],
+    "Position": {
+      "X": 508.27,
+      "Y": 249.468,
+      "Z": 144.649,
+      "Yaw": 180
+    }
   }
 ]

@@ -3073,5 +3073,27 @@
       "Yaw": -30.9375
     },
     "Scale": 1.0
+  },
+  {
+    "UnitId": 11565,
+    "Title": "spawn-fill: 10.x event spawner 102051 (member 11565)",
+    "NpcSpawnerIds": [ 102051 ],
+    "Position": {
+      "X": 674.732,
+      "Y": 592.651,
+      "Z": 196.318,
+      "Yaw": 0
+    }
+  },
+  {
+    "UnitId": 11565,
+    "Title": "spawn-fill: 10.x event spawner 102052 (member 11565)",
+    "NpcSpawnerIds": [ 102052 ],
+    "Position": {
+      "X": 656.419,
+      "Y": 593.618,
+      "Z": 196.29,
+      "Yaw": 0
+    }
   }
 ]
