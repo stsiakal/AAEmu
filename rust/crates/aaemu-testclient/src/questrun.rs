@@ -18,6 +18,7 @@ use std::time::{Duration, Instant};
 
 use aaemu_commons::PacketStream;
 use aaemu_game::opcodes::{cs, pp, sc};
+use aaemu_game::systems::services::commands::COMMAND_PREFIX;
 use aaemu_game::systems::skills::types::{SkillCastTarget, SkillCaster};
 use anyhow::{bail, Context};
 use futures::future::LocalBoxFuture;
@@ -56,6 +57,23 @@ const ITEM_OPEN_DEPTH: u32 = 3;
 const WORLD_LOAD_WAIT: Duration = Duration::from_secs(8);
 /// Best-effort window for leaving an instance at the end of a quest.
 const WORLD_LEAVE_WINDOW: Duration = Duration::from_secs(15);
+/// Budget of the pre-quest recovery (normal exit retry + GM recall).
+const RECOVERY_WINDOW: Duration = Duration::from_secs(60);
+/// The main-world instance in `SCLoadInstancePacket` / `Transform.InstanceId`.
+const MAIN_INSTANCE_ID: u32 = 0;
+/// The 1.2 skills whose `Return` special (`special_effects.special_effect_type_id = 25`,
+/// `value1 = 0`, no `unit_reqs` row) resolves the character's own return point: the GM
+/// `/useskill` of one asks the server to recall the character to the main world
+/// (`skills/effects/special/movement.rs::return_`: `SCLoadInstancePacket(instance 0)`),
+/// which still works when the dungeon's own exit did not move the bot. Verified against the
+/// shipped `compact.sqlite3` with the same query the game data loads:
+/// `SELECT se.skill_id FROM skill_effects se JOIN effects ef ON ef.id = se.effect_id JOIN`
+/// `special_effects sp ON sp.id = ef.actual_id WHERE ef.actual_type = 'SpecialEffect' AND`
+/// `sp.special_effect_type_id = 25 AND sp.value1 = 0 AND NOT EXISTS (SELECT 1 FROM unit_reqs`
+/// `ur WHERE ur.owner_type = 'Skill' AND ur.owner_id = se.skill_id) ORDER BY se.skill_id`
+/// -> 11239, 11572, ... (both `casting_time` 0, no cost). The candidates are tried in order
+/// because the recall is resolved from the character's return point.
+const GM_RETURN_SKILLS: [u32; 2] = [11_239, 11_572];
 /// The `/spawn` fallback window after a hunt / loot step exhausted its deadline.
 const GM_SPAWN_WINDOW: Duration = Duration::from_secs(60);
 /// The `/item add` fallback window (fresh: the step deadline is already used up).
@@ -496,7 +514,7 @@ pub struct FailedStep {
 /// One GM shortcut taken while a quest ran (`fallbacks` of a result line).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Fallback {
-    /// `gm_item`, `gm_spawn` or `forced_complete`.
+    /// `gm_item`, `gm_spawn`, `gm_teleport` or `forced_complete`.
     pub kind: String,
     /// The item / npc / quest the fallback was for.
     pub target: String,
@@ -741,6 +759,14 @@ impl QuestJournal {
     ) {
         if self.blocker.is_none() {
             self.blocker = Some(Blocker::suspect(reason, code, evidence));
+        }
+    }
+
+    /// Sets a fully built blocker (the exit failure of [`exit_failure_suspect`]); the first
+    /// blocker of the quest wins.
+    fn note_suspect_blocker(&mut self, blocker: Blocker) {
+        if self.blocker.is_none() {
+            self.blocker = Some(blocker);
         }
     }
 
@@ -1522,7 +1548,41 @@ pub async fn run(
             )
             .await;
         }
-        let result = match target {
+        // Every quest must start in the main world (each step enters the world it targets). A
+        // quest whose exit was left behind traps the bot in an instance; recover it (retry the
+        // normal exit, then the GM recall) instead of failing every remaining quest on the same
+        // blocker, and stop with a clear error when even that cannot get it out.
+        let recovery_fallback = match recover_main_world(
+            &mut game,
+            &mut world_tracker,
+            compact_db.as_ref(),
+            Instant::now() + RECOVERY_WINDOW,
+        )
+        .await
+        {
+            Recovery::MainWorld => None,
+            Recovery::GmTeleport {
+                skill,
+                instance,
+                exit_failure,
+            } => Some(gm_teleport_fallback(instance, &exit_failure, skill)),
+            Recovery::Failed { reason } => {
+                let result = match &target {
+                    Selected::Plan(quest) => recovery_failed_result(quest, &character, &reason),
+                    Selected::Unknown(id) => {
+                        let mut missing = missing_quest_result(*id, &character);
+                        missing.messages.push(reason.clone());
+                        missing
+                    }
+                };
+                classes.insert(result.quest_id, (result.blocker.class.clone(), reason));
+                emit(&mut writer, &result)?;
+                report.results.push(result);
+                report.aborted = true;
+                break;
+            }
+        };
+        let mut result = match target {
             Selected::Plan(quest) => {
                 run_quest(
                     &mut game,
@@ -1542,6 +1602,9 @@ pub async fn run(
             }
             Selected::Unknown(id) => missing_quest_result(id, &character),
         };
+        if let Some(fallback) = recovery_fallback {
+            result.fallbacks.insert(0, fallback);
+        }
         // Record the result for later prerequisite explanations. A requirement result that is
         // itself only a prerequisite chain is reduced to its root requirement, so dependent
         // lines do not nest ("prerequisite 61 (requirement): prerequisite 62 (requirement): ...").
@@ -1721,6 +1784,45 @@ fn disconnected_result(quest: &PlanQuest, character: &RunCharacter) -> QuestResu
     }
 }
 
+/// The `error` line written when the pre-quest recovery could not return the bot to the main
+/// world: the run stops there instead of failing every remaining quest on the same blocker.
+fn recovery_failed_result(
+    quest: &PlanQuest,
+    character: &RunCharacter,
+    reason: &str,
+) -> QuestResult {
+    QuestResult {
+        quest_id: quest.quest_id,
+        name: quest.name.clone(),
+        character: character.name.clone(),
+        race: character.race,
+        gender: character.gender,
+        start_level: character.start_level,
+        level_raised_to: None,
+        result: QuestOutcome::Error,
+        failed_step: None,
+        steps: Vec::new(),
+        final_status: None,
+        final_objectives: None,
+        messages: vec![reason.to_string()],
+        elapsed_ms: 0,
+        fallbacks: Vec::new(),
+        blocker: Blocker::suspect(
+            reason,
+            "aaemu-testclient/src/questrun.rs::recover_main_world (exit doodad + GM recall)",
+            format!(
+                "observed: {reason}; expected: the exit doodad (DoodadFuncExitIndun -> \
+                 request_leave_instance -> return_to_main_world) or the GM recall \
+                 (`{COMMAND_PREFIX}useskill <Return skill>`, \
+                 aaemu-game/src/systems/skills/effects/special/movement.rs::return_) sends \
+                 SCLoadInstancePacket with instance 0"
+            ),
+        ),
+        forced_complete: false,
+        forced_prereqs: Vec::new(),
+    }
+}
+
 /// The `failed_step` of a quest-level gate (`prereq_missing`, `requirement_unmet`): no act
 /// ran, so `act_id` / `act_type` stay empty and the reason carries the detail.
 fn gate_failed_step(reason: String) -> FailedStep {
@@ -1773,6 +1875,9 @@ mod code {
     pub const DOODAD_LOOT: &str =
         "aaemu-game/src/systems/npcs/doodad/funcs/items.rs:40 (loot_item)";
     pub const GAIN_ITEM: &str = "aaemu-game/src/systems/economy/item_effects.rs:1024 (gain_item)";
+    pub const LEAVE_INSTANCE: &str = "aaemu-game/src/systems/instances/indun.rs:620 \
+         (request_leave_instance) -> instances/dungeon.rs:525 (leave_instance) -> \
+         instances/worlds.rs:339 (return_to_main_world)";
     pub const RUNNER: &str = "aaemu-testclient/src/questrun.rs";
 }
 
@@ -2816,17 +2921,21 @@ async fn run_quest(
             }
         };
 
-        // Leave an instance the quest entered (best effort: the next quest starts in the main
-        // world through the tracker anyway).
-        if world_tracker.current.is_some() {
-            let _ = switch_world(
-                game,
-                world_tracker,
-                None,
-                compact_db,
-                Instant::now() + WORLD_LEAVE_WINDOW,
-            )
-            .await;
+        // Leave an instance the quest entered: the next quest starts in the main world, and the
+        // run loop's pre-quest recovery covers a failure here (normal exit retry, then the GM
+        // recall). The failed exit is reported once, on this quest (the one that entered), not
+        // on every quest after it.
+        if let Err(f) = switch_world(
+            game,
+            world_tracker,
+            None,
+            compact_db,
+            Instant::now() + WORLD_LEAVE_WINDOW,
+        )
+        .await
+        {
+            journal
+                .note_suspect_blocker(exit_failure_suspect(game.state.world_instance, &f.reason));
         }
         (outcome, failed_step)
     };
@@ -3248,12 +3357,104 @@ fn rejected_accept(game: &mut GameClient, quest_id: u32, what: &str, code: i16) 
 
 // ----- worlds -----
 
-/// The plan world the bot is in (`None` = `main_world`), tracked by [`switch_world`]. The
-/// tracker persists across the whole run, so every quest starts in the world the previous one
-/// left it in.
+/// The world the bot is in, tracked across the whole run: the plan world [`switch_world`] last
+/// entered (`None` = `main_world`) and the world instance the server last announced in
+/// `SCLoadInstancePacket` / the character-select snapshot (`0` = the main world). The observed
+/// instance is authoritative: a failed exit doodad leaves it pointing into the instance even
+/// though `current` still names the plan world, and the next quest's recovery must notice.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct WorldTracker {
+    /// Plan world the runner believes the bot is in (`None` = `main_world`).
     pub current: Option<String>,
+    /// The world instance of the last `SCLoadInstancePacket` (`GameState::world_instance`);
+    /// `0` = the main world.
+    pub observed_instance: u32,
+}
+
+impl WorldTracker {
+    /// Syncs the server-authoritative instance from the last world load
+    /// ([`GameState::world_instance`]). A main-world load clears the plan world: the server
+    /// moved the bot out, so the plan bookkeeping is stale, not the server state.
+    pub fn observe(&mut self, state: &GameState) {
+        self.observed_instance = state.world_instance;
+        if self.observed_instance == MAIN_INSTANCE_ID {
+            self.current = None;
+        }
+    }
+
+    /// True when the server reports the main world (`SCLoadInstancePacket` instance 0).
+    pub fn in_main_world(&self) -> bool {
+        self.observed_instance == MAIN_INSTANCE_ID
+    }
+}
+
+/// Whether the bot is in the world a switch targets: the observed instance decides the main
+/// world (instance 0), the plan tracker names the desired world inside an instance. A main-world
+/// observation wins over a stale plan world; an instance observation with no plan world (or a
+/// different one) is not the target.
+pub fn in_target_world(
+    observed_instance: u32,
+    planned_world: Option<&str>,
+    target: Option<&str>,
+) -> bool {
+    match target {
+        None => observed_instance == MAIN_INSTANCE_ID,
+        Some(name) => {
+            observed_instance != MAIN_INSTANCE_ID
+                && planned_world.is_some_and(|planned| planned.eq_ignore_ascii_case(name))
+        }
+    }
+}
+
+/// What the pre-quest [`recover_main_world`] did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Recovery {
+    /// The bot is in the main world: it already was, or the retried normal exit moved it.
+    MainWorld,
+    /// The normal exit did not move the bot; the GM recall (`/useskill <skill>`) did.
+    GmTeleport {
+        skill: u32,
+        /// The instance the bot was trapped in.
+        instance: u32,
+        /// The concrete failure of the normal exit.
+        exit_failure: String,
+    },
+    /// Neither the normal exit nor the GM recall returned the bot to the main world: stop the
+    /// run instead of failing every remaining quest with the same blocker.
+    Failed { reason: String },
+}
+
+/// The `gm_teleport` fallback recorded on the quest during which the recovery ran: the exit
+/// doodad failed, the GM recall (`commands/scripts/use_skill.rs` -> `movement.rs::return_`)
+/// moved the bot back to the main world.
+fn gm_teleport_fallback(instance: u32, exit_failure: &str, skill: u32) -> Fallback {
+    Fallback::new(
+        "gm_teleport",
+        "main_world",
+        format!(
+            "the exit doodad did not return the bot to the main world from instance {instance} \
+             ({exit_failure}); `{COMMAND_PREFIX}useskill {skill}` ran the skill's Return special \
+             (aaemu-game/src/systems/skills/effects/special/movement.rs::return_) and its \
+             main-world SCLoadInstancePacket arrived"
+        ),
+    )
+}
+
+/// The one-time suspect of the quest whose end-of-quest exit left the bot in an instance. The
+/// next quest's recovery explains what was done about it; the quests after it keep their own
+/// results clean.
+fn exit_failure_suspect(instance: u32, reason: &str) -> Blocker {
+    Blocker::suspect(
+        format!("the quest left the bot in world instance {instance}: {reason}"),
+        code::LEAVE_INSTANCE,
+        format!(
+            "observed: the exit doodad was used with its func skill and the bot is still in \
+             world instance {instance} ({reason}); expected: DoodadFuncExitIndun -> \
+             indun::request_leave_instance -> dungeon::leave_instance -> \
+             worlds::return_to_main_world sends SCLoadInstancePacket(instance 0) so the next \
+             quest starts in the main world"
+        ),
+    )
 }
 
 /// The plan world a step targets: the world of its first location (a step without locations,
@@ -3524,7 +3725,10 @@ async fn exit_world(
 }
 
 /// Puts the bot into the plan world `world` (`None` = `main_world`) when it is not there yet:
-/// leaves the current instance first, then enters the target world. Used before every step that
+/// leaves the current instance first, then enters the target world. The server's observed
+/// instance decides where the bot actually is ([`in_target_world`]); the plan tracker is only
+/// bookkeeping, so a failed exit (observed instance left behind) is left visible for the
+/// pre-quest recovery instead of trusting a stale `current`. Used before every step that
 /// targets another world and, best effort, at the end of a quest.
 async fn switch_world(
     game: &mut GameClient,
@@ -3533,19 +3737,171 @@ async fn switch_world(
     compact_db: Option<&CompactDb>,
     deadline: Instant,
 ) -> Result<(), StepFailure> {
+    tracker.observe(&game.state);
     let target = world.map(str::to_string);
-    if tracker.current == target {
+    if in_target_world(
+        tracker.observed_instance,
+        tracker.current.as_deref(),
+        target.as_deref(),
+    ) {
         return Ok(());
     }
-    if tracker.current.is_some() {
+    if !tracker.in_main_world() {
         exit_world(game, compact_db, deadline).await?;
-        tracker.current = None;
+        tracker.observe(&game.state);
+        if !tracker.in_main_world() {
+            return Err(StepFailure::timeout(format!(
+                "the exit doodad answered but the character is still in world instance {}",
+                tracker.observed_instance
+            )));
+        }
     }
     if let Some(name) = &target {
         enter_world(game, name, compact_db, deadline).await?;
+        tracker.observe(&game.state);
+        if tracker.in_main_world() {
+            return Err(StepFailure::timeout(format!(
+                "the entrance doodad answered but the character is still in the main world \
+                 (world '{name}')"
+            )));
+        }
         tracker.current = target;
     }
     Ok(())
+}
+
+/// Makes sure the next quest starts in the main world. A quest the previous one entered through
+/// an exit doodad that did not answer leaves the bot trapped in the instance; retry the normal
+/// exit once (the same path the quest used), then fall back to the GM recall
+/// (`/useskill <Return skill>`). `Failed` when neither moved the bot: the caller stops the run
+/// with a clear error instead of burning every remaining quest on the same blocker.
+async fn recover_main_world(
+    game: &mut GameClient,
+    tracker: &mut WorldTracker,
+    compact_db: Option<&CompactDb>,
+    deadline: Instant,
+) -> Recovery {
+    tracker.observe(&game.state);
+    if in_target_world(tracker.observed_instance, tracker.current.as_deref(), None) {
+        return Recovery::MainWorld;
+    }
+    let instance = tracker.observed_instance;
+    let exit_failure = match exit_world(game, compact_db, deadline).await {
+        Ok(()) => {
+            tracker.observe(&game.state);
+            if tracker.in_main_world() {
+                return Recovery::MainWorld;
+            }
+            format!(
+                "the exit doodad answered but the character is still in world instance {}",
+                tracker.observed_instance
+            )
+        }
+        Err(f) => f.reason,
+    };
+    let gm_failure = match gm_teleport_main_world(game, deadline).await {
+        Ok(skill) => {
+            tracker.observe(&game.state);
+            if tracker.in_main_world() {
+                return Recovery::GmTeleport {
+                    skill,
+                    instance,
+                    exit_failure,
+                };
+            }
+            format!(
+                "the recall answered but the character is still in world instance {}",
+                tracker.observed_instance
+            )
+        }
+        Err(f) => f.reason,
+    };
+    tracker.observe(&game.state);
+    Recovery::Failed {
+        reason: format!(
+            "stuck in world instance {}: the exit doodad did not return the bot to the main \
+             world ({exit_failure}); the GM recall failed too ({gm_failure}); stopping instead \
+             of running the remaining quests with the same blocker",
+            tracker.observed_instance
+        ),
+    }
+}
+
+/// The GM recall fallback: `/useskill <Return skill>` (`commands/scripts/use_skill.rs`)
+/// schedules the skill's Return special (`skills/effects/special/movement.rs::return_`), which
+/// sends the main-world `SCLoadInstancePacket` on its own. The candidates of
+/// [`GM_RETURN_SKILLS`] are tried in order because the recall resolves the character's own
+/// return point; the first load that arrives wins.
+async fn gm_teleport_main_world(
+    game: &mut GameClient,
+    deadline: Instant,
+) -> Result<u32, StepFailure> {
+    let mut last = "no candidate skill answered".to_string();
+    for skill in GM_RETURN_SKILLS {
+        if Instant::now() >= deadline {
+            last = "the recovery window closed".into();
+            break;
+        }
+        let messages = game
+            .gm(&format!("useskill {skill}"), Duration::from_millis(1500))
+            .await
+            .unwrap_or_default();
+        match wait_recall_load(game, deadline).await {
+            Ok(true) if game.state.world_instance == MAIN_INSTANCE_ID => return Ok(skill),
+            Ok(true) => {
+                last = format!(
+                    "skill {skill} loaded world instance {} instead of the main world",
+                    game.state.world_instance
+                );
+            }
+            Ok(false) => {
+                let said = messages
+                    .first()
+                    .map(|m| format!(" (server said: {m})"))
+                    .unwrap_or_default();
+                last = format!("skill {skill} sent no SCLoadInstancePacket{said}");
+            }
+            Err(f) => last = format!("skill {skill}: {}", f.reason),
+        }
+    }
+    Err(StepFailure::timeout(format!(
+        "the GM recall did not return the bot to the main world: {last}"
+    )))
+}
+
+/// Waits for the world-load answer of the GM recall: [`GameClient::gm`]'s response window drops
+/// packets that are not chat, so when it already consumed the `SCLoadInstancePacket` the
+/// observer's `world_instance` says so (the main world is 0) and only the client handshake runs
+/// (`CSInstanceLoadedPacket` -> own `SCUnitStatePacket`, `instances/worlds.rs::instance_loaded`).
+/// `Ok(false)` when no load arrived at all.
+async fn wait_recall_load(game: &mut GameClient, deadline: Instant) -> Result<bool, StepFailure> {
+    let seen = if game.state.world_instance == MAIN_INSTANCE_ID {
+        true
+    } else {
+        wait_for_packet(
+            game,
+            (Instant::now() + WORLD_LOAD_WAIT).min(deadline),
+            |p| p.is_sc(sc::SCLoadInstancePacket),
+        )
+        .await
+        .map_err(StepFailure::io)?
+        .is_some()
+    };
+    if !seen {
+        return Ok(false);
+    }
+    game.confirm_instance_loaded()
+        .await
+        .map_err(StepFailure::io)?;
+    let _ = wait_for_packet(
+        game,
+        (Instant::now() + WORLD_LOAD_WAIT).min(deadline),
+        |p| p.is_sc(sc::SCUnitStatePacket),
+    )
+    .await
+    .map_err(StepFailure::io)?;
+    settle(game, deadline).await;
+    Ok(true)
 }
 
 // ----- shared waits -----
@@ -8069,6 +8425,125 @@ mod tests {
             .unwrap_err()
             .reason
             .contains("no spawn location"));
+    }
+
+    /// The observed instance (last `SCLoadInstancePacket` / select snapshot) is authoritative
+    /// for world tracking; a main-world load clears a stale plan world.
+    #[test]
+    fn world_tracker_follows_the_server_instance() {
+        let mut tracker = WorldTracker {
+            current: Some("instance_library".into()),
+            observed_instance: 7,
+        };
+        let mut state = GameState {
+            world_instance: 7,
+            ..GameState::default()
+        };
+
+        tracker.observe(&state);
+        assert_eq!(tracker.observed_instance, 7);
+        assert_eq!(tracker.current.as_deref(), Some("instance_library"));
+        assert!(!tracker.in_main_world());
+
+        // A main-world load means the server moved the bot out: the plan world is stale.
+        state.world_instance = MAIN_INSTANCE_ID;
+        tracker.observe(&state);
+        assert_eq!(tracker.observed_instance, MAIN_INSTANCE_ID);
+        assert!(tracker.current.is_none());
+        assert!(tracker.in_main_world());
+    }
+
+    /// The pre-quest recovery decision: a main-world target is the observed instance 0 (a
+    /// stale plan world does not force an exit), a plan-world target needs both the instance
+    /// and the matching plan bookkeeping, anything else must be recovered.
+    #[test]
+    fn in_target_world_prefers_the_observed_instance() {
+        assert!(in_target_world(0, None, None));
+        assert!(in_target_world(0, Some("instance_library"), None));
+        assert!(!in_target_world(7, None, None));
+        assert!(!in_target_world(7, Some("instance_library"), None));
+
+        assert!(in_target_world(
+            7,
+            Some("instance_library"),
+            Some("instance_library")
+        ));
+        assert!(!in_target_world(
+            0,
+            Some("instance_library"),
+            Some("instance_library")
+        ));
+        assert!(!in_target_world(7, None, Some("instance_library")));
+        assert!(!in_target_world(
+            7,
+            Some("arche_mall_world"),
+            Some("instance_library")
+        ));
+    }
+
+    /// The failed exit is reported once (suspect with observed/expected evidence on the quest
+    /// that caused it); the GM recall recovery is a marked `gm_teleport` fallback naming the
+    /// skill and code path; a failed recovery is an `error` line that stops the run.
+    #[test]
+    fn recovery_fallbacks_and_suspects_name_the_paths() {
+        let fallback = gm_teleport_fallback(
+            7,
+            "no SCLoadInstancePacket after using the exit doodad 4535 (skill 16560)",
+            11_239,
+        );
+        assert_eq!(fallback.kind, "gm_teleport");
+        assert_eq!(fallback.target, "main_world");
+        assert!(fallback.reason.contains("4535"), "{}", fallback.reason);
+        assert!(fallback.reason.contains("11239"), "{}", fallback.reason);
+        assert!(
+            fallback.reason.contains("movement.rs::return_"),
+            "{}",
+            fallback.reason
+        );
+
+        let suspect = exit_failure_suspect(
+            7,
+            "no SCLoadInstancePacket after using the exit doodad 4535 (skill 16560)",
+        );
+        assert_eq!(suspect.class, blocker_class::SUSPECT);
+        assert!(
+            suspect.reason.contains("world instance 7"),
+            "{}",
+            suspect.reason
+        );
+        assert!(
+            suspect.code.contains("request_leave_instance"),
+            "{}",
+            suspect.code
+        );
+        assert!(
+            suspect.evidence.contains("observed:"),
+            "{}",
+            suspect.evidence
+        );
+        assert!(
+            suspect.evidence.contains("expected:"),
+            "{}",
+            suspect.evidence
+        );
+        assert!(
+            suspect.evidence.contains("SCLoadInstancePacket"),
+            "{}",
+            suspect.evidence
+        );
+
+        let character = RunCharacter {
+            name: "Bot".into(),
+            race: 1,
+            gender: 1,
+            start_level: 1,
+        };
+        let result =
+            recovery_failed_result(&quest(10, "ok"), &character, "stuck in world instance 7");
+        assert_eq!(result.result, QuestOutcome::Error);
+        assert_eq!(result.messages, ["stuck in world instance 7"]);
+        assert_eq!(result.blocker.class, blocker_class::SUSPECT);
+        assert!(result.blocker.code.contains("recover_main_world"));
     }
 
     #[test]

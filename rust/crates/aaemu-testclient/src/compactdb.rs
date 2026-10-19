@@ -1018,4 +1018,43 @@ mod tests {
         assert!(starts.is_empty());
         assert!(edges.contains(&(11307, 11308)));
     }
+
+    /// The GM recall fallback of the quest runner (`questrun.rs::GM_RETURN_SKILLS`) uses 1.2
+    /// skills whose `Return` special resolves the character's own return point
+    /// (`special_effect_type_id` 25, `value1` 0) and that carry no `unit_reqs`; gated like the
+    /// other game-data tests.
+    #[test]
+    fn main_world_return_skills_are_recall_specials() {
+        let path = Path::new(DEFAULT_COMPACT_DB);
+        if !path.exists() {
+            return;
+        }
+        let db = CompactDb::open(path).unwrap();
+        for skill_id in [11_239u32, 11_572] {
+            let returns: i64 = db
+                .conn
+                .query_row(
+                    "SELECT COUNT(*) FROM skill_effects se \
+                     JOIN effects ef ON ef.id = se.effect_id AND ef.actual_type = 'SpecialEffect' \
+                     JOIN special_effects sp ON sp.id = ef.actual_id \
+                     WHERE se.skill_id = ?1 AND sp.special_effect_type_id = 25 AND sp.value1 = 0",
+                    [skill_id],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(
+                returns, 1,
+                "skill {skill_id} is not a value1=0 Return special"
+            );
+            let reqs: i64 = db
+                .conn
+                .query_row(
+                    "SELECT COUNT(*) FROM unit_reqs WHERE owner_type = 'Skill' AND owner_id = ?1",
+                    [skill_id],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(reqs, 0, "skill {skill_id} has unit_reqs");
+        }
+    }
 }

@@ -238,9 +238,10 @@ runner expected, with the source of the expectation: plan, compact field or ques
 suspect is only a confirmed server issue when it is reproduced AND a retail source (client text,
 the C# original, period data) says the server is wrong; nothing in this file calls a suspect a
 confirmed bug by itself. `fallbacks: [{kind, target, reason}]` lists every GM shortcut
-actually taken (`gm_item`, `gm_spawn`, `forced_complete`), each with the concrete reason the
-real path failed (e.g. "loot pack 6459 rolled nothing in 5 kills", "doodad 2552 used 3 times
-gave none of item 15985", "the merchants table lists npc 1196 but npcs.merchant is false").
+actually taken (`gm_item`, `gm_spawn`, `gm_teleport`, `forced_complete`), each with the concrete
+reason the real path failed (e.g. "loot pack 6459 rolled nothing in 5 kills", "doodad 2552 used
+3 times gave none of item 15985", "the merchants table lists npc 1196 but npcs.merchant is
+false").
 `--summary` groups results, blocker classes and their top reasons, and prints how many quests
 completed without any fallback, with fallbacks, and forced; requirements (race / faction /
 gender / already completed) are counted separately as `not_applicable` / `already_completed`,
@@ -339,6 +340,22 @@ pollute the completed set. A forced quest keeps its real result and failed step,
 dependents still run; later quests list the forced prerequisite ids in `forced_prereqs` and a
 chain that only fails on a requirement is `requirement_unmet` naming the prerequisite. A quest
 whose forcing the server refuses keeps the failure reason in the blocker.
+
+**World tracking and the pre-quest recovery.** The bot's world is tracked from the server's own
+`SCLoadInstancePacket` (`0` = the main world; the character-select snapshot's instance id and
+world loads update it), not from the plan bookkeeping alone, so an exit doodad that does not
+answer (`no SCLoadInstancePacket after using the exit doodad …`, the
+`DoodadFuncExitIndun` -> `request_leave_instance` -> `return_to_main_world` chain) is visible:
+the bot is still in the instance even though the plan tracker says otherwise. Before every quest
+the runner checks the observed instance; when it is not the main world it retries the normal
+exit once and then falls back to the GM recall (`/useskill` of a 1.2 `Return` skill — skill
+11239 / 11572, `special_effects.special_effect_type_id` 25 with `value1 = 0` and no `unit_reqs`;
+`systems/skills/effects/special/movement.rs::return_` sends the main-world
+`SCLoadInstancePacket`), recorded as a `gm_teleport` fallback naming the failed exit and the
+skill used. The failed exit is reported **once**, as a `suspect` on the quest that caused it, not
+on every quest after it; when neither the exit retry nor the GM recall moves the bot out, the run
+stops with an `error` line and `aborted` instead of burning the remaining quests on the same
+blocker.
 
 Items / hunts use the plan's `item_sources` / `locations` (a hunt at the locations of the step's
 own world); the bag is tracked from

@@ -815,8 +815,10 @@ pub(crate) fn observe_into(st: &mut GameState, p: &Packet) -> anyhow::Result<()>
         st.quests.remove(&quest_id);
     } else if p.is_sc(sc::SCCharacterStatePacket) {
         // `unit_state::character_state`: instance id, guid (sized bytes), rwd, then
-        // `Character.Write` (id, name, race, gender, level, ...).
-        s.read_u32()?; // instance id
+        // `Character.Write` (id, name, race, gender, level, ...). The select snapshot is
+        // authoritative for the world instance (character select forces the main world,
+        // `world/session.rs::select_character`).
+        st.world_instance = s.read_u32()?;
         let guid_len = s.read_u16()?;
         s.read_bytes(usize::from(guid_len))?;
         s.read_i32()?; // rwd
@@ -1820,6 +1822,8 @@ mod body_tests {
                 faction: 113,
             })
         );
+        // The snapshot's instance id is tracked too (0 = the main world).
+        assert_eq!(st.world_instance, 100);
     }
 
     /// `SCLoadInstancePacket`: the server moved the character to another world instance; the
