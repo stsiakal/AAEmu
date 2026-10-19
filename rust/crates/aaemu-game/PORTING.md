@@ -1381,7 +1381,8 @@ is no longer mirrored (see "Known deviations", dead NPC returned and healed).
   overlapping a delayed apply) has the old id recovered and counted (`replaced`). Exhaustion
   never blocks or panics: it logs a throttled `warn` with the holders' ages and hands out 0 (the
   cast continues without a timeline), and the manager exposes in-use / peak / gets / releases /
-  unused / exhaustions / replaced / leaked-over-10-min counters (`TlIdStats`). Covered by
+  unused / exhaustions / replaced / leaked-over-10-min counters (`TlIdStats`), shown on the Web
+  API `/status` page and in the every-500-gets debug line. Covered by
   `skills/tasks.rs` unit tests and `skills/tl_id_flow_tests.rs` (a 250-iteration sweep of instant,
   interrupted, completed, cancelled, failed, item-reagent and plot casts asserting the pool
   returns to baseline).
