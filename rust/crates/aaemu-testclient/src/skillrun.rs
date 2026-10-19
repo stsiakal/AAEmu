@@ -350,6 +350,8 @@ pub struct SkillPlan {
     pub show: bool,
     pub target_type: u8,
     pub target_relation: u8,
+    pub target_selection: i32,
+    pub target_area_radius: i32,
     pub casting_time: i32,
     pub channeling_time: i32,
     pub channeling_tick: i32,
@@ -373,8 +375,21 @@ pub struct SkillPlan {
     /// `skill_effects` never run and the plot tree (mana, buffs, damage) is the whole effect.
     pub plot_only: bool,
     /// The plot's `SpecialEffect` 39 `ManaCost` total (plot skills only): every reachable event's
-    /// `value1 + value2 / 6.35`, each truncated as the server truncates on the wire.
+    /// `value1 + value2 / 6.35`, each truncated as the server truncates on the wire. Only rows
+    /// whose source is the caster count (`ManaCost` needs a player caster).
     pub plot_mana_cost: Option<i32>,
+    /// Reachable plot events carrying a caster-side `ManaCost`: the cost only applies when one
+    /// of them ran (`plot_mana_cost` is the sum of all of them).
+    #[serde(default)]
+    pub plot_mana_events: Vec<u32>,
+    /// The skill has a `RestoreManaEffect`: the net MP delta is not the cost, so the mana check
+    /// is skipped.
+    #[serde(default)]
+    pub mana_restore: bool,
+    /// `unit_reqs` kind 12 (`skill_urk_combat`): the caster must not be in battle. The runner
+    /// waits out the server's 15 s combat timeout before the cast.
+    #[serde(default)]
+    pub requires_no_combat: bool,
     pub effects: EffectSummary,
     pub reqs: Vec<ReqRow>,
 }
@@ -502,6 +517,9 @@ pub struct SkillDb {
 /// events and the buff each reachable event's `BuffEffect` row applies.
 struct PlotPlan {
     mana_cost: i32,
+    /// Reachable events carrying a caster-side `ManaCost` row (the cost only applies when one
+    /// of them ran).
+    mana_events: Vec<u32>,
     /// buff id -> (event id, `PlotEffectTarget`) of reachable events carrying it.
     buff_events: HashMap<u32, Vec<(u32, i32)>>,
 }
@@ -537,7 +555,7 @@ fn load_plots(
     let mut buff_by_event: HashMap<u32, Vec<(u32, i32)>> = HashMap::new();
     {
         let mut stmt = conn.prepare(
-            "SELECT event_id, actual_id, actual_type, target_id FROM plot_effects \
+            "SELECT event_id, actual_id, actual_type, target_id, source_id FROM plot_effects \
              WHERE actual_type IN ('SpecialEffect','BuffEffect')",
         )?;
         let rows = stmt.query_map([], |r| {
@@ -546,12 +564,19 @@ fn load_plots(
                 r.get::<_, u32>(1)?,
                 r.get::<_, String>(2)?,
                 r.get::<_, i32>(3)?,
+                r.get::<_, i32>(4)?,
             ))
         })?;
         for row in rows {
-            let (event, actual_id, actual_type, target_id) = row?;
+            let (event, actual_id, actual_type, target_id, source_id) = row?;
             match actual_type.as_str() {
                 "SpecialEffect" => {
+                    // `ManaCost` takes mana from the caster: only a source of 1 (the caster) or
+                    // 3 (the previous source -- the caster when the plot starts) can pay it
+                    // (`special::combat::mana_cost` needs a player caster).
+                    if !matches!(source_id, 1 | 3) {
+                        continue;
+                    }
                     let se = conn.query_row(
                         "SELECT special_effect_type_id, value1, value2 FROM special_effects \
                          WHERE id = ?1",
@@ -597,7 +622,15 @@ fn load_plots(
                 stack.extend(children.iter().copied());
             }
         }
-        let mana_cost = reachable.iter().filter_map(|e| mana_by_event.get(e)).sum();
+        let mana_events: Vec<u32> = reachable
+            .iter()
+            .filter(|event| mana_by_event.contains_key(event))
+            .copied()
+            .collect();
+        let mana_cost = mana_events
+            .iter()
+            .filter_map(|event| mana_by_event.get(event))
+            .sum();
         let mut buff_events: HashMap<u32, Vec<(u32, i32)>> = HashMap::new();
         for event in &reachable {
             if let Some(buffs) = buff_by_event.get(event) {
@@ -613,6 +646,7 @@ fn load_plots(
             plot,
             PlotPlan {
                 mana_cost,
+                mana_events,
                 buff_events,
             },
         );
@@ -635,6 +669,7 @@ impl SkillDb {
                  CASE WHEN need_learn='t' THEN 1 ELSE 0 END, \
                  CASE WHEN SHOW='t' THEN 1 ELSE 0 END, \
                  COALESCE(target_type_id,0), COALESCE(target_relation_id,0), \
+                 COALESCE(target_selection_id,0), COALESCE(target_area_radius,0), \
                  COALESCE(casting_time,0), COALESCE(channeling_time,0), \
                  COALESCE(channeling_tick,0), COALESCE(cooldown_time,0), \
                  COALESCE(mana_cost,0), COALESCE(mana_level_md,0.0), \
@@ -662,26 +697,31 @@ impl SkillDb {
                     show: r.get::<_, i64>(8)? != 0,
                     target_type: r.get(9)?,
                     target_relation: r.get(10)?,
-                    casting_time: r.get(11)?,
-                    channeling_time: r.get(12)?,
-                    channeling_tick: r.get(13)?,
-                    cooldown_time: r.get(14)?,
-                    mana_cost: r.get(15)?,
-                    mana_level_md: r.get(16)?,
-                    min_range: f64::from(r.get::<_, i32>(17)?),
-                    max_range: r.get(18)?,
-                    toggle_buff_id: r.get(19)?,
-                    effect_delay: r.get(20)?,
-                    effect_repeat_count: r.get(21)?,
-                    effect_repeat_tick: r.get(22)?,
-                    active_weapon_id: r.get(23)?,
-                    mainhand_tool_id: r.get(24)?,
-                    offhand_tool_id: r.get(25)?,
-                    target_dead: r.get::<_, i64>(26)? != 0,
-                    or_unit_reqs: r.get::<_, i64>(27)? != 0,
-                    plot_id: r.get(28)?,
-                    plot_only: r.get::<_, i64>(29)? != 0,
+                    target_selection: r.get(11)?,
+                    target_area_radius: r.get(12)?,
+                    casting_time: r.get(13)?,
+                    channeling_time: r.get(14)?,
+                    channeling_tick: r.get(15)?,
+                    cooldown_time: r.get(16)?,
+                    mana_cost: r.get(17)?,
+                    mana_level_md: r.get(18)?,
+                    min_range: f64::from(r.get::<_, i32>(19)?),
+                    max_range: r.get(20)?,
+                    toggle_buff_id: r.get(21)?,
+                    effect_delay: r.get(22)?,
+                    effect_repeat_count: r.get(23)?,
+                    effect_repeat_tick: r.get(24)?,
+                    active_weapon_id: r.get(25)?,
+                    mainhand_tool_id: r.get(26)?,
+                    offhand_tool_id: r.get(27)?,
+                    target_dead: r.get::<_, i64>(28)? != 0,
+                    or_unit_reqs: r.get::<_, i64>(29)? != 0,
+                    plot_id: r.get(30)?,
+                    plot_only: r.get::<_, i64>(31)? != 0,
                     plot_mana_cost: None,
+                    plot_mana_events: Vec::new(),
+                    mana_restore: false,
+                    requires_no_combat: false,
                     effects: EffectSummary::default(),
                     reqs: Vec::new(),
                 })
@@ -867,6 +907,10 @@ impl SkillDb {
                             plan.effects.heal_rows.push(h);
                         }
                     }
+                    "RestoreManaEffect" => {
+                        plan.mana_restore = true;
+                        *plan.effects.other.entry(actual_type).or_default() += 1;
+                    }
                     other => {
                         *plan.effects.other.entry(other.to_string()).or_default() += 1;
                     }
@@ -892,6 +936,9 @@ impl SkillDb {
             for row in rows {
                 let (skill_id, req) = row?;
                 if let Some(plan) = skills.get_mut(&skill_id) {
+                    if req.kind == 12 {
+                        plan.requires_no_combat = true;
+                    }
                     plan.reqs.push(req);
                 }
             }
@@ -916,6 +963,7 @@ impl SkillDb {
                     };
                     if plan.plot_only {
                         plan.plot_mana_cost = Some(plot.mana_cost);
+                        plan.plot_mana_events = plot.mana_events.clone();
                     }
                     for row in &mut plan.effects.buff_rows {
                         if let Some(events) = plot.buff_events.get(&row.buff_id) {
@@ -1108,10 +1156,15 @@ pub struct SkillResult {
     pub mana_source: String,
     /// Target HP after - before (negative = damage, positive = heal).
     pub target_hp_delta: Option<i32>,
-    /// `SCUnitDamagedPacket`s of this skill on the compare unit (misses included).
+    /// `SCUnitDamagedPacket`s of this skill on any unit other than the caster (misses
+    /// included; an area skill hits every unit in its area).
     pub damage_packets: u32,
     /// Of those, the ones with a miss / immune / dodge / parry / block hit type.
     pub miss_packets: u32,
+    /// The largest damage value of those packets (0 = every hit was absorbed).
+    pub dealt_damage: i32,
+    /// `SCUnitDamagedPacket`s of this skill on the caster itself.
+    pub self_damage_packets: u32,
     pub heal_packets: u32,
     pub buffs_created_caster: Vec<u32>,
     pub buffs_created_target: Vec<u32>,
@@ -1385,13 +1438,14 @@ pub fn mana_cost_expected(plan: &SkillPlan, ab_level: i32) -> i32 {
     (base * plan.mana_level_md + f64::from(plan.mana_cost)) as i32
 }
 
-/// The mana the cast is expected to take. A `plot_only` skill returns from `Skill.Use` before
-/// `Skill.Cast`'s `ConsumeMana`, so its cost is the plot's `SpecialEffect` 39 `ManaCost`
-/// (`special/combat.rs::mana_cost`); a plot the data gives no cost takes nothing. Every other
-/// skill pays the `Skill.ManaCost` formula. Skill modifiers (which the server applies on top)
-/// are not part of the expectation: the sweep's bot carries none.
+/// The mana the cast is expected to take. A `plot_only` skill *with a plot* returns from
+/// `Skill.Use` before `Skill.Cast`'s `ConsumeMana`, so its cost is the plot's `SpecialEffect` 39
+/// `ManaCost` (`special/combat.rs::mana_cost`); a `plot_only` row without a `plot_id` runs the
+/// normal cast and pays the formula. A plot the data gives no cost takes nothing. Skill
+/// modifiers (which the server applies on top) are not part of the expectation: the sweep's bot
+/// carries none.
 pub fn expected_mana_cost(plan: &SkillPlan, ab_level: i32) -> i32 {
-    if plan.plot_only {
+    if plan.plot_only && plan.plot_id != 0 {
         plan.plot_mana_cost.unwrap_or(0)
     } else {
         mana_cost_expected(plan, ab_level)
@@ -1400,10 +1454,10 @@ pub fn expected_mana_cost(plan: &SkillPlan, ab_level: i32) -> i32 {
 
 /// Reads the cast's mana from the observed `SCUnitPointsPacket` updates of the caster. The cost
 /// is paid once, at the cast (`Skill.Cast` for a normal skill, during the plot for a
-/// `plot_only` one); the update may precede the cast's first response packet, so the first
-/// update after the response is preferred and the lowest update during the cast is the
-/// fallback. An end-of-cast delta is not used: a channel's regen (or a mana restore effect)
-/// hides the cost behind it.
+/// `plot_only` one); the update may precede the cast's first response packet (an instant cast
+/// pays before `SCSkillFired`, a plot applies its effects before the event batch is sent), so a
+/// larger drop than the first-after-response update is still the cost. An end-of-cast delta is
+/// not used: a channel's regen (or a mana restore effect) hides the cost behind it.
 fn measure_mana(
     before: Option<i32>,
     updates: &[i32],
@@ -1412,15 +1466,23 @@ fn measure_mana(
     let Some(before) = before else {
         return (None, "no MP reading before the cast".to_string());
     };
+    let drop_of = |mp: i32| (before - mp).max(0);
+    let max_drop = updates.iter().map(|mp| drop_of(*mp)).max();
     if let Some(after) = after_response {
-        return (
-            Some((before - after).max(0)),
-            "first update after the cast response".to_string(),
-        );
+        let d = drop_of(after);
+        if let Some(max_drop) = max_drop {
+            if max_drop > d {
+                return (
+                    Some(max_drop),
+                    "largest MP drop during the cast".to_string(),
+                );
+            }
+        }
+        return (Some(d), "first update after the cast response".to_string());
     }
     if let Some(min) = updates.iter().min() {
         return (
-            Some((before - *min).max(0)),
+            Some(drop_of(*min)),
             "lowest update during the cast".to_string(),
         );
     }
@@ -1621,7 +1683,9 @@ fn parse_unit_damaged(p: &Packet) -> Option<DamageHit> {
         caster_id,
         target_id,
         damage: values[0] as i32,
-        hit_type: (packed & 0xFF) as u8,
+        // `288 + hit_type` on the wire (C# `Write((ushort)(288 + (byte)HitType))`): subtract the
+        // constant back out.
+        hit_type: (packed as i32 - 288).clamp(0, 0xFF) as u8,
     })
 }
 
@@ -2308,6 +2372,18 @@ impl<'a> Sweep<'a> {
                 .await;
             self.state.dummy_obj = 0;
         }
+        self.spawn_dummy_excluding(old).await
+    }
+
+    /// Spawns one more training dummy in front of the bot (the area skills' second target) and
+    /// returns its object id.
+    async fn spawn_dummy(&mut self) -> anyhow::Result<Result<u32, String>> {
+        let old = self.state.dummy_obj;
+        self.spawn_dummy_excluding(old).await
+    }
+
+    /// Spawns a dummy in front of the bot, ignoring `old` (the copy being replaced).
+    async fn spawn_dummy_excluding(&mut self, old: u32) -> anyhow::Result<Result<u32, String>> {
         let _ = self
             .cmd(
                 &format!("spawn npc {DUMMY_TEMPLATE}"),
@@ -2768,9 +2844,25 @@ impl<'a> Sweep<'a> {
                 }
             }
             if let Some(hit) = parse_unit_damaged(&p) {
+                tracing::debug!(
+                    "SCUnitDamaged skill {} caster {}->{} target {} damage {} hit {}",
+                    hit.skill_id,
+                    hit.caster_obj,
+                    hit.caster_id,
+                    hit.target_id,
+                    hit.damage,
+                    hit.hit_type
+                );
                 attempt.damage_hits.push(hit);
             }
             if let Some(hit) = parse_unit_healed(&p) {
+                tracing::debug!(
+                    "SCUnitHealed skill {} caster {} target {} value {}",
+                    hit.skill_id,
+                    hit.caster_obj,
+                    hit.target_id,
+                    hit.value
+                );
                 attempt.heal_hits.push(hit);
             }
             if let Some((e1, e2)) = parse_error(&p) {
@@ -2873,6 +2965,28 @@ impl<'a> Sweep<'a> {
             .get(&plan.ability_id)
             .is_some_and(|set| set.contains(&plan.id));
 
+        // `unit_reqs` kind 12 wants the caster out of battle; the server clears that flag 15 s
+        // (world `DefaultCombatTimeout`) after the last combat activity, so wait it out (the
+        // command that clears it client-side does not touch the server flag).
+        if plan.requires_no_combat {
+            let deadline = Instant::now() + Duration::from_secs(17);
+            while let Some(left) = deadline.checked_duration_since(Instant::now()) {
+                if left.is_zero() {
+                    break;
+                }
+                match self.game.recv_within(PUMP.min(left)).await {
+                    Ok(Some(p)) => self.session.observe(&p),
+                    Ok(None) => {}
+                    Err(e) => {
+                        out.result = SkillOutcome::Error;
+                        out.reason = format!("connection error while waiting out combat: {e:#}");
+                        self.finish(chat_start, start, &mut out);
+                        return out;
+                    }
+                }
+            }
+        }
+
         // Gear: the four holdable slots the data's unit_reqs can demand (also restores what a
         // two-handed staff swap moved to the bag), then the weapon the skill's damage scales
         // with. Spell-scaled damage (`level_md` with no fixed part) gets the staff so the
@@ -2945,27 +3059,26 @@ impl<'a> Sweep<'a> {
             match self.place_dummy().await {
                 Ok(Ok(obj)) => {
                     compare_obj = obj;
+                    let pos_a = self
+                        .game
+                        .state
+                        .units
+                        .get(&obj)
+                        .map(|u| u.pos)
+                        .unwrap_or(self.game.state.self_pos);
+                    let desired = Self::desired_distance(plan);
                     if plan.target_type == 6 {
-                        let pos = self
-                            .game
-                            .state
-                            .units
-                            .get(&obj)
-                            .map(|u| u.pos)
-                            .unwrap_or(self.game.state.self_pos);
-                        let desired = Self::desired_distance(plan);
-                        if let Err(e) = self.face_at_distance(pos, desired).await {
+                        if let Err(e) = self.face_at_distance(pos_a, desired).await {
                             out.result = SkillOutcome::Error;
                             out.reason = format!("connection error while positioning: {e:#}");
                             self.finish(chat_start, start, &mut out);
                             return out;
                         }
-                        out.dummy_distance_m = self.dummy_distance(obj);
                         target = SkillCastTarget::Position3 {
                             obj_id: 0,
-                            x: pos.0,
-                            y: pos.1,
-                            z: pos.2 + 1.0,
+                            x: pos_a.0,
+                            y: pos_a.1,
+                            z: pos_a.2 + 1.0,
                             pitch: 0.0,
                         };
                         out.target = format!("position at npc {DUMMY_TEMPLATE}#{obj}");
@@ -2975,20 +3088,21 @@ impl<'a> Sweep<'a> {
                         out.target = format!("dead npc {DUMMY_TEMPLATE}#{obj}");
                         out.target_kind = "unit".into();
                     } else {
-                        if let Some(pos) = self.game.state.units.get(&obj).map(|u| u.pos) {
-                            let desired = Self::desired_distance(plan);
-                            if let Err(e) = self.face_at_distance(pos, desired).await {
-                                out.result = SkillOutcome::Error;
-                                out.reason = format!("connection error while positioning: {e:#}");
-                                self.finish(chat_start, start, &mut out);
-                                return out;
-                            }
+                        if let Err(e) = self.face_at_distance(pos_a, desired).await {
+                            out.result = SkillOutcome::Error;
+                            out.reason = format!("connection error while positioning: {e:#}");
+                            self.finish(chat_start, start, &mut out);
+                            return out;
                         }
-                        out.dummy_distance_m = self.dummy_distance(obj);
                         // Hostile relation or hostile-only effect rows: cast on the dummy,
-                        // never on the bot (godmode would swallow self damage).
+                        // never on the bot (godmode would swallow self damage). A self-target
+                        // skill with a hostile relation is a plot skill whose events expect a
+                        // hostile `previous target`, so it goes on the dummy too.
                         let hostile = plan.target_relation == 4 || plan.has_hostile_effects();
-                        if plan.target_type == 4 || (plan.target_type == 5 && hostile) {
+                        if plan.target_type == 4
+                            || (plan.target_type == 5 && hostile)
+                            || (plan.target_type == 0 && plan.target_relation == 4)
+                        {
                             target = SkillCastTarget::Unit(obj);
                             out.target = format!("npc {DUMMY_TEMPLATE}#{obj}");
                         } else {
@@ -2996,8 +3110,46 @@ impl<'a> Sweep<'a> {
                         }
                         out.target_kind = "unit".into();
                     }
-                    self.game.change_target(obj).await.ok();
+                    // Area skills exclude the cast target from their own area
+                    // (`geometry::around_radius` skips the origin): a second dummy inside the
+                    // area is the unit the damage and buffs land on.
+                    if plan.target_area_radius > 0 && plan.target_selection == 2 {
+                        let lo = (plan.min_range.max(0.0) + 0.5).max(0.75);
+                        let hi = if plan.max_range > 0.0 {
+                            (plan.max_range - 0.5).max(lo)
+                        } else {
+                            desired + 1.0
+                        };
+                        let d = (desired + 1.0).clamp(lo, hi);
+                        if let Err(e) = self.face_at_distance(pos_a, d).await {
+                            out.notes
+                                .push(format!("could not position for the area dummy: {e:#}"));
+                        } else {
+                            match self.spawn_dummy().await {
+                                Ok(Ok(b)) => {
+                                    compare_obj = b;
+                                    out.dummy_distance_m = self.dummy_distance(b);
+                                    out.target.push_str(&format!(" + area dummy {b}"));
+                                }
+                                Ok(Err(reason)) => {
+                                    out.notes.push(format!("no area dummy: {reason}"));
+                                }
+                                Err(e) => {
+                                    out.notes
+                                        .push(format!("could not spawn the area dummy: {e:#}"));
+                                }
+                            }
+                        }
+                    }
+                    if out.dummy_distance_m.is_none() {
+                        out.dummy_distance_m = self.dummy_distance(obj);
+                    }
+                    if compare_obj == self_obj {
+                        out.target_kind = "self".into();
+                    }
+                    self.game.change_target(compare_obj).await.ok();
                     if plan.target_dead && !self.game.state.dead_units.contains(&obj) {
+                        self.game.change_target(obj).await.ok();
                         match self.kill_dummy(obj).await {
                             Ok(true) => {}
                             Ok(false) => {
@@ -3032,16 +3184,25 @@ impl<'a> Sweep<'a> {
                 }
             }
         } else if plan.target_type == 6 {
-            // A position skill without a hostile relation resolves at the caster's position.
+            // A position skill without a hostile relation: cast a few metres in front of the
+            // bot. A cast at the bot's own position has no direction and answers
+            // `SkillResult 16` (`skill_outof_angle`).
             let pos = self.game.state.self_pos;
+            let ahead = (pos.0, pos.1 + 3.0, pos.2);
+            if let Err(e) = self.game.move_to_facing(pos, ahead, 300).await {
+                out.result = SkillOutcome::Error;
+                out.reason = format!("connection error while facing ahead: {e:#}");
+                self.finish(chat_start, start, &mut out);
+                return out;
+            }
             target = SkillCastTarget::Position3 {
                 obj_id: 0,
-                x: pos.0,
-                y: pos.1,
-                z: pos.2,
+                x: ahead.0,
+                y: ahead.1,
+                z: ahead.2,
                 pitch: 0.0,
             };
-            out.target = format!("position at self ({self_obj})");
+            out.target = format!("position 3 m ahead of self ({self_obj})");
             out.target_kind = "position".into();
         } else {
             out.target = format!("self ({self_obj})");
@@ -3126,20 +3287,19 @@ impl<'a> Sweep<'a> {
             .get(&compare_obj)
             .map(|(hp, _)| *hp);
 
-        // Buffs created / removed on the caster and the compare unit, during the cast.
+        // Buffs created / removed on the caster and on any other unit (an area skill applies
+        // them to every unit in its area, not only to the cast target).
         for (owner, buff) in &attempt.buffs_created {
             if *owner == self_obj {
                 out.buffs_created_caster.push(*buff);
-            }
-            if *owner == compare_obj {
+            } else {
                 out.buffs_created_target.push(*buff);
             }
         }
         for (owner, buff) in &attempt.buffs_removed {
             if *owner == self_obj {
                 out.buffs_removed_caster.push(*buff);
-            }
-            if *owner == compare_obj {
+            } else {
                 out.buffs_removed_target.push(*buff);
             }
         }
@@ -3175,20 +3335,34 @@ impl<'a> Sweep<'a> {
             (Some(before), Some(after)) => Some(after - before),
             _ => None,
         };
+        // Damage / heal packets of this cast on any unit other than the caster (an area skill
+        // hits every unit in its area; the cast target itself is excluded by the server).
         out.damage_packets = attempt
             .damage_hits
             .iter()
-            .filter(|h| h.skill_id == plan.id && h.target_id == compare_obj)
+            .filter(|h| h.skill_id == plan.id && h.target_id != self_obj)
             .count() as u32;
         out.miss_packets = attempt
             .damage_hits
             .iter()
-            .filter(|h| h.skill_id == plan.id && h.target_id == compare_obj && h.is_miss())
+            .filter(|h| h.skill_id == plan.id && h.target_id != self_obj && h.is_miss())
             .count() as u32;
+        out.self_damage_packets = attempt
+            .damage_hits
+            .iter()
+            .filter(|h| h.skill_id == plan.id && h.target_id == self_obj)
+            .count() as u32;
+        out.dealt_damage = attempt
+            .damage_hits
+            .iter()
+            .filter(|h| h.skill_id == plan.id && h.target_id != self_obj)
+            .map(|h| h.damage)
+            .max()
+            .unwrap_or(0);
         out.heal_packets = attempt
             .heal_hits
             .iter()
-            .filter(|h| h.skill_id == plan.id && h.target_id == compare_obj)
+            .filter(|h| h.skill_id == plan.id)
             .count() as u32;
         out.messages = window_messages(&self.game, chat_start);
 
@@ -3357,8 +3531,35 @@ impl<'a> Sweep<'a> {
                 }
             }
         }
-        // Mana.
-        if let Some(spent) = out.mana_spent {
+        // Mana. A `RestoreManaEffect` makes the net delta a restore, not the cost, and a plot
+        // `ManaCost` is only paid when its event ran -- both are notes.
+        if plan.mana_restore {
+            if let Some(spent) = out.mana_spent {
+                out.notes.push(format!(
+                    "skill restores mana (RestoreManaEffect); MP change {spent} not compared"
+                ));
+            }
+        } else if plan.plot_id != 0 {
+            let reached = plan
+                .plot_mana_events
+                .iter()
+                .any(|event| out.plot_event_ids.contains(event));
+            if !plan.plot_mana_events.is_empty() && !reached {
+                out.notes.push(format!(
+                    "plot ManaCost event(s) {:?} not reached; MP change {:?} not compared",
+                    plan.plot_mana_events, out.mana_spent
+                ));
+            } else if let Some(spent) = out.mana_spent {
+                let expected = expected_mana_cost(plan, self.state.raised_level as i32);
+                let tolerance = 5.max(expected / 5);
+                if (spent - expected).abs() > tolerance {
+                    out.mismatches.push(format!(
+                        "mana cost {} vs observed MP loss {} ({})",
+                        expected, spent, out.mana_source
+                    ));
+                }
+            }
+        } else if let Some(spent) = out.mana_spent {
             let expected = expected_mana_cost(plan, self.state.raised_level as i32);
             let tolerance = 5.max(expected / 5);
             if (spent - expected).abs() > tolerance {
@@ -3371,6 +3572,8 @@ impl<'a> Sweep<'a> {
         // Buffs: only rows the server would run are demanded. The level filter ran at load; a
         // tag / chance / weight gated row, a row whose relation excludes the actual target and
         // a plot-dependent row whose event the plot never reached are notes, not mismatches.
+        // A plot skill (`plot_id`) never runs `skill_effects`: only buffs its plot carries can
+        // be demanded, and only when the carrying event ran.
         let applied: HashSet<u32> = out
             .buffs_created_caster
             .iter()
@@ -3384,6 +3587,28 @@ impl<'a> Sweep<'a> {
                 "caster"
             };
             let applied_here = applied.contains(&row.buff_id);
+            let plot_reached = row
+                .plot_events
+                .iter()
+                .any(|event| out.plot_event_ids.contains(event));
+            if plan.plot_id != 0 {
+                if applied_here {
+                    continue;
+                }
+                if !row.plot_events.is_empty() && plot_reached {
+                    out.mismatches.push(format!(
+                        "the plot reached buff {}'s event(s) {:?} but the {side} buff was not applied",
+                        row.buff_id, row.plot_events
+                    ));
+                } else {
+                    out.notes.push(format!(
+                        "{side} buff {} not applied ({})",
+                        row.buff_id,
+                        row.gate_note()
+                    ));
+                }
+                continue;
+            }
             if row.unconditional(target_self) {
                 if !applied_here {
                     out.mismatches.push(format!(
@@ -3396,24 +3621,13 @@ impl<'a> Sweep<'a> {
             if applied_here {
                 continue;
             }
-            let plot_reached = row
-                .plot_events
-                .iter()
-                .any(|event| out.plot_event_ids.contains(event));
-            if plan.plot_only && !row.plot_events.is_empty() && plot_reached {
-                out.mismatches.push(format!(
-                    "the plot reached buff {}'s event(s) {:?} but the {side} buff was not applied",
-                    row.buff_id, row.plot_events
-                ));
-            } else {
-                out.notes.push(format!(
-                    "{side} buff {} not applied ({})",
-                    row.buff_id,
-                    row.gate_note()
-                ));
-            }
+            out.notes.push(format!(
+                "{side} buff {} not applied ({})",
+                row.buff_id,
+                row.gate_note()
+            ));
         }
-        // Damage / heal rows vs the compare unit's HP delta.
+        // Damage / heal rows vs the packets the cast produced on other units.
         let all_damage: Vec<&DamageRow> = plan.effects.damage_rows_for(target_self);
         let damage_rows: Vec<&DamageRow> = all_damage
             .iter()
@@ -3436,34 +3650,44 @@ impl<'a> Sweep<'a> {
             .iter()
             .filter(|r| r.unconditional(target_self))
             .count();
-        if plan.plot_only {
-            // A `plot_only` skill never runs `skill_effects`; the plot tree decides what
-            // happens, so its rows are not an expectation.
-            if (damage_count > 0 || heal_count > 0)
-                && (out.damage_packets == 0 || out.target_hp_delta == Some(0))
-            {
+        if plan.plot_id != 0 {
+            // A plot skill never runs `skill_effects`; the plot tree decides what happens, so
+            // its rows are not an expectation.
+            if (damage_count > 0 || heal_count > 0) && out.damage_packets == 0 {
                 out.notes.push(format!(
-                    "plot_only skill: {} damage / {} heal skill_effects row(s) never run (the plot tree carries the effects)",
+                    "plot skill: {} damage / {} heal skill_effects row(s) never run (the plot tree carries the effects)",
                     damage_count, heal_count
                 ));
             }
         } else if let Some(delta) = out.target_hp_delta {
-            if damage_count > 0 && delta >= 0 && out.damage_packets == 0 {
-                if unconditional_damage > 0 {
-                    out.mismatches.push(format!(
-                        "{unconditional_damage} unconditional damage row(s) exist but no SCUnitDamagedPacket and no target HP loss (delta {delta})"
-                    ));
-                } else {
-                    out.notes.push(format!(
-                        "{damage_count} damage row(s) exist, no damage packet and no HP loss (delta {delta}): the row's gates were not met"
-                    ));
+            if damage_count > 0 && delta >= 0 {
+                if out.damage_packets == 0 {
+                    if target_self {
+                        out.notes.push(format!(
+                            "{damage_count} damage row(s) on the caster itself: `CanAttack` refuses self (delta {delta})"
+                        ));
+                    } else if unconditional_damage > 0 {
+                        out.mismatches.push(format!(
+                            "{unconditional_damage} unconditional damage row(s) exist but no SCUnitDamagedPacket and no target HP loss (delta {delta})"
+                        ));
+                    } else {
+                        out.notes.push(format!(
+                            "{damage_count} damage row(s) exist, no damage packet and no HP loss (delta {delta}): the row's gates were not met"
+                        ));
+                    }
+                } else if out.dealt_damage == 0 {
+                    if out.miss_packets > 0 {
+                        out.notes.push(format!(
+                            "{} of {} damage packet(s) missed (hit type); target HP delta {}",
+                            out.miss_packets, out.damage_packets, delta
+                        ));
+                    } else {
+                        out.notes.push(format!(
+                            "{} damage packet(s) all absorbed (0 damage); target HP delta {}",
+                            out.damage_packets, delta
+                        ));
+                    }
                 }
-            }
-            if out.miss_packets > 0 && delta >= 0 {
-                out.notes.push(format!(
-                    "{} of {} damage packet(s) missed (hit type); target HP delta {}",
-                    out.miss_packets, out.damage_packets, delta
-                ));
             }
             if damage_count == 0 && heal_count == 0 && delta != 0 {
                 if applied.is_empty() && plan.effects.buff_rows_for(target_self).is_empty() {
@@ -3482,10 +3706,10 @@ impl<'a> Sweep<'a> {
                     "{unconditional_heal} unconditional heal row(s) exist but target HP delta is {delta}"
                 ));
             }
-            if target_self && damage_count > 0 && delta == 0 && out.damage_packets > 0 {
+            if target_self && damage_count > 0 && delta == 0 && out.self_damage_packets > 0 {
                 out.notes.push(format!(
-                    "self-target damage suppressed by godmode ({} SCUnitDamagedPacket(s), HP delta 0)",
-                    out.damage_packets
+                    "self-target damage suppressed by godmode ({} SCUnitDamagedPacket(s) on the caster)",
+                    out.self_damage_packets
                 ));
             }
         }
@@ -3576,6 +3800,8 @@ impl<'a> Sweep<'a> {
             target_hp_delta: None,
             damage_packets: 0,
             miss_packets: 0,
+            dealt_damage: 0,
+            self_damage_packets: 0,
             heal_packets: 0,
             buffs_created_caster: Vec::new(),
             buffs_created_target: Vec::new(),
@@ -3806,6 +4032,8 @@ pub async fn run(cfg: &BotConfig, opts: &RunOptions) -> anyhow::Result<RunReport
                     show: false,
                     target_type: 0,
                     target_relation: 0,
+                    target_selection: 0,
+                    target_area_radius: 0,
                     casting_time: 0,
                     channeling_time: 0,
                     channeling_tick: 0,
@@ -3826,6 +4054,9 @@ pub async fn run(cfg: &BotConfig, opts: &RunOptions) -> anyhow::Result<RunReport
                     plot_id: 0,
                     plot_only: false,
                     plot_mana_cost: None,
+                    plot_mana_events: Vec::new(),
+                    mana_restore: false,
+                    requires_no_combat: false,
                     effects: EffectSummary::default(),
                     reqs: Vec::new(),
                 },
@@ -3963,6 +4194,8 @@ mod tests {
             show: true,
             target_type: 0,
             target_relation: 0,
+            target_selection: 0,
+            target_area_radius: 0,
             casting_time: 0,
             channeling_time: 0,
             channeling_tick: 0,
@@ -3983,6 +4216,9 @@ mod tests {
             plot_id: 0,
             plot_only: false,
             plot_mana_cost: None,
+            plot_mana_events: Vec::new(),
+            mana_restore: false,
+            requires_no_combat: false,
             effects: EffectSummary::default(),
             reqs: Vec::new(),
         };
@@ -4007,6 +4243,8 @@ mod tests {
             show: true,
             target_type: 4,
             target_relation: 0,
+            target_selection: 0,
+            target_area_radius: 0,
             casting_time: 0,
             channeling_time: 0,
             channeling_tick: 0,
@@ -4027,6 +4265,9 @@ mod tests {
             plot_id: 0,
             plot_only: false,
             plot_mana_cost: None,
+            plot_mana_events: Vec::new(),
+            mana_restore: false,
+            requires_no_combat: false,
             effects: EffectSummary::default(),
             reqs: Vec::new(),
         };
@@ -4119,6 +4360,16 @@ mod tests {
         assert_ne!(mana_cost_expected(smash, 55), 83);
         // 14810: plot 1078, ManaCost = 24 + 0.
         assert_eq!(expected_mana_cost(db.skill(14810).unwrap(), 55), 24);
+        // 12759 (plot 623): ManaCost = 300 / 6.35 -> 47 from the caster (source 1).
+        assert_eq!(expected_mana_cost(db.skill(12759).unwrap(), 55), 47);
+        // 12345 is flagged `plot_only` but has no `plot_id`: the server runs the normal cast,
+        // so the `Skill.ManaCost` formula applies.
+        let no_plot = db.skill(12345).unwrap();
+        assert!(no_plot.plot_only && no_plot.plot_id == 0);
+        assert_eq!(
+            expected_mana_cost(no_plot, 55),
+            mana_cost_expected(no_plot, 55)
+        );
         // A non-plot skill keeps the `Skill.ManaCost` formula.
         let basic = db.skill(10372).unwrap();
         assert!(!basic.plot_only);
@@ -4255,6 +4506,11 @@ mod tests {
         assert_eq!(
             measure_mana(Some(100), &[100, 90, 95], Some(90)),
             (Some(10), "first update after the cast response".to_string())
+        );
+        // A plot pays before its event batch: the larger earlier drop is the cost.
+        assert_eq!(
+            measure_mana(Some(100), &[53], Some(96)),
+            (Some(47), "largest MP drop during the cast".to_string())
         );
         // No update at all: nothing to compare.
         assert_eq!(measure_mana(Some(100), &[], None).0, None);

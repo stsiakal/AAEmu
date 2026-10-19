@@ -429,27 +429,61 @@ shipped data) once on the live server and checks the outcome against the same
 
 Per skill the runner makes the skill's ability one of `ability1..3` (`CSSwapAbilityPacket`),
 `/level 55`, learns the skill (`CSLearnSkillPacket`), equips the holdable slots the data's
-`unit_reqs` demand (one-hand sword, shield, bow, instrument), refills HP/MP with `/heal`, clears
-buffs left by earlier skills with `/buff -<id>` and resets cooldowns with `/resetcd`. Targets
-by `skills.target_type_id`: hostile skills on a spawned passive training dummy (NPC 13013) the
-bot faces at a distance inside `min_range..max_range`; self / friendly skills on the bot; position
-skills at the dummy's position (or the bot's, without a hostile relation); doodad skills on a
-spawned doodad. Other target types, and `target_dead` skills with a friendly target (a resurrect
-needs a dead player), are `unsupported` with the reason. The cast is `CSStartSkillPacket`.
+`unit_reqs` demand (one-hand sword, shield, bow, instrument) and, for spell-scaled damage
+(a `level_md` damage row with no fixed part), a level-55 two-handed staff so the weapon term is
+not zero -- the weapon used is recorded as `weapon_used`; a skill that needs the offhand slot
+keeps the sword. `/heal` refills HP/MP, `/buff -<id>` clears buffs left by earlier skills and
+`/resetcd` resets cooldowns.
+
+Targets by `skills.target_type_id`: hostile skills on a training dummy (NPC 13013) that is
+respawned in front of the bot before every skill (the distance is recorded as
+`dummy_distance_m`; a wandering or half-health dummy used to poison the damage measurement)
+and that the bot faces at a distance inside `min_range..max_range`; self / friendly skills on
+the bot; position skills at the dummy's position (or the bot's, without a hostile relation);
+doodad skills on a spawned doodad. Hostile-only effect rows are never cast on the bot itself
+(the `godmode true` safety net makes player damage vanish), so they always go on the dummy.
+Other target types, and `target_dead` skills with a friendly target, are `unsupported` with
+the reason. The cast is `CSStartSkillPacket`.
 
 Observed: `SCSkillStarted` (cast times, `SkillResult`), `SCSkillFired` (effect delay, channel
-time), `SCSkillEnded` / `SCSkillStopped`, plot skills' `SCPlotEvent` / `SCPlotEnded` (the server
-batches plot events into `CompressedGamePackets`; the runner reads the first inner packet),
-`SCErrorMsg`, `SCUnitPoints` (mana spent, target HP delta), `SCBuffCreated` / `SCBuffRemoved`
-on caster and target, and a second immediate cast for the cooldown check.
+time), `SCSkillEnded` / `SCSkillStopped`, plot skills' `SCPlotEvent` / `SCPlotEnded`, plot
+events' `SCUnitDamaged` / `SCUnitHealed` (misses are notes, not failures), `SCErrorMsg`,
+`SCUnitPoints` (mana spent, target HP delta), `SCBuffCreated` / `SCBuffRemoved` on caster and
+target, and a second immediate cast for the cooldown check. **Every inner packet of a
+`CompressedGamePackets` (`DD04`) batch is decoded** (`game::split_compressed_batch` measures
+each lengthless body with its codec's field sizes) and handed out as a normal level-1 packet,
+so plot events, unit points, buff and damage packets inside a batch are seen like any other.
+
+The mana expectation comes from the skill's path: a `plot_only` skill returns from
+`Skill.Use` before `Skill.Cast`'s `ConsumeMana` and pays the plot's `SpecialEffect` 39
+`ManaCost` (`value1 + value2 / 6.35` per apply, walked in `plot_events` / `plot_effects` /
+`special_effects`); every other skill pays the `Skill.ManaCost` formula. `mana_spent` is read
+at the first `SCUnitPoints` update after the cast's response (the lowest update of the cast
+when the cost update precedes the response -- an instant cast); `mana_source` says which,
+and an end-of-channel delta is not used (regen hides the cost there).
+
+The immediate-recast cooldown probe goes out right after the cast. It is skipped (recorded as
+`cooldown not probeable` in `cooldown_probe`) when `skills.cooldown_time` is 3000 ms or less
+(the ~1 s GCD window leaves no room to tell the GCD from the skill cooldown) and when the
+recast answers `SkillResult 50` (`skill_req_fail`) after the first cast applied a buff (an
+immunity / telekinesis effect blocks the recast before the cooldown check).
+
+Expectations are gated the way the server gates them: `skill_effects` rows outside the
+caster's `start_level..end_level` are dropped at load; a row with a source / target buff tag,
+a chance below 100, a weight or a `plot_only` plot event is only a note when its buff does
+not show up (`notes`, not `mismatches`), except a plot event the run actually reached
+(`plot_event_ids`). The HP delta is attributed to the buff effects when the skill has no
+damage / heal rows but applied buffs, and self-target damage suppressed by godmode is a note.
 
 Each line of the JSONL records the data fields next to the observed ones (cast / channel /
-effect-delay times, `mana_cost_expected` vs `mana_spent`, `cooldown_time_ms` and `recast_result`,
-`expected_buffs` vs `buffs_created_*`, `damage_rows` / `heal_rows` vs `target_hp_delta`,
-`plot_events`) and a `mismatches` array with one short reason per deviation. `result` is `ok`
-(the cast ran), `rejected` (a `SkillResult` or `SCErrorMsg`, or a plot skill that sent no plot
-event), `timeout` (a non-plot cast the server dropped silently for 6 s), `unsupported` or
-`setup_failed`.
+effect-delay times, `mana_cost_expected` vs `mana_spent` + `mana_source`, `cooldown_time_ms`,
+`recast_result` + `cooldown_probe`, `expected_buffs` vs `buffs_created_*`, `damage_rows` /
+`heal_rows` vs `target_hp_delta`, `damage_packets` / `miss_packets`, `plot_events` /
+`plot_event_ids`, `weapon_used`, `dummy_distance_m`, `target_kind`) and a `mismatches` array
+with one short reason per deviation plus a `notes` array for explained observations. `result`
+is `ok` (the cast ran), `rejected` (a `SkillResult` or `SCErrorMsg`, or a plot skill that sent
+no plot event), `timeout` (a non-plot cast the server dropped silently for 6 s), `unsupported`
+or `setup_failed`.
 
 ```sh
 $TC skill --config testclient.local.json --login 127.0.0.1:21237           --compact-db rust/crates/aaemu-game/app/Data/compact.sqlite3           --new-character --all --out skill-audit.jsonl --summary
