@@ -25,6 +25,12 @@ LANES=${AAEMU_LANES:-D:/aaemu-lanes}
 # shellcheck disable=SC1091
 [ -f "$LANES/machine.conf" ] && source "$LANES/machine.conf"
 LANE=${AAEMU_LANE:-}
+# A lane worktree's git dir is .git/worktrees/<lane>: unlike paths, this survives drive aliases
+# (D: is a subst of C:\AAEMU_DISK, so one worktree has two `pwd -P` spellings).
+GIT_DIR_ABS=$(git -C "$REPO" rev-parse --absolute-git-dir 2>/dev/null || true)
+if [ -z "$LANE" ]; then
+  case "$GIT_DIR_ABS" in */worktrees/*) [ -f "$LANES/${GIT_DIR_ABS##*/}.env" ] && LANE=${GIT_DIR_ABS##*/} ;; esac
+fi
 if [ -z "$LANE" ]; then
   for f in "$LANES"/*.env; do
     [ -f "$f" ] || continue
@@ -32,6 +38,11 @@ if [ -z "$LANE" ]; then
     [ "$(cd "$wt" && pwd -P)" = "$(cd "$REPO" && pwd -P)" ] && LANE=$(basename "$f" .env)
   done
 fi
+# Never fall back to the shared D:/aaemu-live stack from a linked worktree: `sync` would copy
+# this worktree's files over the shared runtime.
+case "$GIT_DIR_ABS" in
+  */worktrees/*) [ -n "$LANE" ] || { echo "worktree is not a known lane; set AAEMU_LANE=<name>" >&2; exit 1; } ;;
+esac
 if [ -n "$LANE" ]; then
   [ -f "$LANES/$LANE.env" ] || { echo "no lane '$LANE' (Scripts/lane.sh list)" >&2; exit 1; }
   # shellcheck disable=SC1090
