@@ -33,6 +33,8 @@ pub struct RunOptions {
     pub tests: Vec<String>,
     pub all: bool,
     pub compact_db: Option<PathBuf>,
+    /// `npc_spawns.json` of the world (natural spawn positions for NPCs without /spawn).
+    pub spawns: Option<PathBuf>,
     pub out: Option<PathBuf>,
     pub summary: bool,
     pub new_character: bool,
@@ -205,6 +207,7 @@ impl Obs {
             .find_map(|t| parse_behavior(t))
     }
     fn hostile_onset(&self, npc: u32, bot: u32, from: u64, until: u64) -> Option<(u64, String)> {
+        let mut first_target = None;
         for e in &self.events {
             if e.t_ms < from || e.t_ms > until {
                 continue;
@@ -221,12 +224,27 @@ impl Obs {
                 Ev::SkillStarted { caster, target, .. } if *caster == npc && *target == bot => {
                     "skill_started"
                 }
+                Ev::TargetChanged { npc: n, target } if *n == npc && *target == bot => {
+                    // The alert sends one target change; the attack behavior re-sets the target
+                    // every tick, so a repeated change is the combat transition.
+                    match first_target {
+                        None => {
+                            first_target = Some(e.t_ms);
+                            continue;
+                        }
+                        Some(t0) if (1200..=5000).contains(&e.t_ms.saturating_sub(t0)) => {
+                            "retarget"
+                        }
+                        Some(_) => continue,
+                    }
+                }
                 _ => continue,
             };
             return Some((e.t_ms, what.to_string()));
         }
         None
     }
+
     fn alert_onset(&self, npc: u32, bot: u32, from: u64, until: u64) -> Option<u64> {
         self.events
             .iter()
@@ -569,6 +587,7 @@ struct SkillRow {
 
 struct AiDb {
     conn: rusqlite::Connection,
+    path: PathBuf,
 }
 
 impl AiDb {
@@ -576,7 +595,10 @@ impl AiDb {
         let conn =
             rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
                 .with_context(|| format!("opening compact database {}", path.display()))?;
-        Ok(Self { conn })
+        Ok(Self {
+            conn,
+            path: path.to_path_buf(),
+        })
     }
 
     fn open_default(compact_db: Option<&Path>) -> anyhow::Result<Self> {
@@ -595,13 +617,17 @@ impl AiDb {
         bail!("no compact database found; pass --compact-db")
     }
 
+    fn path(&self) -> &Path {
+        &self.path
+    }
+
     fn npc(&self, id: u32) -> anyhow::Result<Option<NpcRow>> {
         use rusqlite::OptionalExtension;
         Ok(self
             .conn
             .query_row(
                 "SELECT name, LEVEL, COALESCE(ai_file_id,0), COALESCE(npc_ai_param_id,0),
-                 COALESCE(aggression,0), COALESCE(attack_start_range_scale,0),
+                 COALESCE(aggression,'f'), COALESCE(attack_start_range_scale,0),
                  COALESCE(sight_range_scale,0), COALESCE(return_distance,0),
                  COALESCE(absolute_return_distance,0), COALESCE(npc_grade_id,0)
                  FROM npcs WHERE id = ?1",
@@ -612,7 +638,7 @@ impl AiDb {
                         level: r.get::<_, i64>(1)? as u8,
                         ai_file_id: r.get::<_, i64>(2)? as u32,
                         npc_ai_param_id: r.get::<_, i64>(3)? as u32,
-                        aggression: r.get::<_, i64>(4)? != 0,
+                        aggression: !r.get::<_, String>(4)?.eq_ignore_ascii_case("f"),
                         attack_scale: r.get::<_, f64>(5)? as f32,
                         sight_scale: r.get::<_, f64>(6)? as f32,
                         return_distance: r.get::<_, f64>(7)? as f32,
@@ -684,6 +710,84 @@ impl AiDb {
     }
 }
 
+/// Natural spawn positions from `Worlds/main_world/npc_spawns.json` (JSONC: `//` comments and
+/// trailing commas). The file is `[{"UnitId": N, "Position": {"X": .., "Y": .., "Z": ..}}, ..]`.
+fn load_spawn_points(path: &Path) -> anyhow::Result<HashMap<u32, Vec<P>>> {
+    let text = std::fs::read_to_string(path)
+        .with_context(|| format!("reading spawn points {}", path.display()))?;
+    Ok(parse_spawn_points(&text))
+}
+
+fn parse_spawn_points(text: &str) -> HashMap<u32, Vec<P>> {
+    let mut out: HashMap<u32, Vec<P>> = HashMap::new();
+    let mut unit: Option<u32> = None;
+    let mut xyz: [Option<f32>; 3] = [None; 3];
+    let flush =
+        |unit: &mut Option<u32>, xyz: &mut [Option<f32>; 3], out: &mut HashMap<u32, Vec<P>>| {
+            if let Some(u) = unit.take() {
+                if let (Some(x), Some(y)) = (xyz[0].take(), xyz[1].take()) {
+                    let z = xyz[2].take().unwrap_or(0.0);
+                    out.entry(u).or_default().push((x, y, z));
+                } else {
+                    xyz[2] = None;
+                }
+            }
+            *xyz = [None; 3];
+        };
+    for line in text.lines() {
+        let line = line.trim();
+        if let Some(at) = line.find("\"UnitId\":") {
+            flush(&mut unit, &mut xyz, &mut out);
+            unit = line[at + "\"UnitId\":".len()..]
+                .split(|c: char| !c.is_ascii_digit())
+                .find(|s| !s.is_empty())
+                .and_then(|s| s.parse().ok());
+        }
+        if let Some(at) = line.find("\"X\":") {
+            xyz[0] = parse_json_number(&line[at + "\"X\":".len()..]);
+        }
+        if let Some(at) = line.find("\"Y\":") {
+            xyz[1] = parse_json_number(&line[at + "\"Y\":".len()..]);
+        }
+        if let Some(at) = line.find("\"Z\":") {
+            xyz[2] = parse_json_number(&line[at + "\"Z\":".len()..]);
+            flush(&mut unit, &mut xyz, &mut out);
+        }
+    }
+    flush(&mut unit, &mut xyz, &mut out);
+    out
+}
+
+fn parse_json_number(rest: &str) -> Option<f32> {
+    rest.split("//")
+        .next()?
+        .trim()
+        .chars()
+        .take_while(|c| c.is_ascii_digit() || matches!(c, '.' | '-' | '+' | 'e' | 'E'))
+        .collect::<String>()
+        .parse()
+        .ok()
+}
+
+/// `--spawns`, `$AAEMU_NPC_SPAWNS`, next to the compact database, or the repository app data.
+fn default_spawns_path(db: &AiDb) -> Option<PathBuf> {
+    if let Some(p) = std::env::var_os("AAEMU_NPC_SPAWNS") {
+        return Some(PathBuf::from(p));
+    }
+    let candidates = [
+        db.path()
+            .parent()
+            .map(|d| d.join("Worlds/main_world/npc_spawns.json")),
+        Some(PathBuf::from(
+            "crates/aaemu-game/app/Data/Worlds/main_world/npc_spawns.json",
+        )),
+        Some(PathBuf::from(
+            "rust/crates/aaemu-game/app/Data/Worlds/main_world/npc_spawns.json",
+        )),
+    ];
+    candidates.into_iter().flatten().find(|p| p.exists())
+}
+
 fn param_number(param: &str, key: &str) -> Option<f32> {
     let at = param.find(key)?;
     let after = param[at + key.len()..].trim_start().strip_prefix('=')?;
@@ -730,6 +834,10 @@ struct Spawned {
     pos: P,
     /// NPC spawn -> where the bot stood (the NPC spawned facing that way).
     facing: (f32, f32),
+    /// A natural world spawn (never despawned by the sweep) instead of a GM `/spawn`.
+    natural: bool,
+    /// The engagement was forced with a `/damage 1` probe instead of proximity aggro.
+    damage_fallback: bool,
 }
 
 struct Sweep {
@@ -739,6 +847,7 @@ struct Sweep {
     lines: Vec<AiLine>,
     gm_used: Vec<String>,
     spawned: Vec<u32>,
+    spawn_points: HashMap<u32, Vec<P>>,
 }
 
 impl Sweep {
@@ -851,13 +960,149 @@ impl Sweep {
             obj,
             pos,
             facing: direction(pos, bot_pos),
+            natural: false,
+            damage_fallback: false,
         })
+    }
+
+    /// Finds a naturally spawned NPC of `tpl`: first the units the login already announced,
+    /// then up to four world spawn points starting at `occurrence`, then `/spawn npc` for
+    /// templates the world data does not place.
+    async fn locate_npc(&mut self, tpl: u32, occurrence: usize) -> anyhow::Result<Spawned> {
+        let points = self.spawn_points.get(&tpl).cloned().unwrap_or_default();
+        if points.is_empty() {
+            return self.fresh_spawn(tpl).await;
+        }
+        let known = |s: &Self, point: P| {
+            s.game
+                .state
+                .units
+                .values()
+                .find(|u| u.unit_type == 1 && u.id == tpl && dist(u.pos, point) < 80.0)
+                .map(|u| (u.obj_id, u.pos))
+        };
+        let len = points.len();
+        let attempts = len.min(4);
+        let wait = if len == 1 {
+            Duration::from_secs(30)
+        } else {
+            Duration::from_secs(15)
+        };
+        for step in 0..attempts {
+            let point = points[(occurrence + step) % len];
+            // Units announced while the sweep was still setting up live in `GameState` only.
+            if let Some((obj, pos)) = known(self, point) {
+                return Ok(Spawned {
+                    obj,
+                    pos,
+                    facing: direction(pos, self.game.state.self_pos),
+                    natural: true,
+                    damage_fallback: false,
+                });
+            }
+            // Two region activations (spawners tick around players), then the point itself.
+            self.teleport((point.0 + 40.0, point.1, point.2)).await?;
+            self.pump_for(Duration::from_millis(600)).await?;
+            self.teleport((point.0 + 6.0, point.1, point.2)).await?;
+            let mark = self.obs.mark();
+            let found = self
+                .wait_until(wait, |s| {
+                    s.obs.since(mark).iter().rev().any(|e| {
+                        matches!(&e.kind, Ev::UnitState { tpl: t, pos, .. } if *t == tpl && dist(*pos, point) < 80.0)
+                    }) || known(s, point).is_some()
+                })
+                .await?;
+            let found_unit = self
+                .obs
+                .since(mark)
+                .iter()
+                .rev()
+                .find_map(|e| match &e.kind {
+                    Ev::UnitState { obj, tpl: t, pos } if *t == tpl && dist(*pos, point) < 80.0 => {
+                        Some((*obj, *pos))
+                    }
+                    _ => None,
+                })
+                .or_else(|| known(self, point));
+            if found || found_unit.is_some() {
+                let Some((obj, pos)) = found_unit else {
+                    unreachable!("found implies a unit");
+                };
+                return Ok(Spawned {
+                    obj,
+                    pos,
+                    facing: direction(pos, self.game.state.self_pos),
+                    natural: true,
+                    damage_fallback: false,
+                });
+            }
+        }
+        bail!("no natural spawn of {tpl} found near any of its {attempts} tried spawn point(s)")
+    }
+
+    /// Removes a GM-spawned NPC; natural world spawns are left in place.
+    async fn release(&mut self, spawned: Spawned) {
+        if !spawned.natural {
+            self.despawn_npc(spawned.obj).await;
+        }
+    }
+
+    /// Places the bot `distance` from the NPC and tries four bearings until the NPC reacts
+    /// (alert target change or a hostile action) within `settle`. Returns the placement, the
+    /// reaction time and its kind.
+    async fn place_until_seen(
+        &mut self,
+        obj: u32,
+        npc: P,
+        distance: f32,
+        settle: Duration,
+    ) -> anyhow::Result<Option<(P, u64, String)>> {
+        let bot = self.bot();
+        for bearing in [0.0f32, 90.0, 180.0, 270.0] {
+            let angle = bearing.to_radians();
+            let pos = (
+                npc.0 + angle.cos() * distance,
+                npc.1 + angle.sin() * distance,
+                npc.2,
+            );
+            self.teleport(pos).await?;
+            let t0 = self.obs.now_ms();
+            self.pump_for(settle).await?;
+            let now = self.obs.now_ms();
+            if let Some((t, kind)) = self.obs.hostile_onset(obj, bot, t0, now) {
+                return Ok(Some((pos, t, kind)));
+            }
+            if let Some(t) = self.obs.alert_onset(obj, bot, t0, now) {
+                return Ok(Some((pos, t, "alert".into())));
+            }
+        }
+        Ok(None)
     }
 
     async fn despawn_npc(&mut self, obj: u32) {
         let _ = self
             .gm(&format!("despawn npc {obj}"), Duration::from_millis(300))
             .await;
+    }
+
+    /// One real auto attack (skill 2) from 2.5 m, facing the target. GM `/damage` changes HP
+    /// without an aggro entry, so this is what makes an NPC engage.
+    async fn auto_attack(&mut self, obj: u32) -> anyhow::Result<()> {
+        let Some(np) = self.npc_pos(obj) else {
+            return Ok(());
+        };
+        let dir = direction(np, self.game.state.self_pos);
+        let stand = (np.0 + dir.0 * 2.5, np.1 + dir.1 * 2.5, np.2);
+        self.teleport(stand).await?;
+        self.game.change_target(obj).await?;
+        self.pump_for(Duration::from_millis(150)).await?;
+        self.game.move_to_facing(stand, np, 600).await?;
+        self.pump_for(Duration::from_millis(150)).await?;
+        for _ in 0..3 {
+            self.game.start_skill(2, obj).await?;
+            self.pump_for(Duration::from_millis(1300)).await?;
+        }
+        Ok(())
     }
 
     async fn damage(&mut self, obj: u32, amount: &str) -> anyhow::Result<()> {
@@ -919,58 +1164,100 @@ impl Sweep {
     async fn engage(
         &mut self,
         tpl: u32,
+        occurrence: usize,
         distance: f32,
         test: &str,
         suspect: &str,
     ) -> Option<Spawned> {
-        let spawned = match self.fresh_spawn(tpl).await {
+        let spawned = match self.locate_npc(tpl, occurrence).await {
             Ok(s) => s,
             Err(e) => {
                 self.inconclusive(test, suspect, tpl, format!("spawn failed: {e:#}"));
                 return None;
             }
         };
-        if let Err(e) = self.place_bot(spawned.pos, spawned.facing, distance).await {
-            self.inconclusive(test, suspect, tpl, format!("placement failed: {e:#}"));
-            self.despawn_npc(spawned.obj).await;
-            return None;
-        }
-        let t0 = self.obs.now_ms();
-        let bot = self.bot();
-        let ok = self
-            .wait_until(Duration::from_secs(8), |s| {
-                s.obs
-                    .hostile_onset(spawned.obj, bot, t0, s.obs.now_ms())
-                    .is_some()
-            })
+        let placed = match self
+            .place_until_seen(
+                spawned.obj,
+                spawned.pos,
+                distance,
+                Duration::from_millis(4000),
+            )
             .await
-            .unwrap_or(false);
-        if !ok {
-            self.inconclusive(
-                test,
-                suspect,
-                tpl,
-                format!("NPC {tpl} did not engage at {distance} m"),
-            );
-            self.despawn_npc(spawned.obj).await;
-            return None;
-        }
-        Some(spawned)
+        {
+            Ok(Some((pos, _t, _kind))) => pos,
+            Ok(None) => {
+                // Proximity aggro did not fire (a measured finding in itself): force the
+                // engagement with one real auto attack so the rest of the test can run.
+                let t0 = self.obs.now_ms();
+                let pos = if let Err(e) = self.auto_attack(spawned.obj).await {
+                    self.inconclusive(test, suspect, tpl, format!("attack failed: {e:#}"));
+                    self.release(spawned).await;
+                    return None;
+                } else {
+                    self.game.state.self_pos
+                };
+                let bot = self.bot();
+                let ok = self
+                    .wait_until(Duration::from_secs(4), |s| {
+                        s.obs
+                            .hostile_onset(spawned.obj, bot, t0, s.obs.now_ms())
+                            .is_some()
+                    })
+                    .await
+                    .unwrap_or(false);
+                if !ok {
+                    let hp0 = self.obs.hp_at(spawned.obj, t0);
+                    let hp1 = self.obs.hp_at(spawned.obj, self.obs.now_ms());
+                    let own_casts = self.obs.skill_starts(self.bot(), t0, self.obs.now_ms());
+                    let behavior = self.poll_behavior(spawned.obj).await.ok().flatten();
+                    self.inconclusive(
+                        test,
+                        suspect,
+                        tpl,
+                        format!(
+                            "NPC {tpl} did not react to proximity or an auto attack (hp {hp0:?}->                             {hp1:?}, own casts {own_casts:?}, behavior {behavior:?})"
+                        ),
+                    );
+                    self.release(spawned).await;
+                    return None;
+                }
+                return Some(Spawned {
+                    facing: direction(spawned.pos, pos),
+                    damage_fallback: true,
+                    ..spawned
+                });
+            }
+            Err(e) => {
+                self.inconclusive(test, suspect, tpl, format!("placement failed: {e:#}"));
+                self.release(spawned).await;
+                return None;
+            }
+        };
+        Some(Spawned {
+            facing: direction(spawned.pos, placed),
+            ..spawned
+        })
     }
-}
-// -------------------------------------------------------------------------------------------
-// S1: leash / return distance
-// -------------------------------------------------------------------------------------------
 
-impl Sweep {
     async fn test_s1(&mut self) -> anyhow::Result<()> {
-        for (tpl, with_hits) in [(10008u32, false), (10008, true), (10035, false)] {
-            self.leash_case(tpl, with_hits).await?;
+        for (tpl, with_hits, occurrence) in [
+            (7673u32, false, 0usize),
+            (10011, false, 1),
+            (10011, true, 2),
+            (7491, false, 0),
+        ] {
+            self.leash_case(tpl, occurrence, with_hits).await?;
         }
         Ok(())
     }
 
-    async fn leash_case(&mut self, tpl: u32, with_hits: bool) -> anyhow::Result<()> {
+    async fn leash_case(
+        &mut self,
+        tpl: u32,
+        occurrence: usize,
+        with_hits: bool,
+    ) -> anyhow::Result<()> {
         let row = self
             .db
             .npc(tpl)?
@@ -980,7 +1267,7 @@ impl Sweep {
         } else {
             "S1_leash"
         };
-        let Some(spawned) = self.engage(tpl, 4.0, test, "S1").await else {
+        let Some(spawned) = self.engage(tpl, occurrence, 4.0, test, "S1").await else {
             return Ok(());
         };
         let aggro_ms = self
@@ -1077,6 +1364,7 @@ impl Sweep {
                 "npc_home_distance_at_end_m": npc_home_final,
                 "followed_past_80_m": followed_past_80,
                 "with_hits": with_hits,
+                "aggro_source": if spawned.damage_fallback { "damage_fallback" } else { "proximity" },
                 "first_hostile_packet_ms": aggro_ms,
                 "behavior_samples": behavior_samples,
             }),
@@ -1087,24 +1375,31 @@ impl Sweep {
             setup: self.gm_used.clone(),
             evidence: vec![format!("spawned /spawn npc {tpl} at {:?}", spawned.pos)],
         });
-        self.despawn_npc(spawned.obj).await;
+        self.release(spawned).await;
         Ok(())
     }
 
     // ---- S2: alert vs aggression radii -----------------------------------------------------
 
     async fn test_s2(&mut self) -> anyhow::Result<()> {
-        let plan: [(u32, &[f32]); 2] = [
-            (10042, &[4.0, 9.0, 10.5, 12.0, 14.0, 15.5, 18.0]),
-            (10008, &[3.5, 4.5, 5.5, 7.0, 9.0, 12.0, 15.0, 18.0]),
+        // 10011: attack 0.6 / sight 1.2 -> Rust 6/18 m, retail base 9/12 m.
+        // 835 (Bloodmist warrior): attack 0.7 / sight 1.2 -> Rust 7/18 m, retail base 10.5/12 m.
+        let plan: [(u32, &[f32], usize); 2] = [
+            (10011, &[4.0, 5.5, 6.5, 8.0, 9.5, 12.0, 15.0, 18.0], 1),
+            (835, &[4.0, 6.5, 7.5, 9.0, 10.5, 13.0, 15.5, 18.0], 0),
         ];
-        for (tpl, distances) in plan {
-            self.radii_case(tpl, distances).await?;
+        for (tpl, distances, occurrence) in plan {
+            self.radii_case(tpl, distances, occurrence).await?;
         }
         Ok(())
     }
 
-    async fn radii_case(&mut self, tpl: u32, distances: &[f32]) -> anyhow::Result<()> {
+    async fn radii_case(
+        &mut self,
+        tpl: u32,
+        distances: &[f32],
+        occurrence: usize,
+    ) -> anyhow::Result<()> {
         let row = self
             .db
             .npc(tpl)?
@@ -1112,34 +1407,55 @@ impl Sweep {
         let mut samples = Vec::new();
         let mut alert_samples = Vec::new();
         let mut evidence = Vec::new();
-        for d in distances {
-            let spawned = match self.fresh_spawn(tpl).await {
+        for (i, d) in distances.iter().enumerate() {
+            let spawned = match self.locate_npc(tpl, occurrence + i).await {
                 Ok(s) => s,
                 Err(e) => {
                     evidence.push(format!("spawn at {d} m failed: {e:#}"));
                     continue;
                 }
             };
-            if let Err(e) = self.place_bot(spawned.pos, spawned.facing, *d).await {
-                evidence.push(format!("place at {d} m failed: {e:#}"));
-                self.despawn_npc(spawned.obj).await;
-                continue;
+            let bot = self.bot();
+            let mut alert = None;
+            let mut hostile = None;
+            let mut cleared = None;
+            for bearing in [0.0f32, 90.0, 180.0, 270.0] {
+                let angle = bearing.to_radians();
+                let pos = (
+                    spawned.pos.0 + angle.cos() * d,
+                    spawned.pos.1 + angle.sin() * d,
+                    spawned.pos.2,
+                );
+                if let Err(e) = self.teleport(pos).await {
+                    evidence.push(format!("place at {d} m failed: {e:#}"));
+                    break;
+                }
+                let t0 = self.obs.now_ms();
+                self.pump_for(Duration::from_millis(2500)).await?;
+                let now = self.obs.now_ms();
+                hostile = self.obs.hostile_onset(spawned.obj, bot, t0, now);
+                alert = self.obs.alert_onset(spawned.obj, bot, t0, now);
+                if hostile.is_some() || alert.is_some() {
+                    if let Some(a) = alert {
+                        self.pump_for(Duration::from_millis(6000)).await?;
+                        let later = self.obs.now_ms();
+                        hostile = self.obs.hostile_onset(spawned.obj, bot, t0, later);
+                        cleared = self.obs.alert_cleared(spawned.obj, a, later);
+                    }
+                    break;
+                }
             }
-            let t0 = self.obs.now_ms();
-            let until = t0 + 7000;
-            self.pump_for(Duration::from_millis(7000)).await?;
-            let alert = self.obs.alert_onset(spawned.obj, self.bot(), t0, until);
-            let hostile = self.obs.hostile_onset(spawned.obj, self.bot(), t0, until);
-            let cleared = alert.and_then(|a| self.obs.alert_cleared(spawned.obj, a, until));
+            let reacted = hostile.is_some() || alert.is_some();
             samples.push((*d, hostile.is_some()));
             alert_samples.push((*d, alert.is_some()));
             evidence.push(format!(
-                "d={d} alert_ms={:?} hostile_ms={:?} alert_window_ms={:?}",
-                alert.map(|t| t.saturating_sub(t0)),
-                hostile.as_ref().map(|(t, _)| t.saturating_sub(t0)),
+                "d={d} alert={} hostile={} alert_window_ms={:?}",
+                alert.is_some(),
+                hostile.is_some(),
                 cleared.zip(alert).map(|(c, a)| c.saturating_sub(a)),
             ));
-            self.despawn_npc(spawned.obj).await;
+            let _ = reacted;
+            self.release(spawned).await;
         }
         let aggro_m = threshold(&samples);
         let alert_m = threshold(&alert_samples);
@@ -1155,11 +1471,15 @@ impl Sweep {
                 "suspect"
             }
             Some(m) if (m - retail_attack).abs() <= 1.5 => "matches",
-            _ => "inconclusive",
+            Some(_) => "inconclusive",
+            // No aggression at all, not even inside the server's own attack radius.
+            None if alert_m.is_some() => "suspect",
+            None => "inconclusive",
         };
         let mut notes = vec![
             "Rust radii: aggression = attack_start_range_scale*10, alert = sight_range_scale*15 (check_aggression / check_alert)".into(),
             "retail basicaitable.lua defaults attackStartRange=15, sightrange=10; how the npcs scale columns multiply them is the open [?] item (10.x oracle, weaker)".into(),
+            "each distance was tried from four bearings because the NPC's FOV is not on the wire".into(),
         ];
         if let Some(m) = alert_m {
             notes.push(format!("measured alert (TargetChanged) threshold {m} m"));
@@ -1194,15 +1514,16 @@ impl Sweep {
 
     async fn test_s3(&mut self) -> anyhow::Result<()> {
         self.alert_case(
-            10042,
-            12.0,
+            10011,
+            0,
+            8.0,
             3000,
             "default alertDuration 3 s (no param row)",
         )
         .await?;
-        self.alert_case(10021, 13.0, 0, "param 1485 alertDuration = 0")
+        self.alert_case(8023, 0, 8.0, 0, "param 1220 alertDuration = 0")
             .await?;
-        self.alert_case(7336, 12.0, 10000, "param 1001 alertDuration = 10")
+        self.alert_case(528, 8, 8.5, 10000, "param 318 alertDuration = 10")
             .await?;
         Ok(())
     }
@@ -1210,6 +1531,7 @@ impl Sweep {
     async fn alert_case(
         &mut self,
         tpl: u32,
+        occurrence: usize,
         distance: f32,
         expected_ms: u64,
         note: &str,
@@ -1219,7 +1541,7 @@ impl Sweep {
             .npc(tpl)?
             .with_context(|| format!("npc {tpl} missing from compact"))?;
         let param = self.db.param(row.npc_ai_param_id)?;
-        let spawned = match self.fresh_spawn(tpl).await {
+        let spawned = match self.locate_npc(tpl, occurrence).await {
             Ok(s) => s,
             Err(e) => {
                 self.inconclusive(
@@ -1231,28 +1553,87 @@ impl Sweep {
                 return Ok(());
             }
         };
-        if let Err(e) = self.place_bot(spawned.pos, spawned.facing, distance).await {
+        let bot = self.bot();
+        let mut reaction = None;
+        for bearing in [0.0f32, 90.0, 180.0, 270.0] {
+            let angle = bearing.to_radians();
+            let pos = (
+                spawned.pos.0 + angle.cos() * distance,
+                spawned.pos.1 + angle.sin() * distance,
+                spawned.pos.2,
+            );
+            if let Err(e) = self.teleport(pos).await {
+                self.inconclusive(
+                    "S3_alert_to_attack",
+                    "S3",
+                    tpl,
+                    format!("placement failed: {e:#}"),
+                );
+                self.release(spawned).await;
+                return Ok(());
+            }
+            let t0 = self.obs.now_ms();
+            self.pump_for(Duration::from_millis(2500)).await?;
+            let alert = self
+                .obs
+                .alert_onset(spawned.obj, bot, t0, self.obs.now_ms());
+            if alert.is_some()
+                || self
+                    .obs
+                    .hostile_onset(spawned.obj, bot, t0, self.obs.now_ms())
+                    .is_some()
+            {
+                reaction = Some(alert);
+                break;
+            }
+        }
+        if reaction.is_none() {
+            let mut diag = Vec::new();
+            let _ = self.game.change_target(spawned.obj).await;
+            self.pump_for(Duration::from_millis(150)).await?;
+            if let Ok(chats) = self.gm("dist", Duration::from_millis(400)).await {
+                diag.extend(chats);
+            }
+            if let Ok(Some(b)) = self.poll_behavior(spawned.obj).await {
+                diag.push(format!("behavior={b}"));
+            }
             self.inconclusive(
                 "S3_alert_to_attack",
                 "S3",
                 tpl,
-                format!("placement failed: {e:#}"),
+                format!(
+                    "NPC {tpl} did not notice the bot at {distance} m from any bearing; server: {}",
+                    diag.join(" / ")
+                ),
             );
-            self.despawn_npc(spawned.obj).await;
+            self.release(spawned).await;
             return Ok(());
         }
         let t0 = self.obs.now_ms();
-        let watch_ms = (expected_ms + 4000).max(8000);
+        let watch_ms = (expected_ms + 6000).max(9000);
         let until = t0 + watch_ms;
         self.pump_for(Duration::from_millis(watch_ms)).await?;
-        let alert = self.obs.alert_onset(spawned.obj, self.bot(), t0, until);
-        let hostile = self.obs.hostile_onset(spawned.obj, self.bot(), t0, until);
+        let alert = self.obs.alert_onset(spawned.obj, bot, 0, until);
+        let hostile = self.obs.hostile_onset(spawned.obj, bot, 0, until);
         let cleared = alert.and_then(|a| self.obs.alert_cleared(spawned.obj, a, until));
+        let (alert_base, hostile_base) = match (alert, hostile.as_ref()) {
+            (Some(a), Some((h, _))) => (a, *h),
+            (Some(a), None) => (a, a),
+            (None, Some((h, _))) => (*h, *h),
+            (None, None) => (t0, t0),
+        };
         let behavior = self.poll_behavior(spawned.obj).await?;
-        let onset = hostile.as_ref().map(|(t, _)| t.saturating_sub(t0));
+        let onset = hostile
+            .as_ref()
+            .map(|(t, _)| t.saturating_sub(hostile_base));
         let alert_len = cleared.zip(alert).map(|(c, a)| c.saturating_sub(a));
         let classification = if alert.is_none() {
-            "inconclusive"
+            // No alert target change: the NPC attacked straight away (or only after the watch).
+            match hostile.as_ref() {
+                Some((h, _)) if h.saturating_sub(t0) <= 1500 => "matches",
+                Some(_) => "suspect",
+                None => "inconclusive",
+            }
         } else if let Some(onset) = onset {
             if expected_ms == 0 {
                 if onset <= 1500 {
@@ -1272,6 +1653,7 @@ impl Sweep {
             note.to_string(),
             "retail: alertDuration < 0.1 s attacks at once; otherwise the alert lasts alertDuration, then an aggressive species attacks (default.lua, 1.2 and 10.x)".into(),
             "Rust alert_end_time = now + 5000 ms fixed; only check_aggression can start combat inside it (behaviors.rs)".into(),
+            "the distance was reached from four bearings; the alert/attack radii themselves are measured by S2".into(),
         ];
         if let Some(len) = alert_len {
             notes.push(format!("measured alert window {len} ms"));
@@ -1291,36 +1673,45 @@ impl Sweep {
                 "npc": row.json(param.as_deref()),
             }),
             measured: json!({
-                "alert_onset_ms": alert.map(|t| t.saturating_sub(t0)),
+                "alert_onset_ms": alert.map(|t| t.saturating_sub(alert_base)),
                 "alert_window_ms": alert_len,
                 "hostile_onset_ms": onset,
-                "hostile_kind": hostile.map(|(_, k)| k),
+                "hostile_kind": hostile.as_ref().map(|(_, k)| k),
                 "behavior_after": behavior,
             }),
             notes,
             setup: self.gm_used.clone(),
             evidence: vec![format!("placed at {distance} m; watch {watch_ms} ms")],
         });
-        self.despawn_npc(spawned.obj).await;
+        self.release(spawned).await;
         Ok(())
     }
 
     // ---- S4: ranged stopping distance -----------------------------------------------------
 
     async fn test_s4(&mut self) -> anyhow::Result<()> {
-        self.ranged_case(10258, 6.0, 18.0).await?;
-        self.ranged_case(7336, 8.0, 30.0).await?;
+        self.ranged_case(528, 9, 6.0, 18.0).await?;
+        self.ranged_case(529, 0, 6.0, 20.0).await?;
         Ok(())
     }
 
-    async fn ranged_case(&mut self, tpl: u32, start: f32, retreat: f32) -> anyhow::Result<()> {
+    async fn ranged_case(
+        &mut self,
+        tpl: u32,
+        occurrence: usize,
+        start: f32,
+        retreat: f32,
+    ) -> anyhow::Result<()> {
         let row = self
             .db
             .npc(tpl)?
             .with_context(|| format!("npc {tpl} missing from compact"))?;
         let param = self.db.param(row.npc_ai_param_id)?;
         let preferred = param.as_deref().and_then(preferred_combat_dist);
-        let Some(spawned) = self.engage(tpl, start, "S4_ranged_stop", "S4").await else {
+        let Some(spawned) = self
+            .engage(tpl, occurrence, start, "S4_ranged_stop", "S4")
+            .await
+        else {
             return Ok(());
         };
         let t0 = self.obs.now_ms();
@@ -1425,24 +1816,30 @@ impl Sweep {
             setup: self.gm_used.clone(),
             evidence: vec![format!("spawned {tpl} at {:?}", spawned.pos)],
         });
-        self.despawn_npc(spawned.obj).await;
+        self.release(spawned).await;
         Ok(())
     }
 
     // ---- S5: idle displacement / return ---------------------------------------------------
 
     async fn test_s5(&mut self) -> anyhow::Result<()> {
-        self.idle_case(100, 8.0, false).await?;
-        self.idle_case(10020, 20.0, true).await?;
+        self.idle_case(10011, 10, 8.0, false).await?;
+        self.idle_case(2049, 0, 20.0, true).await?;
         Ok(())
     }
 
-    async fn idle_case(&mut self, tpl: u32, offset: f32, roaming: bool) -> anyhow::Result<()> {
+    async fn idle_case(
+        &mut self,
+        tpl: u32,
+        occurrence: usize,
+        offset: f32,
+        roaming: bool,
+    ) -> anyhow::Result<()> {
         let row = self
             .db
             .npc(tpl)?
             .with_context(|| format!("npc {tpl} missing from compact"))?;
-        let spawned = match self.fresh_spawn(tpl).await {
+        let spawned = match self.locate_npc(tpl, occurrence).await {
             Ok(s) => s,
             Err(e) => {
                 self.inconclusive("S5_idle_return", "S5", tpl, format!("spawn failed: {e:#}"));
@@ -1532,7 +1929,10 @@ impl Sweep {
                 spawned.obj, displaced.0, displaced.1, displaced.2
             )],
         });
-        self.despawn_npc(spawned.obj).await;
+        if spawned.natural {
+            let _ = self.setpos(spawned.obj, home).await;
+        }
+        self.release(spawned).await;
         Ok(())
     }
 }
@@ -1542,8 +1942,8 @@ impl Sweep {
 
 impl Sweep {
     async fn test_s6(&mut self) -> anyhow::Result<()> {
-        self.make_gap_case(7336).await?;
-        for tpl in [10258u32, 7337] {
+        self.make_gap_case(528, 10).await?;
+        for tpl in [529u32, 702] {
             let row = self.db.npc(tpl)?.with_context(|| format!("npc {tpl}"))?;
             let param = self.db.param(row.npc_ai_param_id)?;
             let skill = param.as_deref().and_then(spurt_skill);
@@ -1574,14 +1974,17 @@ impl Sweep {
         Ok(())
     }
 
-    async fn make_gap_case(&mut self, tpl: u32) -> anyhow::Result<()> {
+    async fn make_gap_case(&mut self, tpl: u32, occurrence: usize) -> anyhow::Result<()> {
         let row = self
             .db
             .npc(tpl)?
             .with_context(|| format!("npc {tpl} missing from compact"))?;
         let param = self.db.param(row.npc_ai_param_id)?;
         let preferred = param.as_deref().and_then(preferred_combat_dist);
-        let Some(spawned) = self.engage(tpl, 3.0, "S6_make_a_gap", "S6").await else {
+        let Some(spawned) = self
+            .engage(tpl, occurrence, 3.0, "S6_make_a_gap", "S6")
+            .await
+        else {
             return Ok(());
         };
         let t0 = self.obs.now_ms();
@@ -1642,7 +2045,7 @@ impl Sweep {
             setup: self.gm_used.clone(),
             evidence: vec![format!("engaged at 3 m from {:?}", spawned.pos)],
         });
-        self.despawn_npc(spawned.obj).await;
+        self.release(spawned).await;
         Ok(())
     }
 
@@ -1678,9 +2081,13 @@ impl Sweep {
             );
             return Ok(());
         };
-        let Some(spawned) = self.engage(tpl, 4.0, "S7_boar_spurt", "S7").await else {
+        let Some(spawned) = self.engage(tpl, 0, 4.0, "S7_boar_spurt", "S7").await else {
             return Ok(());
         };
+        // Natural NPCs keep their HP between runs; restore it before the crossing.
+        let _ = self.game.change_target(spawned.obj).await;
+        self.pump_for(Duration::from_millis(150)).await?;
+        let _ = self.gm("heal", Duration::from_millis(400)).await;
         self.pump_for(Duration::from_millis(1500)).await?;
         let hp_before = self.obs.hp_at(spawned.obj, self.obs.now_ms());
         self.damage(spawned.obj, "60%").await?;
@@ -1726,7 +2133,7 @@ impl Sweep {
             setup: self.gm_used.clone(),
             evidence: vec![format!("[/damage 60%] on obj {} after 1.5 s of combat", spawned.obj)],
         });
-        self.despawn_npc(spawned.obj).await;
+        self.release(spawned).await;
         Ok(())
     }
 
@@ -1757,17 +2164,17 @@ impl Sweep {
             setup: Vec::new(),
             evidence: vec![format!("SELECT COUNT(*) ... -> {rows}")],
         });
-        self.burst_control(10021).await?;
+        self.burst_control(7673, 1).await?;
         Ok(())
     }
 
-    async fn burst_control(&mut self, tpl: u32) -> anyhow::Result<()> {
+    async fn burst_control(&mut self, tpl: u32, occurrence: usize) -> anyhow::Result<()> {
         let row = self
             .db
             .npc(tpl)?
             .with_context(|| format!("npc {tpl} missing from compact"))?;
         let Some(spawned) = self
-            .engage(tpl, 4.0, "S8_combat_start_burst_control", "S8")
+            .engage(tpl, occurrence, 4.0, "S8_combat_start_burst_control", "S8")
             .await
         else {
             return Ok(());
@@ -1803,15 +2210,15 @@ impl Sweep {
             setup: self.gm_used.clone(),
             evidence: Vec::new(),
         });
-        self.despawn_npc(spawned.obj).await;
+        self.release(spawned).await;
         Ok(())
     }
 
     // ---- S9: spawn window -----------------------------------------------------------------
 
     async fn test_s9(&mut self) -> anyhow::Result<()> {
-        self.spawn_window_case(421).await?;
-        self.spawn_window_case(913).await?;
+        self.spawn_window_case(523).await?;
+        self.spawn_window_case(1575).await?;
         Ok(())
     }
 
@@ -1821,7 +2228,7 @@ impl Sweep {
             .npc(tpl)?
             .with_context(|| format!("npc {tpl} missing from compact"))?;
         let spawn_skills = self.db.skills_of_condition(tpl, 5)?;
-        let spawned = match self.fresh_spawn(tpl).await {
+        let spawned = match self.locate_npc(tpl, 0).await {
             Ok(s) => s,
             Err(e) => {
                 self.inconclusive("S9_spawn_window", "S9", tpl, format!("spawn failed: {e:#}"));
@@ -1890,7 +2297,7 @@ impl Sweep {
             setup: self.gm_used.clone(),
             evidence: vec![format!("two [/damage 5] probes after /spawn npc {tpl}")],
         });
-        self.despawn_npc(spawned.obj).await;
+        self.release(spawned).await;
         Ok(())
     }
 
@@ -1909,7 +2316,7 @@ impl Sweep {
             .with_context(|| format!("npc {tpl} missing from compact"))?;
         let param = self.db.param(row.npc_ai_param_id)?;
         let min_aps = param.as_deref().and_then(|p| param_number(p, "minAPS"));
-        let spawned = match self.fresh_spawn(tpl).await {
+        let spawned = match self.locate_npc(tpl, 0).await {
             Ok(s) => s,
             Err(e) => {
                 self.inconclusive("S10_min_aps", "S10", tpl, format!("spawn failed: {e:#}"));
@@ -1923,12 +2330,17 @@ impl Sweep {
                 tpl,
                 format!("placement failed: {e:#}"),
             );
-            self.despawn_npc(spawned.obj).await;
+            self.release(spawned).await;
             return Ok(());
         }
         self.pump_for(Duration::from_millis(800)).await?;
         let t0 = self.obs.now_ms();
-        self.damage(spawned.obj, "1").await?;
+        // A GM `/damage` changes HP without an aggro entry; one real auto attack does both.
+        if let Err(e) = self.auto_attack(spawned.obj).await {
+            self.inconclusive("S10_min_aps", "S10", tpl, format!("attack failed: {e:#}"));
+            self.release(spawned).await;
+            return Ok(());
+        }
         let bot = self.bot();
         let aggro = self
             .wait_until(Duration::from_secs(5), |s| {
@@ -1944,7 +2356,7 @@ impl Sweep {
                 tpl,
                 format!("NPC {tpl} never acquired the bot after the 1-damage probe"),
             );
-            self.despawn_npc(spawned.obj).await;
+            self.release(spawned).await;
             return Ok(());
         }
         let probe = self.obs.now_ms();
@@ -1996,7 +2408,7 @@ impl Sweep {
             setup: self.gm_used.clone(),
             evidence: vec![format!("[/damage 1] on obj {} then 4 behaviour polls", spawned.obj)],
         });
-        self.despawn_npc(spawned.obj).await;
+        self.release(spawned).await;
         Ok(())
     }
 }
@@ -2015,6 +2427,18 @@ pub async fn run(cfg: &BotConfig, opts: &RunOptions) -> anyhow::Result<AiReport>
     };
     let (game, _character, _abilities) = fight::setup_world(cfg, &fight_opts, &rec).await?;
     let db = AiDb::open_default(opts.compact_db.as_deref())?;
+    let spawns_path = opts.spawns.clone().or_else(|| default_spawns_path(&db));
+    let spawn_points = match &spawns_path {
+        Some(path) => load_spawn_points(path)?,
+        None => HashMap::new(),
+    };
+    println!(
+        "[ai] {} natural NPC spawn template(s) from {}",
+        spawn_points.len(),
+        spawns_path
+            .as_ref()
+            .map_or_else(|| "(none)".to_string(), |p| p.display().to_string())
+    );
     let arena = opts.arena.unwrap_or(game.state.self_pos);
     println!(
         "[ai] arena {arena:?}, character obj {}",
@@ -2027,8 +2451,11 @@ pub async fn run(cfg: &BotConfig, opts: &RunOptions) -> anyhow::Result<AiReport>
         lines: Vec::new(),
         gm_used: Vec::new(),
         spawned: Vec::new(),
+        spawn_points,
     };
     s.gm("godmode true", Duration::from_millis(400)).await?;
+    s.gm("level 55", Duration::from_millis(600)).await?;
+    s.gm("revive", Duration::from_millis(400)).await?;
     s.gm("heal", Duration::from_millis(300)).await?;
     if arena != s.game.state.self_pos {
         s.teleport(arena).await?;
@@ -2147,6 +2574,38 @@ mod tests {
     }
 
     #[test]
+    fn spawn_point_parser_handles_jsonc() {
+        let text = r#"[
+            {
+                "UnitId": 10008, // Bloodmist watcher
+                "Position": {
+                    "X": 11428.989,
+                    "Y": 13988.21,
+                    "Z": 431.27222
+                }
+            },
+            {
+                "UnitId": 528,
+                "Position": { "X": 10548.683, "Y": 11752.29, "Z": 162.23685 }
+            },
+            {
+                "UnitId": 529,
+                "Position": {
+                    "X": 10528.7,
+                    "Y": 11672.99
+                }
+            }
+        ]"#;
+        let points = parse_spawn_points(text);
+        assert_eq!(
+            points.get(&10008),
+            Some(&vec![(11428.989, 13988.21, 431.27222)])
+        );
+        assert_eq!(points.get(&528).map(Vec::len), Some(1));
+        assert_eq!(points.get(&529), Some(&vec![(10528.7, 11672.99, 0.0)]));
+    }
+
+    #[test]
     fn param_parsing() {
         let p = "alertDuration = 10,\r\nalertToAttack = 3,\r\ncombatSkills = { melee = { 2 }, makeAGap = { 12340 } }, preferedCombatDist = 18, maxMakeAGapCount = 3,";
         assert_eq!(param_number(p, "alertDuration"), Some(10.0));
@@ -2163,6 +2622,35 @@ mod tests {
             Some(50.0)
         );
         assert_eq!(spurt_skill("minAPS = 20"), None);
+    }
+
+    #[test]
+    fn target_changed_packet_body_is_read() {
+        use crate::game::{Packet, LEVEL_GAME};
+        let p = Packet {
+            level: LEVEL_GAME,
+            opcode: sc::SCTargetChangedPacket,
+            body: vec![0x4f, 0x9d, 0x00, 0xed, 0x5f, 0x00],
+        };
+        match parse_event(&p) {
+            Some(Ev::TargetChanged { npc, target }) => {
+                assert_eq!(npc, 40271);
+                assert_eq!(target, 24557);
+            }
+            other => panic!("unexpected event {other:?}"),
+        }
+        let p = Packet {
+            level: LEVEL_GAME,
+            opcode: sc::SCAggroTargetChanged,
+            body: vec![0x4f, 0x9d, 0x00, 0xed, 0x5f, 0x00],
+        };
+        match parse_event(&p) {
+            Some(Ev::Aggro { npc, target }) => {
+                assert_eq!(npc, 40271);
+                assert_eq!(target, 24557);
+            }
+            other => panic!("unexpected event {other:?}"),
+        }
     }
 
     #[test]

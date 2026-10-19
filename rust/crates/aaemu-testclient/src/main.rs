@@ -622,6 +622,7 @@ async fn main() -> anyhow::Result<()> {
                 tests: args.get_all("test").iter().map(|v| v.to_string()).collect(),
                 all: args.has("all") || !args.has("test"),
                 compact_db: args.get("compact-db").map(PathBuf::from),
+                spawns: args.get("spawns").map(PathBuf::from),
                 out: args.get("out").map(PathBuf::from),
                 summary: args.has("summary"),
                 new_character: args.has("new-character"),
