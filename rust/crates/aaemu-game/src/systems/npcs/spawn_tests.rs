@@ -2,7 +2,7 @@
 //! loading, NPC spawn / death / despawn / respawn timing, doodad respawns, generated and event
 //! spawners. NPC / doodad creation goes through a test backend while the managers are stubs.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -94,10 +94,8 @@ fn member(id: u32, spawner: u32, npc: u32) -> NpcSpawnerNpc {
 }
 
 /// Spawner templates: 1 (Test Warrior, fake template source), 10 (NPC 500), 20 + 21 (NPC 600,
-/// two spawners), 30 (NPC 700, 2 members of an unsupported type + one valid), 40 (group 900).
+/// two spawners), 30 (NPC 700, 2 members of an unsupported type + one valid).
 fn server() -> Arc<GameServer> {
-    let mut group_template = template(40, 2);
-    group_template.min_population = 2; // spawn both authored group members
     let mut data = GameData::empty();
     data.items.templates.insert(
         crate::data::items::ITEM_COINS,
@@ -112,7 +110,6 @@ fn server() -> Arc<GameServer> {
             template(20, 1),
             template(21, 1),
             t30,
-            group_template,
         ],
         vec![
             member(1, 1, 1),
@@ -123,10 +120,6 @@ fn server() -> Arc<GameServer> {
             NpcSpawnerNpc {
                 member_type: "Doodad".into(),
                 ..member(301, 30, 701)
-            },
-            NpcSpawnerNpc {
-                member_type: "NpcGroup".into(),
-                ..member(400, 40, 900)
             },
         ],
     )
@@ -777,34 +770,6 @@ async fn spawn_effect_resolves_an_ordinary_spawner_and_spawns_its_npc() {
     assert_eq!(spawner.current_spawn_count(), 1);
     let npc = spawner.spawned_npcs().values().next().unwrap()[0].clone();
     assert_eq!(npc.data().unit.template_id, 600);
-}
-
-#[tokio::test]
-async fn authored_spawner_id_pins_template_and_expands_npc_group() {
-    let server = server();
-    let m = manager(&server);
-    server
-        .game_data
-        .systems
-        .npcs
-        .npc_spawners
-        .set_group_members(HashMap::from([(900, vec![501, 502])]));
-    let mut def = npc_def(600, 40.0, 40.0);
-    def.base.spawner_id = 40; // pin ordinary template 40 (an NpcGroup member)
-    assert_eq!(m.add_npc_spawner(&server, def), Ok(1));
-    let spawner = m.get_npc_spawner(40).remove(0);
-    assert_eq!(spawner.spawnable_npcs()[0].member_id, 900);
-    assert!(spawner.force_spawn(&server, 0).is_some());
-    assert_eq!(spawner.current_spawn_count(), 2);
-    let spawned = spawner.spawned_npcs();
-    let ids: Vec<u32> = spawned
-        .values()
-        .flatten()
-        .map(|n| n.data().unit.template_id)
-        .collect();
-    assert_eq!(ids, vec![501, 502]);
-    // The pinned template is the only spawner of this entry (not every template of UnitId 600).
-    assert!(m.get_npc_spawner(20).is_empty());
 }
 
 #[tokio::test]

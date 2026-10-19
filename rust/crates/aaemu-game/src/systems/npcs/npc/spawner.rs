@@ -1914,36 +1914,8 @@ pub fn spawn_member(
     owner_id: u32,
 ) -> Result<Option<Vec<NpcRef>>, String> {
     match nsn.member_type.as_str() {
-        "Npc" => spawn_npc(server, nsn, spawner, owner_id),
-        "NpcGroup" => {
-            // The C# `SpawnNpcGroup` was `SpawnNpc` (it tried to create the group id as an NPC
-            // template and usually failed). Spawn the authored group members instead, so the
-            // ambient `NpcGroup` spawners placed from the 10.x editor data produce their mobs.
-            let Some(member_ids) = server
-                .game_data
-                .systems
-                .npcs
-                .npc_spawners
-                .group_member_ids(nsn.member_id)
-            else {
-                tracing::warn!(
-                    "NpcSpawnerNpc {}: npc group {} has no members",
-                    nsn.id,
-                    nsn.member_id
-                );
-                return Ok(None);
-            };
-            let mut spawned = Vec::new();
-            for member_id in member_ids {
-                let mut member = nsn.clone();
-                member.member_id = member_id;
-                member.member_type = "Npc".into();
-                if let Some(mut npcs) = spawn_npc(server, &member, spawner, owner_id)? {
-                    spawned.append(&mut npcs);
-                }
-            }
-            Ok((!spawned.is_empty()).then_some(spawned))
-        }
+        // SpawnNpcGroup is SpawnNpc.
+        "Npc" | "NpcGroup" => spawn_npc(server, nsn, spawner, owner_id),
         _ => Err(format!(
             "Tried spawning an unsupported line from NpcSpawnerNpc - Id: {}",
             nsn.id

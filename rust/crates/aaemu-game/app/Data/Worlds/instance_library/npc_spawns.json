@@ -20293,27 +20293,5 @@
             "Z": 512.561,
             "Yaw": 175
         }
-    },
-    {
-        "UnitId": 14374,
-        "Title": "spawn-fill: 10.x ambient spawner 15704",
-        "SpawnerId": 15704,
-        "Position": {
-            "X": 864.04,
-            "Y": 4888.35,
-            "Z": 258.02,
-            "Yaw": 0
-        }
-    },
-    {
-        "UnitId": 14374,
-        "Title": "spawn-fill: 10.x ambient spawner 15704",
-        "SpawnerId": 15704,
-        "Position": {
-            "X": 913.75,
-            "Y": 4839.77,
-            "Z": 257.27,
-            "Yaw": 0
-        }
     }
 ]

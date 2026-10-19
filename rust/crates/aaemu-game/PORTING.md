@@ -2026,16 +2026,14 @@ dungeon placements keep their authored Z instead of being dropped.
 * **Summon/despawn effects**: 2,901 event entries for 1,214 event spawner ids
   (`NpcSpawnerIds`), one per NPC member per placement. 1,456 of the 2,006 dangling spawn rows
   are now placeable, including all 162 boss and all 34 player-item rows.
-* **Unplaced ambient/dungeon/schedule spawners**: 653 ordinary entries for 106 spawner
-  templates, pinned with `SpawnerId`; the remaining 3 of the audit's 109 are covered by an
-  event entry of the same NPC at the same point. `NpcGroup` spawner members are expanded from
-  `npc_group_members` (the C# `SpawnNpcGroup` spawned the group id as an NPC and usually
-  failed).
+* **Unplaced ambient/dungeon/schedule spawners: not shipped.** The tool can generate 653
+  entries (`--include-ambient`, opt-in), but our existing placements come from the 1.2 client
+  `npc_map` (retail 1.2 data) and these 10.x placements were never in it; adding them needs 1.2
+  evidence first. They were removed from the world files.
 * **Resolver fix**: `SpawnManager::GetNpcSpawner` now falls back to ordinary `NpcSpawners`
   after the event spawners, so the 16 shipped effect rows that reference normal spawner ids
-  resolve. Ordinary spawn entries with an authored `SpawnerId` pin that template; event entries
-  are no longer dropped by the UnitId/position duplicate filter (several waves can share an
-  anchor and each id must stay registered for `GetNpcSpawner`).
+  resolve. Event entries are no longer dropped by the UnitId/position duplicate filter (several
+  waves can share an anchor and each id must stay registered for `GetNpcSpawner`).
 
 Data only where the source is reliable: no 2014 coordinates, no disabled ("비활성") or
 memberless spawners, and no invented positions for the 543 effect rows with no placement in any

@@ -791,16 +791,7 @@ impl SpawnManager {
             return Ok(0);
         }
         if ids.is_empty() {
-            // An authored `SpawnerId` pins one ordinary spawner template. The 10.x fill entries
-            // use it so an ambient spawner whose member is an `NpcGroup` (or whose member NPC is
-            // shared with other templates) is placed exactly once, as authored.
-            let pinned = (b.spawner_id != 0
-                && data.get_npc_spawner_template(b.spawner_id).is_some())
-            .then_some(b.spawner_id);
-            let game_data_ids = match pinned {
-                Some(id) => vec![id],
-                None => data.get_spawner_ids(b.unit_id).unwrap_or_default(),
-            };
+            let game_data_ids = data.get_spawner_ids(b.unit_id).unwrap_or_default();
             let mut spawners = Vec::new();
             let mut added = 0;
             if game_data_ids.is_empty() {

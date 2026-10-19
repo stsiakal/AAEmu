@@ -329,6 +329,11 @@ def main():
     ap.add_argument("--heights")
     ap.add_argument("--apply", action="store_true")
     ap.add_argument("--strict", action="store_true")
+    ap.add_argument(
+        "--include-ambient",
+        action="store_true",
+        help="required for the unplaced (ambient) mode; off by default, see the README",
+    )
     ap.add_argument("--summary")
     args = ap.parse_args()
 
@@ -336,6 +341,11 @@ def main():
     if args.mode == "events":
         cands, skipped = gen_events(args, spawners, members, npcs, effect_ids)
     else:
+        if not args.include_ambient:
+            ap.error(
+                "unplaced (ambient) mode is opt-in: pass --include-ambient. The ambient spawners are "
+                "10.x placements the 1.2 client map never had; add them only with 1.2 evidence"
+            )
         if not args.fill:
             ap.error("unplaced mode needs --fill")
         cands, skipped = gen_unplaced(args, spawners, members, npcs, groups)

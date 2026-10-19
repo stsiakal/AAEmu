@@ -34,10 +34,15 @@ clipped. The shipped event entries show the same >50 m differences in instances,
 keep the authored Z (`--strict` drops them). `--apply` appends the entries; runs are
 idempotent for ordinary placements and event entries are keyed by spawner id.
 
-Generated data (October 19, 2026): 2,901 event entries / 1,214 event spawner ids and 653
-ambient entries / 106 pinned spawner ids (the other 3 of the 109 are already covered by an
-event entry of the same NPC at the same point). Effect-row coverage: 1,456 of the 2,006
-dangling spawn rows, 162/162 boss and 34/34 player-item rows.
+Generated data (October 19, 2026): 2,901 event entries / 1,214 event spawner ids. Effect-row
+coverage: 1,456 of the 2,006 dangling spawn rows, 162/162 boss and 34/34 player-item rows.
+
+**The `unplaced` (ambient) mode is opt-in (`--include-ambient`) and its output is NOT shipped.**
+Our existing placements come from the 1.2 client `npc_map`, i.e. retail 1.2 data. The ambient
+spawners (dungeon / schedule / field templates) are 10.x editor placements the 1.2 map never had;
+adding 653 of them would change mob density in `main_world` without any evidence that retail
+1.2 ran them. They need 1.2 evidence first. Event spawners are different: they only run when a
+skill summons them.
 
 ```bash
 python -I fill_spawns.py events \
@@ -51,7 +56,7 @@ AAEMU_GAME_PAK='D:\AA1.2\game_pak' AAEMU_HEIGHT_QUERY=queries.json \
   AAEMU_HEIGHT_OUT=heights.json \
   cargo test -p aaemu-game dump_terrain_heights -- --ignored
 python -I fill_spawns.py events ... --heights heights.json --apply
-python -I fill_spawns.py unplaced ... --fill fill_unplaced_spawners.json --heights heights.json --apply
+python -I fill_spawns.py unplaced ... --include-ambient --fill fill_unplaced_spawners.json --heights heights.json --apply
 python -I -m unittest discover -s rust/tools/spawn_import -p "test_*.py"
 ```
 

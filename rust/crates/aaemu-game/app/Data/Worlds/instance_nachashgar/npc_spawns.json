@@ -7934,16 +7934,5 @@
       "Z": 132,
       "Yaw": 90
     }
-  },
-  {
-    "UnitId": 13162,
-    "Title": "spawn-fill: 10.x ambient spawner 14640",
-    "SpawnerId": 14640,
-    "Position": {
-      "X": 905.07,
-      "Y": 858.56,
-      "Z": 132,
-      "Yaw": 0
-    }
   }
 ]
