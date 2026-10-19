@@ -14,11 +14,22 @@ files in them (a client writing its own logs at runtime is fine). Put all RE out
 | Path | `D:\AA1.2` | `D:\ArcheAge Returns 10.0.2.13 - 8yx - r575 - 2026-06-18` |
 | Version / arch | 1.2 Trion `r208022`, **x86** (`bin32\`) | 10.0.2.13 `r575`, **x64** (`Bin64\`) |
 | Game logic DLL | `bin32\x2game.dll` | `Bin64\x2game.dll`, dev build `x2game-dev.dll` |
-| Physics | `bin32\cryphysics.dll` (**VMProtect-packed**; unpacked copy: `D:\aa-re\cryphysics\work_x86\`) | `Bin64\cryphysics.dll` (client), `cryphysics_dedicate.dll` (zone) |
+| Physics | `bin32\cryphysics.dll` (**VMProtect-packed**; no unpacked copy on this machine) | `Bin64\cryphysics.dll` (client), `cryphysics_dedicate.dll` (zone) |
 | Zone server | — | `dedicatedserver.exe` + `Bin64\*_dedicate.dll` (`x2game-dev_dedicate`, `cry3dengine_`, `cryaction_`, `cryaisystem_`, `cryentitysystem_`, `crynetwork_`, `cryphysics_dedicate`) |
 | Content | `game_pak` (worlds, models, navmesh) | `game_pak` (68 GB) |
 | Start it | `Scripts/live-stack.sh client` (our `aaemu-launcher`, ticket login) | `launch_aaemu.bat` (`-devmode`, targets an older local AAEmu setup); see `FAST_START.md` |
 | Notes | HackShield does not start under our launcher. Lua can be run inside it with `aaemu-clientdriver`. | `Bin64\xlcommon.dll` is the `aa_debugger` proxy (`aa_debugger\`; the original is needed for standalone loading). `x2game-dev.dll` carries a 2-byte fast-start patch (`patch_fast_start.py status/restore`, backup `.faststart.bak`). |
+
+### Other clients (reference only)
+
+- **ArcheAge Classic 3.0.4.2 client (r336598)**: `C:\Users\stsiakal\Downloads\ArcheAge Classic 2024-03-19 (r336598)\ArcheAge Classic 2024-03-19`
+  (**read-only**). 32-bit, FileVersion 3,0,4,2, `game_pak` 36.8 GB (opens with the repo `aapak` reader).
+  `x2game.dll`/`archeage.exe`/`crynetwork.dll` are **packed like 1.2** (unpacked copies and a Ghidra project exist, see
+  Tools). `game\db\compact.sqlite` is **encrypted** (the cipher is in the packed `x2game.dll`; unlike the 10.x
+  `game_pak` copy it is not plain SQLite). Its private-server guard (`daruguard.dll`) is only loaded by that
+  project's own launcher, not by `archeage.exe` started directly. Static inventory: `D:\aa-re\aac\INVENTORY.md`.
+- **AA Classic 3.5 install** `C:\Games\AAClassic`: its `x2game.dll`/`xlcommon.dll` import the private server's
+  modules. **Do not run or dump it.**
 
 **Same engine, different game layer.** The CryPhysics in both clients is the same generation (48 of 55
 matched vtables have identical slot counts; same contact dispatch tables and default tuning values), so 10.x physics behaviour
@@ -36,62 +47,84 @@ confirm a 10.x behaviour against what the 1.2 client sends/expects before portin
 - It writes `ArcheAge.log` into the **real `Documents\ArcheAge`** (and moves the client log into
   `LogBackups`) no matter where it runs from — don't run it casually.
 - Its physics DLL *can* be driven standalone: that is the oracle below.
+- **Feasibility** (static study, `D:\aa-re\zone\feasibility\FEASIBILITY.md`): booting the zone against a fake
+  world server is feasible but expensive (41 server-only tables, 30 of them derivable from the 1.2/3.0.4.2 DBs;
+  small WZ/ZW join handshake, transport framing unverified) and only a partial oracle. The zone covers NPC
+  AI/pathing, aggro, spawners and physics/geometry; the **world** computes damage/heal formulas, buffs, loot, XP
+  and quests, so those formulas are **not in the zone binary**.
+- The 10.x client `game_pak` `game\db\compact.sqlite3` is **plain SQLite** (233 MB, 1003 tables); only the zone's
+  own `game.sqlite3` is encrypted. The 1.2 `game_pak` ships AI behaviour Lua source under
+  `game/scripts/ai/behaviors` (a static oracle for AI that needs no running zone).
 
 ## Tools
 
-- **IDA Pro 9.4**: `C:\Program Files\IDA Professional 9.4` (`ida.exe` GUI, `idat.exe` headless,
-  Hex-Rays x86 + x64).
-  - Headless batch: `idat.exe -A "-S<script.py>" "-L<log>" <dll-or-.i64>`. Pass output paths through
+- **IDA Pro 9.4**: `C:\Program Files\IDA Professional 9.4` (`ida.exe` GUI, `idat.exe` headless).
+  Only the **x64** Hex-Rays decompiler is installed (no x86): IDA gives disassembly, xrefs and
+  `.funcs.csv`/strings for x86 DLLs but no C. **Use Ghidra for 1.2 (x86) decompiles.**
+  - Headless batch: `idat.exe -A -B "-S<script.py>" "-L<log>" <dll-or-.i64>`. Pass output paths through
     environment variables (IDA's `-S` mangles paths with spaces). Copy a DLL into a work dir under
     `D:\aa-re\` first so the `.i64` lands there. Reopening a saved `.i64` skips analysis.
+    The export script used for the current databases is `D:\aa-re\scratch\ida\export.py`
+    (env `AA_OUT`, `AA_NAME`, `AA_DECOMP`; driven by `scratch\ida\run.sh`): it writes
+    `.funcs.csv`, `.strings.txt`, `.imports.txt`, `.exports.txt` and, for x64, the Hex-Rays `.c`.
   - **ida-pro-mcp** (MCP tools `mcp__ida-pro-mcp__*`): serves the one database open in an IDA GUI
     instance (Ctrl-Alt-M, port 13337). Good for interactive look-ups; use headless idat for bulk work.
-- **Ghidra 12.1.4 PUBLIC**: installed at `D:\Tools\ghidra_12.1.4_PUBLIC` (read-only is fine;
-  archive kept at `D:\Tools\_dl\ghidra.zip`), running on Temurin JDK 25
-  (`C:\Program Files\Eclipse Adoptium\jdk-25.0.1.8-hotspot`; Ghidra 12.1.4 needs JDK 21+ and
-  rejects the also-installed JDK 17). This is the tool for the **1.2 client DLLs** — IDA
-  databases below are for physics/zone; the unpacked 1.2 `x2game.dll` lives in Ghidra.
-  - **Always launch headless through the wrapper**:
-    `ghidra-work\ghidra-headless.cmd <projectDir> <projectName> [analyzeHeadless args...]`
-    from the repo root. The wrapper pins `JAVA_HOME` and redirects `APPDATA` to
-    `ghidra-work\appdata` — without that, Ghidra dies with "Failed to create directory"
-    and a bogus "JDK 21+ could not be found" (the real `%APPDATA%` is unwritable here).
-  - Working area: **`ghidra-work\`** at the repo root (gitignored, machine-local). Its
-    `README.md` records the traps and run results; `scripts\` holds the post-scripts
-    (`CountFunctions.java`, `DumpBlocks.java`, `DumpCoverage.java`); `logs\` the run logs.
-    Project directories must have **no dot-prefixed path element** (Ghidra rejects them),
-    hence `ghidra-work\proj-*`, never `.ghidra-work\…`.
-  - Example (reopen a saved project, no re-analysis):
-    `cmd /c "ghidra-work\ghidra-headless.cmd <repo>\ghidra-work\proj-aa12u aa12u -process x2game_unpacked.dll -noanalysis -scriptPath <repo>\ghidra-work\scripts -postScript CountFunctions.java"`.
+- **Ghidra 12.1.4 PUBLIC**: `D:\Tools\ghidra_12.1.4_PUBLIC`, running on the JDK in `D:\Tools\jdk`
+  (Temurin 25; Ghidra 12.1.4 needs JDK 21+). Archives are kept in `D:\Tools\_dl`. This is the tool for the
+  **1.2 client DLLs** (and the 3.0.4.2 client): the unpacked 1.2 `x2game.dll` lives in Ghidra.
+  - **Ghidra project directories must be given in the `C:\AAEMU_DISK\...` form, not `D:\...`**:
+    `D:` is a `subst` of `C:\AAEMU_DISK`, and the subst path breaks Ghidra's OSGi (felix) start-up.
+  - Launch headless through the wrapper `D:\aa-re\aac\ghidra\hl.cmd` (also `ghidra-headless.cmd` there); it
+    pins `JAVA_HOME` and redirects `APPDATA` to `aac\ghidra\appdata12|appdata30|appdata`.
+    Run files: `aac\ghidra\run_aa12u.cmd` (1.2 x2game + crynetwork), `client12\ghidra\run_archeage.cmd`
+    (1.2 archeage.exe), `run_aa30u.cmd` / `run_import.cmd` (3.0.4.2). Post-scripts are in
+    `D:\aa-re\aac\ghidra\scripts\` (`CountFunctions.java`, `ResolveExternals.java`). The repo-local
+    `ghidra-work\` folder described in older notes **does not exist**.
+  - Project directories must have **no dot-prefixed path element** (Ghidra rejects them).
     Do not use `Start-Process -RedirectStandardOutput` (sandbox denies it); invoke with `cmd /c`.
-- **MSVC** (for the oracle and native client-driver parts): found via the `build.bat` files.
+- **MSVC** (for the oracle and native client-driver parts): found via the `build.bat` files; the physics
+  oracle needs MSVC 2022.
 - **Python** for the extraction tools: `c:\python312\python.exe` (run with `-I`).
 
 Saved IDA databases (open these instead of re-analysing):
 
 | Binary | `.i64` |
 |---|---|
-| 10.x `cryphysics_dedicate.dll` | `D:\aa-re\cryphysics\work_x64\` and `D:\aa-re\zone\bin\` |
-| 1.2 `cryphysics.dll` (unpacked) | `D:\aa-re\cryphysics\work_x86\cryphysics_unpacked.dll.i64` |
-| 10.x zone DLLs (`cry3dengine_`, `cryaction_`, `cryaisystem_`, `cryentitysystem_dedicate`, `crysystem`) | `D:\aa-re\zone\bin\` |
-| 1.2 `crysystem.dll`, `cryscriptsystem.dll` | `D:\aa-re\client12\ida\` |
+| 10.x zone DLLs (`cry3dengine_`, `cryaction_`, `cryaisystem_`, `cryentitysystem_`, `crynetwork_`, `cryphysics_dedicate`) and `x2game-dev_dedicate.dll` (89,574 functions) | `D:\aa-re\zone\bin\` (decompiles of the six `_dedicate` DLLs in `D:\aa-re\zone\out\`; for `x2game-dev_dedicate` only indexes sit in `zone\bin\`, its `.c` is in `<10.x>\Bin64\decompiled\`) |
+| 10.x client `crynetwork.dll`, `xlcommon.dll`, `xlpack.dll` | `D:\aa-re\zone\client10\` (with `.c`) |
+| 1.2 `crysystem.dll`, `cryscriptsystem.dll` (not packed; no `.c`, IDA has no x86 decompiler) | `D:\aa-re\client12\ida\` |
+| 1.2 `cryphysics.dll` | **none** (VMProtect-packed, never unpacked here) |
 
-Saved Ghidra projects, all under `ghidra-work\` in the repo (open these instead of re-analysing):
+Saved Ghidra projects (open these instead of re-analysing; the path is the `C:\AAEMU_DISK` form):
 
-| Project | Binary | State |
+| Project | Binaries | State |
 |---|---|---|
-| `proj-aa12u` (`aa12u`) | `D:\aa-re\client12\x2game_unpacked.dll` | **The 1.2 client logic oracle**: full analysis, 65 203 functions (18 756 named). `.data` is absent from the runtime dump, so globals/RTTI descriptors resolve by reference only |
-| `proj-aa12` (`aa12`) | `D:\AA1.2\bin32\x2game.dll` as shipped | Packed: only the 135-function decrypt stub analyses. Useful as the before/after proof, not for logic |
-| `proj-smoke` | `notepad.exe` | Headless smoke test only |
+| `C:\AAEMU_DISK\aa-re\client12\ghidra\proj-aa12u` (`aa12u`) | `x2game_unpacked.dll`, `crynetwork_unpacked.dll`, `archeage_unpacked.exe` (1.2) | **The 1.2 client logic oracle.** `x2game` fully analysed: 65,437 functions (18,961 named); `crynetwork` 11,698 / 1,957; `archeage` 176 / 32 (mostly packer data). The dumps keep the original import tables, so Win32/CRT names resolve. `.data` is absent from the runtime dump, so globals/RTTI descriptors resolve by reference only |
+| `C:\AAEMU_DISK\aa-re\aac\ghidra\proj-aa30u` (`aa30u`) | `x2game_unpacked.dll`, `crynetwork_unpacked.dll` (3.0.4.2) | `x2game` 56,263 functions (131 named; external calls resolved with `aac\unpack\extmap_30.txt`), `crynetwork` 9,778 / 245 (externals unresolved: dumped too late) |
 
-Unpacking a packed 1.2 DLL (`x2game.dll`, `crynetwork.dll`, `archeage.exe`; in-place section
-encryption, no VMProtect/Themida marks, imports intact, preferred base honoured): dump the
-decrypted sections from the live client with
-`D:\aa-re\regrade\db-auth\runtime\dump_runtime_modules.py` (update the PID; client via
-`Scripts/live-stack.sh client`), then splice them into a copy of the DLL with
-`D:\aa-re\client12\rebuild_unpacked.py`. Existing dumps: `x2game.{hdr,text,rdata}.bin`,
-`xlcommon.*`, `archeage.*` in that same `runtime\` folder. Never do any of this inside the
-client folders — they stay read-only; outputs go to `D:\aa-re\`.
+`proj-aa12` (packed 1.2 `x2game.dll` as shipped) and `proj-smoke` no longer exist.
+
+### Unpacking a packed client DLL (1.2 and 3.0.4.2)
+
+`x2game.dll`, `crynetwork.dll` and `archeage.exe` are packed by in-place section encryption (no
+VMProtect/Themida marks, imports intact, preferred base honoured). The scripts are
+`D:\aa-re\aac\unpack\{start_client.py, dump_modules.py, rebuild.py}` (notes: `aac\unpack\NOTES.md`):
+
+1. `start_client.py <archeage.exe> <secs>` starts `archeage.exe` directly (no `aaemu-launcher`, no
+   injection) with a dummy ticket and dummy user against `127.0.0.1` (it creates the inheritable
+   `archeage_auth_ticket_map`/`_event` objects). The client dies on its own after ~25 s because the login fails.
+2. Poll the loaded-module list and **stop if any guard module is loaded** (`daruguard`, `hshield`, `ahn`,
+   `xigncode`, `mrac`, `nprotect`); on the stock clients none is.
+3. About 3 s after start (target DLL loaded) run `dump_modules.py <PID> <outdir> x2game.dll archeage.exe ...`
+   (read-only `ReadProcessMemory`). Later dumps differ by per-run call-site rewriting. `crynetwork.dll`
+   loads later: poll for it and dump immediately.
+4. `rebuild.py <orig> <mem> <out>` splices the dumped sections into a copy of the original PE
+   (`x2game_unpacked.dll`, etc.), then import it into Ghidra.
+
+Existing results: 1.2 in `D:\aa-re\client12\` (`x2game_unpacked.dll`, `crynetwork_unpacked.dll`,
+`archeage_unpacked.exe`, `capture\`, `unpacked\`), 3.0.4.2 in `D:\aa-re\aac\unpack\`. The older
+`regrade\db-auth\runtime` dumps and `rebuild_unpacked.py` are gone (these scripts replace them). Never do
+any of this inside the client folders; outputs go to `D:\aa-re\`.
 
 ## Knowledge base
 
@@ -112,16 +145,29 @@ client folders — they stay read-only; outputs go to `D:\aa-re\`.
 
 ### On disk (`D:\aa-re\`, plus the 10.x folder)
 
+Present on this machine:
+
 | Path | Contents |
 |---|---|
-| `<10.x>\Bin64\decompiled\` | Full decompiles: **`x2game-dev_dedicate.c`** (zone game logic, ~89k functions — the main oracle for zone behaviour), `crynetwork.c`, `xlcommon.c`, `xlpack.c`; `.funcs.csv`/`.strings.txt`/`.imports.txt`/`.exports.txt` indexes; `OPCODES_10x.md`; `x2game.cvar*.txt`; `NEXT_SESSION.md` (older notes on the 10.x client handshake) |
-| `D:\aa-re\zone\out\` | Decompiles and call inventories of the other `_dedicate` DLLs (physics-call sites, vtable offsets) |
-| `D:\aa-re\zone\agent_proto\zone_protocol_physics.md`, `wz_opcodes_fixed.txt` | World↔zone protocol: every WZ*/ZW* packet with handler addresses and constants |
-| `D:\aa-re\zone\agent_geom\` | `sub_cgf.md` (CGF chunks + physics-blob format), `sub_navmesh.md` (`.bai` formats, AI loader, Rust gaps), `sub_x2game.md` (zone startup, doodads, ocean, query sites); `tools\` (`pakx.py` pak extractor, `cgf.py`, `physblob.py`, `baiparse.py`, …); `data\` (per-cell `.dat`, model tables) |
-| `D:\aa-re\cryphysics\` | `x64_10x\` and `x86_12\` (decompile, RTTI, vtables, funcs, strings), `compare\func_match.csv` (1,122 matched functions 1.2↔10.x), `unpack_x86\` (how the 1.2 DLL was unpacked), `harness\` (first oracle prototype) |
-| `D:\aa-re\client12\` | 1.2 client PE info + strings for every main DLL (`*.pe.txt`, `*.strings.txt`), IDA work for the Lua driver (`ida\`), driver scratch, **`x2game_unpacked.dll`** (reconstructed unpacked client DLL — the binary behind Ghidra project `aa12u`) + `rebuild_unpacked.py` |
-| `D:\aa-re\regrade\db-auth\runtime\` | Runtime memory dumps from the live 1.2 client (`dump_runtime_modules.py` + `runtime_evidence.json`): decrypted `x2game`/`xlcommon`/`archeage` section `.bin`s — the source material of the unpack above |
-| `D:\aaemu-target\phys-bvtree\cgf_corpus\` | 1,500 real game models with physics blobs (used by the physics tests via `AAEMU_PHYS_CGF_DIR`) |
+| `<10.x>\Bin64\decompiled\x2game-dev_dedicate.dll.c` | Full decompile of the zone game logic (~89k functions, ~3.2 M lines) — the main oracle for zone behaviour. The other `decompiled\` files older notes list (`crynetwork.c`, `xlcommon.c`, `OPCODES_10x.md`, indexes) are **not there**; use `zone\client10\` and `zone\bin\` below |
+| `D:\aa-re\zone\bin\` | The `.i64` databases and DLL copies of the six `_dedicate` DLLs and `x2game-dev_dedicate.dll` (`.funcs.csv`, `.strings.txt`, `.imports.txt`, `.exports.txt`) |
+| `D:\aa-re\zone\out\` | Hex-Rays decompiles (`.c`) and indexes of the six `_dedicate` DLLs: `cry3dengine`, `cryaction`, `cryaisystem`, `cryentitysystem`, `crynetwork`, `cryphysics` |
+| `D:\aa-re\zone\client10\` | 10.x client `crynetwork.dll`, `xlcommon.dll`, `xlpack.dll`: `.i64`, `.c` and indexes |
+| `D:\aa-re\zone\feasibility\` | Zone-server feasibility study (`FEASIBILITY.md`) with helper data: WZ/ZW handler and opcode tables rebuilt from the decompile (`wz_handlers.txt`, `zw_ops.txt`, `pkt_names.txt`), the 41 server-only tables (`server_tables.json`, `table_rows.md`), every zone `SELECT` (`sql_all.tsv`), pak listings (`pak10.txt`, `pak12.txt`) |
+| `D:\aa-re\client12\` | 1.2 client work: `x2game_unpacked.dll`, `crynetwork_unpacked.dll`, `archeage_unpacked.exe` (inputs in `capture\`, `unpacked\`), Ghidra logs and run file (`ghidra\`; the project itself is `C:\AAEMU_DISK\aa-re\client12\ghidra\proj-aa12u`), `ida\` (`crysystem`, `cryscriptsystem`), UI/Lua extraction outputs (`out-*`, `ui*`, `x2ui-*`, `tools\`) |
+| `D:\aa-re\aac\` | ArcheAge Classic 3.0.4.2 client work: `INVENTORY.md`, `pak_list.txt`, `pe_summary.txt`, `paktool\` (pak reader wrapper), `pakx\` (extracted samples), `unpack\` (scripts, memory dumps, `x2game_unpacked.dll`), `ghidra\` (wrapper, scripts, `proj-aa30u`) |
+| `D:\aa-re\scratch\ida\` | The IDA headless export script and job runner |
+| `D:\aa-re\REBUILD-NOTES.md` | What was rebuilt after the original RE folders were lost, and what is still missing |
+
+**Not on this machine** (older notes mention them; rebuild if needed):
+
+| Path | How to get it back |
+|---|---|
+| `D:\aa-re\cryphysics\` (`x64_10x`, `x86_12`, `compare\func_match.csv`, `unpack_x86`, `harness`, `work_x64`, `work_x86`) | Empty. 10.x side: use `zone\bin\cryphysics_dedicate.dll.i64` and `zone\out\`. The 1.2 `cryphysics.dll` is VMProtect-packed with no unpacked copy and the function match table is gone (`rust/docs/physics/CRYPHYSICS-MAP.md` keeps the addresses) |
+| `D:\aa-re\zone\agent_proto\`, `zone\agent_geom\` (WZ/ZW protocol notes, `sub_cgf.md`, `sub_navmesh.md`, `pakx.py`, `cgf.py`, `baiparse.py`, per-cell data) | Gone. The WZ/ZW tables are rebuilt in `zone\feasibility\`; for pak extraction use `aac\paktool` / `zone\feasibility\paktool` (wrappers over `aaemu_commons::aapak`) |
+| `D:\aaemu-target\phys-bvtree\cgf_corpus\` (1,500 models with physics blobs, `AAEMU_PHYS_CGF_DIR`) | Rebuild the corpus by extracting models from the 1.2 `D:\AA1.2\game_pak` |
+| `physoracle.exe` build (`AAEMU_PHYS_ORACLE`) | Build from `rust/crates/aaemu-physics/oracle` with MSVC 2022 (`build.bat`) |
+| `D:\aa-re\regrade\db-auth\runtime\`, repo `ghidra-work\` | Replaced by `aac\unpack\` and `aac\ghidra\` (see Tools) |
 
 ## Porting a zone feature into the 1.2 stack
 
@@ -129,7 +175,7 @@ client folders — they stay read-only; outputs go to `D:\aa-re\`.
    `x2game-dev_dedicate.strings.txt` / `.funcs.csv` for the feature's strings or RTTI names, then
    read the function in `x2game-dev_dedicate.c` (open the `.i64` in IDA for xrefs).
 2. **Check the 1.2 side**: does the 1.2 client send/expect the same packets and fields? Read the
-   handler in the unpacked 1.2 `x2game.dll` first (Ghidra project `ghidra-work/proj-aa12u` — see
+   handler in the unpacked 1.2 `x2game.dll` first (Ghidra project `proj-aa12u` — see
    Tools above; its strings include the client's own `Load*Descs` SQL and feature API names).
    1.2 opcode tables are in `rust/crates/aaemu-game/src/opcodes.rs`; packed-DLL strings in
    `D:\aa-re\client12\` are the fallback. 10.x-only mechanics should be skipped or adapted,

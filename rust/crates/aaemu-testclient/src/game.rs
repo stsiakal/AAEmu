@@ -425,7 +425,7 @@ pub struct TaskItem {
     /// Template id (0 for tasks that do not carry it, e.g. `UpdateDetail`).
     pub template: u32,
     pub id: u64,
-    /// Stack count the task carried (0 for `UpdateDetail`).
+    /// Stack size of the task (0 for `UpdateDetail`).
     pub count: i32,
     /// `SummonMate` detail block: `(exp, dead flag, level)`; a non-zero dead flag marks a corpse.
     pub mate: Option<(i32, u8, u8)>,
