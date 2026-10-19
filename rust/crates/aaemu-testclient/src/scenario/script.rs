@@ -53,6 +53,7 @@
 //! await <Event> [secs]             wait (60 s default) for a social event (`DuelStarted`,
 //!                                    `DuelEnded`, `TeamJoined`, `LootDiceSummary`, `ZoneState`,
 //!                                    `FactionChanged`, ...; the variant name) and consume it
+//! tryawait <Event> [secs]            like `await` (10 s default) but only reports a timeout
 //! events                             print every social event received so far
 //! duel [name]                        CSChallengeDuel to the peer (first other player)
 //! daccept                            wait for SCDuelChallenged and answer CSStartDuel (accept)
@@ -865,6 +866,14 @@ pub(super) async fn run(
                 let secs: u64 = parts.get(1).and_then(|x| x.parse().ok()).unwrap_or(60);
                 let e = await_event(game, &mut consumed, kind, secs).await?;
                 println!("    awaited: {e:?}");
+            }
+            "tryawait" => {
+                let kind = parts.first().context("tryawait needs an event name")?;
+                let secs: u64 = parts.get(1).and_then(|x| x.parse().ok()).unwrap_or(10);
+                match await_event(game, &mut consumed, kind, secs).await {
+                    Ok(e) => println!("    awaited: {e:?}"),
+                    Err(e) => println!("    no {kind} within {secs} s ({e})"),
+                }
             }
             "events" => {
                 for (i, e) in game.state.social.iter().enumerate() {
