@@ -92,6 +92,11 @@ impl CompactDb {
         })
     }
 
+    /// Path this database was opened from (`valuecheck` opens its own read-only connection).
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
     /// `items.use_skill_id` and, when the skill exists, its `target_type_id`
     /// (`SkillTargetType`).
     pub fn item_use_skill(&self, item_id: u32) -> anyhow::Result<ItemUseSkill> {
