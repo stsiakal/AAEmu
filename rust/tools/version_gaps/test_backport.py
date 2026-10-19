@@ -543,5 +543,31 @@ class ClientPatchTest(unittest.TestCase):
                 refuse_protected_client(tmp)  # no game_pak
 
 
+class ClientNullNormalizationTest(unittest.TestCase):
+    def test_zero_becomes_null_where_client_rows_are_null(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = {n: os.path.join(tmp, n + ".sqlite3") for n in ("base", "client", "patched")}
+            for name, path in paths.items():
+                conn = sqlite3.connect(path)
+                conn.execute("CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT, exp_date INTEGER, price INTEGER)")
+                conn.executemany(
+                    "INSERT INTO items VALUES (?,?,NULL,?)",
+                    [(i, f"old{i}", 0) for i in range(1, 201)],
+                )
+                if name == "patched":
+                    conn.execute("INSERT INTO items VALUES (9000, 'new', 0, 0)")
+                conn.commit()
+                conn.close()
+            report = patch_client_db(paths["client"], paths["base"], paths["patched"])
+            self.assertEqual(report["zero_to_null"], {"items.exp_date": 1})
+            conn = sqlite3.connect(paths["client"])
+            row = conn.execute("SELECT exp_date, price FROM items WHERE id = 9000").fetchone()
+            conn.close()
+            self.assertEqual(row, (None, 0))
+            again = patch_client_db(paths["client"], paths["base"], paths["patched"])
+            self.assertEqual(sum(again["inserted"].values()), 0)
+            self.assertEqual(again["conflicts"], {})
+
+
 if __name__ == "__main__":
     unittest.main()

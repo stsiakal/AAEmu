@@ -42,6 +42,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from gaps import CUSTOM_ID_MIN, Db, camel_to_snake, names_compatible
 
+MONEY_ITEM_ID = 500
 NAMED_SETS = {"obsidian-armor": list(range(35581, 35626))}
 
 TABLE_ORDER = (
@@ -648,6 +649,14 @@ class Borrower:
             for row in self.ref.rows(
                 f'select * from "{table}" where craft_id = ? order by id', (craft_id,)
             ):
+                if table == "craft_materials" and row.get("item_id") == MONEY_ITEM_ID:
+                    # 3.0 lists the coin cost as a material; 1.2 has no such rows (the
+                    # server would need item 500 in the bag, which cannot exist).
+                    skipped = self.report.setdefault("money_materials_skipped", [])
+                    skipped.append(
+                        {"craft_id": craft_id, "amount": row.get("amount")}
+                    )
+                    continue
                 self.plan_row(table, row)
         if self.ref.has("craft_pack_crafts"):
             count = len(
@@ -756,7 +765,8 @@ class Borrower:
         for item_id in sorted(item_ids):
             rows = self.ref.rows(
                 "select * from localized_texts where tbl_name = 'items'"
-                " and idx = ? and tbl_column_name in ('name', 'description')"
+                " and idx = ? and tbl_column_name in ('name', 'description',"
+                " 'buff_modifier_tooltip', 'skill_modifier_tooltip')"
                 " order by tbl_column_name",
                 (item_id,),
             )
@@ -779,6 +789,56 @@ class Borrower:
                 self.seen_ids.setdefault("localized_texts", set()).add(row["id"])
                 self.report["borrowed_rows"]["localized_texts"] += 1
                 borrowed += 1
+        return borrowed
+
+    EXTRA_LOCALIZED = (
+        ("buffs", ("name", "desc")),
+        ("crafts", ("title", "desc")),
+        ("skills", ("name", "desc", "web_desc")),
+    )
+
+    def borrow_localized_extra(self):
+        """English texts for the buffs, crafts and skills the backport adds.
+
+        Without them the client falls back to the Korean column of the row itself
+        (equip effect line, recipe titles in the folio).
+        """
+        if not self.ref.has("localized_texts"):
+            return 0
+        borrowed = 0
+        missing = self.report.setdefault("localized_missing", [])
+        for table, columns in self.EXTRA_LOCALIZED:
+            for source in sorted(self.rows.get(table, []), key=lambda r: r["id"]):
+                row_id = source["id"]
+                for column in columns:
+                    if row_id >= CUSTOM_ID_MIN:
+                        missing.append([table, column, row_id, "synthesized id"])
+                        continue
+                    ref_row = self.ref.row(
+                        "select * from localized_texts where tbl_name = ?"
+                        " and tbl_column_name = ? and idx = ?",
+                        (table, column, row_id),
+                    )
+                    if not ref_row or not (ref_row.get("en_us") or "").strip():
+                        missing.append([table, column, row_id, "no en_us in 3.0"])
+                        continue
+                    row = {
+                        "id": self.next_synth_id("localized_texts"),
+                        "tbl_name": table,
+                        "tbl_column_name": column,
+                        "idx": row_id,
+                        "ko": source.get(column) or "",
+                        "ko_ver": 0,
+                        "en_us": ref_row["en_us"],
+                        "en_us_ver": 0,
+                    }
+                    for locale in ("zh_cn", "ja", "ru", "zh_tw", "de", "fr"):
+                        row[locale] = ""
+                        row[locale + "_ver"] = 0
+                    self.rows.setdefault("localized_texts", []).append(row)
+                    self.seen_ids.setdefault("localized_texts", set()).add(row["id"])
+                    self.report["borrowed_rows"]["localized_texts"] += 1
+                    borrowed += 1
         return borrowed
 
 
@@ -846,6 +906,7 @@ def build_backport(base, ref, item_ids):
     borrower.borrow_localized_items(
         [row["id"] for row in borrower.rows.get("items", [])], item_names
     )
+    borrower.borrow_localized_extra()
     material_ids = [
         item_id
         for item_id in closure["items"]
@@ -1392,6 +1453,28 @@ def _columns(conn, schema, table):
     return [r[1] for r in conn.execute(f'PRAGMA {schema}.table_info("{table}")')]
 
 
+def _mostly_null_columns(conn, table, cols, threshold=0.95, min_rows=100):
+    """Positions of columns the client's own rows leave NULL (>= threshold).
+
+    The 3.0 data stores 0 where the 1.2 data stores NULL (exp_date, more_asset_id,
+    ...). The 1.2 client reads a 0 there as a real value: exp_date 0 makes the
+    tooltip say "Item expired.", so those zeros are written as NULL.
+    """
+    total = conn.execute(f'SELECT COUNT(*) FROM main."{table}"').fetchone()[0]
+    result = []
+    if total < min_rows:
+        return result
+    for pos, col in enumerate(cols):
+        if col.lower() == "id":
+            continue
+        nulls = conn.execute(
+            f'SELECT COUNT(*) FROM main."{table}" WHERE "{col}" IS NULL'
+        ).fetchone()[0]
+        if nulls / total >= threshold:
+            result.append(pos)
+    return result
+
+
 def patch_client_db(client_db, base_db, patched_db):
     """Insert the backported rows into the loose client db (idempotent).
 
@@ -1425,8 +1508,15 @@ def patch_client_db(client_db, base_db, patched_db):
             inserted = present = 0
             conflicts = []
             idx = low.index("id")
+            null_cols = _mostly_null_columns(conn, table, cols)
+            normalized = report.setdefault("zero_to_null", {})
             for row in rows:
                 row = list(row)
+                for pos in null_cols:
+                    if row[pos] in (0, ""):
+                        row[pos] = None
+                        key = f"{table}.{cols[pos]}"
+                        normalized[key] = normalized.get(key, 0) + 1
                 if table == "icons" and "name" in low and "filename" in low:
                     ni, fi = low.index("name"), low.index("filename")
                     if not row[ni] and row[fi]:
