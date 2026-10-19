@@ -16,3 +16,4 @@ pub mod record;
 pub mod scenario;
 pub mod skillrun;
 pub mod stream;
+pub mod valuecheck;

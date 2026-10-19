@@ -338,6 +338,8 @@ pub struct UnitInfo {
     pub unit_type: u8,
     /// Character id (type 0) or NPC template id (type 1).
     pub id: u32,
+    /// Unit level (`SCUnitStatePacket` carries it for every unit type).
+    pub level: u8,
     pub pos: (f32, f32, f32),
     /// Transport-layer id of a mate (type 5, `SCUnitStatePacket`); 0 for every other unit.
     pub tl_id: u16,
@@ -427,6 +429,60 @@ pub struct TaskItem {
     pub count: i32,
     /// `SummonMate` detail block: `(exp, dead flag, level)`; a non-zero dead flag marks a corpse.
     pub mate: Option<(i32, u8, u8)>,
+}
+
+/// One `SCExpChangedPacket` (`obj_id` gained `exp` experience).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ExpChange {
+    pub obj_id: u32,
+    pub exp: i32,
+    /// Monotonic order among the value-check observations of this state.
+    pub seq: u64,
+    /// Arrival time (ms since the first observation of this process).
+    pub t_ms: u64,
+}
+
+/// One `SCLevelChangedPacket`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LevelChange {
+    pub obj_id: u32,
+    pub level: u8,
+}
+
+/// One NPC death (`SCUnitDeathPacket`) with the unit state known at that moment.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct KillInfo {
+    pub obj_id: u32,
+    /// NPC template id (`UnitInfo.id` of a type-1 unit in `SCUnitStatePacket`).
+    pub template_id: u32,
+    /// The level the server announced for the unit (0 when it was never announced).
+    pub level: u8,
+    /// Object id the death packet named as the killer (0 = none).
+    pub killer_obj_id: u32,
+    /// The player's own level when the unit died (the kill-XP oracle needs it).
+    pub player_level: u8,
+    /// Monotonic order among the value-check observations of this state.
+    pub seq: u64,
+    /// Arrival time (ms since the first observation of this process).
+    pub t_ms: u64,
+}
+
+/// One `SCLootItemTookPacket`: an item taken from a loot owner (corpse / doodad).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LootTook {
+    pub item_template_id: u32,
+    pub owner_obj_id: u32,
+    pub count: i32,
+}
+
+/// Milliseconds since the first value-check observation of this process. The kill-XP pairing
+/// needs the `SCExpChangedPacket` the server sends immediately before the death packet.
+fn observation_ms() -> u64 {
+    static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    START
+        .get_or_init(std::time::Instant::now)
+        .elapsed()
+        .as_millis() as u64
 }
 
 /// The readable part of an `SCItemTaskSuccessPacket`.
@@ -608,6 +664,18 @@ pub struct GameState {
     pub buffs: HashMap<u32, BTreeMap<u32, BuffInfo>>,
     /// Units announced dead by `SCUnitDeathPacket` (and not removed since).
     pub dead_units: HashSet<u32>,
+    /// Experience gains (`SCExpChangedPacket`) in arrival order; the quest value checks pair
+    /// them with kills and quest rewards.
+    pub exp_changes: Vec<ExpChange>,
+    /// Level-ups (`SCLevelChangedPacket`) in arrival order.
+    pub level_changes: Vec<LevelChange>,
+    /// NPC deaths (`SCUnitDeathPacket`) with the unit state known at death.
+    pub kill_log: Vec<KillInfo>,
+    /// Items taken from a loot owner (`SCLootItemTookPacket`).
+    pub loot_log: Vec<LootTook>,
+    /// Monotonic sequence shared by [`GameState::exp_changes`] and [`GameState::kill_log`], so
+    /// a kill can be paired with the experience gain the server sent just before it.
+    pub observation_seq: u64,
     /// Last `SCMateSpawnedPacket`.
     pub mate_spawned: Option<MateSpawn>,
     /// Number of `SCMateSpawnedPacket`s seen so far.
@@ -974,6 +1042,8 @@ pub(crate) fn observe_into(st: &mut GameState, p: &Packet) -> anyhow::Result<()>
         };
         let _owner = s.read_string()?;
         let pos = s.read_position()?;
+        s.read_f32()?; // scale
+        let level = s.read_u8()?;
         if unit_type == 0 && id == st.selected_char && id != 0 {
             st.self_obj = obj_id;
             st.self_pos = pos;
@@ -985,6 +1055,7 @@ pub(crate) fn observe_into(st: &mut GameState, p: &Packet) -> anyhow::Result<()>
                 name,
                 unit_type,
                 id,
+                level,
                 pos,
                 tl_id,
             },
@@ -1019,7 +1090,66 @@ pub(crate) fn observe_into(st: &mut GameState, p: &Packet) -> anyhow::Result<()>
         let mp = s.read_i32()? / 100;
         st.unit_points.insert(obj_id, (hp, mp));
     } else if p.is_sc(sc::SCUnitDeathPacket) {
-        st.dead_units.insert(s.read_bc()?);
+        let obj_id = s.read_bc()?;
+        st.dead_units.insert(obj_id);
+        // Best-effort kill metadata: the packet may be truncated like any other server packet.
+        let killer = (|| -> anyhow::Result<u32> {
+            s.read_u8()?; // kill reason
+            s.read_i32()?; // resurrect wait
+            s.read_i32()?; // lost exp
+            s.read_u8()?; // durability loss rate
+            Ok(s.read_bc()?) // killer object id (0 = none)
+        })();
+        if let Ok(killer_obj_id) = killer {
+            if let Some(unit) = st.units.get(&obj_id).filter(|u| u.unit_type == 1) {
+                st.observation_seq += 1;
+                let player_level = st.self_info.as_ref().map_or(0, |info| info.level);
+                st.kill_log.push(KillInfo {
+                    obj_id,
+                    template_id: unit.id,
+                    level: unit.level,
+                    killer_obj_id,
+                    player_level,
+                    seq: st.observation_seq,
+                    t_ms: observation_ms(),
+                });
+            }
+        }
+    } else if p.is_sc(sc::SCExpChangedPacket) {
+        let obj_id = s.read_bc()?;
+        let exp = s.read_i32()?;
+        s.read_bool()?; // shouldAddAbilityExp
+        st.observation_seq += 1;
+        let seq = st.observation_seq;
+        st.exp_changes.push(ExpChange {
+            obj_id,
+            exp,
+            seq,
+            t_ms: observation_ms(),
+        });
+    } else if p.is_sc(sc::SCLevelChangedPacket) {
+        let obj_id = s.read_bc()?;
+        let level = s.read_u8()?;
+        st.level_changes.push(LevelChange { obj_id, level });
+        if obj_id == st.self_obj {
+            if let Some(info) = st.self_info.as_mut() {
+                info.level = level;
+            }
+        }
+    } else if p.is_sc(sc::SCLootItemTookPacket) {
+        // `SCLootItemTookPacket`: [u32 template][u16 index][u16 owner type][bc owner][u8 0]
+        // [i32 count] (`systems/economy/loot_packets.rs`).
+        let item_template_id = s.read_u32()?;
+        s.read_u16()?; // item index
+        s.read_u16()?; // loot owner type
+        let owner_obj_id = s.read_bc()?;
+        s.read_u8()?;
+        let count = s.read_i32()?;
+        st.loot_log.push(LootTook {
+            item_template_id,
+            owner_obj_id,
+            count,
+        });
     } else if p.is_sc(sc::SCBuffCreatedPacket) {
         // `SCBuffCreatedPacket::write`: caster (type byte + body), caster id, owner obj id,
         // index, buff id, caster level, ab level, skill id, then `Buff.WriteData`.
@@ -2305,6 +2435,7 @@ mod body_tests {
                 name: "Old world npc".into(),
                 unit_type: 1,
                 id: 100,
+                level: 3,
                 pos: (1.0, 2.0, 3.0),
                 tl_id: 0,
             },
