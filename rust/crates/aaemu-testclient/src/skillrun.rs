@@ -390,6 +390,10 @@ pub struct SkillPlan {
     /// waits out the server's 15 s combat timeout before the cast.
     #[serde(default)]
     pub requires_no_combat: bool,
+    /// The skill's effects include a `SpecialEffect` 43 (`ResetCooldown`): the cast removes its
+    /// own cooldown, so the recast probe cannot test it.
+    #[serde(default)]
+    pub resets_cooldown: bool,
     pub effects: EffectSummary,
     pub reqs: Vec<ReqRow>,
 }
@@ -722,6 +726,7 @@ impl SkillDb {
                     plot_mana_events: Vec::new(),
                     mana_restore: false,
                     requires_no_combat: false,
+                    resets_cooldown: false,
                     effects: EffectSummary::default(),
                     reqs: Vec::new(),
                 })
@@ -801,6 +806,19 @@ impl SkillDb {
             for row in rows {
                 let (id, h) = row?;
                 heal.insert(id, h);
+            }
+            // `SpecialEffect` type per id (the `ResetCooldown` action resets the cast's own
+            // cooldown, so the recast probe cannot test it).
+            let mut special_types: HashMap<u32, i32> = HashMap::new();
+            {
+                let mut stmt =
+                    conn.prepare("SELECT id, special_effect_type_id FROM special_effects")?;
+                let rows =
+                    stmt.query_map([], |r| Ok((r.get::<_, u32>(0)?, r.get::<_, i32>(1)?)))?;
+                for row in rows {
+                    let (id, kind) = row?;
+                    special_types.insert(id, kind);
+                }
             }
 
             // One row per `skill_effects` entry; the gate columns drive the runner's
@@ -909,6 +927,12 @@ impl SkillDb {
                     }
                     "RestoreManaEffect" => {
                         plan.mana_restore = true;
+                        *plan.effects.other.entry(actual_type).or_default() += 1;
+                    }
+                    "SpecialEffect" => {
+                        if special_types.get(&actual_id) == Some(&43) {
+                            plan.resets_cooldown = true;
+                        }
                         *plan.effects.other.entry(actual_type).or_default() += 1;
                     }
                     other => {
@@ -3413,7 +3437,11 @@ impl<'a> Sweep<'a> {
         // makes the recast answer `skill_req_fail` before the cooldown check — neither is a
         // cooldown deviation.
         if out.result == SkillOutcome::Ok && plan.cooldown_time > 0 {
-            if plan.cooldown_time <= COOLDOWN_PROBE_MIN_MS {
+            if plan.resets_cooldown {
+                out.cooldown_probe =
+                    "cooldown not probeable: the skill resets its own cooldown (SpecialEffect 43)"
+                        .to_string();
+            } else if plan.cooldown_time <= COOLDOWN_PROBE_MIN_MS {
                 out.cooldown_probe = format!(
                     "cooldown not probeable: cooldown {} ms <= {} ms (the GCD window is ~1 s)",
                     plan.cooldown_time, COOLDOWN_PROBE_MIN_MS
@@ -3432,6 +3460,15 @@ impl<'a> Sweep<'a> {
                              (skill_req_fail) with buffs from the first cast (caster {:?}, \
                              target {:?})",
                             out.buffs_created_caster, out.buffs_created_target
+                        );
+                    }
+                    // The recast resolved the same target from a stale position (a wandering
+                    // dummy, or a cast that turned the caster): a range / angle rejection
+                    // comes before the cooldown check and says nothing about it.
+                    Ok(Some(code)) if (14..=16).contains(&code) => {
+                        out.cooldown_probe = format!(
+                            "cooldown not probeable: the recast answered SkillResult {code} ({})",
+                            skill_result_name(code)
                         );
                     }
                     Ok(result) => {
@@ -3690,14 +3727,24 @@ impl<'a> Sweep<'a> {
                 }
             }
             if damage_count == 0 && heal_count == 0 && delta != 0 {
-                if applied.is_empty() && plan.effects.buff_rows_for(target_self).is_empty() {
+                if !applied.is_empty() || !plan.effects.buff_rows_for(target_self).is_empty() {
+                    out.notes.push(format!(
+                        "target HP delta {delta} attributed to the buff effects of the cast"
+                    ));
+                } else if !plan.effects.other.is_empty() {
+                    out.notes.push(format!(
+                        "target HP delta {delta} attributed to the skill's other effects: {}",
+                        plan.effects
+                            .other
+                            .iter()
+                            .map(|(kind, n)| format!("{kind} x{n}"))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ));
+                } else {
                     out.mismatches.push(format!(
                         "target HP delta {} without a damage_effects / heal_effects row",
                         delta
-                    ));
-                } else {
-                    out.notes.push(format!(
-                        "target HP delta {delta} attributed to the buff effects of the cast"
                     ));
                 }
             }
@@ -4057,6 +4104,7 @@ pub async fn run(cfg: &BotConfig, opts: &RunOptions) -> anyhow::Result<RunReport
                     plot_mana_events: Vec::new(),
                     mana_restore: false,
                     requires_no_combat: false,
+                    resets_cooldown: false,
                     effects: EffectSummary::default(),
                     reqs: Vec::new(),
                 },
@@ -4219,6 +4267,7 @@ mod tests {
             plot_mana_events: Vec::new(),
             mana_restore: false,
             requires_no_combat: false,
+            resets_cooldown: false,
             effects: EffectSummary::default(),
             reqs: Vec::new(),
         };
@@ -4268,6 +4317,7 @@ mod tests {
             plot_mana_events: Vec::new(),
             mana_restore: false,
             requires_no_combat: false,
+            resets_cooldown: false,
             effects: EffectSummary::default(),
             reqs: Vec::new(),
         };
