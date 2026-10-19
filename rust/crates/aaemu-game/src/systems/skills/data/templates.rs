@@ -702,6 +702,8 @@ pub struct SkillControllerTemplate {
     pub kind_id: u32,
     pub active_weapon_id: u8,
     pub value: [i32; 15],
+    /// `end_skill_id`: the skill an Anchor controller fires when it has finished moving.
+    pub end_skill_id: u32,
 }
 
 pub fn read_skill_controller(r: &SqlRow<'_, '_>) -> rusqlite::Result<SkillControllerTemplate> {
@@ -714,5 +716,6 @@ pub fn read_skill_controller(r: &SqlRow<'_, '_>) -> rusqlite::Result<SkillContro
         kind_id: r.u32("kind_id")?,
         active_weapon_id: r.u8("active_weapon_id")?,
         value,
+        end_skill_id: r.u32_or("end_skill_id", 0)?,
     })
 }
