@@ -2144,6 +2144,19 @@ memberless spawners, and no invented positions for the 543 effect rows with no p
 client. The tool, reproduction commands and parser tests are in `rust/tools/spawn_import/`;
 generated entries carry a `Title` naming the 10.x source (the loader ignores it).
 
+### Crowd-control and buff rule layer (October 19, 2026)
+
+| Area | Rust | Status | Evidence / confidence |
+| --- | --- | --- | --- |
+| `buff_tolerances` / `buff_tolerance_steps` (diminishing returns of repeated CC) | `systems/skills/buffs.rs` `add_buff` | already ported from the C# (`BuffGameData.GetBuffToleranceForBuffTag`); a debug line now logs the step reduction | C# original; flow test `repeated_stuns_follow_the_tolerance_steps` |
+| `buff_breakers` (661 rows, 92 buffs) | `skills/data/mod.rs` (`buff_breakers`), `buffs::apply_buff_breakers` called by `add_buff` | new: a buff carrying a breaker tag ends the active buffs it breaks, and an arriving breakable buff ends at once when a breaker tag is already active | The C# ignored the table. The 10.x zone loads it (`LoadBuffBreakersRelation`, `SELECT buff_id, buff_tag_id FROM buff_breakers`) but no consumer was traced. **Direction is derived from the rows (medium confidence):** the `buff_id` side is gliders (tags stun 6, fear 12, spear 13, sleep 97, silence 99, knock-down 107, psychokinesis 150, bubble 346, root 27), bard songs 656-667/778 and the ice-wall step buff 431 (broken by glider flight tag 294); a stun ending a flight or a song is the natural reading, the reverse (a glider ending a stun) is not. |
+| Damage ends sleep | `buffs::trigger_remove_on` (`remove_on_damaged_*` columns) | already ported; covered by `damage_removes_a_breakable_sleep` | the buff columns (sleep buffs 414/523/2276/... carry all four `remove_on_damaged_*` flags) |
+| `aoe_diminishings` (10 rows: 100, 90, 80, 70, 55, 40, 25, 10, 10, 10) + plot event flag `aoe_diminishing` (13 of 9,074 events) | `PlotEventTemplate.aoe_diminishing`, `plots::apply_plot_effect`, `EffectSource.aoe_diminishing`, `effects::combat::damage` | new: the n-th target of an event with the flag takes damage times `rate(n) / 100` (ranks past the last row use it) | The 10.x damage log prints `damage %d <= aoe diminishing %f` between the actability and the minimum-damage steps and loads the table into a float array indexed by id (`LoadAoeDiminishingDescs`). **Rank = index in the event's target list is assumed (low-medium confidence)**; the zone's caller was not traced. The C# stored the flag and never used it. `ResetAoeDiminishingEffect` (1 row) stays a no-op: the per-cast counter it would reset does not exist in this rank-per-event model. |
+| `ExplodeBuff` (special type 46; skills 16410 / 20650 "Internal Shock") | `effects/special/unit_actions.rs::explode_buff` | new, **unverified numbers**: burns every non-passive, non-system Good buff of the target and, if at least one was burned, deals `value1` fixed damage; a target without a beneficial buff takes nothing | Only the 1.2 skill tooltip: "burns away the enemy's beneficial effects and deals #{min_damage}~#{max_damage}; an enemy without beneficial effects takes no damage". The meaning of `value1` (1000 / 2000) and `value2` / `value3` (20 / 20, 50 / 50) is a guess; the stun (buff 2871+) and knock-back come from the skill's other effects. No retail oracle. |
+| `Anchor` skill controller (kind 6, controllers 7736 / 7739, `end_skill_id` 23437 "Land on the ground", used by monster skills 22268 / 23103) | `skills/controllers.rs` (`Behavior::Anchor`, `anchor_tick`), `SkillControllerTemplate.end_skill_id` | new, **partial**: the owner descends to the ground under it at the first stage speed (`value2` mm/s, timeout `value3` ms), then fires `end_skill_id` on itself | 10.x zone `X2::AnchorSkillController` (stages of speed + ground-entity id, finish on time over / ragdoll / arrival, then the end skill). The stage targets are ground-collider doodads this server does not model, so the stage kinds in `value1/4/7` are not interpreted and only the first stage is used. Movement timing for 1.2 is unverified. |
+| Live check (lane stack, headless bot, GM `/buff` + a real melee hit) | - | done | Stun 2219 on one target: 5000, 4000, 3000 ms, then the stun-immunity final buff 2371; sleep 523 ends on the bot's melee hit; song 663 ends when stun/sleep arrives and ends at once when applied under an active sleep. Not driven live: `aoe_diminishing` events, ExplodeBuff (monster skill) and the Anchor landing skills (flow tests only). GM `/buff view` hides buffs that expired between commands (each GM command takes ~2 s). |
+| `buff_unit_modifiers` (17 rows), `buff_mount_skills` (64 rows) | - | not applied | `buff_unit_modifiers` are the `unit_modifiers` rows with `owner_type = 'BuffUnitModifier'` keyed by skill-tag + buff pairs (Sorcery 232-244 skill tags); how they combine with the skill damage is not documented in the C#, the client or the zone strings. `buff_mount_skills` lists the mount skills a siege-stance / mount buff grants to the client bar and has no server-side effect. Neither claims retail behaviour here. |
+
 ### 1.2 `npc_map` placements missing from `main_world/npc_spawns.json` (small batch)
 
 The 1.2 client's `game/worlds/main_world/map_data/npc_map/*.dat` (retail 1.2 data) lists 326 placements (176 ids) that the shipped JSON lacked. Git history (`git log --all -- '*main_world/npc_spawns.json'`): all of them were once in the file; they were dropped by upstream rewrites (2022-06-19 `277753513`, the raw-export rewrite, 54; 2024-04-24 `58cdf34c6`, "Z height and added NPCs", 63; 2023-06-13 `5a0b59496`, 8) and by our own ambient revert `1ff1eaa9c` (15), none with a per-entry reason. Added: 58 entries, with `Title` `1.2 client npc_map (<zone>)`.
@@ -2234,3 +2247,40 @@ weapon sets 393-395 (buffs only; weapon models), Auroria class sets (no set rows
 * **`/setfaction` is persistent** (`faction::set_faction_persistent`): a GM change goes through the `Character.SetFaction` effects (housing, guild, party) and ends any temporary faction, so `characters.faction_id` stores it. Only duel and battlefield factions are temporary.
 * **Quit game frees the account** (`leave_world_task`, target 0): the C# kept the connection and the `AccountManager` entry until the client closed the socket or the 30-60 s dead-connection sweep did, so a relog right after quit got "enter world denied, reason 1" (`already_connected`). The server now unregisters the account and closes the connection after `SCLeaveWorldGranted`; `AccountManager::remove_if_owned` makes a late close of the old connection leave a newer login of the same account alone. Saves are unchanged (still under the transaction lock, all-or-nothing).
 * **Rotate-winner and bind-on-pickup rolls** (checked, no change): with the party rule `ROTATE_WINNER` and more than one eligible player, `TryTakeLootLocked` hands the item to the round-robin winner before the `rollMandatory` check, so `RollForBindOnPickup` and `MinimumGrade` never roll under that rule (a mirrored C# order). Rolls happen under `FREE_FOR_ALL` and `LOOT_MASTER`.
+## Bevy protocol audit (October 19, 2026)
+
+The Bevy 1.2 client (`AABevy1.2`) is the main client; its reverse-engineering notes
+(`docs/aa-net.md`, digest M1..M23) found layout suspects between our encoders and the original
+1.2 client's readers. Oracle used here: the original reader in the unpacked 1.2 client
+(`x2game_unpacked.dll`, Ghidra, addresses below), decompiled again for each fix marked
+*verified*; the rest are marked *per Bevy RE notes*.
+
+| # | Fix | Oracle |
+|---|---|---|
+| M1 | `SCHouseState` / `SCMyHouse` model is one fixed `i32` (was PISC pair, shifting every later field) | verified: `39897460` reads it with stream slot `+0x4c`, the same slot as `allstep`/`curstep`/`skillCount` |
+| M2 | `SCCancelInstantGame` carries only the `i16` error (the branch byte and padding are gone; `clear_queue` and `with_error` are indistinguishable on the 1.2 wire, the handler ignores the value anyway) | verified: serializer `397c3bf0` transfers one `i16` (slot `+0x50`) |
+| M3 | The empty faction lists use their real opcodes: `SCFactionList` `0x008` (was `0x007` = `SCTrionConfig`) and `SCFactionRelationList` `0x009` (was `0x008` = `SCFactionList`, which also carried a stray byte) | opcode table; relation body `[bool][u8 count]` kept from the non-empty packet. The C# hard-coded the wrong ids |
+| M4 | `SCResponseUIData` trailer is the UTF-8 byte count + 1 (was UTF-16 units + 1; truncated non-ASCII data) | per Bevy RE notes (`391e57e0` -> `memcpy` / `xlcommon::Data::Load`) |
+| M5 | The slave item detail (tag 2) is always 29 bytes: `RepairStartTime` is an i64 (0 when unset, the same bytes as before) plus four i32 zeros (was i32 + five i32 when unset, i64 + five i32 = 33 bytes when set, which desynced batched item packets). The split of the 24 trailing bytes is inferred | width verified: `3961edf0` tag 2 = `0x1e - 1` = 29 bytes; field split per Bevy RE notes |
+| M6 | `SCMateEquipmentChanged` now carries a real success flag; the rejected-move packet writes `false` (the C# always wrote `true`) | verified: `OnMateEquipmentChanged` `391db200` passes the flag at `+0x330` to `394e1c10`, which copies the item into the bag cache only when it is set; entry/record readers `397d12a0`/`397d1340` match our layout |
+| M7 | `CSSpawnSlave` reads container + slot only when the item id is nonzero (37/39-byte bodies; was always 41). The handler still only logs | per Bevy RE notes (client writer) |
+| M8 | `SCCraftFailed` never writes more than 20 entries (count clamped to 0..=20). Still unsent | per Bevy RE notes (`391e0840` -> `394d2370` clamp) |
+| M9 | A missing trial reporter name is written as an empty string (the C# omitted the length) | per Bevy RE notes (string always has its `u16` length) |
+| M10 | Bounty rows write `notGuilty` before `guilty` | verified: row reader `397bebf0` reads `notGuilty` (`+0xc8`) then `guilty` (`+0xcc`) |
+| M14 | `SCUnitState` of a character sets flag bit3 (`0x0008`) while force attack is on, so late observers see Bloodlust | verified: `397c9480` stores bit3 of the `u16` flags in the unit's force-attack byte |
+| M15 | `SCCooldowns` has a full writer (`i32` count + `[id, total, remaining]` u32 triples, skills then tags, 150 per list) and is sent after `SCCharacterState` when the character has running skill cooldowns. The server keeps only the end time of a skill cooldown and no tags, so `total` equals `remaining` | verified: `397b64d0` -> `397b2350`; entries are appended, an empty list is no reset. Cooldowns are not persisted, so a freshly loaded character normally has none |
+| CS | The client CS table entries missing from `opcodes::cs` were added: `0x11f CSRequestSetBountyMoney`, `0x120 CSSendBountyUpdate`, `0x130 CSRankSnapshot` (already handled through a local const, now the table entry), `0x133 CSChangeAutoUseAAPoint` | the Bevy `opcodes.rs` (client table); 0x130 additionally by the RE notes in `ranking_packets.rs`. `0x11f`/`0x120` are logged no-ops (the bounty ledger is not wired to the wallet, TODO); `0x133` sets `Character.auto_use_aa_point` |
+
+Doc-only items:
+
+- **M11** scheduled rewards: the client keeps at most 16 rows (verified: `397b0190` clamps the
+  count to `0x10`, row `3961f100` = `u32,u8,i32,i64`). We still write up to
+  `MAX_ITEMS_IN_PACKET` (32); the extra rows are ignored in a plain frame, and the packet is never
+  batched, so it is left unchanged.
+- **M12** list caps (family > 8, achievements > 50, radar > 10, battlefield members > 50, expedition
+  chunks of 20): per Bevy RE notes; our senders already chunk at those sizes. Not re-verified.
+- **M17** (f32 vs f64 arithmetic of pet revive/repair cost), **M18** (ranking period: UTC half-open vs
+  local inclusive), **M19** (`SCUnitMovements` unsent), **M20** (party leave/kick log-only; the
+  client uses `CSAskRiskyTeamAction`), **M21** (new factions get `political_system 1`, native
+  rename needs 0), **M23** (actability downgrade clamp): per Bevy RE notes, not re-verified and not
+  changed; each needs a reproduction against the real client before a fix.

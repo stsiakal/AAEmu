@@ -5,10 +5,76 @@ use rand::seq::SliceRandom;
 use crate::server::GameServer;
 use crate::world::now_ms;
 
+use super::super::super::packets::SCUnitDamagedPacket;
 use super::super::super::state::AggroKind;
-use super::super::super::types::SkillCaster;
-use super::super::super::{buffs, combat};
+use super::super::super::types::{KillReason, SkillCaster, SkillHitType};
+use super::super::super::{broadcast, buffs, combat};
 use super::super::EffectArgs;
+
+/// `ExplodeBuff` (special type 46, "Internal Shock" 16410 / 20650): "burns away the enemy's
+/// beneficial effects and deals damage; an enemy without a beneficial effect takes no damage"
+/// (the 1.2 skill tooltip, the only oracle: neither the C# nor the 10.x zone strings name the
+/// action). `value1` is read as the fixed damage; `value2` / `value3` (20 / 20 and 50 / 50) are
+/// not understood and only logged. Recorded in `PORTING.md` as unverified.
+pub fn explode_buff(server: &GameServer, args: &EffectArgs<'_>, values: [i32; 4]) {
+    let (Some(caster), Some(target)) = (&args.caster, args.target.as_obj()) else {
+        return;
+    };
+    if !caster.is_unit() || !target.is_unit() || caster.same(target) {
+        return;
+    }
+    let burned: Vec<u32> = target.with_base_unit(|unit| {
+        unit.buffs()
+            .effects
+            .iter()
+            .filter(|buff| {
+                !buff.passive
+                    && !buff.is_ended()
+                    && server
+                        .game_data
+                        .systems
+                        .skills
+                        .buff(buff.template.id)
+                        .is_some_and(|template| template.kind == 1 && !template.system)
+            })
+            .map(|buff| buff.index)
+            .collect()
+    });
+    if burned.is_empty() {
+        return;
+    }
+    for index in &burned {
+        buffs::exit(server, target, *index, false);
+    }
+    let damage = values[0].max(0);
+    tracing::debug!(
+        "ExplodeBuff: burned {} buffs of {}, damage {damage} (value2 {}, value3 {})",
+        burned.len(),
+        target.obj_id(),
+        values[1],
+        values[2]
+    );
+    if damage == 0 {
+        return;
+    }
+    combat::reduce_current_hp(server, target, Some(caster), damage, KillReason::Damage);
+    let mut packet = SCUnitDamagedPacket::new(
+        args.cast,
+        args.caster_caster,
+        caster.obj_id(),
+        target.obj_id(),
+        damage,
+        0,
+    );
+    packet.hit_type = SkillHitType::MeleeHit;
+    broadcast(server, target, &packet, true);
+    buffs::trigger_remove_on(
+        server,
+        target,
+        super::super::super::types::BuffRemoveOn::DamagedEtc,
+        0,
+    );
+}
 
 /// The native WZFakeDeath handler removes incoming aggro without killing the
 /// unit or awarding kill credit. Its packet contains only the target unit ID.
