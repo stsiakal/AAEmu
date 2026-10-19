@@ -32,7 +32,7 @@
 //! Every line records the data-vs-observed fields (cast times, mana, buffs, HP deltas, channel
 //! ticks, cooldown rejection) and a `mismatches` array with a short reason per deviation.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs::{File, OpenOptions};
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
@@ -133,6 +133,15 @@ pub struct DamageRow {
     pub chance: i32,
     #[serde(default)]
     pub weight: i32,
+    /// The `skill_effects` buff-tag gates (checked against the cast baseline).
+    #[serde(default)]
+    pub source_buff_tag_id: u32,
+    #[serde(default)]
+    pub target_buff_tag_id: u32,
+    #[serde(default)]
+    pub source_no_buff_tag_id: u32,
+    #[serde(default)]
+    pub target_no_buff_tag_id: u32,
     /// A source / target buff-tag gate the runner cannot evaluate (a missing hit is not a
     /// mismatch then, it is recorded as a note).
     #[serde(default)]
@@ -515,6 +524,14 @@ impl SkillPlan {
 pub struct SkillDb {
     skills: HashMap<u32, SkillPlan>,
     path: PathBuf,
+    /// Buff ids whose `unit_modifiers` / `dynamic_unit_modifiers` change `MaxHealth` (6): an HP
+    /// delta during a cast can be a max-HP change of such a buff.
+    buff_max_hp: HashSet<u32>,
+    /// Buff ids with a damage / heal tick effect (DoT / HoT): such a tick can change HP during
+    /// a cast without a `damage_rows` / `heal_rows` entry.
+    buff_hp_tick: HashSet<u32>,
+    /// Buff id -> tag ids (`tagged_buffs`): evaluates the `skill_effects` buff-tag gates.
+    buff_tags: HashMap<u32, Vec<u32>>,
 }
 
 /// What a plot tree contributes to a `plot_only` skill: the total `ManaCost` of its reachable
@@ -771,6 +788,10 @@ impl SkillDb {
                         non_friendly: true,
                         chance: 100,
                         weight: 0,
+                        source_buff_tag_id: 0,
+                        target_buff_tag_id: 0,
+                        source_no_buff_tag_id: 0,
+                        target_no_buff_tag_id: 0,
                         conditional: false,
                     },
                 ))
@@ -910,6 +931,10 @@ impl SkillDb {
                             dmg.non_friendly = gate.non_friendly;
                             dmg.chance = gate.chance;
                             dmg.weight = gate.weight;
+                            dmg.source_buff_tag_id = gate.source_buff_tag_id;
+                            dmg.target_buff_tag_id = gate.target_buff_tag_id;
+                            dmg.source_no_buff_tag_id = gate.source_no_buff_tag_id;
+                            dmg.target_no_buff_tag_id = gate.target_no_buff_tag_id;
                             dmg.conditional = gate.conditional();
                             plan.effects.damage_rows.push(dmg);
                         }
@@ -1020,10 +1045,69 @@ impl SkillDb {
                 }
             }
         }
+        // The buff facts the delta and gate checks need: max-HP modifiers (a buff applied
+        // during a cast can change HP with no damage/heal row), HP tick effects (DoT / HoT) and
+        // the buff tags the `skill_effects` gates test.
+        let mut buff_max_hp: HashSet<u32> = HashSet::new();
+        {
+            let mut stmt = conn.prepare(
+                "SELECT owner_id FROM unit_modifiers \
+                 WHERE owner_type = 'Buff' AND unit_attribute_id = 6",
+            )?;
+            let rows = stmt.query_map([], |r| r.get::<_, u32>(0))?;
+            for row in rows {
+                buff_max_hp.insert(row?);
+            }
+            let mut stmt = conn.prepare(
+                "SELECT buff_id FROM dynamic_unit_modifiers WHERE unit_attribute_id = 6",
+            )?;
+            let rows = stmt.query_map([], |r| r.get::<_, u32>(0))?;
+            for row in rows {
+                buff_max_hp.insert(row?);
+            }
+        }
+        let mut buff_hp_tick: HashSet<u32> = HashSet::new();
+        {
+            let mut stmt = conn.prepare(
+                "SELECT bte.buff_id FROM buff_tick_effects bte JOIN effects ef ON ef.id = bte.effect_id \
+                 WHERE ef.actual_type IN ('DamageEffect','HealEffect')",
+            )?;
+            let rows = stmt.query_map([], |r| r.get::<_, u32>(0))?;
+            for row in rows {
+                buff_hp_tick.insert(row?);
+            }
+        }
+        let mut buff_tags: HashMap<u32, Vec<u32>> = HashMap::new();
+        {
+            let mut stmt = conn.prepare("SELECT buff_id, tag_id FROM tagged_buffs")?;
+            let rows = stmt.query_map([], |r| Ok((r.get::<_, u32>(0)?, r.get::<_, u32>(1)?)))?;
+            for row in rows {
+                let (buff, tag) = row?;
+                buff_tags.entry(buff).or_default().push(tag);
+            }
+        }
         Ok(Self {
             skills,
             path: path.to_path_buf(),
+            buff_max_hp,
+            buff_hp_tick,
+            buff_tags,
         })
+    }
+
+    /// Whether the buff changes `MaxHealth`.
+    pub fn buff_changes_max_hp(&self, buff_id: u32) -> bool {
+        self.buff_max_hp.contains(&buff_id)
+    }
+
+    /// Whether the buff has a damage / heal tick effect (DoT / HoT).
+    pub fn buff_has_hp_tick(&self, buff_id: u32) -> bool {
+        self.buff_hp_tick.contains(&buff_id)
+    }
+
+    /// The tag ids of a buff (`tagged_buffs`).
+    pub fn tags_of_buff(&self, buff_id: u32) -> &[u32] {
+        self.buff_tags.get(&buff_id).map_or(&[], Vec::as_slice)
     }
 
     pub fn path(&self) -> &Path {
@@ -2265,6 +2349,8 @@ struct Sweep<'a> {
     state: SweepState,
     character: RunCharacter,
     opts: &'a RunOptions,
+    /// The compact-database facts the comparison needs (buff max-HP / tick effects, buff tags).
+    db: SkillDb,
 }
 
 impl<'a> Sweep<'a> {
@@ -2732,6 +2818,32 @@ impl<'a> Sweep<'a> {
     /// Best-effort clean leave at the end of the run.
     async fn leave(&mut self) {
         leave(&mut self.game).await;
+    }
+
+    /// Pumps packets for 400 ms so the last buff-clear clamp / heal update is in the state
+    /// before the HP baseline is read.
+    async fn settle_briefly(&mut self) -> anyhow::Result<()> {
+        let deadline = Instant::now() + Duration::from_millis(400);
+        while let Some(left) = deadline.checked_duration_since(Instant::now()) {
+            if left.is_zero() {
+                break;
+            }
+            if let Some(p) = self.game.recv_within(PUMP.min(left)).await? {
+                self.session.observe(&p);
+            }
+        }
+        Ok(())
+    }
+
+    /// The buff tags a unit carries right now (the baseline the `skill_effects` gates saw).
+    fn buff_tags_of(&self, obj: u32) -> HashSet<u32> {
+        let mut tags = HashSet::new();
+        if let Some(buffs) = self.game.state.buffs.get(&obj) {
+            for info in buffs.values() {
+                tags.extend(self.db.tags_of_buff(info.buff_id).iter().copied());
+            }
+        }
+        tags
     }
 
     /// Sends `CSStartSkillPacket` and watches the cast until it settles.
@@ -3236,6 +3348,31 @@ impl<'a> Sweep<'a> {
             out.target_kind = "self".into();
         }
 
+        // Buffs left by earlier skills (stuns, roots, max-HP or refreshed buffs) are cleared
+        // *before* the heal: a max-HP buff still in place makes `/heal` fill to the buffed
+        // maximum, and clearing it afterwards clamps the target back down -- a loss the cast
+        // would be blamed for. With the buffs gone the heal sets the true baseline.
+        if let Err(e) = self.clear_buffs(self_obj).await {
+            out.result = SkillOutcome::Error;
+            out.reason = format!("connection error while clearing caster buffs: {e:#}");
+            self.finish(chat_start, start, &mut out);
+            return out;
+        }
+        if compare_obj != self_obj && !self.game.state.dead_units.contains(&compare_obj) {
+            if let Err(e) = self.clear_buffs(compare_obj).await {
+                out.result = SkillOutcome::Error;
+                out.reason = format!("connection error while clearing target buffs: {e:#}");
+                self.finish(chat_start, start, &mut out);
+                return out;
+            }
+        }
+        if let Err(e) = self.reset_cooldowns().await {
+            out.result = SkillOutcome::Error;
+            out.reason = format!("connection error during /resetcd: {e:#}");
+            self.finish(chat_start, start, &mut out);
+            return out;
+        }
+
         // Refill before the cast (the dummy too, so the HP delta is honest).
         if let Err(e) = self.heal_self().await {
             out.result = SkillOutcome::Error;
@@ -3251,28 +3388,12 @@ impl<'a> Sweep<'a> {
                 return out;
             }
         }
-        if let Err(e) = self.reset_cooldowns().await {
+        // Let the last clamp / refill update land before the baseline is read.
+        if let Err(e) = self.settle_briefly().await {
             out.result = SkillOutcome::Error;
-            out.reason = format!("connection error during /resetcd: {e:#}");
+            out.reason = format!("connection error while settling before the cast: {e:#}");
             self.finish(chat_start, start, &mut out);
             return out;
-        }
-
-        // Buffs left by earlier skills (stuns, roots, refreshed buffs) would reject the cast or
-        // hide the buff creation this skill is checked for.
-        if let Err(e) = self.clear_buffs(self_obj).await {
-            out.result = SkillOutcome::Error;
-            out.reason = format!("connection error while clearing caster buffs: {e:#}");
-            self.finish(chat_start, start, &mut out);
-            return out;
-        }
-        if compare_obj != self_obj && !self.game.state.dead_units.contains(&compare_obj) {
-            if let Err(e) = self.clear_buffs(compare_obj).await {
-                out.result = SkillOutcome::Error;
-                out.reason = format!("connection error while clearing target buffs: {e:#}");
-                self.finish(chat_start, start, &mut out);
-                return out;
-            }
         }
         if compare_obj != self_obj {
             self.game.change_target(compare_obj).await.ok();
@@ -3290,8 +3411,12 @@ impl<'a> Sweep<'a> {
             .unit_points
             .get(&compare_obj)
             .map(|(hp, _)| *hp);
+        // The buff-tag sets the server's `skill_effects` gates saw at the cast baseline
+        // (buffs are cleared above, so this is the post-clear state).
+        let source_tags = self.buff_tags_of(self_obj);
+        let target_tags = self.buff_tags_of(compare_obj);
 
-        let attempt = match self
+        let mut attempt = match self
             .execute_cast(plan, target, compare_obj, self.opts.step_timeout)
             .await
         {
@@ -3303,6 +3428,8 @@ impl<'a> Sweep<'a> {
                 return out;
             }
         };
+        attempt.source_tags = source_tags;
+        attempt.target_tags = target_tags;
 
         let hp_after = self
             .game
@@ -3637,11 +3764,15 @@ impl<'a> Sweep<'a> {
                         "the plot reached buff {}'s event(s) {:?} but the {side} buff was not applied",
                         row.buff_id, row.plot_events
                     ));
+                } else if row.plot_events.is_empty() {
+                    out.notes.push(format!(
+                        "{side} buff {} not applied (plot skill: skill_effects rows never run)",
+                        row.buff_id
+                    ));
                 } else {
                     out.notes.push(format!(
-                        "{side} buff {} not applied ({})",
-                        row.buff_id,
-                        row.gate_note()
+                        "{side} buff {} not applied (plot event(s) {:?} not reached)",
+                        row.buff_id, row.plot_events
                     ));
                 }
                 continue;
@@ -3679,10 +3810,6 @@ impl<'a> Sweep<'a> {
             .collect();
         let damage_count = damage_rows.len();
         let heal_count = heal_rows.len() + heal_damage.len();
-        let unconditional_damage = damage_rows
-            .iter()
-            .filter(|r| r.unconditional(target_self))
-            .count();
         let unconditional_heal = heal_rows
             .iter()
             .filter(|r| r.unconditional(target_self))
@@ -3697,61 +3824,153 @@ impl<'a> Sweep<'a> {
                 ));
             }
         } else if let Some(delta) = out.target_hp_delta {
-            if damage_count > 0 && delta >= 0 {
-                if out.damage_packets == 0 {
-                    if target_self {
-                        out.notes.push(format!(
-                            "{damage_count} damage row(s) on the caster itself: `CanAttack` refuses self (delta {delta})"
-                        ));
-                    } else if unconditional_damage > 0 {
-                        out.mismatches.push(format!(
-                            "{unconditional_damage} unconditional damage row(s) exist but no SCUnitDamagedPacket and no target HP loss (delta {delta})"
-                        ));
-                    } else {
-                        out.notes.push(format!(
-                            "{damage_count} damage row(s) exist, no damage packet and no HP loss (delta {delta}): the row's gates were not met"
-                        ));
+            let damage_explains = out.damage_packets > 0 && out.dealt_damage > 0 && delta < 0;
+            let heal_explains = out.heal_packets > 0 && delta > 0;
+            let mut handled = damage_explains || heal_explains;
+            if !handled && target_self && damage_count > 0 && out.damage_packets == 0 {
+                // `DamageEffect.Apply` refuses the caster itself (`CanAttack`): the rows can
+                // never run on a self target, whatever their gates say.
+                out.notes.push(format!(
+                    "{damage_count} damage row(s) on the caster itself: `CanAttack` refuses self (delta {delta})"
+                ));
+                handled = true;
+            }
+            if !handled && damage_count > 0 && out.damage_packets == 0 {
+                // Which rows the baseline (post-clear, pre-cast) let run at all? Name the
+                // exact blocking gate instead of a blanket "gates were not met".
+                let mut target_tags_absent: BTreeSet<u32> = BTreeSet::new();
+                let mut source_tags_absent: BTreeSet<u32> = BTreeSet::new();
+                let mut target_nobuff_present: BTreeSet<u32> = BTreeSet::new();
+                let mut source_nobuff_present: BTreeSet<u32> = BTreeSet::new();
+                let mut chances: BTreeSet<i32> = BTreeSet::new();
+                let mut weighted = false;
+                let mut runnable: Vec<u32> = Vec::new();
+                for row in &damage_rows {
+                    let mut blocked = false;
+                    if row.target_buff_tag_id != 0
+                        && !attempt.target_tags.contains(&row.target_buff_tag_id)
+                    {
+                        target_tags_absent.insert(row.target_buff_tag_id);
+                        blocked = true;
                     }
-                } else if out.dealt_damage == 0 {
-                    if out.miss_packets > 0 {
-                        out.notes.push(format!(
-                            "{} of {} damage packet(s) missed (hit type); target HP delta {}",
-                            out.miss_packets, out.damage_packets, delta
-                        ));
-                    } else {
-                        out.notes.push(format!(
-                            "{} damage packet(s) all absorbed (0 damage); target HP delta {}",
-                            out.damage_packets, delta
-                        ));
+                    if row.source_buff_tag_id != 0
+                        && !attempt.source_tags.contains(&row.source_buff_tag_id)
+                    {
+                        source_tags_absent.insert(row.source_buff_tag_id);
+                        blocked = true;
+                    }
+                    if row.target_no_buff_tag_id != 0
+                        && attempt.target_tags.contains(&row.target_no_buff_tag_id)
+                    {
+                        target_nobuff_present.insert(row.target_no_buff_tag_id);
+                        blocked = true;
+                    }
+                    if row.source_no_buff_tag_id != 0
+                        && attempt.source_tags.contains(&row.source_no_buff_tag_id)
+                    {
+                        source_nobuff_present.insert(row.source_no_buff_tag_id);
+                        blocked = true;
+                    }
+                    if row.chance < 100 {
+                        chances.insert(row.chance);
+                        blocked = true;
+                    }
+                    if row.weight > 0 {
+                        weighted = true;
+                        blocked = true;
+                    }
+                    if !blocked && row.chance >= 100 && row.weight == 0 {
+                        runnable.push(row.effect_id);
                     }
                 }
-            }
-            if damage_count == 0 && heal_count == 0 && delta != 0 {
-                if !applied.is_empty() || !plan.effects.buff_rows_for(target_self).is_empty() {
-                    out.notes.push(format!(
-                        "target HP delta {delta} attributed to the buff effects of the cast"
+                let mut reasons: Vec<String> = Vec::new();
+                let tag_list = |tags: &BTreeSet<u32>| {
+                    tags.iter()
+                        .map(u32::to_string)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                };
+                if !target_tags_absent.is_empty() {
+                    reasons.push(if target_tags_absent.len() == 1 {
+                        format!("target buff tag {} absent", tag_list(&target_tags_absent))
+                    } else {
+                        format!("target buff tags {} absent", tag_list(&target_tags_absent))
+                    });
+                }
+                if !source_tags_absent.is_empty() {
+                    reasons.push(if source_tags_absent.len() == 1 {
+                        format!("source buff tag {} absent", tag_list(&source_tags_absent))
+                    } else {
+                        format!("source buff tags {} absent", tag_list(&source_tags_absent))
+                    });
+                }
+                if !target_nobuff_present.is_empty() {
+                    reasons.push(format!(
+                        "target no-buff tag {} present",
+                        tag_list(&target_nobuff_present)
                     ));
-                } else if !plan.effects.other.is_empty() {
-                    out.notes.push(format!(
-                        "target HP delta {delta} attributed to the skill's other effects: {}",
-                        plan.effects
-                            .other
+                }
+                if !source_nobuff_present.is_empty() {
+                    reasons.push(format!(
+                        "source no-buff tag {} present",
+                        tag_list(&source_nobuff_present)
+                    ));
+                }
+                if !chances.is_empty() {
+                    reasons.push(format!(
+                        "chance {}",
+                        chances
                             .iter()
-                            .map(|(kind, n)| format!("{kind} x{n}"))
+                            .map(i32::to_string)
                             .collect::<Vec<_>>()
                             .join(", ")
                     ));
+                }
+                if weighted {
+                    reasons.push("weighted row (one of a group runs)".to_string());
+                }
+                if runnable.is_empty() {
+                    let detail = if reasons.is_empty() {
+                        "no blocking gate seen at the baseline".to_string()
+                    } else {
+                        reasons.join("; ")
+                    };
+                    out.notes.push(format!(
+                        "{damage_count} damage row(s) exist, no damage packet and no HP loss (delta {delta}): {detail}"
+                    ));
+                    if delta != 0 {
+                        self.explain_hp_delta(out, delta, target_self);
+                    }
                 } else {
                     out.mismatches.push(format!(
-                        "target HP delta {} without a damage_effects / heal_effects row",
-                        delta
+                        "{} damage row(s) {runnable:?} should have run (no blocking gate at the baseline) but no SCUnitDamagedPacket appeared (delta {delta})",
+                        runnable.len()
                     ));
                 }
+                handled = true;
             }
-            if heal_count > 0 && delta < 0 && unconditional_heal > 0 {
+            if !handled && out.damage_packets > 0 && out.dealt_damage == 0 && delta >= 0 {
+                if out.miss_packets > 0 {
+                    out.notes.push(format!(
+                        "{} of {} damage packet(s) missed (hit type); target HP delta {}",
+                        out.miss_packets, out.damage_packets, delta
+                    ));
+                } else {
+                    out.notes.push(format!(
+                        "{} damage packet(s) all absorbed (0 damage); target HP delta {}",
+                        out.damage_packets, delta
+                    ));
+                }
+                handled = true;
+            }
+            if !handled && heal_count > 0 && delta < 0 && unconditional_heal > 0 {
                 out.mismatches.push(format!(
                     "{unconditional_heal} unconditional heal row(s) exist but target HP delta is {delta}"
                 ));
+                handled = true;
+            }
+            if !handled && delta != 0 {
+                self.explain_hp_delta(out, delta, target_self);
             }
             if target_self && damage_count > 0 && delta == 0 && out.self_damage_packets > 0 {
                 out.notes.push(format!(
@@ -3794,6 +4013,40 @@ impl<'a> Sweep<'a> {
             out.notes.push(format!(
                 "effect_repeat_count {} x {} ms (tick packets are not separable on the wire)",
                 plan.effect_repeat_count, plan.effect_repeat_tick
+            ));
+        }
+    }
+
+    /// A non-zero HP delta nothing else explains. Only two things count as an explanation, and
+    /// both come from the data: an HP-ticking buff (DoT / HoT) or a max-HP buff the cast
+    /// applied. Anything else is an *unverified* mismatch, not a note.
+    fn explain_hp_delta(&self, out: &mut SkillResult, delta: i32, target_self: bool) {
+        let side_buffs: &[u32] = if target_self {
+            &out.buffs_created_caster
+        } else {
+            &out.buffs_created_target
+        };
+        let hp_ticks: Vec<u32> = side_buffs
+            .iter()
+            .copied()
+            .filter(|b| self.db.buff_has_hp_tick(*b))
+            .collect();
+        let max_hp: Vec<u32> = side_buffs
+            .iter()
+            .copied()
+            .filter(|b| self.db.buff_changes_max_hp(*b))
+            .collect();
+        if !hp_ticks.is_empty() {
+            out.notes.push(format!(
+                "target HP delta {delta} attributed to the HP tick(s) of the cast's buff(s) {hp_ticks:?}"
+            ));
+        } else if !max_hp.is_empty() {
+            out.notes.push(format!(
+                "target HP delta {delta} attributed to the max-HP buff(s) {max_hp:?} applied by the cast"
+            ));
+        } else {
+            out.mismatches.push(format!(
+                "unverified target HP delta {delta}: no damage/heal row, damage/heal packet, HP tick or max-HP buff explains it"
             ));
         }
     }
@@ -3903,6 +4156,10 @@ struct CastAttempt {
     plot_event_ids: Vec<u32>,
     damage_hits: Vec<DamageHit>,
     heal_hits: Vec<HealHit>,
+    /// Buff tags the caster / the compare unit carried at the cast baseline (buffs are cleared
+    /// before it, so this is the state the `skill_effects` gates saw).
+    source_tags: HashSet<u32>,
+    target_tags: HashSet<u32>,
 }
 
 // -------------------------------------------------------------------------------------------
@@ -4046,6 +4303,7 @@ pub async fn run(cfg: &BotConfig, opts: &RunOptions) -> anyhow::Result<RunReport
         },
         character,
         opts,
+        db,
     };
     // Safety net: hostile skills hit the dummy, never the bot.
     sweep
@@ -4564,6 +4822,34 @@ mod tests {
         );
         // No update at all: nothing to compare.
         assert_eq!(measure_mana(Some(100), &[], None).0, None);
+    }
+
+    #[test]
+    fn buff_facts_load_from_the_game_data() {
+        let Some(db) = test_compact_db() else {
+            return;
+        };
+        // MaxHealth (unit attribute 6) buffs: 7652 is +2318, 8226 +350; 448 only has a
+        // persistent health regen (attribute 67).
+        assert!(db.buff_changes_max_hp(7652));
+        assert!(db.buff_changes_max_hp(8226));
+        assert!(!db.buff_changes_max_hp(448));
+        // 4813 ticks a DamageEffect (a DoT), 3187 has no HP tick.
+        assert!(db.buff_has_hp_tick(4813));
+        assert!(!db.buff_has_hp_tick(3187));
+        // Buff 82 carries the tag 27 gate of skill 14376's damage row.
+        assert!(db.tags_of_buff(82).contains(&27));
+        // 14376's two damage rows are gated on the target buff tags 27 and 373.
+        let skill = db.skill(14376).unwrap();
+        let gates: Vec<u32> = skill
+            .effects
+            .damage_rows
+            .iter()
+            .map(|r| r.target_buff_tag_id)
+            .filter(|tag| *tag != 0)
+            .collect();
+        assert_eq!(gates.len(), 2);
+        assert!(gates.contains(&27) && gates.contains(&373));
     }
 
     #[test]

@@ -485,9 +485,14 @@ caster's `start_level..end_level` are dropped at load; a row with a source / tar
 a chance below 100 or a weight is only a note when its buff does not show up (`notes`, not
 `mismatches`). A skill with a `plot_id` never runs `skill_effects`: its buffs are demanded
 from the plot tree (`plot_effects`) and only when the run reached the carrying event
-(`plot_event_ids`). The HP delta is attributed to the buff effects (or to the skill's other
-effects, e.g. a spawn) when the skill has no damage / heal rows but applied them, and
-self-target damage rows are a note (`CanAttack` refuses the caster itself).
+(`plot_event_ids`). Buffs are cleared *before* the heal so a max-HP buff from an earlier cast
+cannot fill the target to a buffed maximum and then clamp it down after the clear (the heal
+sets the true baseline; a short settle lets the clamp and refill updates land). A non-zero HP
+delta is only a note when the cast applied a DoT/HoT buff (an HP tick effect) or a max-HP
+modifier buff; anything else is an `unverified target HP delta` mismatch. A damage row the
+baseline's gates skipped is named exactly (`target buff tag 121 absent`, `target buff tags 27,
+373 absent`, `chance 15`, `weighted row`), and self-target damage rows are a note (`CanAttack`
+refuses the caster itself).
 
 Each line of the JSONL records the data fields next to the observed ones (cast / channel /
 effect-delay times, `mana_cost_expected` vs `mana_spent` + `mana_source`, `cooldown_time_ms`,
