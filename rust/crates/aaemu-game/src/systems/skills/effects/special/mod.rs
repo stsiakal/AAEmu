@@ -323,6 +323,7 @@ pub fn execute(server: &GameServer, kind: i32, args: &EffectArgs<'_>, values: [i
         41 => combat::global_cooldown(s, a, v),
         43 => combat::reset_cooldown(s, a, v),
         45 => items::gain_item_with_emblem_imprint(s, a, v),
+        46 => unit_actions::explode_buff(s, a, v),
         47 => movement::teleport_to_unit(s, a, v),
         49 => items::item_conversion(s, a, v),
         50 => misc::declare_dominion(s, a, v),

@@ -371,6 +371,13 @@ pub fn add_buff(
     if forced_duration != 0 {
         duration = forced_duration;
     }
+    if let (Some(tol), Some(reduction)) = (&tolerance, current_reduction) {
+        tracing::debug!(
+            "AddBuff {}: tolerance {} step reduction {reduction}% -> duration {duration}ms",
+            template.id,
+            tol.id
+        );
+    }
     buff.duration = duration;
 
     let (skill_caster, caster_obj, skill_id, skill_level) = (
@@ -381,6 +388,7 @@ pub fn add_buff(
     );
     owner.with_base_unit(|b| b.buffs_mut().add_buff_with_duration(buff, index, now));
     crate::systems::dispatch_buff_events(server, owner);
+    apply_buff_breakers(server, owner, template.id);
 
     if final_tolerance_buff > 0 {
         if let Some(t) = data.buff(final_tolerance_buff).cloned() {
@@ -402,6 +410,64 @@ pub fn add_buff(
     }
 }
 
+/// `buff_breakers`: a buff ends when a buff carrying one of its breaker tags arrives (a stun,
+/// sleep or fear ends a glider flight or a bard song). Both directions are applied after an
+/// `AddBuff`: the arriving buff ends the active buffs it breaks, and an arriving breakable buff
+/// ends at once when the owner already carries a breaker tag.
+///
+/// The 1.2 server data holds the table and the 10.x zone loads it
+/// (`LoadBuffBreakersRelation`); neither the C# nor a 1.2 client reader exists, so the
+/// direction (`buff_id` is broken by `buff_tag_id`) is derived from the rows (victims are
+/// gliders / songs / ice-wall steps, tags are the stun, sleep, fear, silence, knock-down,
+/// psychokinesis, bubble, root and glider-flight tags).
+pub fn apply_buff_breakers(server: &GameServer, owner: &WorldObject, new_buff_id: u32) {
+    let data = &server.game_data.systems.skills;
+    if data.buff_breakers.is_empty() {
+        return;
+    }
+    let new_tags = data.buff_tags(new_buff_id);
+    let new_breakers = data.buff_breakers(new_buff_id);
+    // (index, template id) of every live buff on the owner.
+    let active: Vec<(u32, u32)> = owner.with_base_unit(|b| {
+        b.buffs()
+            .effects
+            .iter()
+            .filter(|e| !e.is_ended())
+            .map(|e| (e.index, e.template.id))
+            .collect()
+    });
+    let mut broken: Vec<u32> = Vec::new();
+    for &(index, id) in &active {
+        if id == new_buff_id {
+            // The arriving buff itself: broken when an already active buff carries a breaker tag.
+            let blocked = !new_breakers.is_empty()
+                && active.iter().any(|&(_, other)| {
+                    other != new_buff_id
+                        && data
+                            .buff_tags(other)
+                            .iter()
+                            .any(|t| new_breakers.contains(t))
+                });
+            if blocked {
+                broken.push(index);
+            }
+        } else if data
+            .buff_breakers(id)
+            .iter()
+            .any(|breaker| new_tags.contains(breaker))
+        {
+            broken.push(index);
+        }
+    }
+    for index in broken {
+        tracing::debug!(
+            "buff_breakers: buff index {index} on {} broken by {new_buff_id}",
+            owner.obj_id()
+        );
+        exit(server, owner, index, false);
+    }
+}
+
 /// `Buffs.AddBuff(buffId, caster, forcedDuration)`.
 pub fn add_buff_by_id(
     server: &GameServer,
@@ -410,11 +476,24 @@ pub fn add_buff_by_id(
     caster: &WorldObject,
     forced_duration: i32,
 ) {
+    add_buff_by_id_with_charge(server, owner, buff_id, caster, forced_duration, 0);
+}
+
+/// `Buffs.AddBuff(buffId, ...)` with an explicit initial charge (the `battle_field_buffs.value`
+/// column). A charge of 0 keeps the template's `init_min_charge` / `init_max_charge` roll.
+pub fn add_buff_by_id_with_charge(
+    server: &GameServer,
+    owner: &WorldObject,
+    buff_id: u32,
+    caster: &WorldObject,
+    forced_duration: i32,
+    charge: i32,
+) {
     let Some(t) = server.game_data.systems.skills.buff(buff_id).cloned() else {
         tracing::error!("AddBuff: unknown buff {buff_id}");
         return;
     };
-    let b = new_buff(
+    let mut b = new_buff(
         server,
         &t,
         Some(caster),
@@ -422,6 +501,7 @@ pub fn add_buff_by_id(
         None,
         now_ms(),
     );
+    b.charge = charge;
     add_buff(server, owner, b, 0, forced_duration);
 }
 
@@ -1714,6 +1794,7 @@ fn execute_trigger(
                 amount,
                 is_trigger: true,
                 always_hit: false,
+                aoe_diminishing: None,
             },
         )
     } else {
@@ -1725,6 +1806,7 @@ fn execute_trigger(
                 amount: 0,
                 is_trigger: false,
                 always_hit: false,
+                aoe_diminishing: None,
             },
         )
     };

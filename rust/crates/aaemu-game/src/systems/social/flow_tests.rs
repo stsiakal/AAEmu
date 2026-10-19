@@ -1316,6 +1316,37 @@ async fn guild_create_invite_kick_roles_and_disband() {
     }
     // Everybody on the server learns the new faction.
     assert!(outsider.ops().contains(&sc::SCFactionListPacket));
+    // Player guilds have political system 0 (the 1.2 client's Created / rename-task handlers
+    // ignore any other value).
+    assert_eq!(e.faction.political_system, 0);
+
+    // Renaming: only the owner, under the creation name rules.
+    let rename = |name: &str| {
+        let mut s = PacketStream::new();
+        s.write_u32(id).write_str(name).write_bool(true);
+        s
+    };
+    pcs[1]
+        .send(&server, cs::CSRenameExpeditionPacket, rename("Templars"))
+        .await;
+    assert_eq!(server.expeditions.get(id).unwrap().faction.name, "Knights");
+    pcs[0]
+        .send(&server, cs::CSRenameExpeditionPacket, rename("x1"))
+        .await;
+    assert_eq!(pcs[0].ops(), vec![sc::SCErrorMsgPacket]);
+    assert_eq!(server.expeditions.get(id).unwrap().faction.name, "Knights");
+    pcs[0]
+        .send(&server, cs::CSRenameExpeditionPacket, rename("Templars"))
+        .await;
+    assert_eq!(server.expeditions.get(id).unwrap().faction.name, "Templars");
+    let renamed = find(&outsider.frames(), sc::SCFactionRenamedPacket);
+    assert_eq!(renamed.len(), 1);
+    let mut want = PacketStream::new();
+    want.write_u32(id).write_str("Templars").write_bool(false);
+    assert_eq!(renamed[0], want.into_bytes());
+    for x in pcs.iter_mut() {
+        x.ops();
+    }
 
     // Guild chat.
     pcs[1]

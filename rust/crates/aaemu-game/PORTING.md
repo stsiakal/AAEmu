@@ -258,6 +258,7 @@ Economy hooks (`server.systems.housing.hooks`): installed by `economy::bridges::
 | `QuestManager.Load` (contexts, components, base acts, all 64 `quest_act_*` detail tables, supplies, item / NPC groups, `UpdateQuestComponentActs`) | `systems/quests/data.rs`, `templates.rs` | done | Same table order (act order inside a component = objective indices), first-base-act linking, tutorial category skipped. Validated against compact.sqlite3 (`real_compact_db_quest_tables`: 4775 quests, 17720 components, 19047 acts, per-type counts). Exhaustive record accounting and outstanding gameplay failures: `Docs/wiki/Quest-Audit.md`, `rust/tools/quest_audit/audit.py`; port coverage does not certify every quest as playable. |
 | `Models/Game/Quests` (`Quest`, `NewQuestCode`, `QuestStep`, `QuestComponent`, `QuestAct`, all `Acts/*` + `UnusedActs/*`) | `state.rs`, `engine.rs`, `acts.rs` | done | Live quests on `Character::quest_state` (handles + act paths instead of object references); `c.quests` rows re-derived after every operation. Step machine, objective status / percent, rewards, drop / cleanup, event subscriptions in invocation-list order (`-=` removes the last occurrence). |
 | `CharacterQuests` (AddQuest*, DropQuest, completed flags, reset / daily reset, LetItDone, item destroy, `GetActiveActsWithUseItem`, Load) | `engine.rs`, `events.rs` | done | Save = existing `Character.Save` rows. |
+| `Quest.DistributeRewards` exp / copper pool | `engine.rs` (`distribute_rewards`), `acts.rs` (`SupplyExp` / `SupplyCopper`) | deviation | **Deviation:** a Reward component `QuestActSupplyExp` / `QuestActSupplyCopper` act replaces the level-based `quest_supplies` exp / copper instead of being added on top of it (the C# added both). 1.2 client oracle + 2014 data, details in the deviations list. |
 | `QuestManagerEvents` + other C# entry points (OnItemUse, OnKill, cinema, mate level) | `events.rs` | done | Public event API; nested calls from hooks are queued. |
 | `QuestManager` evaluation queue / timers / daily reset task | `mod.rs` | done | `QuestManagerRunQueueTask` as a 1 ms tokio task; timers as tokio tasks; daily reset at 00:00 UTC. |
 | `UnitRequirementsGameData` (`CanComponentRun`, `CanTriggerSphere`) + `UnitReqs.Validate` | `unit_reqs.rs` | done | `ReqSubject` / `ReqEnv` traits (owner = locked character, target = snapshot). `CanUseSkill` is the skills subsystem's (can reuse `validate`). |
@@ -290,7 +291,7 @@ Economy hooks (`server.systems.housing.hooks`): installed by `economy::bridges::
 | Doodad funcs `EnterInstance`, `EnterSysInstance`, `ExitIndun`, `RemoveInstance`; skills hooks `leave_instance` (`ExitArchemall`) / `main_world_position` (`Return`); portal `UsePortal` court check | `npcs/doodad/funcs/world.rs`, `skills/ext.rs` (default bodies), `npcs/portal/mod.rs` | done | |
 | Tower defense runtime, `TowerDefenseAttackerAiCharacter` | `tower_def.rs`, `config.rs`, `scripts/tower_def.rs`, `ai/framework.rs` | extended | Rust adds event start/end, first-wave delay, timed/kill AND/OR progression, NPC controller/summon cleanup preserving normal corpse timers, client lists, GM controls and opt-in game-time/war schedules. The attacker's C# behavior graph already matches `AiKind::TowerDefenseAttacker`. Unsupported target kinds and absent spawn positions fail preflight; rewards/victory event chains are not added. |
 
-Cross-subsystem: mates are despawned on dungeon entry and `PlayerCanEnter` checks the summoned vehicle (`systems::vehicles`); dungeon entry items use the economy's checked `EconomyBridge::bag_consume_item`; `SetFaction` updates the owned houses (`SocialHooks::update_owned_housing_faction`, housing). Instant games have no rewards in C#.
+Cross-subsystem: mates are despawned on dungeon entry and `PlayerCanEnter` checks the summoned vehicle (`systems::vehicles`); dungeon entry items use the economy's checked `EconomyBridge::bag_consume_item`; the permanent `Character.SetFaction` updates the owned houses (`SocialHooks::update_owned_housing_faction`, housing). Battlefield corps factions are temporary and skip every side effect (see the RPA-09 deviation below).
 
 ### systems::vehicles
 
@@ -347,6 +348,62 @@ Cross-subsystem: mates are despawned on dungeon entry and `PlayerCanEnter` check
 | `WaterBodies`, `WaterBodyArea`, `Models/CryEngine/Objects` (`object.dat`) | `systems/ai/physics/{water,objects_file}.rs` | done | Water areas of all 1 294 client `object.dat` files equal the C# output bit for bit (differential harness, gated test `real_ai_object_dat_water_bodies`). Gimmick `FloatToSurface` uses them. |
 | `ShipTuningDebug`, `HarpoonMechanicsDebug` logging, `ShipHarpoonRopeController` | – | not ported / slaves | Debug code is hard-wired off in the C#; the rope controller belongs to the slaves subsystem. |
 | (Rust only) the 10.x zone server's collision world: terrain heightfield, `brush.dat` / `vegetation.dat` statics from CGF `MeshPhysicsData`, doodad colliders, ocean / water-volume buoyancy areas, living-entity proxies of units, ray / sweep query service, `GetBlinkPosition`, ZWUnitFell, ZWReportMoveHack, ZWUnitCollision, CryPhysics hulls | `systems/ai/collision/`, `systems/ai/physics/cry.rs` | done | On the CryPhysics port (`aaemu-physics`), `Configurations/Physics.json`. See "systems::ai collision" below. |
+
+#### systems::ai retail alignment (2026-10-19, 1.2 AI Lua as the oracle)
+
+The C# AI differs from the 1.2 client's own AI Lua (`game/scripts/ai/**`, extracted to
+`D:\aa-re\zone\ai\lua12`; study in `AI-ORACLE.md`) in the places below. Each was measured live with
+`aaemu-testclient ai` first (`ai-sweep.md`) and is changed where the 1.2 Lua or 1.2 data defines the
+behaviour.
+
+* **Alert (S3, S11)**: `alertDuration` (`npc_ai_params`; default 3.0 as in `default.lua`) sets the alert
+  length instead of the fixed 5 s. After it, `alert.lua` `OnAITimeEvent`: an aggressive species
+  (`npcs.aggression`) attacks the attention target (`NpcAddAggro`), anything else remembers it as
+  alert-safe (`alertSafeTargetRememberTime`, default 5 s, per target) and leaves. `alertDuration < 0.1`
+  (`default.lua:1753` `OnAlertTargetChanged`) means no alert state at all: aggressive NPCs attack from
+  sight range at once, calm ones ignore the target. The C# `_nextAlertCheckTime` global 7 s cooldown is
+  gone. `alertDuration` / `alertSafeTargetRememberTime` of the 1.2 rows of AI types without typed
+  parameters (roaming, hold position, default, ...; the C# ignores those rows) are read into
+  `AiData::alert_only`. `alertToAttack` is not read by any 1.2 Lua file (dead data in retail); the
+  Almighty spawning use of it is unchanged.
+* **Leash (S1)**: `npcs.return_distance` is applied per target (a target farther than it from the NPC is
+  removed from the aggro table; `0` disables the check, the C# substituted 50), and
+  `absolute_return_distance` is measured from where the fight started (first combat tick) instead of from
+  the idle position (`0` disables, the C# substituted 200). The 1.2 Lua has no leash code; the column
+  names and meaning come from the 10.x `NpcAggroTable::ProcessAggroCancel` / `ProcessReturn`, and the
+  1.2 data carries the same columns. **Open suspects** (10.x only, not corroborated by 1.2 data/Lua, not
+  implemented): the 3 s no-hit grace before a far target is dropped, the `2 * absolute_return_distance`
+  hard leash from spawn for boss grades 3/4/5/8 (S13), the target-under-terrain cancel, and `Npc::Update`
+  staggering.
+* **Idle position (S5)**: hold-position NPCs run `hold_position.lua` `UpdateHoldPosition` every 2 s:
+  7 m or more from the idle position teleports home, 3 m or more goes through `ReturnToIdlePos`
+  (return state). Roaming (`UpdateIdleEnd`) and alert (`UpdateAlert`) teleport home beyond 15 m
+  (`X2AI:IsOutOfIdleArea`; the group-member 50 m case is not ported, formations are missing). The
+  `returnSpawnPos` param (2 rows) is not read. The talk 7 m / 3 m rule is unchanged.
+* **Archer make-a-gap (S6)**: after the make-a-gap skill the NPC backs away from the target
+  (`archerAttack_MakeAGap`: `backoff` by `preferedCombatDist`, 3 s) instead of walking to its idle
+  position.
+* **Wild boar spurt (S7)**: `wild_boar_attack.lua` `OnAITimeEvent`: a spurt skill is queued once when the
+  HP% crosses its `healthCondition` downward (`curr < cond <= prev`), only while nothing is queued, and
+  cast through the skill list; the C# cast on every pick while below the threshold. The
+  `onCombatStartSkill` list is still cast as its first entry only.
+* **Spawn window (S9)**: the `Spawning` behavior waits `spawning.lua`'s minimum `spawningEffectTime`
+  (0.1 s of AI tick time; the real value is set by the zone C++ and is not in the 1.2 data) before the
+  command set. **Open**: the `NPC_SPAWN_INVINCIBLE_BUFF_TYPE` buff and the Busy state object are
+  C++/engine constants with no 1.2 buff id, so NPCs are not invulnerable while spawning.
+* **minAPS (S10)**: left open. `tower_defense_attacker.lua` only calls `NpcSetMinAps(minAPS)`; what the
+  C++ does with it exists only in the 10.x zone (`NpcAggroTable` APS filter), the 1.2 rows carry
+  `minAPS` 20 (and 1e8 for NPC 8828) without a 1.2 definition. Not implemented.
+* **Other open suspects** from the oracle, unchanged: S2 radii (the live server behaves as
+  `attackStartRange 15 / sightrange 10` times the scale although `behaviors.rs` reads `10 / 15`; the
+  measured radii agree with retail, the source-level reason is not explained), S4 ranged stop distance
+  (0.85 factor, 10.x only), 0.3/0.5 backoff, roaming cadence, formations, `skills.onAlert`
+  per-second alert skills, and the combat-start burst (S8, nothing to cast in the 1.2 data).
+* **`/spawn npc <template>`** (and `/spawngrid`, `npc spawn`): the C# registered memberwise clones of the
+  natural spawners for an NPC that has some and left the command's own spawner without a template, so the
+  command logged `[Spawn] Can't spawn NPC 0:<id> - template is null` and the NPC only appeared when its
+  natural spawner (schedule, population) was active. The command now always uses a generated spawner
+  (`SpawnManager::add_generated_npc_spawner`, template 1 for exactly this NPC).
 
 #### systems::ai collision (the zone's physics, Rust only)
 
@@ -835,6 +892,22 @@ is no longer mirrored (see "Known deviations", dead NPC returned and healed).
   switch): they abort the event invocation list / sphere tick. Out-of-range objective reads
   that would throw in RunAct / score sums read 0 (no 1.2 quest triggers them).
 * systems::quests: the daily reset runs at 00:00 UTC (C# cron in server local time).
+* systems::quests (reward exp / copper pool, 1.2 oracle): the Reward component's own
+  `QuestActSupplyExp` / `QuestActSupplyCopper` act **replaces** the level-based
+  `quest_supplies` value instead of being added on top of it (`engine.rs`
+  `distribute_rewards`). The act itself still runs immediately (`acts.rs` `SupplyExp` /
+  `SupplyCopper`): the immediate exp keeps its unscaled grant, and the let_it_done reward
+  ratio keeps scaling whatever lands in the reward pool — the copper act pool when the
+  copper act is present, the level supply otherwise — as before. The C# added both
+  (`Quest.cs` `DistributeRewards`). Sources: the 1.2 client's
+  `X2Quest.GetQuestContextRewardExp` / copper lookup (`x2game` FUN_394a1370 / FUN_394a0fd0)
+  scans the Reward component for act type 0x18 / 0x19 and falls back to `quest_supplies`
+  only when the act is absent, and the Oct–Dec 2014 archeagedatabase.net export shows
+  exactly the act value on 103 quests and the level supply on 897 others (quest 2785
+  level 35: 8,400, not 8,400 + 3,224; quest 1213: 110, not 110 + 420). Open suspect: the
+  client decompile also scales the level supply by `quest_contexts.degree` (x0.5..x1.5),
+  but the 2014 site shows unscaled values for all 221 non-degree-3 quests; degree scaling
+  is not implemented until that conflict is resolved.
 * systems::quests: the October 2026 quest audit corrects timer event isolation, explicit NPC
   reporting, per-quest NPC/doodad reporting, doodad reward selection/finalization, and OR
   requirement evaluation. Timed saved deadlines, aggro credit, CheckSphere, and authored
@@ -1026,6 +1099,8 @@ is no longer mirrored (see "Known deviations", dead NPC returned and healed).
   operation is aborted and logged.
 
 * systems::instances: the dungeon loader awaits the spawn tasks before registering the indun events again (C# does not await `Task.WhenAll`, a race) and reads the spawn files there instead of in `CreateWorldInstance`; `DestroyInstantGame` cleans the instance up and releases its id right away (C#: the finalizer, later); `Environment.TickCount` is a process-relative monotonic clock; the `World.Template.SpawnPosition` mutation in `MoveCharacterTo*` is a local value; paths that throw in C# (missing action / room / zone / rule set, `_members[x]` of a non-member, a destroyed dungeon's `World`) log and return, keeping the side effects done before the throw; `EndGame().Start()` throwing after a victory is modelled as "the rest of `OnKill` (respawn) does not run"; the timed `EndGame` decides the result instead of sending both corps as `Lose` (kill count, then score, equal as a draw; see the ranking note under "Ranking boards"); the cross-instance region switch removes the object from every old neighbour once (no double notification of its own sector).
+* systems::instances (battlefield rules, 2026-10-19): `game_score_rules` is now loaded instead of the hard-coded 30-point kill. A kill uses event 200 (`event_value` 0) and an assist event 204; a corps-bound row wins over the `rule_set_corps = -1` row. Shipped rows: rule set 28 (Gladiator) event 200 -> 30 (id 93); rule sets 8/17/22/26/27 event 200 -> 3 and events 202/203/204 -> 2 (ids 26/53/68/73/76 and 81-92); rule set 2 authors no kill row, so its kills award 0. The assist rows do not distinguish healer / dealer in 1.2, so one 204 row is paid per assist (the three rows carry the same value). `game_rule_events` is loaded (rule set 28: 4 rows; 8/17/22/26/27: 1 each) but has no consumer with defined semantics in the 1.2 C#, in the 10.x zone decompile (loader only) or in the 1.2 client UI, so no behaviour is invented for `condition_id` / `kind_id` / `param1` / `param2`. `battle_field_buffs` is applied at match start (after the reset that clears buffs) with the row's `value` as the buff charge and removed on leave / disconnect: battlefield 7 has 8 rows (6266/100, 7006/1, 7007/2, 7061/3, 7062/4, 8246/1, 8247/1, 8000007/10) and battlefield 11 has 3 (8246/1, 8247/1, 8000007/1); the 3.0 successor `battle_field_honor_buffs.basic_value` repeats the same buff ids and values. Regression: `battlefield_kill_and_assist_scores_come_from_game_score_rules`, `battlefield_buffs_are_granted_at_start_and_removed_on_leave`, `battlefield_data_loads_with_json_quirks` and `real_instances_data`.
+* systems::instances / systems::social (RPA-09 temporary factions): duel Red / Blue team and battlefield corps factions are temporary. `UnitBase::faction_temporary` marks them, `SCUnitFactionChangedPacket.temp` is `true`, and they skip `Character.SetFaction`'s housing update, guild kick and party removal. `db_character::persisted_faction` writes the origin faction, so an autosave, logout or crash during a duel / battlefield never stores the temporary faction; the faction is also restored on duel end, battlefield leave and departure/save (`world::session::save_and_remove_from_world`). Tested by `duel::tests::temporary_team_factions_keep_guild_and_restore`, `disconnect_during_a_duel_restores_the_origin_faction`, `instances::flow_tests::battlefield_entered_requires_actual_instance_and_subscribes_kills_once` and `db_character::tests::a_temporary_faction_is_never_persisted`.
 * systems::instances (tower defense): the C# command only sent packets to its caller and hard-coded zone group 5. The Rust runtime reserves controller positions from the existing NPC JSON by compact spawner membership; these controllers no longer spawn permanently. Manual controls affect the caller's instance/group. Automatic schedules are disabled by default and validate every selected event at startup. Orphan waves/targets no longer truncate later valid rows. Kill notifications use only `DoDie`, deduplicate the NPC handle and retain id-reuse semantics. Timers use monotonic real seconds; `tod` uses the accelerated game clock and day intervals count from scheduler startup. Spawn effects carry explicit event ownership for cleanup even when Unit.OwnerId is zero. Unsupported `DoodadAlmighty` targets, NPC groups without authored controller positions and reward/victory chains remain unavailable rather than being synthesized.
 * systems::instances (dungeons/mentoring): replaces the mirrored double entry-item charge and unsafe dungeon destruction below. Each character pays once per run; re-entry is free, capacity counts pending admissions, and creation obeys `World.MaxInstances` including concurrent requests. Empty owner/leader resets remove the whole run binding; destruction cancels its loader and returns occupants before removing their world. Party join grants access without inserting a player into another world's object table. Mentor eligibility is captured at boss death for nearby living party members with complementary active quests, rechecked during interactions, and bound to selected chest participants. Four explicit 1.2 quest/chest bindings are verified by a gated real-data test. Missing reward chests use the authored templates at the boss position (two metres apart for the two-chest dungeons); this placement fallback and qualification policy are emulator extensions, not claimed native-server execution parity. Authored phases grant seal items through existing inventory/quest hooks and daily persistence; Gilda is not issued directly by mentoring.
 
@@ -1062,6 +1137,10 @@ is no longer mirrored (see "Known deviations", dead NPC returned and healed).
   The tick resolves the character under the save transaction lock (serialized with
   `select_character`'s load and world registration). Before an offline write, it flushes a
   departing sibling's pending labor (`SaveManager::flush_account_labor_locked`).
+* systems::economy (RPA-16): socketing (success, failed roll and DawnStone), lunastone, temper
+  and temper reset write plain `ItemDetails` fields; the C# setter-less fields did not mark
+  `IsDirty`, so `ItemManager.Save` skipped them. Rust marks `Item.dirty` in those paths and the
+  regressions assert the next prepared save snapshot contains the item.
 * systems::services: the WebApi 500 page shows the Rust error chain instead of a .NET stack
   trace, and System.Text.Json / NotSupportedException messages are close paraphrases. Character
   `CreatedAt` of characters created in the running session is written without the `Z` of a
@@ -1488,6 +1567,21 @@ The 1.2 C# never answered `CSRankCharacterPacket` (empty, log-only) and has no `
 - **Period close.** A once-a-minute task (first tick at start-up) mails every closed, unpaid period: place -> `rank_scope_links` band -> `rank_rewards` item (count and grade as authored) as a `SYS_EXPRESS` letter (offline winners included), then `SCRankRewardMailPacket` to online winners. The period is marked paid before the letters are built, inside the economy operation gate; a crash between the letters and the next save can therefore lose (never duplicate) the mark. `rank_rewards.weeks` (how long the reward lasts) and appellation rewards (none authored) are not applied.
 - **Not sent.** `SCRankAlarmPacket` (0x205): only the fishing contest authors alarms (`start_time_alarm` -5 / `end_time_alarm` 0 and message strings), that board ended in 2014 and the packet's `kind` / `rank_alarm_kind` values are unresolved, so no trigger is invented.
 
+### Hosting hardening (Rust only, RPA-19/20)
+
+Security deviations from the C# servers (no retail oracle needed; the C# had none of these):
+
+- Login internal port: only `GLRegisterGameServer` with the shared `SecretKey` is honoured from
+  an unregistered peer; any other packet closes the connection. A bad secret closes it after the
+  error reply. Unregistered peers: 10 s handshake window, at most 8 at once. `GLPlayerEnter` and
+  `GLPlayerReconnect` are bound to the registered game server (or its mirrors). Shipped
+  `InternalNetwork.Host` is `127.0.0.1`, `AutoAccount` is `false` (`cargo xtask dev` sets it).
+- Web API: every route except `/status` needs `WebApiNetwork.Token` (`Authorization: Bearer` or
+  `X-Api-Key`); no token configured = those routes answer 403. An empty host binds loopback.
+- Level-0 commands are pinned to `help`, `online`, `soloparty`, `dungeon`, `collectdominion`,
+  `joinsiege`, `leavesiege` by a shipped-config test (`/fly`, `/teleport` are 50).
+- Compose: MySQL published on `127.0.0.1` only, Adminer behind `--profile tools`.
+
 ### Startup warnings (Rust only)
 
 - **`FamilyIdManager` and family 0.** `characters.family` is 0 for a character without a family. The C# `FamilyIdManager` passes `Exclude = []`, so every start logged "Object ID 0 in DB is less than 1". `IdManagerSpec` now carries the C# `_exclude` list (checked before the first-id warning, as in `IdManager.Initialize`) and `FAMILY_ID` excludes 0. Every other manager keeps an empty list and still warns about ids below its first id.
@@ -1616,8 +1710,6 @@ and in NPC wandering / buff remaining times.
 * `CharacterManager.Load`: `character_supplies` creates `_abilityItems` entries that
   `character_equip_packs` then `Add`s again (throws for an ability with both).
 * `FriendMananger.Load` keys all friends by `id` although the table key is `(id, owner)`.
-* `ItemManager.LoadUserItems`: a stacked item (merged into an existing stack while loading) keeps
-  its own DB row, which is loaded again next time.
 * `SCUnitStatePacket.Write` adds buffs 8000011 / 8000012 to the character ("Wrong place"), and an
   exception inside any `Write` (e.g. no `VisualOptions.Stp`) truncates the packet, because
   `PacketStream.Write(PacketMarshaler)` swallows it. Both reproduced.
@@ -1628,29 +1720,50 @@ and in NPC wandering / buff remaining times.
 * `systems::npcs`: the "spawn all" schedule check is inverted; `DoRandomSpawn` leaks an obj id and spawns twice; a doodad despawn may release its obj id twice; gimmick spawn rotations are not converted from degrees; scheduled doodad spawns stack cron tasks; the player-in-radius check scans every player; NPCs are not despawned when players leave.
 * `systems::npcs`: dated game schedules compare `StartTime` / `EndTime` (usually 0) instead of the start / end hours (a one-day event counts as ended at 00:00); the cron builder tests the captured day of week instead of its parameter, and undated schedules produce day / month 0 (rejected by the cron parser); `VendorExist` reads the `id` column; deleting a portal sends no packet; `NotifySubZone` re-sends the portal book once per recall portal of the sub zone; the exit portal's yaw is the book rotation in degrees.
 * `systems::npcs`: corrected coin double credit and failed trade-pack acquisition; `BuyFish` uses the checked economy sale. Phase operations reserve live object identity, honor interaction counts, enter functions on time-of-day changes, and cancel superseded timers. Saves/deletes use a FIFO writer drained by the save lifecycle; partial interaction counts use the doodad-interactions SQL update. Scheduled spawns recreate deleted doodads, deduplicate cron callbacks, and retain original world identity. Logic links/families route matching true/false pulses with per-object state and cycle guards; client-created wires require ownership and reach. Immediate gates are supported; delay descriptors 2/3 need reference behavior. `SpawnGimmick` creates the authored object with offsets/faction/kinematic motion; `SpawnMgmt` requires explicit authored `SpawnGroupId` membership. Prefab flow graphs are client-owned. `CheckGrowth` still runs funcs with `nextPhase = 0`; child metadata templates (e.g. `DoodadFuncBuyFishItem`) remain in the phase dictionary.
-* systems::economy: `AddOrMoveExistingItem` merging an item from another container into a stack
-  removes it from the source without releasing it (the DB row stays); it is kept as a loose item.
-  The mail branch of the acquire / consume events reads `item.SlotType` after it was overwritten,
-  so moving an item into a mail container raises no quest event.
-* systems::economy: `SplitOrMoveItemEx` gives the split item owner 0, assigns the *source* owner to
-  the moved source item and passes `fromSlot` as the previous slot of the target item's leave
-  event; `CSWithdrawMoneyPacket` reports `ItemTaskType.DepositMoney`; `ExpandSlot` never sends its
-  `MoneyChange` task.
 * systems::economy: the two "is not welcome in this container" rejections of `SplitOrMoveItemEx`
   (an item the target / source container refuses, e.g. armor sent to a wrong equipment slot) are
   logged at `warn` (C#: `Error`) and include the whole request (from / to type, slot, item ids,
   owner). The client is the source of the request and `CanAccept` already warns with the cause.
 * systems::economy: `BindType.HasFlag(...)` on the plain `ItemBindType` enum is a bit test
   (`BindOnUnpack` matches 4..7, `BindOnEquip` matches 3 and 7); mirrored.
+* systems::economy: loot dice are won by the highest roll (the C# sorted the rolled values
+  ascending and took the first positive one, so the lowest bidder won). The 1.2 client presents
+  the roll as an item bid and only reports values: `ui_texts` 4305 `loot_dice_roll` = "Roll"
+  (입찰), 4318 `loot_dice_title` = "Item Bid" (아이템 입찰), 2412 `msg_dice_value` = "$1 rolled a
+  $2 on the dice. (1-$3)"; its `loot_dice.alb` bytecode only calls `X2Loot.DoDiceAction` /
+  `RequestNextDiceItem`, so the winner is the server's decision and a bid over 1-100 is won by
+  the highest value.
+* systems::economy: `CSWithdrawMoneyPacket` reports `ItemTaskType.WithdrawMoney` (84; the C#
+  handler called `ChangeMoney` without a task type, so it defaulted to `DepositMoney`) and
+  `ExpandSlot` sends its `MoneyChange(-price)` task with the expansion (the C# collected the task
+  into a list it never sent, in both the economy and the services copies).
+* systems::economy: taking loot releases the item id it allocates for the grant checks once
+  `AcquireDefaultItem` created its own item (the C# leaked one id per non-coin, non-trade-pack
+  loot grant).
+* systems::economy: `AddOrMoveExistingItem` releases a stack that is merged into another
+  container's stack (the C# removed it from the source without releasing it and kept it as a
+  loose item, so its row stayed and a mail attachment merged into a bag stack was saved as an
+  orphan `slot_type Mail` row; the same fix as the fork's C# `47a3a9e77`). The mail acquired /
+  consumed event uses the slot type captured before the move (the C# read the overwritten
+  `item.SlotType`, so moving an item into a mail container raised no quest event).
+* systems::economy: `ItemProc` `ignoreRoll` never procs; `HDps` uses the magic DPS grade value;
+  fish conversion only uses the first pack.
+* systems::economy: `ItemManager.LoadUserItems` deletes the row of a loaded stack that was merged
+  into an existing stack (the C# kept it, so the same units were loaded and merged again on every
+  start; related to upstream issue #1189, "sold items reappear after relogin"). The id is freed
+  and the row is removed by the next save.
+* systems::economy: `SplitOrMoveItemEx` gives every item the owner of the container that holds it
+  after the operation (a split item belongs to the target container, and a moved / swapped item
+  to its new holder; the C# assigned the *source* owner to the moved source item and the
+  *target* owner wherever the target ended up) and the target item's leave event names its
+  previous target slot (`toSlot`; the C# passed `fromSlot`). The split item used to keep owner 0
+  and could be lost on relogin (upstream issue #412).
 * systems::economy: `ExpandExpert` adds the vocation cost; craft / backpack / weapon booleans
   read as numbers are false for `'t'` texts; `Specialty.VendorExist` reads the `id` column.
-* systems::economy: loot dice pick the lowest positive roll; looting allocates a new item id that
-  is never released; `ItemProc` `ignoreRoll` never procs; `HDps` uses the magic DPS grade value;
-  fish conversion only uses the first pack.
 * systems::economy: mail — opening a mailbox re-sends a "got mail" per unread received
   mail; FinalizeForBidFail still uses AucOffFail; receiver lookup is case-sensitive.
   The old return failure and sender unread-count bug are corrected below.
-* `systems::instances`: `RegisterIndunEvents` runs in the `Dungeon` constructor and again in the loader, so every indun event handler is subscribed twice; a dungeon kill raises `OnUnitKilled` (and the victim's `OnDeath`) in `PostUpdateCurrentHp` and again in `DoDie` — NPC-killed action chains run four times; `IndunEventDoodadSpawneds.UnSubscribe` adds the handler (`+=`); `AreaClearTick` stops at the first cleared room (`return`); a new dungeon verifies the requirements twice (the entry item is consumed twice) and the creator gets `SCProcessingInstancePacket` twice; `Transform.CloneDetached(character)` / `MainWorldPosition.Clone()` fire `OnZoneChange(0, zone)` (the instance zone chat is never left); `ApplyWorldSpawnPosition` stores the spawn rotation in degrees; leaving an instance sends the (radian) return rotation through `DegToRad` again and `SCLoadInstancePacket` names `MainWorldPosition.WorldId`; `DestroyDungeon` removes the players from the instance without moving them out; `InstantGame.RemovePlayer` looks the corps lists up by 0 / 1 instead of the faction ids (never cleaned); `AddScore` always sends `Corps1` / `score2 = 0`; the kill packet's victim count is the victim corps' kills; entering a battlefield sets the corps faction, so `Character.SetFaction` kicks guild members of another mother faction from their guild and party; offline queue applicants are never pruned (`CharObj` is never null); `RemoveGame` leaves the game in the queue list; battlefields.json loops stop (`return`) at the first orphan row.
+* `systems::instances`: `RegisterIndunEvents` runs in the `Dungeon` constructor and again in the loader, so every indun event handler is subscribed twice; a dungeon kill raises `OnUnitKilled` (and the victim's `OnDeath`) in `PostUpdateCurrentHp` and again in `DoDie` — NPC-killed action chains run four times; `IndunEventDoodadSpawneds.UnSubscribe` adds the handler (`+=`); `AreaClearTick` stops at the first cleared room (`return`); a new dungeon verifies the requirements twice (the entry item is consumed twice) and the creator gets `SCProcessingInstancePacket` twice; `Transform.CloneDetached(character)` / `MainWorldPosition.Clone()` fire `OnZoneChange(0, zone)` (the instance zone chat is never left); `ApplyWorldSpawnPosition` stores the spawn rotation in degrees; leaving an instance sends the (radian) return rotation through `DegToRad` again and `SCLoadInstancePacket` names `MainWorldPosition.WorldId`; `DestroyDungeon` removes the players from the instance without moving them out; `InstantGame.RemovePlayer` looks the corps lists up by 0 / 1 instead of the faction ids (never cleaned); `AddScore` always sends `Corps1` / `score2 = 0`; the kill packet's victim count is the victim corps' kills; entering a battlefield set the corps faction through `Character.SetFaction`, which kicked guild members of another mother faction from their guild and party (no longer mirrored: the corps faction is temporary, see the RPA-09 deviation above); offline queue applicants are never pruned (`CharObj` is never null); `RemoveGame` leaves the game in the queue list; battlefields.json loops stop (`return`) at the first orphan row.
 * systems::housing: abandoned-house removal buff 2250 now applies its original effect
   1876 through the normal damage path. C# rejected the house attacking itself, so the
   building never decayed. Only the active server-owned removal tick on that same unowned
@@ -1753,8 +1866,8 @@ and in NPC wandering / buff remaining times.
   clamped value carries over to the next recipient); `AuctionController.SearchAuctionItems`
   throws on lots without bidder when filtering by `BidderName`; `CommandController` passes the
   raw regex group (query string included) as the command name.
-* systems::services: `Inventory.ExpandSlot` deducts the price without sending the `MoneyChange` item
-  task; `CharacterActability.ExpandExpert` adds the vocation cost (`ChangeGamePoints(Vocation,
+* systems::services: `CharacterActability.ExpandExpert` adds the vocation cost
+  (`ChangeGamePoints(Vocation,
   +LifePoint)`) instead of paying it; `CSBroadcastVisualOptionPacket` keeps the members the new
   flag does not mention.
 * systems::services: `CSExpressEmotionPacket` passes the animation id as the emotion id to
@@ -1949,6 +2062,14 @@ the C# `GameNetwork`. Deviations of the audit ports:
 * The zone conflict state lives in `systems::social::conflicts` (copied from the loaded data at
   start); `NextStateTime` is kept in milliseconds for the timers and sent in seconds.
 * `ZoneStateChangeTask` is a tokio task holding a weak server reference.
+* RPA-10 (zone conflict kill counter): a PvP kill registers with the zone conflict in every
+  state (`skills::combat::award_pvp_honor` calls `conflicts.add_zone_kill` before the honor
+  branch). The 1.2 C# only called it from the Conflict / War honor branch, where
+  `ZoneConflict.AddZoneKill` returns early, so the `conflict_zones.num_kills_0..4` thresholds
+  of zone groups 14-27 (70 / 100 / 140 / 190 / 250) were unreachable and the zone stayed in
+  Tension after its first Peace -> Tension step. Honor stays Conflict-only / War-only as in
+  1.2. Regression: `skills::tests::pvp_kill_advances_a_conflict_zone_that_returned_to_tension`
+  walks Conflict -> War -> Peace -> Tension and then kills once at 70 accumulated kills.
 * `SusManager.finalize_check` keeps the `_skipCheckTime` / `_lastFinalizeTime` of an object by obj
   id; the analysis itself (database log) runs on a task.
 * systems::services (commands): `CrimeCmd` keeps `CommandNames = ["doodad"]` (help / call prefix
@@ -1994,6 +2115,69 @@ See Docs/wiki/Quest-Audit.md and Docs/wiki/Mail-Audit.md.
 | Zones whose origin differs between the 1.2 and 10.x `world.xml` (190, 192, 193, 200, 227, 251, 266, 281, 286, 287) | same | data | The content sits at the 10.x position (zone origin x 1024 + local): the 1.2 origin never fits the 1.2 heightmap (0 of 154 editor candidates with unclipped terrain), the 10.x frame does (many points within 0.1 m). Z values above the 1024 m ceiling cannot be verified. Candidates whose terrain differs by tens of metres (10.x-only zones such as 157, parts of 190/281) were rejected. |
 | `NpcSpawner.SelectSpawnerId` for NORMAL multi-member spawners | `systems/npcs/npc/spawner.rs` (`select_spawner_id`) | matches the C# | Not changed. A JSON entry clones every game-data spawner that has its unit as a member and (memberwise clone) shares one `NpcSpawnerIds` list, so with more than one spawner only an AUTOCREATED unscheduled one or a scheduled one is ever selected: a unit that has no JSON entry of its own and is only a sibling of a NORMAL group spawner (Vicious/Silent Treant 3105/3106, Goblin Fighter 527, ...) never spawns. The 13 audit findings of this kind are all `ConAcceptNpcKill` starters, which `starter_accepts` evaluates as an OR over the component's acts, and in every one of the 7 quests other listed NPCs spawn, so no quest is blocked; the data would need real positions for these units (the 10.x editor has no placement of those group spawners). |
 
+### Later-version spawn fill (October 19, 2026)
+
+A deliberate fill from the 10.x client pak (`10.0.2.13`, r575): positions come from
+`game/worlds/*/level_design/zone/*/zone_server/npc_spawners.g`, world metres are
+`world.xml origin * 1024 + local`. Only zones whose 1.2 and 10.x origin are identical are used
+(ten moved zones excluded), and templates / NPC members must exist in the 1.2
+`compact.sqlite3`; 10.x-only templates and worlds absent from 1.2 are skipped. Z is re-snapped
+to the 1.2 heightmap (`|dz| <= 5 m`); interiors keep the authored Z when an existing spawn is
+within 40 m / 8 m or the ground is clipped, like the October 17 import. The shipped event
+entries show the same >50 m terrain differences in instances (Howling Abyss), so unverified
+dungeon placements keep their authored Z instead of being dropped.
+
+* **Summon/despawn effects**: 2,901 event entries for 1,214 event spawner ids
+  (`NpcSpawnerIds`), one per NPC member per placement. 1,456 of the 2,006 dangling spawn rows
+  are now placeable, including all 162 boss and all 34 player-item rows.
+* **Unplaced ambient/dungeon/schedule spawners: not shipped.** The tool can generate 653
+  entries (`--include-ambient`, opt-in), but our existing placements come from the 1.2 client
+  `npc_map` (retail 1.2 data) and these 10.x placements were never in it; adding them needs 1.2
+  evidence first. They were removed from the world files.
+* **Resolver fix**: `SpawnManager::GetNpcSpawner` now falls back to ordinary `NpcSpawners`
+  after the event spawners, so the 16 shipped effect rows that reference normal spawner ids
+  resolve. Event entries are no longer dropped by the UnitId/position duplicate filter (several
+  waves can share an anchor and each id must stay registered for `GetNpcSpawner`).
+
+Data only where the source is reliable: no 2014 coordinates, no disabled ("비활성") or
+memberless spawners, and no invented positions for the 543 effect rows with no placement in any
+client. The tool, reproduction commands and parser tests are in `rust/tools/spawn_import/`;
+generated entries carry a `Title` naming the 10.x source (the loader ignores it).
+
+### Crowd-control and buff rule layer (October 19, 2026)
+
+| Area | Rust | Status | Evidence / confidence |
+| --- | --- | --- | --- |
+| `buff_tolerances` / `buff_tolerance_steps` (diminishing returns of repeated CC) | `systems/skills/buffs.rs` `add_buff` | already ported from the C# (`BuffGameData.GetBuffToleranceForBuffTag`); a debug line now logs the step reduction | C# original; flow test `repeated_stuns_follow_the_tolerance_steps` |
+| `buff_breakers` (661 rows, 92 buffs) | `skills/data/mod.rs` (`buff_breakers`), `buffs::apply_buff_breakers` called by `add_buff` | new: a buff carrying a breaker tag ends the active buffs it breaks, and an arriving breakable buff ends at once when a breaker tag is already active | The C# ignored the table. The 10.x zone loads it (`LoadBuffBreakersRelation`, `SELECT buff_id, buff_tag_id FROM buff_breakers`) but no consumer was traced. **Direction is derived from the rows (medium confidence):** the `buff_id` side is gliders (tags stun 6, fear 12, spear 13, sleep 97, silence 99, knock-down 107, psychokinesis 150, bubble 346, root 27), bard songs 656-667/778 and the ice-wall step buff 431 (broken by glider flight tag 294); a stun ending a flight or a song is the natural reading, the reverse (a glider ending a stun) is not. |
+| Damage ends sleep | `buffs::trigger_remove_on` (`remove_on_damaged_*` columns) | already ported; covered by `damage_removes_a_breakable_sleep` | the buff columns (sleep buffs 414/523/2276/... carry all four `remove_on_damaged_*` flags) |
+| `aoe_diminishings` (10 rows: 100, 90, 80, 70, 55, 40, 25, 10, 10, 10) + plot event flag `aoe_diminishing` (13 of 9,074 events) | `PlotEventTemplate.aoe_diminishing`, `plots::apply_plot_effect`, `EffectSource.aoe_diminishing`, `effects::combat::damage` | new: the n-th target of an event with the flag takes damage times `rate(n) / 100` (ranks past the last row use it) | The 10.x damage log prints `damage %d <= aoe diminishing %f` between the actability and the minimum-damage steps and loads the table into a float array indexed by id (`LoadAoeDiminishingDescs`). **Rank = index in the event's target list is assumed (low-medium confidence)**; the zone's caller was not traced. The C# stored the flag and never used it. `ResetAoeDiminishingEffect` (1 row) stays a no-op: the per-cast counter it would reset does not exist in this rank-per-event model. |
+| `ExplodeBuff` (special type 46; skills 16410 / 20650 "Internal Shock") | `effects/special/unit_actions.rs::explode_buff` | new, **unverified numbers**: burns every non-passive, non-system Good buff of the target and, if at least one was burned, deals `value1` fixed damage; a target without a beneficial buff takes nothing | Only the 1.2 skill tooltip: "burns away the enemy's beneficial effects and deals #{min_damage}~#{max_damage}; an enemy without beneficial effects takes no damage". The meaning of `value1` (1000 / 2000) and `value2` / `value3` (20 / 20, 50 / 50) is a guess; the stun (buff 2871+) and knock-back come from the skill's other effects. No retail oracle. |
+| `Anchor` skill controller (kind 6, controllers 7736 / 7739, `end_skill_id` 23437 "Land on the ground", used by monster skills 22268 / 23103) | `skills/controllers.rs` (`Behavior::Anchor`, `anchor_tick`), `SkillControllerTemplate.end_skill_id` | new, **partial**: the owner descends to the ground under it at the first stage speed (`value2` mm/s, timeout `value3` ms), then fires `end_skill_id` on itself | 10.x zone `X2::AnchorSkillController` (stages of speed + ground-entity id, finish on time over / ragdoll / arrival, then the end skill). The stage targets are ground-collider doodads this server does not model, so the stage kinds in `value1/4/7` are not interpreted and only the first stage is used. Movement timing for 1.2 is unverified. |
+| Live check (lane stack, headless bot, GM `/buff` + a real melee hit) | - | done | Stun 2219 on one target: 5000, 4000, 3000 ms, then the stun-immunity final buff 2371; sleep 523 ends on the bot's melee hit; song 663 ends when stun/sleep arrives and ends at once when applied under an active sleep. Not driven live: `aoe_diminishing` events, ExplodeBuff (monster skill) and the Anchor landing skills (flow tests only). GM `/buff view` hides buffs that expired between commands (each GM command takes ~2 s). |
+| `buff_unit_modifiers` (17 rows), `buff_mount_skills` (64 rows) | - | not applied | `buff_unit_modifiers` are the `unit_modifiers` rows with `owner_type = 'BuffUnitModifier'` keyed by skill-tag + buff pairs (Sorcery 232-244 skill tags); how they combine with the skill damage is not documented in the C#, the client or the zone strings. `buff_mount_skills` lists the mount skills a siege-stance / mount buff grants to the client bar and has no server-side effect. Neither claims retail behaviour here. |
+
+### 1.2 `npc_map` placements missing from `main_world/npc_spawns.json` (small batch)
+
+The 1.2 client's `game/worlds/main_world/map_data/npc_map/*.dat` (retail 1.2 data) lists 326 placements (176 ids) that the shipped JSON lacked. Git history (`git log --all -- '*main_world/npc_spawns.json'`): all of them were once in the file; they were dropped by upstream rewrites (2022-06-19 `277753513`, the raw-export rewrite, 54; 2024-04-24 `58cdf34c6`, "Z height and added NPCs", 63; 2023-06-13 `5a0b59496`, 8) and by our own ambient revert `1ff1eaa9c` (15), none with a per-entry reason. Added: 58 entries, with `Title` `1.2 client npc_map (<zone>)`.
+
+Left out, with the reason:
+
+* 181 records whose NPC id has no `npcs` row (and no spawner) in the 1.2 `compact.sqlite3`: nothing can spawn them.
+* 52 within 5 m of an existing placement of the same id (curated position tweak) and 21 within 2 m of a placement of another id (curated id swap, e.g. 4228 over another NPC): already covered.
+* 8 `Arcum Iris`/Rainbow Field event caravan NPCs (12007/12008/12009/12124): `5a0b59496` removed them deliberately ("npc that weren't there in 1.2"); kept out.
+* 13878/14033 (Korean Liberation Day event NPCs, no schedule in the 1.2 data, would stand permanently) and 14745 (zone-name marker NPC "Shining Shore", empty comment): not ambient world NPCs.
+
+Every added id has a 1.2 `npc_spawner_npcs` row. Positions are the client map's own metres (no yaw in the format).
+
+### Plot `ManaCost` special effect (type 39)
+
+The C# charged `value1 + value2 / 6.35` (with a TODO: "value2 is based on skill level somehow"). The 1.2 data shows `value1` = the skill's `mana_cost` and `value2` = `mana_level_md * 100` for 59 of the 68 plot-only skills that carry the effect (e.g. 11854: md 1.55, effect 0/155; 18132: mana_cost 30, effect 30/0). The 1.2 client shows the cost in the skill tooltip as `mana_cost + mana_level_md * f(ability level)` (Ghidra `aa12u`, x2game `FUN_3941e750` -> `manaCost` of `FUN_394ace10`, via the unit formulas 12 and 13: `(ab_level * 1.6 + 8) * 3 / 3.65`), and the cast pre-check (`validation.rs`) already requires exactly that amount. The effect therefore now charges `value1 + value2 / 100 * scale` with the same scale as `skill::mana_cost`; at ability level 55 skill 11854 costs 120 instead of 24. Deviation from the C#: the charge side is inferred from the tooltip/data (no retail charge capture); the 9 plot-only skills whose effect differs from the skill row follow the same rule.
+
+### Premium for every account (`Account.PremiumForAll`)
+
+The C# `AccountPayment` is never loaded from anywhere (TODO "Load payment and account tier information"), so every account is premium (`Premium`, location 1, until 2030-01-01): it feeds `SCAccountInfo`, labor limits/regen, the offline-labor tick, the schedule-item patron check and the `max_labor` unit requirement. This stays the default, now an explicit option `Account.PremiumForAll` (`Configurations/CharacterSettings.json`, default `true`); `false` makes every connection `PaymentMethodType::None` with no validity window (non-premium). The value is read once at startup (`net::connection::set_premium_for_all`); there is still no per-account payment source.
+
 ## Achievement producers (live wiring)
 
 The achievement subsystem has no 1.2 C# manager; the behaviour follows `rust/docs/achievement-hook-audit.txt`
@@ -2016,3 +2200,154 @@ The achievement subsystem has no 1.2 C# manager; the behaviour follows `rust/doc
 * **GET_ITEM_TYPE (k29), KILL_SLAVE (k26), MY_DISHONORABLE_POINT (k49), siege results (k57-60)** stay
   unwired (see the audit for why). `SCAchievementResetedPacket` (0x1ff) has no 1.2 trigger and is
   deliberately never sent.
+
+## Later-version gear backport (opt-in tooling, `rust/tools/version_gaps/backport.py`)
+
+Not part of the shipped data: the tool reads the 1.2 `compact.sqlite3` and the 3.0.4.2 reference
+read-only and writes a SQL patch plus a patched copy; nothing changes unless the operator drops the
+patched copy in as the server's `compact.sqlite3`. Evidence for Crazed Wizard/Hermit/Slaver
+(items 38877-38897, equip sets 396-398): 3.0.4.2 rows (10.x-era, so a suspect for retail numbers),
+the 1.2 client reading the rows back (set name, bonus text and the proc text came out of the
+client's own tooltip code), and the live server applying the set bonus buffs.
+
+Per family the tool follows `item_armors.eiset_id` -> `equip_item_sets` -> `equip_item_set_bonuses`
+-> bonus buffs (+ `unit_modifiers`, `skill_modifiers`, `tagged_buffs`) and bonus `item_procs` (+
+proc skills/effects/buffs), plus items, looks (new ids above the custom range, as for obsidian),
+icons, upgrade crafts, materials and English texts. Deviations:
+
+- **Set bonus 4 of each Crazed set is omitted** (buff 18408, 3.0 PvE damage reduction, unit
+  attribute 199): 1.2 unit attributes end at 186, nothing implements it. Reported as
+  `set_bonuses_omitted`; unit modifiers above the 1.2 range are never copied.
+- **Item procs do not fire.** The set procs (124-126, chance kind 18/3/13) are data only: the C#
+  `ItemProc` never ran (see `apply_equip_item_set_bonuses`), so the Rust server has no proc
+  engine. The client shows the proc text. Chance kind 18 is also unused by any 1.2 proc row.
+- **No source for the base pieces.** The 3.0 data holds only the Heroic/Unique/Relic upgrade crafts
+  (they consume the same piece at grade 4/5/6); the base crafts (8595, 8599, ...) have products and
+  materials but no `crafts` row, and no loot/vendor row gives the pieces. The backport copies the
+  63 upgrade crafts and reports the base crafts as `orphan_crafts_in_3_0`; where the base piece
+  comes from (authored recipe, boss drop, vendor) is a design decision still open.
+- Armor looks of 3.0 mean other looks in 1.2, so 15 new armor looks (60 new item_assets, 185 files
+  not in the 1.2 pak incl. dwarf/warborn variants) come from the 10.x pak; `patch-client` writes
+  them into a pak copy (2 specular textures of the unused dwarf/warborn cloth look are absent from
+  the 10.x pak).
+- Client side: `patch-client` into a client copy; a client reading the server `compact.sqlite3`
+  (Bevy client) needs only the patched server db plus a pak containing the 185 new files.
+
+Next families, in order (all need the same tool; blockers in brackets): Hardy/Heartless 3-piece
+class sets 387-392 (proc only, no engine; 18 items, base-piece source open), Distorted Whispers 386
+(not craftable, bonuses 3/5 + proc), Hexbane/Talisman/Tempting/Enchanting Melody 414-417 (lvl 53,
+no crafts), Soulforged/Maliceforged weapons and Bane's Bolt/Bloodmist/Abyssal Destroyer 2-piece
+weapon sets 393-395 (buffs only; weapon models), Auroria class sets (no set rows), then lunagems
+(socket tables reshaped, loader check). The Dawnsdrop/Hellforged sets use emulator-custom ids
+(>= 9,000,000) and are refused by the tool. A proc engine is the prerequisite for the 57 item procs.
+
+## Bevy-client server fixes (October 19, 2026)
+
+Found by the open-source Bevy client's reverse-engineering notes (`AABevy1.2/docs/aa-net.md`,
+digest `D:/aaemu-audits/bevy/DIGEST.md`). Items marked "per Bevy RE notes" were not re-derived
+from the unpacked 1.2 client here.
+
+- **Repair reachable (deviation from the C#).** The C# advertised the repair skill (12086) only
+  for `repairman` NPC templates but repaired only at `blacksmith` ones; the data has 331
+  blacksmith-only and a handful of repairman-only templates, so repair was unreachable through
+  NPC interaction. The original client's `npc_interaction` script maps `"blacksmith"` to the
+  repair window and its `"repairman"` branch references an undefined constant (per Bevy RE
+  notes), so the blacksmith is the retail repair NPC. Now the repair handlers accept a
+  blacksmith *or* a repairman, and `CSStartInteraction` appends `REPAIR` to the advertised skill
+  list of every blacksmith/repairman (the primary option, e.g. `USE_STORE`, stays first).
+- **One tick origin (deviation).** `Pong.world/remote` and `SCInstantGameStart/End` counted
+  from two separate `OnceLock<Instant>` origins; the client maps battlefield timers through
+  the Pong samples (per Bevy RE notes, `TimeKeeper::AddSample`), so they were skewed by the
+  difference of the first uses. Both now use `packets::proxy::tick_count`.
+- **Ability-tree skills need an active ability and a learned skill (deviation).** The C#
+  `CSStartSkill` handler fell through to a catch-all that cast any skill id. The 1.2 client
+  refuses unlearned / inactive-tree skills locally (`URK_TRAINED_SKILL`, per Bevy RE notes), so
+  only other clients could cast them. `handlers::class_skill_denial` now refuses a client cast of
+  a skill with `ability_id != 0` when that ability is not one of the three active ones
+  (`SkillResult` `INACTIVE_ABILITY`) or, for `need_learn` skills, when neither the skill nor a
+  same-ability-level variant is learned (`INVALID_SKILL`). Mount, item, default/common and
+  auto-attack casts are decided before the check, ability-less skills (doodad / quest /
+  buff-granted) are unaffected, and GM commands cast through the server skill API. The exact
+  result codes are our choice (the client only needs a non-success `SCSkillStarted`).
+- **Keep-alive grace (deviation).** The 30 s dead-connection sweep (`accounts::remove_dead_connections`)
+  closed a registered connection that had not pinged yet at the next sweep (C#: `LastPing =
+  MinValue`). It now measures such a connection from when it connected. The Bevy client pings
+  every 3 s from the moment the TCP connection opens, so a healthy client always stays well
+  inside the 30 s window; the grace only covers a sweep that lands right after registration.
+- **Player guilds have political system 0; guild rename (deviation).** The C# created (and
+  loaded) every expedition faction with `PoliticalSystem = 1`. The 1.2 client's `SCFactionCreated`
+  handler (`x2game.dll` `FUN_392febb0`: membership/menu effects only when the faction's
+  political-system field at +0x118 is 0) and its rename-task planner (`FUN_392f8db0` via
+  `FUN_398a36e0`: the cached faction's political system must be 0) both ignore a faction with
+  another value, so a guild created with 1 could not open the rename dialog (verified in the
+  unpacked 1.2 x2game; that the field is the wire `political_system` byte is per Bevy RE
+  notes). New and loaded guilds now use 0 (kingdom factions in `system_factions` stay 1).
+  `CSRenameExpedition` (the C# only logged it) now renames: the guild owner only, under the
+  creation name rules (length, `Expedition.NameRegex`, unique), no cost; it broadcasts
+  `SCFactionRenamed` (`by_gm = false`) and saves. The retail gating by `allow_change_name`
+  (the client clears it on a player rename) is not known and not implemented; the guild chat
+  channel keeps its creation-time name.
+- **Not changed (checked against the Bevy findings).**
+  - *Auction refund wedge*: not reproduced on the current tree. The Bevy lane (a snapshot 278
+    commits older) hung on `TakeAllAndDelete` of an outbid-refund mail and then refused
+    `enter world`. On this tree the whole sequence works live (post / cancel + claim, bid +
+    buyout by a third player + claim of the refund, seller proceeds claim with its labor cost, a
+    two-bot concurrent post/cancel/claim loop, relog) and as `auction_tests`
+    (`cancel_refund_mail_can_be_taken_all_and_deleted`, `sale_and_win_mails_...`,
+    `outbid_refund_mail_can_be_taken_all_and_deleted`, all under `finishes_in_time`). Open audit
+    note: `mail::store_quest_rewards_locked` takes the mail state while the caller holds the
+    character lock (quest "locked hooks"), whereas `delete_mail`, `check_all_mail_timings`,
+    `get_current_mail_list` and `notify_new_mail_by_name_if_online` take a character lock while
+    holding the mail state; a quest mail reward racing a mail delivery for the same character
+    could deadlock. No reproduction, so no change.
+  - *Party leave / kick / dismiss*: already work through `CSAskRiskyTeamAction` (0x088,
+    `teams.ask_risky_team`; the original client's path, layout `team_id u32, target u32, action
+    u8`, dismiss sends target 0 like the Bevy client). The C# opcodes 0x07d-0x07f
+    (`CSLeaveTeam`, `CSKickTeamMember`, `CSDismissTeam`) stay log-only as in the C#.
+  - *`SCNoticeMessage` (0x0d0)*: the 1.2 client's `OnNoticeMessage` handler
+    (`x2game.dll` `FUN_391d8d60` -> `FUN_393c2780(type, alpha, visTime, text)`) reads a `u8`
+    type, a short string, an `i32` and a text string, which is our layout; the Bevy client
+    simply does not decode this opcode yet.
+## PvP bot fixes (duel disconnect, GM faction, quit relog)
+
+* **Duel participant leaves** (`DuelManager::on_participant_leave`, called first in `session::save_and_remove_from_world`): the C# had no handling, so the opponent stayed in the Red / Blue faction with the duel registered until the end timer, and `DuelAccepted` answered "already started". A started duel now ends as a surrender of the leaver (`SCDuelEndedPacket` with `det` 2, the packet of running away from the flag) and restores both factions; a pending request is dropped. No 1.2 oracle for the retail result code; the surrender code is the closest existing one.
+* **`/setfaction` is persistent** (`faction::set_faction_persistent`): a GM change goes through the `Character.SetFaction` effects (housing, guild, party) and ends any temporary faction, so `characters.faction_id` stores it. Only duel and battlefield factions are temporary.
+* **Quit game frees the account** (`leave_world_task`, target 0): the C# kept the connection and the `AccountManager` entry until the client closed the socket or the 30-60 s dead-connection sweep did, so a relog right after quit got "enter world denied, reason 1" (`already_connected`). The server now unregisters the account and closes the connection after `SCLeaveWorldGranted`; `AccountManager::remove_if_owned` makes a late close of the old connection leave a newer login of the same account alone. Saves are unchanged (still under the transaction lock, all-or-nothing).
+* **Rotate-winner and bind-on-pickup rolls** (checked, no change): with the party rule `ROTATE_WINNER` and more than one eligible player, `TryTakeLootLocked` hands the item to the round-robin winner before the `rollMandatory` check, so `RollForBindOnPickup` and `MinimumGrade` never roll under that rule (a mirrored C# order). Rolls happen under `FREE_FOR_ALL` and `LOOT_MASTER`.
+## Bevy protocol audit (October 19, 2026)
+
+The Bevy 1.2 client (`AABevy1.2`) is the main client; its reverse-engineering notes
+(`docs/aa-net.md`, digest M1..M23) found layout suspects between our encoders and the original
+1.2 client's readers. Oracle used here: the original reader in the unpacked 1.2 client
+(`x2game_unpacked.dll`, Ghidra, addresses below), decompiled again for each fix marked
+*verified*; the rest are marked *per Bevy RE notes*.
+
+| # | Fix | Oracle |
+|---|---|---|
+| M1 | `SCHouseState` / `SCMyHouse` model is one fixed `i32` (was PISC pair, shifting every later field) | verified: `39897460` reads it with stream slot `+0x4c`, the same slot as `allstep`/`curstep`/`skillCount` |
+| M2 | `SCCancelInstantGame` carries only the `i16` error (the branch byte and padding are gone; `clear_queue` and `with_error` are indistinguishable on the 1.2 wire, the handler ignores the value anyway) | verified: serializer `397c3bf0` transfers one `i16` (slot `+0x50`) |
+| M3 | The empty faction lists use their real opcodes: `SCFactionList` `0x008` (was `0x007` = `SCTrionConfig`) and `SCFactionRelationList` `0x009` (was `0x008` = `SCFactionList`, which also carried a stray byte) | opcode table; relation body `[bool][u8 count]` kept from the non-empty packet. The C# hard-coded the wrong ids |
+| M4 | `SCResponseUIData` trailer is the UTF-8 byte count + 1 (was UTF-16 units + 1; truncated non-ASCII data) | per Bevy RE notes (`391e57e0` -> `memcpy` / `xlcommon::Data::Load`) |
+| M5 | The slave item detail (tag 2) is always 29 bytes: `RepairStartTime` is an i64 (0 when unset, the same bytes as before) plus four i32 zeros (was i32 + five i32 when unset, i64 + five i32 = 33 bytes when set, which desynced batched item packets). The split of the 24 trailing bytes is inferred | width verified: `3961edf0` tag 2 = `0x1e - 1` = 29 bytes; field split per Bevy RE notes |
+| M6 | `SCMateEquipmentChanged` now carries a real success flag; the rejected-move packet writes `false` (the C# always wrote `true`) | verified: `OnMateEquipmentChanged` `391db200` passes the flag at `+0x330` to `394e1c10`, which copies the item into the bag cache only when it is set; entry/record readers `397d12a0`/`397d1340` match our layout |
+| M7 | `CSSpawnSlave` reads container + slot only when the item id is nonzero (37/39-byte bodies; was always 41). The handler still only logs | per Bevy RE notes (client writer) |
+| M8 | `SCCraftFailed` never writes more than 20 entries (count clamped to 0..=20). Still unsent | per Bevy RE notes (`391e0840` -> `394d2370` clamp) |
+| M9 | A missing trial reporter name is written as an empty string (the C# omitted the length) | per Bevy RE notes (string always has its `u16` length) |
+| M10 | Bounty rows write `notGuilty` before `guilty` | verified: row reader `397bebf0` reads `notGuilty` (`+0xc8`) then `guilty` (`+0xcc`) |
+| M14 | `SCUnitState` of a character sets flag bit3 (`0x0008`) while force attack is on, so late observers see Bloodlust | verified: `397c9480` stores bit3 of the `u16` flags in the unit's force-attack byte |
+| M15 | `SCCooldowns` has a full writer (`i32` count + `[id, total, remaining]` u32 triples, skills then tags, 150 per list) and is sent after `SCCharacterState` when the character has running skill cooldowns. The server keeps only the end time of a skill cooldown and no tags, so `total` equals `remaining` | verified: `397b64d0` -> `397b2350`; entries are appended, an empty list is no reset. Cooldowns are not persisted, so a freshly loaded character normally has none |
+| CS | The client CS table entries missing from `opcodes::cs` were added: `0x11f CSRequestSetBountyMoney`, `0x120 CSSendBountyUpdate`, `0x130 CSRankSnapshot` (already handled through a local const, now the table entry), `0x133 CSChangeAutoUseAAPoint` | the Bevy `opcodes.rs` (client table); 0x130 additionally by the RE notes in `ranking_packets.rs`. `0x11f`/`0x120` are logged no-ops (the bounty ledger is not wired to the wallet, TODO); `0x133` sets `Character.auto_use_aa_point` |
+
+Doc-only items:
+
+- **M11** scheduled rewards: the client keeps at most 16 rows (verified: `397b0190` clamps the
+  count to `0x10`, row `3961f100` = `u32,u8,i32,i64`). We still write up to
+  `MAX_ITEMS_IN_PACKET` (32); the extra rows are ignored in a plain frame, and the packet is never
+  batched, so it is left unchanged.
+- **M12** list caps (family > 8, achievements > 50, radar > 10, battlefield members > 50, expedition
+  chunks of 20): per Bevy RE notes; our senders already chunk at those sizes. Not re-verified.
+- **M17** (f32 vs f64 arithmetic of pet revive/repair cost), **M18** (ranking period: UTC half-open vs
+  local inclusive), **M19** (`SCUnitMovements` unsent), **M20** (party leave/kick log-only; the
+  client uses `CSAskRiskyTeamAction`), **M21** (new factions get `political_system 1`, native
+  rename needs 0), **M23** (actability downgrade clamp): per Bevy RE notes, not re-verified and not
+  changed; each needs a reproduction against the real client before a fix.

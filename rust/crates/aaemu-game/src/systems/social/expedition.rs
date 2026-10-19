@@ -22,6 +22,7 @@ use crate::packets::world::{
 };
 use crate::server::GameServer;
 use crate::systems::social::packets::expedition::*;
+use crate::systems::social::packets::faction::SCFactionRenamedPacket;
 use crate::systems::social::util::{self, error, send_error};
 use crate::world::{broadcast, PlayerRef};
 
@@ -208,7 +209,7 @@ impl ExpeditionManager {
                     owner_id: int(&r, "owner")? as u32,
                     owner_name: r.try_get("owner_name")?,
                     unit_owner_type: 0,
-                    political_system: 1,
+                    political_system: 0,
                     created: unix(dt(&r, "created_at")),
                     aggro_link: false,
                     diplomacy_target: false,
@@ -573,16 +574,13 @@ fn remove_member(server: &GameServer, expedition_id: u32, character_id: u32) {
     }
 }
 
-/// `ExpeditionManager.CreateExpedition(name, connection)`.
-pub async fn create_expedition(server: &GameServer, owner: &PlayerRef, name: &str) {
+/// The name rules of `CreateExpedition`: length, `Expedition.NameRegex` and uniqueness. Sends the
+/// client error and returns false when the name is refused.
+fn check_expedition_name(server: &GameServer, owner: &PlayerRef, name: &str) -> bool {
     let cfg = &server.config.expedition;
-    if expedition_of(server, owner).is_some() {
-        send_error(owner, error::EXPEDITION_ALREADY_MEMBER);
-        return;
-    }
     if name.encode_utf16().count() > 32 {
         send_error(owner, error::EXPEDITION_NAME_LENGTH);
-        return;
+        return false;
     }
     let matches = match regex::Regex::new(&cfg.name_regex) {
         Ok(r) => r.is_match(name),
@@ -593,7 +591,7 @@ pub async fn create_expedition(server: &GameServer, owner: &PlayerRef, name: &st
     };
     if !matches {
         send_error(owner, error::EXPEDITION_NAME_CHARACTER);
-        return;
+        return false;
     }
     if server
         .expeditions
@@ -602,6 +600,47 @@ pub async fn create_expedition(server: &GameServer, owner: &PlayerRef, name: &st
         .any(|e| e.faction.name == name)
     {
         send_error(owner, error::EXPEDITION_NAME_EXIST);
+        return false;
+    }
+    true
+}
+
+/// `CSRenameExpedition` (the original Lua `OkProc` of the rename task, opened by the empty
+/// `SCExpeditionShowRenameUI`; the C# only logged it): the guild owner renames the guild under
+/// the creation name rules. Broadcasts `SCFactionRenamed` (by_gm = false) and saves.
+pub async fn rename_expedition(server: &GameServer, owner: &PlayerRef, id: u32, name: &str) {
+    let Some(e) = expedition_of(server, owner) else {
+        return;
+    };
+    if e.id() != id || e.faction.owner_id != owner.character_id {
+        return;
+    }
+    if name == e.faction.name || !check_expedition_name(server, owner, name) {
+        return;
+    }
+    if server
+        .expeditions
+        .with_mut(id, |e| e.faction.name = name.to_string())
+        .is_none()
+    {
+        return;
+    }
+    server.world.broadcast_to_server(&SCFactionRenamedPacket {
+        id,
+        name: name.to_string(),
+        by_gm: false,
+    });
+    save(server, id).await;
+}
+
+/// `ExpeditionManager.CreateExpedition(name, connection)`.
+pub async fn create_expedition(server: &GameServer, owner: &PlayerRef, name: &str) {
+    let cfg = &server.config.expedition;
+    if expedition_of(server, owner).is_some() {
+        send_error(owner, error::EXPEDITION_ALREADY_MEMBER);
+        return;
+    }
+    if !check_expedition_name(server, owner, name) {
         return;
     }
     // ----------------- Conditions, can change this...
@@ -674,7 +713,7 @@ pub async fn create_expedition(server: &GameServer, owner: &PlayerRef, name: &st
             owner_id: owner.character_id,
             owner_name: owner_name.clone(),
             unit_owner_type: 0,
-            political_system: 1,
+            political_system: 0,
             created: util::now_secs(),
             aggro_link: false,
             diplomacy_target: false,

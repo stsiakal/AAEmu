@@ -1076,8 +1076,7 @@ pub fn json_files_with_prefix(dir: &Path, prefix: &str) -> anyhow::Result<Vec<Pa
 /// `ParentWorld.SpawnManager.AddNpcSpawner(npcSpawner)`: registers the spawner(s) and returns
 /// the command's own `npcSpawner` object as `AddNpcSpawner` leaves it: with the generated
 /// spawner template when the NPC has no spawner in the game data (that object is never stored),
-/// else without a template (the memberwise clones stored in the spawn manager spawn the NPC on
-/// the active-region tick).
+/// the same for an NPC that has natural spawners (see the deviation note below).
 pub fn add_runtime_npc_spawner(
     server: &GameServer,
     world: &Arc<WorldInstance>,
@@ -1088,12 +1087,14 @@ pub fn add_runtime_npc_spawner(
     use crate::systems::npcs::npc::spawner::{NpcSpawnerInit, NpcSpawnerShared};
     let manager = server.systems.npcs.spawns.get_or_create(world);
     let data = &server.game_data.systems.npcs.npc_spawners;
-    let generated = data
-        .get_spawner_ids(unit_id)
-        .is_none_or(|ids| ids.is_empty());
     let fake_id = server.systems.npcs.spawns.peek_fake_spawner_id();
+    // Deviation from the C#: the C# registered memberwise clones of the natural spawners for an
+    // NPC that has some (natural schedule and population) and left the command's own spawner
+    // without a template, so `/spawn npc` logged "template is null" and only spawned the NPC
+    // when its natural spawner happened to be active. The command always gets a generated
+    // spawner for the requested template.
     manager
-        .add_npc_spawner(
+        .add_generated_npc_spawner(
             server,
             NpcSpawnerDef {
                 base: SpawnerBase {
@@ -1106,16 +1107,11 @@ pub fn add_runtime_npc_spawner(
             },
         )
         .map_err(anyhow::Error::msg)?;
-    let (id, ids, template) = if generated {
-        (
-            fake_id,
-            vec![fake_id],
-            data.get_npc_spawner_template(fake_id),
-        )
-    } else {
-        // The memberwise clones append their ids to the shared `NpcSpawnerIds` list.
-        (0, data.get_spawner_ids(unit_id).unwrap_or_default(), None)
-    };
+    let (id, ids, template) = (
+        fake_id,
+        vec![fake_id],
+        data.get_npc_spawner_template(fake_id),
+    );
     Ok(Arc::new(NpcSpawner::new(
         NpcSpawnerInit {
             id,

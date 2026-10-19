@@ -4,6 +4,7 @@
 		"AccessLevelFirstAccount": 100,
 		"AccessLevelFirstCharacter": 100,
 		"DeleteReleaseName": true,
+		"PremiumForAll": true,
 		"DeleteTimings": [
 			{
 				"Delay": 1,

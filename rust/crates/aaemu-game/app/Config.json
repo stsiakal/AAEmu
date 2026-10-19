@@ -13,7 +13,8 @@
     },
     "WebApiNetwork": {
         "Host": "127.0.0.1",
-        "Port": 1280
+        "Port": 1280,
+        "Token": ""
     },
     "LoginNetwork": {
         "Host": "%login_host%",

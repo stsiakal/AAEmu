@@ -697,6 +697,82 @@ async fn fake_and_event_spawners() {
 }
 
 #[tokio::test]
+async fn get_npc_spawner_finds_ordinary_spawner_templates() {
+    let server = server();
+    let m = manager(&server);
+    // NPC 600 has two ordinary spawner templates (20, 21); a normal entry creates both clones.
+    assert_eq!(m.add_npc_spawner(&server, npc_def(600, 20.0, 20.0)), Ok(2));
+    let found = m.get_npc_spawner(20);
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].spawner_id, 20);
+    assert!(m.get_npc_spawner(21).len() == 1);
+    assert!(m.get_npc_spawner(999).is_empty(), "no such spawner id");
+    // The spawn/despawn effect path force-spawns the found ordinary spawner.
+    let spawner = found[0].clone();
+    assert_eq!(spawner.current_spawn_count(), 0);
+    assert!(spawner.force_spawn(&server, 0).is_some());
+    assert_eq!(spawner.current_spawn_count(), 1);
+    // An event spawner with the same id still wins (retargeting, as before).
+    let mut ev = npc_def(500, 30.0, 30.0);
+    ev.npc_spawner_ids = vec![20];
+    assert_eq!(m.add_npc_spawner(&server, ev), Ok(0));
+    let event = m.get_npc_spawner(20);
+    assert_eq!(event.len(), 1);
+    assert_eq!(event[0].template().unwrap().npcs[0].member_id, 500);
+    // The ordinary clone was not retargeted.
+    assert_eq!(spawner.spawnable_npcs()[0].member_id, 600);
+}
+
+#[tokio::test]
+async fn spawn_effect_resolves_an_ordinary_spawner_and_spawns_its_npc() {
+    use crate::systems::npcs::bridges::NpcSkills;
+    use crate::systems::skills::data::effects::NpcSpawnerSpawnEffect;
+    use crate::systems::skills::data::{EffectKind, EffectTemplate};
+    use crate::systems::skills::effects::{EffectArgs, EffectSource};
+    use crate::systems::skills::ext::NpcSkillHooks;
+    use crate::systems::skills::geometry::Target;
+    use crate::systems::skills::types::{CastAction, SkillCastTarget, SkillCaster, SkillObject};
+
+    let server = server();
+    let m = manager(&server);
+    assert_eq!(m.add_npc_spawner(&server, npc_def(600, 20.0, 20.0)), Ok(2));
+    let client = TestClient::new(&server, 1, 1);
+    let player = spawn_player(
+        &server,
+        &client,
+        test_character(1, "Caster", 20.0, 20.0),
+        5000,
+    );
+    let caster = WorldObject::from(player.clone());
+    let effect = NpcSpawnerSpawnEffect {
+        id: 1,
+        spawner_id: 20, // an ordinary `npc_spawners` id, not an event id
+        life_time: 0.0,
+        despawn_on_creator_death: false,
+        use_summoner_aggro_target: false,
+        activation_state: false,
+    };
+    let template = EffectTemplate::NpcSpawnerSpawn(effect);
+    let args = EffectArgs {
+        caster: Some(caster.clone()),
+        caster_caster: SkillCaster::Unit(player.obj_id),
+        target: Target::Obj(caster.clone()),
+        target_caster: SkillCastTarget::Unit(player.obj_id),
+        cast: CastAction::Skill {
+            skill_id: 1,
+            tl_id: 0,
+        },
+        source: EffectSource::default(),
+        skill_object: &SkillObject::None,
+    };
+    assert!(NpcSkills.apply_effect(&server, EffectKind::NpcSpawnerSpawnEffect, &template, &args,));
+    let spawner = m.get_npc_spawner(20).remove(0);
+    assert_eq!(spawner.current_spawn_count(), 1);
+    let npc = spawner.spawned_npcs().values().next().unwrap()[0].clone();
+    assert_eq!(npc.data().unit.template_id, 600);
+}
+
+#[tokio::test]
 async fn fake_spawner_first_and_repeated_placements_spawn_and_respawn() {
     let server = server();
     let m = manager(&server);

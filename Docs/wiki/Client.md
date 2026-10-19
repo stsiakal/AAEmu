@@ -40,8 +40,8 @@ cargo run --release -p aaemu-launcher -- --client "C:\ArcheAge\bin32\archeage.ex
   folder is only read; nothing in it has to be changed.
 - `--login`: the login server's public address and port (default
   `127.0.0.1:1237`).
-- `--user`: the account name. With `AutoAccount` (on by default) the login
-  server creates the account on the first login.
+- `--user`: the account name. With `AutoAccount` (off by default; `cargo xtask dev` turns it on) the
+  login server creates the account on the first login.
 - Password: the launcher asks for it on the console, or use
   `--password PW`, `--password-file FILE` (first line of the file) or the
   `AAEMU_PASSWORD` environment variable.

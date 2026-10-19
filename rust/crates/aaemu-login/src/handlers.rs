@@ -8,7 +8,6 @@ use anyhow::Context;
 use crate::auth::{
     AuthFlow, KoreaAuthFlow, KoreaStep, LoginClient, PasswordAuthFlow, ReconnectAuthFlow,
 };
-use crate::controllers::game::send_with_delay;
 use crate::models::GsRegisterResult;
 use crate::network::internal::InternalConnection;
 use crate::network::login::LoginConnection;
@@ -89,12 +88,33 @@ pub async fn handle_c2l(
     }
 }
 
+/// Constant-time comparison of the shared secret.
+fn secret_matches(given: &str, expected: &str) -> bool {
+    given.len() == expected.len()
+        && given
+            .bytes()
+            .zip(expected.bytes())
+            .fold(0u8, |d, (a, b)| d | (a ^ b))
+            == 0
+}
+
 /// Dispatches a game server packet.
 pub async fn handle_g2l(
     server: &Arc<LoginServer>,
     conn: &Arc<InternalConnection>,
     packet: G2lPacket,
 ) -> anyhow::Result<()> {
+    // Deviation: the C# handled every packet from any peer. Only `RegisterGameServer` (which
+    // carries the shared secret) is honoured before the peer is registered; anything else
+    // from an unauthenticated peer drops the connection.
+    if conn.game_server().is_none() && !matches!(packet, G2lPacket::RegisterGameServer(_)) {
+        tracing::warn!(
+            "Connection {}: packet before registration from an unauthenticated peer, closing",
+            conn.ip
+        );
+        conn.close();
+        return Ok(());
+    }
     match packet {
         G2lPacket::GameServerLoad(p) => {
             // C#: `connection.GameServer!.Load` (NullReferenceException if not registered).
@@ -104,6 +124,14 @@ pub async fn handle_g2l(
             server.games.set_load(gs_id, p.load)
         }
         G2lPacket::PlayerEnter(p) => {
+            if !conn.may_act_for(&server.games, p.gs_id) {
+                tracing::warn!(
+                    "Connection {}: enter-world result for game server {} not sent by it, ignored",
+                    conn.ip,
+                    p.gs_id
+                );
+                return Ok(());
+            }
             server
                 .games
                 .route_enter_world_response(p.connection_id, p.gs_id, p.result);
@@ -113,11 +141,7 @@ pub async fn handle_g2l(
             // Deviation: the C# accepted tokens from any internal peer, so an unregistered
             // connection could mint reconnect logins for any account. Only the registered game
             // server (or one of its mirrors) may add tokens for its id.
-            let allowed = match conn.game_server() {
-                Some(gs) => gs == p.gs_id || server.games.try_get_parent_id(p.gs_id) == Some(gs),
-                None => false,
-            };
-            if !allowed {
+            if !conn.may_act_for(&server.games, p.gs_id) {
                 tracing::warn!(
                     "Connection {}: reconnect token for game server {} not sent by it, ignored",
                     conn.ip,
@@ -131,15 +155,22 @@ pub async fn handle_g2l(
             Ok(())
         }
         G2lPacket::RegisterGameServer(p) => {
-            if p.secret_key != server.config.secret_key {
+            if conn.game_server().is_some() {
+                tracing::warn!("Connection {}: already registered, ignoring", conn.ip);
+                return Ok(());
+            }
+            if !secret_matches(&p.secret_key, &server.config.secret_key) {
                 tracing::error!("Connection {}, bad secret key", conn.ip);
-                send_with_delay(
-                    conn.clone(),
-                    Duration::from_secs(5),
-                    LgRegisterGameServer {
+                // Deviation: the C# kept the connection open after the error reply.
+                let conn = conn.clone();
+                tokio::spawn(async move {
+                    tokio::time::sleep(Duration::from_secs(5)).await;
+                    conn.send_packet(&LgRegisterGameServer {
                         result: GsRegisterResult::Error,
-                    },
-                );
+                    });
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                    conn.close();
+                });
                 return Ok(());
             }
             server.games.add(p.gs_id, p.mirrors, conn);

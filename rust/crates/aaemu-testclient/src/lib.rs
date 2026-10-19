@@ -2,6 +2,7 @@
 //! servers: scripted scenarios with assertions, S->C packet capture, a parity diff between two
 //! server implementations and a concurrent load driver. See `rust/LIVE-TESTING.md`.
 
+pub mod aisweep;
 pub mod compactdb;
 pub mod craftrun;
 pub mod diff;
@@ -10,11 +11,13 @@ pub mod game;
 pub mod inventory;
 pub mod load;
 pub mod login;
+pub mod player;
 pub mod quest;
 pub mod questrun;
 pub mod record;
 pub mod scenario;
 pub mod skillrun;
+pub mod social;
 pub mod stream;
 pub mod valuecheck;
 pub mod walk;

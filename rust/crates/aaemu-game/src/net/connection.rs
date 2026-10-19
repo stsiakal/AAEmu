@@ -5,7 +5,7 @@
 //! login-server link) reach a connection through its [`ConnectionHandle`].
 
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicI64, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -53,14 +53,40 @@ impl AccountPayment {
     }
 }
 
+impl AccountPayment {
+    /// The payment of an account when `Account.PremiumForAll` is `premium_for_all`: the C#
+    /// default premium one until 2030, or the non-premium one.
+    pub fn for_premium_setting(premium_for_all: bool) -> Self {
+        if premium_for_all {
+            Self {
+                method: PaymentMethodType::Premium,
+                location: 1,
+                start_time: 0,
+                end_time: 1_893_456_000,
+            }
+        } else {
+            Self {
+                method: PaymentMethodType::None,
+                location: 0,
+                start_time: 0,
+                end_time: 0,
+            }
+        }
+    }
+}
+
+/// `Account.PremiumForAll`, set once at startup ([`set_premium_for_all`]); `AccountPayment`
+/// has no per-account source yet, so every connection shares it.
+static PREMIUM_FOR_ALL: AtomicBool = AtomicBool::new(true);
+
+/// Applies `Account.PremiumForAll` (called once from `main`).
+pub fn set_premium_for_all(value: bool) {
+    PREMIUM_FOR_ALL.store(value, Ordering::Relaxed);
+}
+
 impl Default for AccountPayment {
     fn default() -> Self {
-        Self {
-            method: PaymentMethodType::Premium,
-            location: 1,
-            start_time: 0,
-            end_time: 1_893_456_000,
-        }
+        Self::for_premium_setting(PREMIUM_FOR_ALL.load(Ordering::Relaxed))
     }
 }
 
@@ -88,6 +114,9 @@ pub struct ConnectionHandle {
     account_id: Arc<AtomicU32>,
     /// `LastPing` as unix milliseconds (`i64::MIN` = `DateTime.MinValue`, never pinged).
     last_ping_ms: Arc<AtomicI64>,
+    /// When the connection was accepted (unix milliseconds): the keep-alive sweep measures a
+    /// connection that has not pinged yet from here.
+    connected_ms: i64,
     tx: mpsc::UnboundedSender<ConnCommand>,
     writer: Outbox,
 }
@@ -103,9 +132,16 @@ impl ConnectionHandle {
             ip,
             account_id: Arc::new(AtomicU32::new(account_id)),
             last_ping_ms: Arc::new(AtomicI64::new(i64::MIN)),
+            connected_ms: chrono::Utc::now().timestamp_millis(),
             tx,
             writer,
         }
+    }
+
+    /// When the connection was accepted.
+    pub fn connected_at(&self) -> chrono::NaiveDateTime {
+        chrono::DateTime::from_timestamp_millis(self.connected_ms)
+            .map_or(chrono::NaiveDateTime::MIN, |d| d.naive_utc())
     }
 
     pub fn account_id(&self) -> u32 {
@@ -251,6 +287,7 @@ pub struct GameConnection {
     pub ip: SocketAddr,
     account_id: Arc<AtomicU32>,
     last_ping_ms: Arc<AtomicI64>,
+    connected_ms: i64,
     pub state: GameState,
     pub payment: AccountPayment,
     /// `Characters.Values` in insertion (load) order.
@@ -288,11 +325,13 @@ impl GameConnection {
     ) -> (Self, ConnectionHandle) {
         let account_id = Arc::new(AtomicU32::new(0));
         let last_ping_ms = Arc::new(AtomicI64::new(i64::MIN));
+        let connected_ms = chrono::Utc::now().timestamp_millis();
         let handle = ConnectionHandle {
             id,
             ip,
             account_id: account_id.clone(),
             last_ping_ms: last_ping_ms.clone(),
+            connected_ms,
             tx: commands.clone(),
             writer: writer.clone(),
         };
@@ -301,6 +340,7 @@ impl GameConnection {
             ip,
             account_id,
             last_ping_ms,
+            connected_ms,
             state: GameState::Lobby,
             payment: AccountPayment::default(),
             characters: Vec::new(),
@@ -358,6 +398,7 @@ impl GameConnection {
             ip: self.ip,
             account_id: self.account_id.clone(),
             last_ping_ms: self.last_ping_ms.clone(),
+            connected_ms: self.connected_ms,
             tx: self.commands.clone(),
             writer: self.writer.clone(),
         }
@@ -376,5 +417,22 @@ impl GameConnection {
 
     pub fn is_closing(&self) -> bool {
         self.closing
+    }
+}
+
+#[cfg(test)]
+mod payment_tests {
+    use super::*;
+
+    #[test]
+    fn premium_for_all_decides_the_payment() {
+        let premium = AccountPayment::for_premium_setting(true);
+        assert!(premium.premium_state(1_800_000_000));
+        assert_eq!(premium.method, PaymentMethodType::Premium);
+        let none = AccountPayment::for_premium_setting(false);
+        assert!(!none.premium_state(1_800_000_000));
+        assert_eq!(none.method, PaymentMethodType::None);
+        // the shipped default keeps the old behaviour
+        assert!(crate::config::AccountConfig::default().premium_for_all);
     }
 }

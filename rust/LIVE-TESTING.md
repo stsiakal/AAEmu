@@ -389,6 +389,20 @@ $TC quest --config testclient.local.json --login 127.0.0.1:21237 \
 $TC quest --config testclient.local.json --plan rust/tools/quest_audit/plan.json --all-ok \
           --race elf --compact-db crates/aaemu-game/app/Data/compact.sqlite3 --summary
 ```
+**Player mode** (`quest --player`): the bot plays the quests in `tools/quest_audit/player_order.py`
+order like a client. It walks (`.bai` navmesh of the 1.2 `game_pak` through the server's own
+`AiGeoData`, coarse heightmap plan for long routes), fights with its learned class skills, loots,
+revives itself, and never uses `/godmode`, `/level` or `/kill`; every remaining GM shortcut is a
+counted fallback with its reason. It stops at the first story quest it cannot complete and writes
+`<out>.blocker.json` and `summary.md`; `--stop-on never` goes on. A per-character checkpoint
+(`--state`) lets `--resume --select-character NAME` continue after a server restart (the
+character list decodes one head per packet: keep one extra character at most, or select by
+deleting the others in the lane DB).
+
+```sh
+$TC quest --player --new-character --race nuian --config bot.json           --plan nuian-order.json --compact-db .../compact.sqlite3 --to-level 15           --out nuian-run.jsonl --state nuian.state.json --summary-file summary.md
+```
+
 `questitem` (`full`'s login/create/select/spawn, then GM setup and a quest-item cast loop) uses
 the Detection Orb (item 17594, use skill 16881) of quest 2394 "Searching for Answers" on the
 Soulreath "Field of Honor Participant" / "Fighter Participant" NPCs (7824 / 7823) three times and
@@ -543,7 +557,7 @@ id on every unit other than the caster (an area skill hits them all): a miss, an
 
 The mana expectation comes from the skill's path: a `plot_only` skill *with a `plot_id`*
 returns from `Skill.Use` before `Skill.Cast`'s `ConsumeMana` and pays the plot's
-`SpecialEffect` 39 `ManaCost` (`value1 + value2 / 6.35` per apply, walked in `plot_events` /
+`SpecialEffect` 39 `ManaCost` (`value1 + value2 / 100 * scale(ab_level)` per apply, the tooltip formula, walked in `plot_events` /
 `plot_effects` / `special_effects`; only caster-side rows count) -- and only when the carrying
 event ran (`plot_mana_events` vs `plot_event_ids`); a `plot_only` row without a `plot_id` and
 every other skill pays the `Skill.ManaCost` formula. `mana_spent` is read at the largest

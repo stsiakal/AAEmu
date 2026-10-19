@@ -95,6 +95,7 @@ async fn run() -> anyhow::Result<()> {
     tracing::info!("Application directory: {}", app_path.display());
     // BuildConfiguration: JSON files, user secrets, environment, command line.
     let config = AppConfig::load_with(&app_path, &config_args).context("loading configuration")?;
+    aaemu_game::net::connection::set_premium_for_all(config.account.premium_for_all);
 
     // Test the MySQL connection ("MySQL connection failed, check your configuration!" is fatal).
     let db = MySqlPoolOptions::new()
@@ -197,6 +198,7 @@ async fn run() -> anyhow::Result<()> {
             &server.game_data.items,
             server.config.id,
             &server.ids.container,
+            &server.ids.item,
         )
         .await
         .context("ItemManager.LoadUserItems")?;

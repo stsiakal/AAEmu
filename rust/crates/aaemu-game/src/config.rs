@@ -175,6 +175,11 @@ pub struct NetworkConfig {
     pub port: u16,
     #[serde(rename = "numconnections", deserialize_with = "lenient")]
     pub num_connections: i32,
+    /// `WebApiNetwork.Token` (Rust only): the shared token every web API route except `/status`
+    /// requires (`Authorization: Bearer <token>` or `X-Api-Key`). Empty = those routes are
+    /// refused. Set it in `Config.Local.json`.
+    #[serde(rename = "token")]
+    pub token: String,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -230,6 +235,12 @@ pub struct AccountConfig {
     pub delete_release_name: bool,
     #[serde(rename = "deletetimings")]
     pub delete_timings: Vec<AccountDeleteDelayTiming>,
+    /// `PremiumForAll` (not in the C#): every account counts as premium until 2030, like the C#
+    /// default `AccountPayment` (true, the default). False gives every account the non-premium
+    /// payment (`PaymentMethodType::None`); no per-account payment info exists yet.
+    /// Read once at startup.
+    #[serde(rename = "premiumforall", deserialize_with = "lenient")]
+    pub premium_for_all: bool,
 }
 
 impl Default for AccountConfig {
@@ -241,6 +252,7 @@ impl Default for AccountConfig {
             access_level_first_character: 100,
             delete_release_name: false,
             delete_timings: Vec::new(),
+            premium_for_all: true,
         }
     }
 }
@@ -1135,6 +1147,7 @@ mod tests {
         assert_eq!(cfg.connections.mysql_provider.port, 3306);
         let web = cfg.web_api_network.as_ref().expect("WebApiNetwork");
         assert_eq!((web.host.as_str(), web.port), ("127.0.0.1", 1280));
+        assert_eq!(web.token, "", "no shipped web API token");
         assert_eq!(cfg.max_concurency_thread_pool, 8);
         assert!(cfg.discord_token.is_none());
         // World.json
@@ -1158,6 +1171,29 @@ mod tests {
         // Specialty.json, AccessLevels.json, CharacterSettings.json
         assert_eq!(cfg.specialty.trade_pack_mail_delay_in_minutes, 480.0);
         assert_eq!(cfg.access_level_of("help"), Some(0));
+        // Hosting safety: only these player-facing commands may be level 0 (see
+        // Docs/wiki "Hosting safely"); everything unlisted defaults to 100.
+        let mut level0: Vec<&str> = cfg
+            .access_level
+            .iter()
+            .filter(|(_, l)| *l == 0)
+            .map(|(n, _)| n.as_str())
+            .collect();
+        level0.sort_unstable();
+        assert_eq!(
+            level0,
+            [
+                "collectdominion",
+                "dungeon",
+                "help",
+                "joinsiege",
+                "leavesiege",
+                "online",
+                "soloparty"
+            ]
+        );
+        assert_eq!(cfg.access_level_of("fly"), Some(50));
+        assert_eq!(cfg.access_level_of("teleport"), Some(50));
         assert_eq!(cfg.access_level_of("announce"), Some(50));
         assert_eq!(cfg.access_level_of("Announce"), None);
         assert!(cfg.account.delete_release_name);
@@ -1205,6 +1241,19 @@ mod tests {
         let cfg = AppConfig::load_from(&dir, Some(&secrets), env, &args).unwrap();
         assert_eq!(cfg.world.exp_rate, 5.0);
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn premium_for_all_defaults_to_true_and_can_be_switched_off() {
+        assert!(
+            AppConfig::from_value(json!({}))
+                .unwrap()
+                .account
+                .premium_for_all
+        );
+        let cfg =
+            AppConfig::from_value(json!({ "Account": { "PremiumForAll": "false" } })).unwrap();
+        assert!(!cfg.account.premium_for_all);
     }
 
     #[test]
