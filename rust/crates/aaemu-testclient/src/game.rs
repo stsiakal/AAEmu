@@ -686,6 +686,9 @@ pub struct GameState {
     /// Position of the last `SCTeleportUnitPacket` (a GM `/move` only tells the client to go
     /// there; the server adopts the position from the client's next movement packet).
     pub last_teleport: Option<(f32, f32, f32)>,
+    /// Absolute labor power from the select snapshot, kept current by
+    /// `SCCharacterLaborPowerChangedPacket` (the live durability checks read it after a relog).
+    pub labor: Option<i32>,
     pub disconnected: bool,
 }
 
@@ -1274,6 +1277,12 @@ pub(crate) fn observe_into(st: &mut GameState, p: &Packet) -> anyhow::Result<()>
         s.read_u32()?; // component id
         st.last_reset = Some(quest_id);
         st.quests.remove(&quest_id);
+    } else if p.is_sc(sc::SCCharacterLaborPowerChangedPacket) {
+        // `SCCharacterLaborPowerChangedPacket`: the signed change, then action / point / step.
+        let amount = s.read_i32()?;
+        if let Some(labor) = st.labor {
+            st.labor = Some(i32::from((labor as i16).wrapping_add(amount as i16)));
+        }
     } else if p.is_sc(sc::SCCharacterStatePacket) {
         // `unit_state::character_state`: instance id, guid (sized bytes), rwd, then
         // `Character.Write` (id, name, race, gender, level, ...). The select snapshot is
@@ -1284,6 +1293,7 @@ pub(crate) fn observe_into(st: &mut GameState, p: &Packet) -> anyhow::Result<()>
         s.read_bytes(usize::from(guid_len))?;
         s.read_i32()?; // rwd
         st.self_info = Some(read_character_head(&mut s)?);
+        st.labor = crate::craftrun::parse_state_labor(&p.body).ok();
         // A character-select snapshot starts here; the quest / completed packets follow.
         st.quests.clear();
         st.completed_quests.clear();

@@ -303,3 +303,109 @@ async fn reconnect_list_world_and_enter_world() {
 
     shutdown.cancel();
 }
+
+async fn internal_fixture() -> (std::sync::Arc<LoginServer>, std::net::SocketAddr) {
+    let config = AppConfig::from_value(lowercase_keys(serde_json::json!({
+        "SecretKey": "test",
+        "SkipHostResolve": true,
+        "InternalNetwork": { "Host": "127.0.0.1", "Port": 0 },
+        "Network": { "Host": "127.0.0.1", "Port": 0 },
+        "Connections": { "MySQLProvider": { "Host": "127.0.0.1", "Port": 1, "User": "x", "Password": "x", "Database": "x" } },
+        "GameServers": [ { "Id": 1, "Name": "AAEmu", "Host": "127.0.0.1", "Port": 1239 } ]
+    })))
+    .unwrap();
+    let pool = db::create_pool(db::connect_options(&config).unwrap());
+    let server = LoginServer::new(config, pool);
+    server.requests.initialize();
+    server.games.load(&server.config).await;
+    let internal = network::internal::bind("127.0.0.1", 0).await.unwrap();
+    let addr = internal.local_addr().unwrap();
+    tokio::spawn(network::internal::run(
+        server.clone(),
+        internal,
+        CancellationToken::new(),
+    ));
+    (server, addr)
+}
+
+/// Whether the peer closed the connection (EOF or reset) within a few seconds.
+async fn is_closed(c: &mut Conn) -> bool {
+    matches!(
+        tokio::time::timeout(Duration::from_secs(3), c.next()).await,
+        Ok(None) | Ok(Some(Err(_)))
+    )
+}
+
+#[tokio::test]
+async fn unauthenticated_internal_peer_is_dropped_on_any_other_packet() {
+    let (server, addr) = internal_fixture().await;
+    // Each packet other than a registration is refused and drops the connection.
+    for which in 0..3 {
+        let mut rogue = Framed::new(TcpStream::connect(addr).await.unwrap(), FrameCodec);
+        match which {
+            0 => {
+                send(
+                    &mut rogue,
+                    &GlPlayerReconnect {
+                        gs_id: GameServerId(1),
+                        account_id: AccountId(1),
+                        token: 1,
+                    },
+                )
+                .await
+            }
+            1 => {
+                send(
+                    &mut rogue,
+                    &GlPlayerEnter {
+                        connection_id: ConnectionId(1),
+                        gs_id: GameServerId(1),
+                        result: 0,
+                    },
+                )
+                .await
+            }
+            _ => {
+                send(
+                    &mut rogue,
+                    &GlGameServerLoad {
+                        load: GsLoad::MEDIUM,
+                    },
+                )
+                .await
+            }
+        }
+        assert!(is_closed(&mut rogue).await, "case {which} stayed open");
+    }
+    assert_eq!(server.internal_connections.unregistered_count(), 0);
+}
+
+#[tokio::test]
+async fn wrong_secret_never_registers() {
+    let (server, addr) = internal_fixture().await;
+    let mut rogue = Framed::new(TcpStream::connect(addr).await.unwrap(), FrameCodec);
+    send(
+        &mut rogue,
+        &GlRegisterGameServer {
+            secret_key: "tesx".into(),
+            gs_id: GameServerId(1),
+            mirrors: vec![],
+        },
+    )
+    .await;
+    // Not registered: a follow-up packet is refused and the connection dropped.
+    send(
+        &mut rogue,
+        &GlPlayerReconnect {
+            gs_id: GameServerId(1),
+            account_id: AccountId(1),
+            token: 5,
+        },
+    )
+    .await;
+    assert!(is_closed(&mut rogue).await);
+    assert!(server
+        .games
+        .get_game_server(GameServerId(1))
+        .is_some_and(|g| !g.active()));
+}
