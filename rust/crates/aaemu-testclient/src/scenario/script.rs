@@ -34,9 +34,39 @@
 //! tmoney <amount>                    CSPutupTradeMoney
 //! tlock <0|1>  /  tok  /  tcancel    CSTradeLock / CSTradeOk / CSCancelTrade
 //! ```
+//!
+//! Two-bot duel / party / PvP / loot-dice commands (run one process per bot, each with its own
+//! script; both bots stand at the same spot, see `crate::social` for the packet layouts). Every
+//! duel / team / faction / loot-dice / zone-state packet the bot reads is printed as
+//! `social: <event>` before the next command, and stays queued for the `await` commands.
+//!
+//! ```text
+//! me                                 own character id / name / object id / last known faction
+//! target self|peer|<npc template>    select yourself, the other player or the nearest NPC
+//! await <Event> [secs]               wait (60 s default) for a social event (`DuelStarted`,
+//!                                    `DuelEnded`, `TeamJoined`, `LootDiceSummary`, `ZoneState`,
+//!                                    `FactionChanged`, ...; prefix match) and consume it
+//! events                             print every social event received so far
+//! duel [name]                        CSChallengeDuel to the peer (first other player)
+//! daccept                            wait for SCDuelChallenged and answer CSStartDuel (accept)
+//! drefuse                            wait for SCDuelChallenged and refuse it (507)
+//! dcancel                            the challenger cancels its own pending / running duel
+//! dwait [secs]                       wait (400 s default) for SCDuelEnded and print who won
+//! party [name]                       CSInviteToTeam (new party) to the peer
+//! paccept | preject                  wait for SCAskToJoinTeam and accept / reject it
+//! pleave | pdismiss                  CSAskRiskyTeamAction leave / dismiss the current team
+//! plr <method> <grade> <bop 0|1>     CSChangeLootingRule (all four fields; method 0 = free for
+//!                                    all, 1 = rotate winner, 2 = loot master)
+//! pcast <skill> [name]               walk next to the peer and cast the skill on it
+//! pfight <skill> <secs> [name]       recast on the peer every 1.5 s until one side dies
+//! pkill [name]                       `/kill` with the peer targeted (GM)
+//! loot [npc obj]                     CSLootOpenBag (loot all) at the last killed / cast NPC
+//! roll roll|pass [index] [npc obj]   CSLootDice for the item at `index` (default 0)
+//! drop                               end the script without logging out (a disconnect)
+//! ```
 
-use std::collections::HashMap;
-use std::time::Duration;
+use std::collections::{HashMap, HashSet};
+use std::time::{Duration, Instant};
 
 use aaemu_game::opcodes::sc;
 use anyhow::{bail, Context};
@@ -44,6 +74,7 @@ use anyhow::{bail, Context};
 use super::questitem::{chat_text, gm_command, quest_state, stack_id};
 use super::{pump, skill_response_result, Runner};
 use crate::game::{parse_item_task, GameClient, Packet, UnitInfo};
+use crate::social::{self, SocialEvent};
 
 fn dist(a: (f32, f32, f32), b: (f32, f32, f32)) -> f32 {
     ((a.0 - b.0).powi(2) + (a.1 - b.1).powi(2) + (a.2 - b.2).powi(2)).sqrt()
@@ -134,6 +165,84 @@ fn num<T: std::str::FromStr>(parts: &[&str], i: usize) -> anyhow::Result<T> {
         .map_err(|_| anyhow::anyhow!("bad number '{}'", parts[i]))
 }
 
+/// The other player to duel / party / fight: `name`, else the first other player in sight.
+fn peer(game: &GameClient, name: Option<&str>) -> anyhow::Result<UnitInfo> {
+    let me = game.state.self_obj;
+    game.state
+        .units
+        .values()
+        .filter(|u| u.unit_type == 0 && u.obj_id != me)
+        .filter(|u| name.is_none_or(|n| u.name.eq_ignore_ascii_case(n)))
+        .min_by_key(|u| u.obj_id)
+        .cloned()
+        .context("no other player in sight (run `pump` after both bots teleported)")
+}
+
+/// Variant name of a social event (`DuelEnded { .. }` -> `DuelEnded`).
+fn event_kind(e: &SocialEvent) -> String {
+    let d = format!("{e:?}");
+    d.split([' ', '{', '(']).next().unwrap_or("").to_string()
+}
+
+/// Waits for the first not yet consumed social event whose kind starts with `kind`
+/// (case-insensitive), reading packets for at most `secs`.
+async fn await_event(
+    game: &mut GameClient,
+    consumed: &mut HashSet<usize>,
+    kind: &str,
+    secs: u64,
+) -> anyhow::Result<SocialEvent> {
+    let want = kind.to_ascii_lowercase();
+    let deadline = Instant::now() + Duration::from_secs(secs);
+    loop {
+        let found = game
+            .state
+            .social
+            .iter()
+            .enumerate()
+            .find(|(i, e)| {
+                !consumed.contains(i) && event_kind(e).to_ascii_lowercase().starts_with(&want)
+            })
+            .map(|(i, e)| (i, e.clone()));
+        if let Some((i, e)) = found {
+            consumed.insert(i);
+            return Ok(e);
+        }
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            bail!("timed out ({secs} s) waiting for social event '{kind}'");
+        }
+        game.recv_within(left.min(Duration::from_millis(500)))
+            .await?;
+    }
+}
+
+/// The team id of the newest `TeamJoined` event that no `TeamLeft` / `TeamDismissed` followed.
+fn current_team(game: &GameClient) -> Option<u32> {
+    for e in game.state.social.iter().rev() {
+        match e {
+            SocialEvent::TeamJoined { team_id, .. } => return Some(*team_id),
+            SocialEvent::TeamLeft { .. } | SocialEvent::TeamDismissed { .. } => return None,
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Walks next to the target and casts `skill` on it.
+async fn attack(
+    game: &mut GameClient,
+    clock: &mut u32,
+    skill: u32,
+    target: &UnitInfo,
+) -> anyhow::Result<()> {
+    *clock += 1500;
+    game.move_to((target.pos.0 + 1.0, target.pos.1, target.pos.2), *clock)
+        .await?;
+    game.change_target(target.obj_id).await?;
+    game.start_skill(skill, target.obj_id).await
+}
+
 pub(super) async fn run(
     game: &mut GameClient,
     cfg: &super::BotConfig,
@@ -145,7 +254,14 @@ pub(super) async fn run(
     let mut items: HashMap<u32, u64> = HashMap::new();
     let mut clock = 40_000u32;
     let mut mate: Option<(u32, u16)> = None;
+    let mut consumed: HashSet<usize> = HashSet::new();
+    let mut printed = 0usize;
+    let mut last_npc = 0u32;
     for (n, raw) in text.lines().enumerate() {
+        for e in &game.state.social[printed.min(game.state.social.len())..] {
+            println!("    social: {e:?}");
+        }
+        printed = game.state.social.len();
         let line = raw.trim();
         if line.is_empty() || line.starts_with('#') {
             continue;
@@ -282,6 +398,17 @@ pub(super) async fn run(
                     .await?;
                 show(&got);
             }
+            "target" if matches!(parts.first().copied(), Some("self" | "peer")) => {
+                let obj = if parts[0] == "self" {
+                    game.state.self_obj
+                } else {
+                    peer(game, None)?.obj_id
+                };
+                game.change_target(obj).await?;
+                game.drain(Duration::from_millis(300), Duration::from_secs(1))
+                    .await?;
+                println!("    target obj {obj}");
+            }
             "target" => {
                 let tpl: u32 = num(&parts, 0)?;
                 let npc = nearest(game, tpl).with_context(|| format!("NPC {tpl} not in sight"))?;
@@ -295,6 +422,7 @@ pub(super) async fn run(
                 game.move_to((npc.pos.0 + 1.0, npc.pos.1, npc.pos.2), clock)
                     .await?;
                 game.change_target(npc.obj_id).await?;
+                last_npc = npc.obj_id;
                 game.drain(Duration::from_millis(300), Duration::from_secs(1))
                     .await?;
                 let got = gm_command(game, "kill").await?;
@@ -309,6 +437,7 @@ pub(super) async fn run(
                 game.move_to((npc.pos.0 + 1.0, npc.pos.1, npc.pos.2), clock)
                     .await?;
                 game.change_target(npc.obj_id).await?;
+                last_npc = npc.obj_id;
                 game.start_skill(skill, npc.obj_id).await?;
                 let got = game
                     .drain(Duration::from_millis(1500), Duration::from_secs(8))
@@ -627,6 +756,243 @@ pub(super) async fn run(
                     .drain(Duration::from_millis(1000), Duration::from_secs(4))
                     .await?;
                 show(&got);
+            }
+            "me" => {
+                let info = game.state.self_info.clone();
+                let obj = game.state.self_obj;
+                let faction = game
+                    .state
+                    .social
+                    .iter()
+                    .rev()
+                    .find_map(|e| match e {
+                        SocialEvent::FactionChanged { obj_id, new, .. } if *obj_id == obj => {
+                            Some(*new)
+                        }
+                        _ => None,
+                    })
+                    .or(info.as_ref().map(|i| i.faction));
+                match info {
+                    Some(i) => println!(
+                        "    me '{}' char {} obj {obj} level {} faction {faction:?}",
+                        i.name, i.id, i.level
+                    ),
+                    None => println!("    me obj {obj} (no character head decoded)"),
+                }
+            }
+            "await" => {
+                let kind = parts.first().context("await needs an event name")?;
+                let secs: u64 = parts.get(1).and_then(|x| x.parse().ok()).unwrap_or(60);
+                let e = await_event(game, &mut consumed, kind, secs).await?;
+                println!("    awaited: {e:?}");
+            }
+            "events" => {
+                for (i, e) in game.state.social.iter().enumerate() {
+                    println!("    #{i} {e:?}");
+                }
+            }
+            "duel" => {
+                let target = peer(game, parts.first().copied())?;
+                let (op, body) = social::challenge_duel(target.id);
+                game.send_cs(op, &body).await?;
+                println!("    challenged '{}' (char {})", target.name, target.id);
+                game.drain(Duration::from_millis(600), Duration::from_secs(3))
+                    .await?;
+            }
+            "daccept" | "drefuse" => {
+                let SocialEvent::DuelChallenged { challenger_id } =
+                    await_event(game, &mut consumed, "DuelChallenged", 60).await?
+                else {
+                    bail!("not a duel challenge");
+                };
+                let err = if cmd == "daccept" { 0 } else { 507 };
+                let (op, body) = social::start_duel(challenger_id, err);
+                game.send_cs(op, &body).await?;
+                println!("    answered challenger {challenger_id} with {err}");
+                game.drain(Duration::from_millis(600), Duration::from_secs(3))
+                    .await?;
+            }
+            "dcancel" => {
+                let id = game
+                    .state
+                    .self_info
+                    .as_ref()
+                    .context("no own character")?
+                    .id;
+                let (op, body) = social::start_duel(id, 507);
+                game.send_cs(op, &body).await?;
+                game.drain(Duration::from_millis(600), Duration::from_secs(3))
+                    .await?;
+            }
+            "dwait" => {
+                let secs: u64 = parts.first().and_then(|x| x.parse().ok()).unwrap_or(400);
+                let e = await_event(game, &mut consumed, "DuelEnded", secs).await?;
+                if let SocialEvent::DuelEnded {
+                    challenger_id,
+                    challenged_id,
+                    det,
+                    ..
+                } = e
+                {
+                    let me = game.state.self_info.as_ref().map_or(0, |i| i.id);
+                    let verdict = match det {
+                        3 => "draw",
+                        _ if challenger_id == me => "I won",
+                        _ if challenged_id == me => "I lost",
+                        _ => "?",
+                    };
+                    println!(
+                        "    duel ended det {det} (first {challenger_id}, second {challenged_id}): {verdict}"
+                    );
+                }
+            }
+            "party" => {
+                let target = peer(game, parts.first().copied())?;
+                let (op, body) = social::invite_to_team(0, true, &target.name);
+                game.send_cs(op, &body).await?;
+                println!("    invited '{}'", target.name);
+                game.drain(Duration::from_millis(600), Duration::from_secs(3))
+                    .await?;
+            }
+            "paccept" | "preject" => {
+                let SocialEvent::TeamAsk {
+                    team_id,
+                    sender_id,
+                    is_party,
+                    ..
+                } = await_event(game, &mut consumed, "TeamAsk", 60).await?
+                else {
+                    bail!("not a team invitation");
+                };
+                let name = game
+                    .state
+                    .self_info
+                    .as_ref()
+                    .map_or(String::new(), |i| i.name.clone());
+                let (op, body) = social::reply_to_join_team(
+                    team_id,
+                    is_party,
+                    sender_id,
+                    cmd == "preject",
+                    &name,
+                );
+                game.send_cs(op, &body).await?;
+                game.drain(Duration::from_millis(800), Duration::from_secs(3))
+                    .await?;
+            }
+            "pleave" | "pdismiss" => {
+                let team = current_team(game).context("not in a team (no SCJoinedTeam seen)")?;
+                let me = game
+                    .state
+                    .self_info
+                    .as_ref()
+                    .context("no own character")?
+                    .id;
+                let action = if cmd == "pdismiss" { 2 } else { 0 };
+                let (op, body) = social::risky_team_action(team, me, action);
+                game.send_cs(op, &body).await?;
+                game.drain(Duration::from_millis(800), Duration::from_secs(3))
+                    .await?;
+            }
+            "plr" => {
+                let team = current_team(game).context("not in a team (no SCJoinedTeam seen)")?;
+                let (method, grade, bop): (u8, u8, u8) =
+                    (num(&parts, 0)?, num(&parts, 1)?, num(&parts, 2)?);
+                let (op, body) =
+                    social::change_looting_rule(team, method, grade, 0, bop != 0, 0x0F);
+                game.send_cs(op, &body).await?;
+                game.drain(Duration::from_millis(800), Duration::from_secs(3))
+                    .await?;
+            }
+            "pcast" => {
+                let skill: u32 = num(&parts, 0)?;
+                let target = peer(game, parts.get(1).copied())?;
+                attack(game, &mut clock, skill, &target).await?;
+                let got = game
+                    .drain(Duration::from_millis(1500), Duration::from_secs(8))
+                    .await?;
+                show(&got);
+            }
+            "pfight" => {
+                let skill: u32 = num(&parts, 0)?;
+                let secs: u64 = num(&parts, 1)?;
+                let target = peer(game, parts.get(2).copied())?;
+                let me = game.state.self_obj;
+                let deadline = Instant::now() + Duration::from_secs(secs);
+                let mut casts = 0u32;
+                let outcome = loop {
+                    if game.state.dead_units.contains(&target.obj_id) {
+                        break "peer died";
+                    }
+                    if game.state.dead_units.contains(&me) {
+                        break "I died";
+                    }
+                    if Instant::now() >= deadline {
+                        break "timed out";
+                    }
+                    let cur = game
+                        .state
+                        .units
+                        .get(&target.obj_id)
+                        .cloned()
+                        .unwrap_or_else(|| target.clone());
+                    attack(game, &mut clock, skill, &cur).await?;
+                    casts += 1;
+                    game.drain(Duration::from_millis(1200), Duration::from_millis(1800))
+                        .await?;
+                };
+                println!(
+                    "    pfight: {outcome} after {casts} cast(s); peer hp {:?}, my hp {:?}",
+                    game.state.unit_points.get(&target.obj_id),
+                    game.state.unit_points.get(&me)
+                );
+            }
+            "pkill" => {
+                let target = peer(game, parts.first().copied())?;
+                clock += 1500;
+                game.move_to((target.pos.0 + 1.0, target.pos.1, target.pos.2), clock)
+                    .await?;
+                game.change_target(target.obj_id).await?;
+                game.drain(Duration::from_millis(300), Duration::from_secs(1))
+                    .await?;
+                let got = gm_command(game, "kill").await?;
+                show(&got);
+            }
+            "loot" => {
+                let obj: u32 = parts
+                    .first()
+                    .and_then(|x| x.parse().ok())
+                    .unwrap_or(last_npc);
+                if obj == 0 {
+                    bail!("no NPC to loot: run `kill`/`cast` first or pass the object id");
+                }
+                game.loot_all(obj).await?;
+                let got = game
+                    .drain(Duration::from_millis(1000), Duration::from_secs(4))
+                    .await?;
+                show(&got);
+            }
+            "roll" => {
+                let roll = match parts.first().copied() {
+                    Some("roll") => true,
+                    Some("pass") => false,
+                    _ => bail!("roll roll|pass [index] [npc obj]"),
+                };
+                let index: u16 = parts.get(1).and_then(|x| x.parse().ok()).unwrap_or(0);
+                let obj: u32 = parts
+                    .get(2)
+                    .and_then(|x| x.parse().ok())
+                    .unwrap_or(last_npc);
+                let (op, body) = social::loot_dice(index, 1, obj, roll);
+                game.send_cs(op, &body).await?;
+                let got = game
+                    .drain(Duration::from_millis(1000), Duration::from_secs(4))
+                    .await?;
+                show(&got);
+            }
+            "drop" => {
+                r.end(s, "connection dropped without logout");
+                return Ok(());
             }
             other => bail!("unknown script command '{other}' at line {}", n + 1),
         }
