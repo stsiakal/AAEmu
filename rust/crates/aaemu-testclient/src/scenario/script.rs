@@ -6,10 +6,12 @@
 //!
 //! ```text
 //! gm <command line>                  GM chat command (without the leading slash)
+//! gmq <command line>                like `gm`, but waits only 0.4 s and prints nothing
 //! tp <x> <y> <z>                     /move there, acknowledge the teleport, wait for the area
 //! pump <secs>                        just read packets
 //! labor                              the current labor power decoded from the server
-//! units [<npc template>...]          NPCs in sight (all within 60 m when no template given)
+//! units [<npc template>...]          NPCs in sight (all within 60 m when no template given; the
+//!                                    nearest of the given templates becomes the `loot` / `roll` owner)
 //! doodads [<doodad template>...]     doodads in sight (all within 40 m when none given)
 //! sq <quest> <npc template|0>        CSStartQuestContext from the nearest NPC of that template
 //! cq <quest> <npc template|0> [sel]  CSCompleteQuestContext at that NPC
@@ -43,9 +45,14 @@
 //! ```text
 //! me                                 own character id / name / object id / last known faction
 //! target self|peer|<npc template>    select yourself, the other player or the nearest NPC
-//! await <Event> [secs]               wait (60 s default) for a social event (`DuelStarted`,
+//! savenpc <file> | loadnpc <file>    write / read the remembered NPC object id (hands one NPC to
+//!                                    the other bot)
+//! castlast <skill>                   walk next to the remembered NPC and cast the skill on it
+//! targetlast                        select the NPC `units <template>` / `kill` / `cast` remembered
+//! waitpeer [secs] [name]             read packets until another player is in sight (60 s default)
+//! await <Event> [secs]             wait (60 s default) for a social event (`DuelStarted`,
 //!                                    `DuelEnded`, `TeamJoined`, `LootDiceSummary`, `ZoneState`,
-//!                                    `FactionChanged`, ...; prefix match) and consume it
+//!                                    `FactionChanged`, ...; the variant name) and consume it
 //! events                             print every social event received so far
 //! duel [name]                        CSChallengeDuel to the peer (first other player)
 //! daccept                            wait for SCDuelChallenged and answer CSStartDuel (accept)
@@ -62,6 +69,10 @@
 //! pkill [name]                       `/kill` with the peer targeted (GM)
 //! loot [npc obj]                     CSLootOpenBag (loot all) at the last killed / cast NPC
 //! roll roll|pass [index] [npc obj]   CSLootDice for the item at `index` (default 0)
+//! gcreate <name>                     CSCreateExpedition (a guild; needs the party and the gold)
+//! ginvite [name]                     CSInviteToExpedition to the peer (or the named character)
+//! gaccept                            wait for the guild invitation and join
+//! grole <role> <character id>        CSChangeExpeditionMemberRole (255 owner, 2 officer)
 //! drop                               end the script without logging out (a disconnect)
 //! ```
 
@@ -184,8 +195,8 @@ fn event_kind(e: &SocialEvent) -> String {
     d.split([' ', '{', '(']).next().unwrap_or("").to_string()
 }
 
-/// Waits for the first not yet consumed social event whose kind starts with `kind`
-/// (case-insensitive), reading packets for at most `secs`.
+/// Waits for the first not yet consumed social event named `kind` (case-insensitive),
+/// reading packets for at most `secs`.
 async fn await_event(
     game: &mut GameClient,
     consumed: &mut HashSet<usize>,
@@ -200,9 +211,7 @@ async fn await_event(
             .social
             .iter()
             .enumerate()
-            .find(|(i, e)| {
-                !consumed.contains(i) && event_kind(e).to_ascii_lowercase().starts_with(&want)
-            })
+            .find(|(i, e)| !consumed.contains(i) && event_kind(e).to_ascii_lowercase() == want)
             .map(|(i, e)| (i, e.clone()));
         if let Some((i, e)) = found {
             consumed.insert(i);
@@ -254,8 +263,9 @@ pub(super) async fn run(
     let mut items: HashMap<u32, u64> = HashMap::new();
     let mut clock = 40_000u32;
     let mut mate: Option<(u32, u16)> = None;
-    let mut consumed: HashSet<usize> = HashSet::new();
-    let mut printed = 0usize;
+    let mut consumed: HashSet<usize> = (0..game.state.social.len()).collect();
+    // The login burst (the zone states of every conflict zone) is not part of the script.
+    let mut printed = game.state.social.len();
     let mut last_npc = 0u32;
     for (n, raw) in text.lines().enumerate() {
         for e in &game.state.social[printed.min(game.state.social.len())..] {
@@ -273,6 +283,12 @@ pub(super) async fn run(
             "gm" => {
                 let reply = gm_command(game, rest).await?;
                 show(&reply);
+            }
+            "gmq" => {
+                // Fire and forget (0.4 s): for loops of GM commands whose output is not needed.
+                game.chat(0, &format!("/{rest}")).await?;
+                game.drain(Duration::from_millis(400), Duration::from_millis(900))
+                    .await?;
             }
             "tp" => {
                 let (x, y, z): (f32, f32, f32) =
@@ -320,6 +336,9 @@ pub(super) async fn run(
                     .collect();
                 us.sort_by(|a, b| dist(a.pos, me).total_cmp(&dist(b.pos, me)));
                 println!("    me {me:?}, {} NPC(s):", us.len());
+                if let (false, Some(first)) = (tpls.is_empty(), us.first()) {
+                    last_npc = first.obj_id; // the default owner of `loot` / `roll`
+                }
                 for u in us {
                     println!(
                         "    npc tpl {} obj {} '{}' at ({:.1}, {:.1}, {:.1}) dist {:.1}",
@@ -397,6 +416,53 @@ pub(super) async fn run(
                     .drain(Duration::from_millis(1200), Duration::from_secs(6))
                     .await?;
                 show(&got);
+            }
+            "savenpc" => {
+                std::fs::write(rest.trim(), last_npc.to_string())
+                    .with_context(|| format!("writing {rest}"))?;
+                println!("    saved npc obj {last_npc}");
+            }
+            "loadnpc" => {
+                // The other bot wrote the object id (`savenpc`); wait up to 90 s for the file.
+                let deadline = Instant::now() + Duration::from_secs(90);
+                loop {
+                    if let Ok(v) = std::fs::read_to_string(rest.trim()) {
+                        if let Ok(obj) = v.trim().parse::<u32>() {
+                            last_npc = obj;
+                            println!("    loaded npc obj {obj}");
+                            break;
+                        }
+                    }
+                    if Instant::now() >= deadline {
+                        bail!("{rest} did not appear within 90 s");
+                    }
+                    game.recv_within(Duration::from_millis(500)).await?;
+                }
+            }
+            "castlast" => {
+                let skill: u32 = num(&parts, 0)?;
+                let Some(npc) = game.state.units.get(&last_npc).cloned() else {
+                    println!("    NPC obj {last_npc} is gone (killed?), nothing to cast at");
+                    continue;
+                };
+                if game.state.dead_units.contains(&last_npc) {
+                    println!("    NPC obj {last_npc} is dead, nothing to cast at");
+                    continue;
+                }
+                attack(game, &mut clock, skill, &npc).await?;
+                let got = game
+                    .drain(Duration::from_millis(1500), Duration::from_secs(8))
+                    .await?;
+                show(&got);
+            }
+            "targetlast" => {
+                if last_npc == 0 {
+                    bail!("no NPC remembered: run `units <template>` first");
+                }
+                game.change_target(last_npc).await?;
+                game.drain(Duration::from_millis(300), Duration::from_secs(1))
+                    .await?;
+                println!("    target obj {last_npc}");
             }
             "target" if matches!(parts.first().copied(), Some("self" | "peer")) => {
                 let obj = if parts[0] == "self" {
@@ -780,6 +846,20 @@ pub(super) async fn run(
                     None => println!("    me obj {obj} (no character head decoded)"),
                 }
             }
+            "waitpeer" => {
+                let secs: u64 = parts.first().and_then(|x| x.parse().ok()).unwrap_or(60);
+                let deadline = Instant::now() + Duration::from_secs(secs);
+                loop {
+                    if let Ok(p) = peer(game, parts.get(1).copied()) {
+                        println!("    peer '{}' char {} obj {}", p.name, p.id, p.obj_id);
+                        break;
+                    }
+                    if Instant::now() >= deadline {
+                        bail!("no other player in sight after {secs} s");
+                    }
+                    game.recv_within(Duration::from_millis(500)).await?;
+                }
+            }
             "await" => {
                 let kind = parts.first().context("await needs an event name")?;
                 let secs: u64 = parts.get(1).and_then(|x| x.parse().ok()).unwrap_or(60);
@@ -920,7 +1000,14 @@ pub(super) async fn run(
                 let me = game.state.self_obj;
                 let deadline = Instant::now() + Duration::from_secs(secs);
                 let mut casts = 0u32;
+                let social_from = game.state.social.len();
                 let outcome = loop {
+                    if game.state.social[social_from..]
+                        .iter()
+                        .any(|e| matches!(e, SocialEvent::DuelEnded { .. }))
+                    {
+                        break "duel ended";
+                    }
                     if game.state.dead_units.contains(&target.obj_id) {
                         break "peer died";
                     }
@@ -989,6 +1076,37 @@ pub(super) async fn run(
                     .drain(Duration::from_millis(1000), Duration::from_secs(4))
                     .await?;
                 show(&got);
+            }
+            "gcreate" => {
+                let (op, body) = social::create_expedition(rest.trim());
+                game.send_cs(op, &body).await?;
+                game.drain(Duration::from_millis(800), Duration::from_secs(4))
+                    .await?;
+            }
+            "ginvite" => {
+                let target = peer(game, parts.first().copied())?;
+                let (op, body) = social::invite_to_expedition(&target.name);
+                game.send_cs(op, &body).await?;
+                game.drain(Duration::from_millis(800), Duration::from_secs(3))
+                    .await?;
+            }
+            "gaccept" => {
+                let SocialEvent::GuildInvite { faction_id, .. } =
+                    await_event(game, &mut consumed, "GuildInvite", 60).await?
+                else {
+                    bail!("not a guild invitation");
+                };
+                let (op, body) = social::reply_expedition_invitation(faction_id, true);
+                game.send_cs(op, &body).await?;
+                game.drain(Duration::from_millis(800), Duration::from_secs(3))
+                    .await?;
+            }
+            "grole" => {
+                let (role, id): (u8, u32) = (num(&parts, 0)?, num(&parts, 1)?);
+                let (op, body) = social::change_expedition_member_role(role, id);
+                game.send_cs(op, &body).await?;
+                game.drain(Duration::from_millis(800), Duration::from_secs(3))
+                    .await?;
             }
             "drop" => {
                 r.end(s, "connection dropped without logout");

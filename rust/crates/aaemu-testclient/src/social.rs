@@ -97,6 +97,13 @@ pub enum SocialEvent {
         owner_obj: u32,
         rolls: Vec<(u32, i8)>,
     },
+    /// `SCExpeditionInvitationPacket` (guild invitation).
+    GuildInvite {
+        invitor_id: u32,
+        invitor_name: String,
+        faction_id: u32,
+        faction_name: String,
+    },
     /// `SCConflictZoneStatePacket`.
     ZoneState {
         zone_group_id: u16,
@@ -213,6 +220,12 @@ fn decode_inner(p: &Packet) -> anyhow::Result<Option<SocialEvent>> {
                 rolls,
             }
         }
+        sc::SCExpeditionInvitationPacket => SocialEvent::GuildInvite {
+            invitor_id: s.read_u32()?,
+            invitor_name: s.read_string()?,
+            faction_id: s.read_u32()?,
+            faction_name: s.read_string()?,
+        },
         sc::SCConflictZoneStatePacket => SocialEvent::ZoneState {
             zone_group_id: s.read_u16()?,
             state: s.read_u8()?,
@@ -301,6 +314,34 @@ pub fn change_looting_rule(
     (cs::CSChangeLootingRulePacket, b.into_bytes())
 }
 
+/// `CSCreateExpeditionPacket` (guild).
+pub fn create_expedition(name: &str) -> (u16, Vec<u8>) {
+    let mut b = PacketStream::new();
+    b.write_str(name).write_u32(0);
+    (cs::CSCreateExpeditionPacket, b.into_bytes())
+}
+
+/// `CSInviteToExpeditionPacket`.
+pub fn invite_to_expedition(name: &str) -> (u16, Vec<u8>) {
+    let mut b = PacketStream::new();
+    b.write_str(name);
+    (cs::CSInviteToExpeditionPacket, b.into_bytes())
+}
+
+/// `CSReplyExpeditionInvitationPacket` (`id` = the faction id of the invitation).
+pub fn reply_expedition_invitation(id: u32, join: bool) -> (u16, Vec<u8>) {
+    let mut b = PacketStream::new();
+    b.write_u32(id).write_u32(1).write_bool(join);
+    (cs::CSReplyExpeditionInvitationPacket, b.into_bytes())
+}
+
+/// `CSChangeExpeditionMemberRolePacket` (role 255 owner, 2 officer, 0 apprentice).
+pub fn change_expedition_member_role(role: u8, character_id: u32) -> (u16, Vec<u8>) {
+    let mut b = PacketStream::new();
+    b.write_u8(role).write_u32(character_id);
+    (cs::CSChangeExpeditionMemberRolePacket, b.into_bytes())
+}
+
 /// `CSLootDicePacket`: `roll` true rolls, false passes.
 pub fn loot_dice(item_index: u16, owner_type: u16, owner_obj: u32, roll: bool) -> (u16, Vec<u8>) {
     let mut b = PacketStream::new();
@@ -362,6 +403,28 @@ mod tests {
                 cs::CSChangeLootingRulePacket,
                 vec![5, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 3]
             )
+        );
+        assert_eq!(
+            create_expedition("Ab"),
+            (
+                cs::CSCreateExpeditionPacket,
+                vec![2, 0, b'A', b'b', 0, 0, 0, 0]
+            )
+        );
+        assert_eq!(
+            invite_to_expedition("Bo"),
+            (cs::CSInviteToExpeditionPacket, vec![2, 0, b'B', b'o'])
+        );
+        assert_eq!(
+            reply_expedition_invitation(7, true),
+            (
+                cs::CSReplyExpeditionInvitationPacket,
+                vec![7, 0, 0, 0, 1, 0, 0, 0, 1]
+            )
+        );
+        assert_eq!(
+            change_expedition_member_role(2, 9),
+            (cs::CSChangeExpeditionMemberRolePacket, vec![2, 9, 0, 0, 0])
         );
         assert_eq!(
             loot_dice(2, 1, 0x0A0B0C, true),
@@ -470,6 +533,22 @@ mod tests {
             })
         );
         assert_eq!(decode(&pkt(sc::SCUnitStatePacket, vec![])), None);
+    }
+
+    #[test]
+    fn guild_invitation_decodes() {
+        assert_eq!(
+            decode(&pkt(
+                sc::SCExpeditionInvitationPacket,
+                vec![1, 0, 0, 0, 1, 0, b'a', 2, 0, 0, 0, 1, 0, b'b']
+            )),
+            Some(SocialEvent::GuildInvite {
+                invitor_id: 1,
+                invitor_name: "a".into(),
+                faction_id: 2,
+                faction_name: "b".into()
+            })
+        );
     }
 
     #[test]
