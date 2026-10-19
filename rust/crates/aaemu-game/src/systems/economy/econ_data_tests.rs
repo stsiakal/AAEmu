@@ -1412,3 +1412,51 @@ fn item_proc_checks_mirror_the_csharp() {
         None
     );
 }
+
+struct Repairman;
+impl NpcEconomyHooks for Repairman {
+    fn shop_info(&self, _: &GameServer, _: &NpcRef) -> Option<NpcShopInfo> {
+        Some(NpcShopInfo {
+            repairman: true,
+            ..Default::default()
+        })
+    }
+}
+
+#[tokio::test]
+async fn repair_single_equipment_at_a_repairman() {
+    let mut w = world_with(data());
+    let npc = spawn_npc(&mut w);
+    w.server
+        .systems
+        .economy
+        .hooks
+        .npcs
+        .install(Arc::new(Repairman));
+    let id = give(
+        &w,
+        &w.pa.clone(),
+        slot_type::EQUIPMENT,
+        PRICEY,
+        1,
+        equip_slot::CHEST,
+    );
+    Inv::of(&w.pa)
+        .equipment()
+        .lock()
+        .unwrap()
+        .get_item_by_id_mut(id)
+        .unwrap()
+        .details
+        .durability = 4;
+    w.pa.data().money = 1000;
+    w.pa.data().unit.current_interaction_object = npc.obj_id;
+    let mut s = PacketStream::new();
+    s.write_u8(slot_type::EQUIPMENT)
+        .write_u8(equip_slot::CHEST as u8)
+        .write_bool(false);
+    run::<repair::CSRepairSingleEquipmentPacket>(&mut w, 0, s.as_bytes());
+    let item = Inv::of(&w.pa).equipped(equip_slot::CHEST).unwrap();
+    assert_eq!(item.details.durability, 10);
+    assert_eq!(w.pa.data().money, 850);
+}

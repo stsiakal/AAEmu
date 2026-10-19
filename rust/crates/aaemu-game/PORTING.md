@@ -2241,6 +2241,73 @@ weapon sets 393-395 (buffs only; weapon models), Auroria class sets (no set rows
 (socket tables reshaped, loader check). The Dawnsdrop/Hellforged sets use emulator-custom ids
 (>= 9,000,000) and are refused by the tool. A proc engine is the prerequisite for the 57 item procs.
 
+## Bevy-client server fixes (October 19, 2026)
+
+Found by the open-source Bevy client's reverse-engineering notes (`AABevy1.2/docs/aa-net.md`,
+digest `D:/aaemu-audits/bevy/DIGEST.md`). Items marked "per Bevy RE notes" were not re-derived
+from the unpacked 1.2 client here.
+
+- **Repair reachable (deviation from the C#).** The C# advertised the repair skill (12086) only
+  for `repairman` NPC templates but repaired only at `blacksmith` ones; the data has 331
+  blacksmith-only and a handful of repairman-only templates, so repair was unreachable through
+  NPC interaction. The original client's `npc_interaction` script maps `"blacksmith"` to the
+  repair window and its `"repairman"` branch references an undefined constant (per Bevy RE
+  notes), so the blacksmith is the retail repair NPC. Now the repair handlers accept a
+  blacksmith *or* a repairman, and `CSStartInteraction` appends `REPAIR` to the advertised skill
+  list of every blacksmith/repairman (the primary option, e.g. `USE_STORE`, stays first).
+- **One tick origin (deviation).** `Pong.world/remote` and `SCInstantGameStart/End` counted
+  from two separate `OnceLock<Instant>` origins; the client maps battlefield timers through
+  the Pong samples (per Bevy RE notes, `TimeKeeper::AddSample`), so they were skewed by the
+  difference of the first uses. Both now use `packets::proxy::tick_count`.
+- **Ability-tree skills need an active ability and a learned skill (deviation).** The C#
+  `CSStartSkill` handler fell through to a catch-all that cast any skill id. The 1.2 client
+  refuses unlearned / inactive-tree skills locally (`URK_TRAINED_SKILL`, per Bevy RE notes), so
+  only other clients could cast them. `handlers::class_skill_denial` now refuses a client cast of
+  a skill with `ability_id != 0` when that ability is not one of the three active ones
+  (`SkillResult` `INACTIVE_ABILITY`) or, for `need_learn` skills, when neither the skill nor a
+  same-ability-level variant is learned (`INVALID_SKILL`). Mount, item, default/common and
+  auto-attack casts are decided before the check, ability-less skills (doodad / quest /
+  buff-granted) are unaffected, and GM commands cast through the server skill API. The exact
+  result codes are our choice (the client only needs a non-success `SCSkillStarted`).
+- **Keep-alive grace (deviation).** The 30 s dead-connection sweep (`accounts::remove_dead_connections`)
+  closed a registered connection that had not pinged yet at the next sweep (C#: `LastPing =
+  MinValue`). It now measures such a connection from when it connected. The Bevy client pings
+  every 3 s from the moment the TCP connection opens, so a healthy client always stays well
+  inside the 30 s window; the grace only covers a sweep that lands right after registration.
+- **Player guilds have political system 0; guild rename (deviation).** The C# created (and
+  loaded) every expedition faction with `PoliticalSystem = 1`. The 1.2 client's `SCFactionCreated`
+  handler (`x2game.dll` `FUN_392febb0`: membership/menu effects only when the faction's
+  political-system field at +0x118 is 0) and its rename-task planner (`FUN_392f8db0` via
+  `FUN_398a36e0`: the cached faction's political system must be 0) both ignore a faction with
+  another value, so a guild created with 1 could not open the rename dialog (verified in the
+  unpacked 1.2 x2game; that the field is the wire `political_system` byte is per Bevy RE
+  notes). New and loaded guilds now use 0 (kingdom factions in `system_factions` stay 1).
+  `CSRenameExpedition` (the C# only logged it) now renames: the guild owner only, under the
+  creation name rules (length, `Expedition.NameRegex`, unique), no cost; it broadcasts
+  `SCFactionRenamed` (`by_gm = false`) and saves. The retail gating by `allow_change_name`
+  (the client clears it on a player rename) is not known and not implemented; the guild chat
+  channel keeps its creation-time name.
+- **Not changed (checked against the Bevy findings).**
+  - *Auction refund wedge*: not reproduced on the current tree. The Bevy lane (a snapshot 278
+    commits older) hung on `TakeAllAndDelete` of an outbid-refund mail and then refused
+    `enter world`. On this tree the whole sequence works live (post / cancel + claim, bid +
+    buyout by a third player + claim of the refund, seller proceeds claim with its labor cost, a
+    two-bot concurrent post/cancel/claim loop, relog) and as `auction_tests`
+    (`cancel_refund_mail_can_be_taken_all_and_deleted`, `sale_and_win_mails_...`,
+    `outbid_refund_mail_can_be_taken_all_and_deleted`, all under `finishes_in_time`). Open audit
+    note: `mail::store_quest_rewards_locked` takes the mail state while the caller holds the
+    character lock (quest "locked hooks"), whereas `delete_mail`, `check_all_mail_timings`,
+    `get_current_mail_list` and `notify_new_mail_by_name_if_online` take a character lock while
+    holding the mail state; a quest mail reward racing a mail delivery for the same character
+    could deadlock. No reproduction, so no change.
+  - *Party leave / kick / dismiss*: already work through `CSAskRiskyTeamAction` (0x088,
+    `teams.ask_risky_team`; the original client's path, layout `team_id u32, target u32, action
+    u8`, dismiss sends target 0 like the Bevy client). The C# opcodes 0x07d-0x07f
+    (`CSLeaveTeam`, `CSKickTeamMember`, `CSDismissTeam`) stay log-only as in the C#.
+  - *`SCNoticeMessage` (0x0d0)*: the 1.2 client's `OnNoticeMessage` handler
+    (`x2game.dll` `FUN_391d8d60` -> `FUN_393c2780(type, alpha, visTime, text)`) reads a `u8`
+    type, a short string, an `i32` and a text string, which is our layout; the Bevy client
+    simply does not decode this opcode yet.
 ## PvP bot fixes (duel disconnect, GM faction, quit relog)
 
 * **Duel participant leaves** (`DuelManager::on_participant_leave`, called first in `session::save_and_remove_from_world`): the C# had no handling, so the opponent stayed in the Red / Blue faction with the duel registered until the end timer, and `DuelAccepted` answered "already started". A started duel now ends as a surrender of the leaver (`SCDuelEndedPacket` with `det` 2, the packet of running away from the flag) and restores both factions; a pending request is dropped. No 1.2 oracle for the retail result code; the surrender code is the closest existing one.

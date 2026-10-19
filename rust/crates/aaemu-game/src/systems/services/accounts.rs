@@ -50,7 +50,11 @@ pub fn initialize(server: &std::sync::Arc<GameServer>) {
 
 /// `RemoveDeadConnections`: shuts down every registered account connection whose `LastPing`
 /// is older than 30 s. A connection that never sent a `PingPacket` has `LastPing =
-/// DateTime.MinValue` in C# and is shut down too. Returns the closed connection ids.
+/// DateTime.MinValue` in C# and was shut down at the next sweep; here it is measured from the
+/// moment it connected instead (deviation, see PORTING.md): clients ping every 3 s from the
+/// moment the TCP connection opens (the Bevy client), but a sweep that lands just after the
+/// registration must not drop a healthy client whose first ping is still in flight. Returns the
+/// closed connection ids.
 pub fn remove_dead_connections(server: &GameServer, now: NaiveDateTime) -> Vec<u32> {
     let timeout = chrono::Duration::from_std(DEAD_CONNECTION_TIMEOUT).expect("30 s");
     let mut closed = Vec::new();
@@ -58,7 +62,8 @@ pub fn remove_dead_connections(server: &GameServer, now: NaiveDateTime) -> Vec<u
         let Some(handle) = server.connections.get(conn_id) else {
             continue;
         };
-        let alive = handle.last_ping().is_some_and(|p| p + timeout >= now);
+        let last_seen = handle.last_ping().unwrap_or_else(|| handle.connected_at());
+        let alive = last_seen + timeout >= now;
         if alive {
             continue;
         }
@@ -194,9 +199,11 @@ mod tests {
         assert!(server.accounts.try_add(11, pinging.conn.id));
         pinging.conn.touch_ping();
         let now = Utc::now().naive_utc();
-        // Never pinged (`DateTime.MinValue`) -> closed; pinged just now -> kept.
-        assert_eq!(remove_dead_connections(&server, now), vec![quiet.conn.id]);
-        // 31 s later the pinging one is dead too.
+        // Neither is dead yet: the one that never pinged is measured from its connect time.
+        assert!(remove_dead_connections(&server, now).is_empty());
+        let pinged = now + chrono::Duration::seconds(29);
+        assert!(remove_dead_connections(&server, pinged).is_empty());
+        // 31 s later both are.
         let later = now + chrono::Duration::seconds(31);
         let mut closed = remove_dead_connections(&server, later);
         closed.sort_unstable();

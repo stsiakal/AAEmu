@@ -1,7 +1,7 @@
 //! `Core/Managers/InstantGameManager.cs` and `Models/Game/InstantGame/*`: battlefield
 //! matchmaking queues, the instant game (arena) instances, teams, kills, scores and results.
 
-use std::sync::{Arc, Mutex, MutexGuard, OnceLock, Weak};
+use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::time::Duration;
 
 use crate::data::world_templates::WorldSpawnPosition;
@@ -82,12 +82,11 @@ pub const ENDING_TIMEOVER_COMPARE_KILL_COUNT: u8 = 1;
 /// `Character.ResetAllSkillCooldowns`: `playerSkillsTag`.
 const PLAYER_SKILLS_TAG: u32 = 378;
 
-/// `Environment.TickCount & int.MaxValue` (milliseconds of a monotonic clock; the C# counts from
-/// the machine's boot, here from the first use).
+/// `Environment.TickCount & int.MaxValue`: the same origin as the `Pong` clock samples, since
+/// the client maps the battlefield timers through those samples (see
+/// [`crate::packets::proxy::tick_count`]).
 pub fn tick_count() -> u32 {
-    static START: OnceLock<std::time::Instant> = OnceLock::new();
-    let start = START.get_or_init(std::time::Instant::now);
-    (start.elapsed().as_millis() as u64 & u64::from(i32::MAX as u32)) as u32
+    crate::packets::proxy::tick_count()
 }
 
 fn now_ms() -> i64 {

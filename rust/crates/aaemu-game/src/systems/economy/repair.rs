@@ -120,10 +120,10 @@ fn repair_in_containers(
             .npcs
             .get()
             .and_then(|h| h.shop_info(server, &npc))
-            .is_some_and(|i| i.blacksmith);
+            .is_some_and(|i| i.blacksmith || i.repairman);
         if !blacksmith {
             tracing::warn!(
-                "Attempting to repair an item while not at a blacksmith, Item: {id}, NPC: {}",
+                "Attempting to repair an item while not at a blacksmith or repairman, Item: {id}, NPC: {}",
                 npc.obj_id
             );
             continue;

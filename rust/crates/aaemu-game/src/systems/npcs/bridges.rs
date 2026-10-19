@@ -1020,6 +1020,7 @@ impl crate::systems::economy::hooks::NpcEconomyHooks for NpcsForEconomy {
             merchant: t.merchant,
             merchant_pack_id: t.merchant_pack_id,
             blacksmith: t.blacksmith,
+            repairman: t.repairman,
             auctioneer: t.auctioneer,
             banker: t.banker,
             specialty: t.specialty,

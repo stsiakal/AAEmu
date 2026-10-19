@@ -206,6 +206,19 @@ pub struct CSStartInteractionPacket {
     pub modifier_keys: i32,
 }
 
+/// Every interaction skill the NPC advertises: the primary option, plus `REPAIR` for
+/// blacksmiths (the 1.2 client's own interaction script treats `blacksmith` as the repair NPC and
+/// `repairman` as a dead branch; the server repairs at both, so both advertise it).
+pub fn interaction_options(t: &super::data::NpcTemplate) -> Vec<u32> {
+    use skills_enum::*;
+    let primary = interaction_option(t);
+    let mut out = vec![primary];
+    if (t.blacksmith || t.repairman) && primary != REPAIR {
+        out.push(REPAIR);
+    }
+    out
+}
+
 /// The interaction option for an NPC template (the `if / else if` chain of
 /// `CSStartInteractionPacket`): 0 when the NPC has no special function.
 pub fn interaction_option(t: &super::data::NpcTemplate) -> u32 {
@@ -284,14 +297,14 @@ impl ClientPacket for CSStartInteractionPacket {
             if let Some(npc) = world.npc(self.npc_obj_id) {
                 let template_id = npc.data().unit.template_id;
                 // `npc.Template` is never null for a created NPC.
-                let option = server
+                let options = server
                     .game_data
                     .systems
                     .npcs
                     .npc
                     .template(template_id)
-                    .map_or(0, interaction_option);
-                me.send(packet(vec![option]));
+                    .map_or_else(|| vec![0], interaction_options);
+                me.send(packet(options));
             }
             if let Some(WorldObject::Mate(_)) = world.unit(self.npc_obj_id) {
                 me.send(packet(vec![skills_enum::SLAVE_MOUNTING]));
@@ -728,5 +741,19 @@ mod tests {
         assert_eq!(interaction_option(&t), skills_enum::USE_STORE);
         t.banker = true;
         assert_eq!(interaction_option(&t), skills_enum::USE_WAREHOUSE);
+    }
+
+    #[test]
+    fn blacksmiths_and_repairmen_advertise_repair() {
+        use skills_enum::*;
+        let mut t = super::super::data::NpcTemplate::default();
+        assert_eq!(interaction_options(&t), vec![0]);
+        t.blacksmith = true;
+        assert_eq!(interaction_options(&t), vec![ITEM_FUSION, REPAIR]);
+        t.merchant = true;
+        assert_eq!(interaction_options(&t), vec![USE_STORE, REPAIR]);
+        t.blacksmith = false;
+        t.repairman = true;
+        assert_eq!(interaction_options(&t), vec![REPAIR]);
     }
 }

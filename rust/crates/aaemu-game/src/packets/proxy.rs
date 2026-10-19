@@ -95,8 +95,11 @@ impl Marshal for FastPongPacket {
 }
 
 /// Millisecond tick counter standing in for `Environment.TickCount` (time since process start
-/// instead of since boot; only used as an opaque timestamp by the client).
-fn tick_count() -> u32 {
+/// instead of since boot). The one origin of every server tick the client correlates: the
+/// `Pong` `world` / `remote` samples feed the client's `TimeKeeper`, and the battlefield
+/// (`SCInstantGameStart` / `End`) timers are mapped through those samples, so both must count
+/// from the same instant (`systems::instances::instant_game::tick_count` delegates here).
+pub fn tick_count() -> u32 {
     static START: OnceLock<Instant> = OnceLock::new();
     (START.get_or_init(Instant::now).elapsed().as_millis() as u64 & u64::from(i32::MAX as u32))
         as u32
@@ -383,6 +386,34 @@ pub fn register(r: &mut crate::net::registry::PacketRegistry) {
 mod tests {
     use super::*;
     use crate::net::packet::encode;
+
+    /// The Pong clock and the battlefield timers count from one origin: the client maps the
+    /// battlefield `start` / `end` ticks through the Pong samples, so two origins skew them by
+    /// the difference between their first uses.
+    #[test]
+    fn pong_and_battlefield_clocks_share_one_origin() {
+        let a = crate::systems::instances::instant_game::tick_count();
+        std::thread::sleep(std::time::Duration::from_millis(250));
+        let b = tick_count();
+        let c = crate::systems::instances::instant_game::tick_count();
+        assert!(b >= a && c >= b, "ticks must be monotonic: {a} {b} {c}");
+        assert!(
+            c - b < 100,
+            "different origins: pong {b} vs battlefield {c}"
+        );
+        // The Pong sample is the same counter.
+        let mut s = PacketStream::new();
+        PongPacket {
+            tm: 0,
+            when: 0,
+            local: 0,
+            world: b,
+        }
+        .write(&mut s);
+        let body = s.as_bytes();
+        let remote = i64::from_le_bytes(body[24..32].try_into().unwrap());
+        assert_eq!(remote, i64::from(b) * 1000);
+    }
 
     #[test]
     fn proxy_frames() {

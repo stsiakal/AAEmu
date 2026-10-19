@@ -39,6 +39,20 @@
 //! tput <slot type> <slot> <amount>   CSPutupTradeItem
 //! tmoney <amount>                    CSPutupTradeMoney
 //! tlock <0|1>  /  tok  /  tcancel    CSTradeLock / CSTradeOk / CSCancelTrade
+//! rawcs <opcode hex> [<body hex>]    send any client packet and print the replies
+//! aucpost <bag slot> <buyout> <duration>
+//!                                    CSAuctionPost of the bag item (remembers the lot id)
+//! auccancel                          CSCancelAuction of the remembered lot
+//! aucbid <lot id> <money>            CSBidAuction (a bid at or above the buyout price buys it)
+//! interact <npc template>            CSInteractNPC + CSStartInteraction (prints the skill list)
+//! repairall                          CSRepairAllEquipments (free of the NPC check in the client)
+//! maillist                           CSListMail (received mail), remembers the mail ids
+//! mailtakeall [<n>]                  CSTakeAllAttachmentItem for the n-th listed mail
+//! partyinvite <name>                 CSInviteToTeam (party) by character name
+//! partyaccept                        wait for SCAskToJoinTeam and accept it
+//! teamact <leave|kick|dismiss> <id>    CSAskRiskyTeamAction on the current team (the way the
+//!                                      original and the Bevy client leave / kick / dismiss);
+//!                                      `id` is the character id (own id for leave, 0 for dismiss)
 //! ```
 //!
 //! Two-bot duel / party / PvP / loot-dice commands (run one process per bot, each with its own
@@ -128,6 +142,7 @@ fn show(packets: &[Packet]) {
             || name.contains("Teleport")
             || name.contains("Mail")
             || name.contains("Trade")
+            || name.contains("Interaction")
             || name.contains("Gold")
         {
             let hex: String = p.body.iter().take(48).map(|b| format!("{b:02x}")).collect();
@@ -268,6 +283,9 @@ pub(super) async fn run(
     let mut items: HashMap<u32, u64> = HashMap::new();
     let mut clock = 40_000u32;
     let mut mate: Option<(u32, u16)> = None;
+    let mut lot_id: u64 = 0;
+    let mut mail_ids: Vec<i64> = Vec::new();
+    let mut team_id: u32 = 0;
     let mut consumed: HashSet<usize> = (0..game.state.social.len()).collect();
     // The login burst (the zone states of every conflict zone) is not part of the script.
     let mut printed = game.state.social.len();
@@ -287,6 +305,10 @@ pub(super) async fn run(
         match cmd {
             "gm" => {
                 let reply = gm_command(game, rest).await?;
+                for p in reply.iter().filter(|p| p.is_sc(sc::SCJoinedTeamPacket)) {
+                    team_id = p.stream().read_u32()?;
+                    println!("    joined team {team_id}");
+                }
                 show(&reply);
             }
             "gmq" => {
@@ -1153,6 +1175,266 @@ pub(super) async fn run(
             "drop" => {
                 r.end(s, "connection dropped without logout");
                 return Ok(());
+            }
+            "rawcs" => {
+                let opcode = u16::from_str_radix(parts.first().context("opcode")?, 16)?;
+                let hex = parts.get(1).copied().unwrap_or("");
+                let body: Vec<u8> = (0..hex.len() / 2)
+                    .map(|i| u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16))
+                    .collect::<Result<_, _>>()?;
+                game.send_cs(opcode, &body).await?;
+                let got = game
+                    .drain(Duration::from_millis(1200), Duration::from_secs(6))
+                    .await?;
+                show(&got);
+            }
+            "aucpost" => {
+                let slot: u8 = num(&parts, 0)?;
+                let buyout: i32 = num(&parts, 1)?;
+                let duration: u8 = num(&parts, 2)?;
+                let item = game
+                    .state
+                    .bag
+                    .get(&slot)
+                    .copied()
+                    .with_context(|| format!("no bag item in slot {slot}"))?;
+                let mut b = aaemu_commons::PacketStream::new();
+                b.write_bc(0x200)
+                    .write_bc(0x200)
+                    .write_u64(item.item_id)
+                    .write_i32(0)
+                    .write_i32(buyout)
+                    .write_u8(duration);
+                game.send_cs(aaemu_game::opcodes::cs::CSAuctionPostPacket, b.as_bytes())
+                    .await?;
+                let got = game
+                    .drain(Duration::from_millis(1200), Duration::from_secs(6))
+                    .await?;
+                for p in got.iter().filter(|p| p.is_sc(sc::SCAuctionPostedPacket)) {
+                    lot_id = p.stream().read_u64()?;
+                    println!("    auction lot {lot_id}");
+                }
+                show(&got);
+            }
+            "auccancel" => {
+                // CSCancelAuction carries the whole lot (`AuctionLot.Read`); the server only
+                // uses its id.
+                let mut b = aaemu_commons::PacketStream::new();
+                b.write_bc(0x200).write_bc(0x200);
+                b.write_u64(lot_id).write_u8(0);
+                // empty item: template 0 reads only the template id
+                b.write_u32(0);
+                b.write_u8(1)
+                    .write_u32(1)
+                    .write_str("x")
+                    .write_i32(0)
+                    .write_i32(0);
+                b.write_i64(0)
+                    .write_u8(255)
+                    .write_u32(0)
+                    .write_str("")
+                    .write_i32(0)
+                    .write_i32(0);
+                game.send_cs(aaemu_game::opcodes::cs::CSCancelAuctionPacket, b.as_bytes())
+                    .await?;
+                let got = game
+                    .drain(Duration::from_millis(1500), Duration::from_secs(6))
+                    .await?;
+                show(&got);
+            }
+            "aucbid" => {
+                // CSBidAuction: the lot (only its id is used) then the bid (lot id, money).
+                let id: u64 = num(&parts, 0)?;
+                let money: i32 = num(&parts, 1)?;
+                let mut b = aaemu_commons::PacketStream::new();
+                b.write_bc(0x200).write_bc(0x200);
+                b.write_u64(id).write_u8(0);
+                b.write_u32(0);
+                b.write_u8(1)
+                    .write_u32(1)
+                    .write_str("x")
+                    .write_i32(0)
+                    .write_i32(0);
+                b.write_i64(0)
+                    .write_u8(255)
+                    .write_u32(0)
+                    .write_str("")
+                    .write_i32(0)
+                    .write_i32(0);
+                b.write_u64(id)
+                    .write_u8(1)
+                    .write_u32(0)
+                    .write_str("")
+                    .write_i32(money);
+                game.send_cs(aaemu_game::opcodes::cs::CSBidAuctionPacket, b.as_bytes())
+                    .await?;
+                let got = game
+                    .drain(Duration::from_millis(1500), Duration::from_secs(6))
+                    .await?;
+                show(&got);
+            }
+            "interact" => {
+                // CSInteractNPC (sets the current interaction object) then CSStartInteraction
+                // (asks for the NPC's interaction skill list).
+                let tpl: u32 = num(&parts, 0)?;
+                let npc = nearest(game, tpl).with_context(|| format!("NPC {tpl} not in sight"))?;
+                let mut b = aaemu_commons::PacketStream::new();
+                b.write_bc(npc.obj_id).write_bool(false);
+                game.send_cs(aaemu_game::opcodes::cs::CSInteractNPCPacket, b.as_bytes())
+                    .await?;
+                game.drain(Duration::from_millis(500), Duration::from_secs(3))
+                    .await?;
+                let mut b = aaemu_commons::PacketStream::new();
+                b.write_bc(npc.obj_id)
+                    .write_bc(0)
+                    .write_i32(0)
+                    .write_i32(0)
+                    .write_u8(1)
+                    .write_i32(0);
+                game.send_cs(
+                    aaemu_game::opcodes::cs::CSStartInteractionPacket,
+                    b.as_bytes(),
+                )
+                .await?;
+                let got = game
+                    .drain(Duration::from_millis(1200), Duration::from_secs(6))
+                    .await?;
+                show(&got);
+            }
+            "repairall" => {
+                let mut b = aaemu_commons::PacketStream::new();
+                b.write_bool(false);
+                game.send_cs(
+                    aaemu_game::opcodes::cs::CSRepairAllEquipmentsPacket,
+                    b.as_bytes(),
+                )
+                .await?;
+                let got = game
+                    .drain(Duration::from_millis(1200), Duration::from_secs(6))
+                    .await?;
+                show(&got);
+            }
+            "maillist" => {
+                game.send_cs(aaemu_game::opcodes::cs::CSListMailPacket, &[])
+                    .await?;
+                let got = game
+                    .drain(Duration::from_millis(1200), Duration::from_secs(6))
+                    .await?;
+                mail_ids.clear();
+                for p in got.iter().filter(|p| p.is_sc(sc::SCMailListPacket)) {
+                    let mut st = p.stream();
+                    let _sent = st.read_bool()?;
+                    let n = st.read_i32()?;
+                    for _ in 0..n {
+                        let id = st.read_i64()?;
+                        let kind = st.read_u8()?;
+                        let status = st.read_u8()?;
+                        let title = st.read_string()?;
+                        let sender = st.read_string()?;
+                        let attachments = st.read_u8()?;
+                        let _receiver = st.read_string()?;
+                        let _open = st.read_i64()?;
+                        let _returned = st.read_bool()?;
+                        let _extra = st.read_i64()?;
+                        println!(
+                            "    mail {id} type {kind} status {status} '{title}' from '{sender}' attachments {attachments}"
+                        );
+                        mail_ids.push(id);
+                    }
+                }
+                show(&got);
+            }
+            "mailtakeall" => {
+                let n: usize = parts.first().and_then(|x| x.parse().ok()).unwrap_or(0);
+                let id = *mail_ids
+                    .get(n)
+                    .context("no such listed mail (run maillist)")?;
+                game.send_cs(
+                    aaemu_game::opcodes::cs::CSTakeAllAttachmentItemPacket,
+                    &id.to_le_bytes(),
+                )
+                .await?;
+                let got = game
+                    .drain(Duration::from_millis(1500), Duration::from_secs(8))
+                    .await?;
+                show(&got);
+            }
+            "partyinvite" => {
+                let mut b = aaemu_commons::PacketStream::new();
+                b.write_u32(0)
+                    .write_bool(true)
+                    .write_str(parts.first().context("name")?);
+                game.send_cs(aaemu_game::opcodes::cs::CSInviteToTeamPacket, b.as_bytes())
+                    .await?;
+                let got = game
+                    .drain(Duration::from_millis(1500), Duration::from_secs(6))
+                    .await?;
+                for p in got.iter().filter(|p| p.is_sc(sc::SCJoinedTeamPacket)) {
+                    team_id = p.stream().read_u32()?;
+                    println!("    joined team {team_id}");
+                }
+                show(&got);
+            }
+            "partyaccept" => {
+                let p = game
+                    .wait_for("SCAskToJoinTeamPacket", |p| {
+                        p.is_sc(sc::SCAskToJoinTeamPacket)
+                    })
+                    .await?;
+                let mut st = p.stream();
+                let ask_team = st.read_u32()?;
+                let sender = st.read_u32()?;
+                let _sender_name = st.read_string()?;
+                let is_party = st.read_bool()?;
+                let mut b = aaemu_commons::PacketStream::new();
+                b.write_u32(ask_team)
+                    .write_bool(is_party)
+                    .write_u32(sender)
+                    .write_bool(false)
+                    .write_str(
+                        game.state
+                            .self_info
+                            .as_ref()
+                            .map_or("", |c| c.name.as_str()),
+                    )
+                    .write_bool(false);
+                game.send_cs(
+                    aaemu_game::opcodes::cs::CSReplyToJoinTeamPacket,
+                    b.as_bytes(),
+                )
+                .await?;
+                let got = game
+                    .drain(Duration::from_millis(1500), Duration::from_secs(6))
+                    .await?;
+                for p in got.iter().filter(|p| p.is_sc(sc::SCJoinedTeamPacket)) {
+                    team_id = p.stream().read_u32()?;
+                    println!("    joined team {team_id}");
+                }
+                show(&got);
+            }
+            "myid" => println!("    character id {}", game.state.selected_char),
+            "teamact" => {
+                anyhow::ensure!(
+                    team_id != 0,
+                    "no team yet (partyinvite / partyaccept first)"
+                );
+                let (action, target) = match parts.first().copied() {
+                    Some("leave") => (0u8, num::<u32>(&parts, 1)?),
+                    Some("kick") => (1u8, num::<u32>(&parts, 1)?),
+                    Some("dismiss") => (2u8, 0),
+                    _ => bail!("teamact <leave|kick|dismiss> <char id>"),
+                };
+                let mut b = aaemu_commons::PacketStream::new();
+                b.write_u32(team_id).write_u32(target).write_u8(action);
+                game.send_cs(
+                    aaemu_game::opcodes::cs::CSAskRiskyTeamActionPacket,
+                    b.as_bytes(),
+                )
+                .await?;
+                let got = game
+                    .drain(Duration::from_millis(1500), Duration::from_secs(6))
+                    .await?;
+                show(&got);
             }
             other => bail!("unknown script command '{other}' at line {}", n + 1),
         }
