@@ -2184,3 +2184,16 @@ from the unpacked 1.2 client here.
   MinValue`). It now measures such a connection from when it connected. The Bevy client pings
   every 3 s from the moment the TCP connection opens, so a healthy client always stays well
   inside the 30 s window; the grace only covers a sweep that lands right after registration.
+- **Player guilds have political system 0; guild rename (deviation).** The C# created (and
+  loaded) every expedition faction with `PoliticalSystem = 1`. The 1.2 client's `SCFactionCreated`
+  handler (`x2game.dll` `FUN_392febb0`: membership/menu effects only when the faction's
+  political-system field at +0x118 is 0) and its rename-task planner (`FUN_392f8db0` via
+  `FUN_398a36e0`: the cached faction's political system must be 0) both ignore a faction with
+  another value, so a guild created with 1 could not open the rename dialog (verified in the
+  unpacked 1.2 x2game; that the field is the wire `political_system` byte is per Bevy RE
+  notes). New and loaded guilds now use 0 (kingdom factions in `system_factions` stay 1).
+  `CSRenameExpedition` (the C# only logged it) now renames: the guild owner only, under the
+  creation name rules (length, `Expedition.NameRegex`, unique), no cost; it broadcasts
+  `SCFactionRenamed` (`by_gm = false`) and saves. The retail gating by `allow_change_name`
+  (the client clears it on a player rename) is not known and not implemented; the guild chat
+  channel keeps its creation-time name.

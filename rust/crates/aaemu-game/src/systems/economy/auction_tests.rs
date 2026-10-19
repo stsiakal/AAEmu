@@ -1059,3 +1059,29 @@ async fn buyout_delivers_item_and_payment_by_mail() {
     );
     assert_eq!(money(&w.pa), before + 900);
 }
+
+/// Post -> cancel (refund mail) -> take-all-and-delete on the cancel mail, through the real mail
+/// wiring. The Bevy client hit a server wedge here; the whole flow must finish.
+#[tokio::test]
+async fn cancel_refund_mail_can_be_taken_all_and_deleted() {
+    let (mut w, _log) = auction_world();
+    crate::systems::economy::wiring::install(&w.server);
+    let ran = crate::test_support::finishes_in_time("cancel refund take-all", move || {
+        let (_item_id, lot) = post(&mut w, SWORD, 0, 1000, 1);
+        run::<CSCancelAuctionPacket>(&mut w, 0, &cancel_body(lot.id));
+        let mails = mails_to(&w.server, 1);
+        assert_eq!(mails.len(), 1, "the refund mail");
+        let mail = mails[0].clone();
+        w.a.drain();
+        run::<crate::systems::economy::mail_packets::CSTakeAllAttachmentItemPacket>(
+            &mut w,
+            0,
+            &mail.id.to_le_bytes(),
+        );
+        w.a.drain();
+        // The player can still act afterwards: a second operation takes the ops lock again.
+        let _ = w.server.systems.economy.ops_lock();
+        mails_to(&w.server, 1).len()
+    });
+    assert_eq!(ran, 0, "take-all deleted the refund mail");
+}
