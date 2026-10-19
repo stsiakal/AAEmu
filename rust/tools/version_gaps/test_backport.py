@@ -630,6 +630,19 @@ class EquipSetTests(unittest.TestCase):
             report["refused"]["missing_references"],
         )
 
+    def test_bonus_with_unknown_unit_attribute_is_omitted(self):
+        base, ref = self.dbs()
+        base.conn.execute("INSERT INTO unit_modifiers VALUES (1, 'Item', 1, 186, 0, 1, 0)")
+        ref.conn.execute("INSERT INTO buffs VALUES (51, 'pve', 0, 0)")
+        ref.conn.execute("INSERT INTO unit_modifiers VALUES ('Buff', 51, 199, 0, -70, 0)")
+        ref.conn.execute("INSERT INTO equip_item_set_bonuses VALUES (3002, 51, 300, 4, 0)")
+        _, rows, report = build_backport(base, ref, [10])
+        self.assertEqual(
+            sorted(r["num_pieces"] for r in rows["equip_item_set_bonuses"]), [3, 5]
+        )
+        self.assertEqual(report["set_bonuses_omitted"][0]["buff_id"], 51)
+        self.assertNotIn(51, [r["id"] for r in rows["buffs"]])
+
     def test_orphan_craft_is_reported_not_borrowed(self):
         base, ref = self.dbs()
         ref.conn.execute("INSERT INTO craft_products VALUES (210, 99, 10, 1)")

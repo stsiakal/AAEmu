@@ -209,6 +209,7 @@ class Borrower:
         }
         self._buff_effect_buff_ids = set()
         self.seen_sets = set()
+        self._max_unit_attribute = None
         self.armor_asset_map = {}
         self.item_asset_map = {}
         self.icon_map = {}
@@ -645,6 +646,15 @@ class Borrower:
                 " order by unit_attribute_id, unit_modifier_type_id, value",
                 (buff_id,),
             ):
+                if self.unknown_unit_attribute(row):
+                    self.report.setdefault("unit_modifiers_unknown_in_1_2", []).append(
+                        {
+                            "buff_id": buff_id,
+                            "unit_attribute_id": row.get("unit_attribute_id"),
+                            "value": row.get("value"),
+                        }
+                    )
+                    continue
                 self.plan_row("unit_modifiers", row)
         if self.ref.has("skill_modifiers") and self.base.has("skill_modifiers"):
             for row in self.ref.rows(
@@ -673,6 +683,41 @@ class Borrower:
                 self.plan_row("dynamic_unit_modifiers", row)
         if source == "buff_effect":
             self._buff_effect_buff_ids.add(buff_id)
+
+    def max_unit_attribute(self):
+        """Highest unit attribute any 1.2 unit_modifiers row uses (the 1.2 client's range)."""
+        if self._max_unit_attribute is None:
+            row = self.base.row("select max(unit_attribute_id) as m from unit_modifiers")
+            # an empty base table gives no range to enforce
+            self._max_unit_attribute = (row["m"] if row else 0) or 10**9
+        return self._max_unit_attribute
+
+    def unknown_unit_attribute(self, row):
+        return (row.get("unit_attribute_id") or 0) > self.max_unit_attribute()
+
+    def buff_has_only_unknown_modifiers(self, buff_id):
+        """True when the buff's only effect is unit modifiers 1.2 has no attribute for."""
+        if not self.ref.has("unit_modifiers"):
+            return False
+        mods = self.ref.rows(
+            "select unit_attribute_id from unit_modifiers"
+            " where owner_type = 'Buff' and owner_id = ?",
+            (buff_id,),
+        )
+        if not mods or not all(self.unknown_unit_attribute(m) for m in mods):
+            return False
+        for table, column in (
+            ("skill_modifiers", "owner_id"),
+            ("buff_tick_effects", "buff_id"),
+            ("dynamic_unit_modifiers", "buff_id"),
+        ):
+            if self.ref.has(table) and self.ref.row(
+                f'select 1 from "{table}" where "{column}" = ?'
+                + (" and owner_type = 'Buff'" if table == "skill_modifiers" else ""),
+                (buff_id,),
+            ):
+                return False
+        return True
 
     def _check_tag(self, tag_id, table, owner_id):
         if not tag_id or not self.base.has("tags"):
@@ -716,8 +761,20 @@ class Borrower:
             " order by num_pieces, id",
             (set_id,),
         ):
-            self.plan_row("equip_item_set_bonuses", bonus)
             buff_id = bonus.get("buff_id") or 0
+            if buff_id and self.buff_has_only_unknown_modifiers(buff_id):
+                # e.g. the 3.0 PvE damage reduction attribute: 1.2 has no such stat, so the
+                # bonus would list an effect nothing implements.
+                self.report.setdefault("set_bonuses_omitted", []).append(
+                    {
+                        "set_id": set_id,
+                        "num_pieces": bonus.get("num_pieces"),
+                        "buff_id": buff_id,
+                        "reason": "only unit attributes 1.2 does not have",
+                    }
+                )
+                continue
+            self.plan_row("equip_item_set_bonuses", bonus)
             if buff_id:
                 self.borrow_buff(buff_id, source="set_bonus")
             proc_id = bonus.get("proc_id") or 0
