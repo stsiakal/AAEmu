@@ -9,10 +9,12 @@ from player_order import (
     Orderer,
     box_distance,
     level_for_xp,
+    load_quest_supplies,
     load_quest_xp,
     load_spawns,
     neighbours_of,
     quest_state,
+    round_even,
     xp_for_level,
 )
 
@@ -22,7 +24,8 @@ def database():
     conn.row_factory = sqlite3.Row
     conn.executescript("""
         CREATE TABLE quest_contexts (id INTEGER, name TEXT, category_id INTEGER,
-            LEVEL INTEGER, chapter_idx INTEGER, quest_idx INTEGER, zone_id INTEGER);
+            LEVEL INTEGER, chapter_idx INTEGER, quest_idx INTEGER, zone_id INTEGER,
+            let_it_done TEXT);
         CREATE TABLE quest_components (id INTEGER, quest_context_id INTEGER,
             component_kind_id INTEGER, or_unit_reqs TEXT);
         CREATE TABLE unit_reqs (id INTEGER, owner_type TEXT, owner_id INTEGER,
@@ -32,6 +35,8 @@ def database():
         CREATE TABLE quest_act_con_accept_npcs (id INTEGER, npc_id INTEGER);
         CREATE TABLE quest_act_con_accept_level_ups (id INTEGER, LEVEL INTEGER);
         CREATE TABLE quest_act_supply_exps (id INTEGER, exp INTEGER);
+        CREATE TABLE quest_supplies (id INTEGER, LEVEL INTEGER, exp INTEGER,
+            copper INTEGER);
         CREATE TABLE levels (id INTEGER, total_exp INTEGER);
         CREATE TABLE zones (id INTEGER, group_id INTEGER);
         CREATE TABLE zone_groups (id INTEGER, x REAL, y REAL, w REAL, h REAL);
@@ -39,9 +44,11 @@ def database():
     return conn
 
 
-def quest(conn, qid, name, category, level, chapter=0, quest_idx=0, zone=1):
-    conn.execute("INSERT INTO quest_contexts VALUES (?, ?, ?, ?, ?, ?, ?)",
-                 (qid, name, category, level, chapter, quest_idx, zone))
+def quest(conn, qid, name, category, level, chapter=0, quest_idx=0, zone=1,
+          let_it_done=False):
+    conn.execute("INSERT INTO quest_contexts VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                 (qid, name, category, level, chapter, quest_idx, zone,
+                  "t" if let_it_done else "f"))
 
 
 def component(conn, cid, qid, kind=2, or_group=False):
@@ -77,6 +84,11 @@ def supply_xp(conn, aid, cid, exp):
 
 def level_row(conn, lid, total_exp):
     conn.execute("INSERT INTO levels VALUES (?, ?)", (lid, total_exp))
+
+
+def level_supply(conn, level, exp, copper=0):
+    conn.execute("INSERT INTO quest_supplies VALUES (?, ?, ?, ?)",
+                 (level, level, exp, copper))
 
 
 def zone(conn, zid, group):
@@ -245,6 +257,81 @@ class PlayerOrderTests(unittest.TestCase):
             self.assertLess([q["quest_id"] for q in result["quests"]].index(10),
                             [q["quest_id"] for q in result["quests"]].index(200))
             self.assertEqual(result["report"]["summary"]["end_level"], 5)
+
+    def test_level_supply_xp_is_ratio_scaled_rounded_and_rate_adjusted(self):
+        with database() as conn:
+            levels_1_to_6(conn)
+            group(conn, 5, 0.0, 0.0, 2000.0, 1000.0)
+            zone(conn, 9, 5)
+            level_supply(conn, 2, 1001)
+            level_supply(conn, 3, 5)
+            level_supply(conn, 4, 15)
+
+            # Plain quest: the level-2 supply is 1.0, banker's rounded.
+            quest(conn, 10, "plain", 4, 2, zone=9)
+            component(conn, 1000, 10)
+            accept_npc(conn, 1, 1000, 800)
+            component(conn, 1001, 10, kind=8)
+            # let_it_done quest with an immediate act XP that is not scaled.
+            quest(conn, 20, "let it done", 4, 2, zone=9, let_it_done=True)
+            component(conn, 2000, 20)
+            accept_npc(conn, 2, 2000, 801)
+            component(conn, 2001, 20, kind=8)
+            supply_xp(conn, 3, 2001, 100)
+            # A quest with no Reward component never gets the level supply.
+            quest(conn, 30, "no reward", 4, 2, zone=9)
+            component(conn, 3000, 30)
+            accept_npc(conn, 4, 3000, 802)
+
+            spawn_data = spawns((800, (0.0, 0.0, 0.0)),
+                                (801, (1.0, 1.0, 0.0)),
+                                (802, (2.0, 2.0, 0.0)))
+            orderer = make_orderer(conn, spawn_data, let_it_done_ratio=0.3)
+            ctxs = {r["id"]: dict(r) for r in conn.execute("SELECT * FROM quest_contexts")}
+            self.assertEqual(orderer._quest_xp(ctxs[10]), (1001, {
+                "act": 0, "supply": 1001, "ratio": 1.0}))
+            # act 100 + round_even(1001 * 0.3) = 100 + 300
+            self.assertEqual(orderer._quest_xp(ctxs[20]), (400, {
+                "act": 100, "supply": 300, "ratio": 0.3}))
+            self.assertEqual(orderer._quest_xp(ctxs[30]), (0, {
+                "act": 0, "supply": 0, "ratio": 1.0}))
+
+            over = make_orderer(conn, spawn_data, let_it_done_ratio=1.2)
+            self.assertEqual(over._quest_xp(ctxs[20])[0], 1301)  # 100 + 1201
+            double = make_orderer(conn, spawn_data, exp_rate=2.0)
+            self.assertEqual(double._quest_xp(ctxs[10])[0], 2002)
+
+            self.assertEqual(round_even(2.5), 2)
+            self.assertEqual(round_even(3.5), 4)
+            self.assertEqual(round_even(1.5), 2)
+            self.assertEqual(round_even(4.5), 4)
+
+    def test_kill_xp_estimate_is_added_per_quest(self):
+        with database() as conn:
+            level_row(conn, 1, 0)
+            level_row(conn, 2, 100)
+            group(conn, 5, 0.0, 0.0, 2000.0, 1000.0)
+            zone(conn, 9, 5)
+            level_supply(conn, 1, 60)
+            quest(conn, 10, "story", 3, 1, chapter=1, quest_idx=1, zone=9)
+            component(conn, 1000, 10)
+            accept_npc(conn, 1, 1000, 800)
+            component(conn, 1001, 10, kind=8)
+            result = make_orderer(conn, spawns((800, (0.0, 0.0, 0.0))),
+                                  max_level=2, kill_xp=50).run()
+            quest_row = result["quests"][0]
+            self.assertEqual(quest_row["xp"], 60)
+            self.assertEqual(quest_row["level_before"], 1)
+            self.assertEqual(quest_row["level_after"], 2)
+            self.assertEqual(result["report"]["summary"]["end_xp"], 110)
+
+    def test_level_supply_loader(self):
+        with database() as conn:
+            level_supply(conn, 1, 420, 33)
+            level_supply(conn, 2, 490, 42)
+            self.assertEqual(load_quest_supplies(conn),
+                             {1: {"exp": 420, "copper": 33},
+                              2: {"exp": 490, "copper": 42}})
 
     def test_or_group_accept_level_up_and_prereq_output(self):
         with database() as conn:
@@ -450,8 +537,9 @@ class RealCompactDbTests(unittest.TestCase):
         summary = result["report"]["summary"]
         self.assertEqual(summary["scheduled"]["story"], 26)
         self.assertEqual(summary["scheduled"]["prologue"], 18)
-        self.assertGreaterEqual(summary["scheduled"]["side"], 7)
-        self.assertLessEqual(summary["never_available"]["side"], 5)
+        self.assertGreaterEqual(summary["scheduled"]["side"], 100)
+        self.assertGreaterEqual(summary["end_level"], 15)
+        self.assertGreater(summary["end_xp"], 100000)
 
 
 if __name__ == "__main__":

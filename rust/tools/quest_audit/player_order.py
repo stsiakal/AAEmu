@@ -13,9 +13,9 @@ current or a neighbouring zone.  This tool builds that order from
   ``status``, ``blockers``) so ``aaemu-testclient quest --plan <file>`` can load
   it directly.  Each entry also carries informational fields the runner
   ignores: ``order``, ``source`` (``prologue`` / ``story`` / ``side``),
-  ``zone_id``, ``chapter_idx``, ``quest_idx``, ``xp``, ``level_before``,
-  ``level_after``, ``start_kind``, ``start_npcs``, ``start_locations`` and
-  ``distance_m``.
+  ``zone_id``, ``chapter_idx``, ``quest_idx``, ``xp``, ``xp_act``,
+  ``xp_supply``, ``xp_ratio``, ``level_before``, ``level_after``,
+  ``start_kind``, ``start_npcs``, ``start_locations`` and ``distance_m``.
 * ``--report`` (optional): the ordering summary: assumptions, scheduled counts,
   every quest that can never become available in the requested window and why,
   the side quests without a player-usable starter, and the tutorial contexts the
@@ -71,9 +71,10 @@ Ordering rules
   spawn of the side quest's start NPC.  A side quest that would satisfy another
   currently eligible side quest's ``ExceptCompleteQuestContext`` requirement is
   deferred until that quest has been taken (quest 330 is lost after 6198, so
-  6198 waits while 330 is on the table).  Side quests are harvested after every
-  story quest (and repeatedly while a story quest is waiting for a level),
-  which is how a player picks up the local side content.
+  6198 waits while 330 is on the table).  Side quests are taken to meet the
+  next story quest's intended level (and, after the chain, to reach
+  ``--max-level``); the bot does not farm every side quest before the next
+  story step.
 
 Zones and distances
 -------------------
@@ -88,15 +89,29 @@ spawn still gets a location list from the plan.
 XP and the level simulation
 ---------------------------
 
-The character level is simulated from the quest rewards only:
-``quest_act_supply_exps.exp`` summed per quest, with level thresholds from
-``levels.total_exp`` (cumulative).  ``--level`` is the starting level and its
-``levels.total_exp`` is the starting XP.  Kill XP and other sources are
-**ignored by default**; ``--kill-xp N`` adds a fixed estimate per completed quest
-for sensitivity runs.  The assumption is printed in the listing and report.
-Because most 1.2 side quests grant no ``QuestActSupplyExp`` at all, the default
-simulation usually stays at the starting level; that is a data fact, not an
-error, and the report says so.
+The character level is simulated from the quest rewards only, with level
+thresholds from ``levels.total_exp`` (cumulative).  ``--level`` is the starting
+level and its ``levels.total_exp`` is the starting XP.  The two XP sources the
+server uses are modelled:
+
+* every ``QuestActSupplyExp`` act is an immediate ``AddExp`` when the act runs
+  (``systems/quests/acts.rs`` `SupplyExp` -> `hooks.add_exp`), so it is **not**
+  multiplied by the reward ratio;
+* the level-based ``quest_supplies`` row (keyed by the quest template's
+  ``quest_contexts.LEVEL``, loaded in ``systems/quests/data.rs``) is added to the
+  reward pool on the Reward step and scaled by the reward ratio
+  (``systems/quests/engine.rs`` `distribute_rewards`): ``1.0`` for a plain
+  quest, and for ``let_it_done`` quests ``0.3`` (early complete), ``1.0``
+  (complete) or ``1.2`` (overachieved), chosen with
+  ``--let-it-done-ratio`` (default ``complete``).  The result is banker's
+  rounded (``round_even`` in the engine).
+
+Both gains pass through ``World.ExpRate`` in
+``systems/skills/progress.rs::add_exp_locked`` (positive XP is multiplied and
+truncated with `as i32`); ``--exp-rate`` defaults to the shipped ``1.0``.
+Kill XP and other sources are **ignored by default**; ``--kill-xp N`` adds a
+fixed estimate per completed quest for sensitivity runs.  The assumptions are
+printed in the listing and report.
 
 The tool never imports anything writable: the database and world files are
 opened read-only.
@@ -151,6 +166,9 @@ RACES = {
     "hariharan": ("Harani (Harihara)", 5, 62),
     "dwarf": ("Dwarf", 3, 93),
 }
+
+# `let_it_done` reward ratios (`systems/quests/engine.rs::distribute_rewards`).
+LET_IT_DONE_RATIOS = {"early": 0.3, "complete": 1.0, "overachieved": 1.2}
 
 # Start acts that make the player walk to an NPC (the only side-quest starters
 # this ordering understands).
@@ -210,6 +228,11 @@ def rows_if(conn, table):
         return quest_plan.rows(conn, table)
     except sqlite3.OperationalError:
         return []
+
+
+def round_even(value):
+    """`C# Math.Round` / `f64::round_ties_even` (banker's rounding)."""
+    return round(value)
 
 
 def int_or(value, default=0):
@@ -359,9 +382,14 @@ def load_spawns(conn, worlds):
                                   schedule_doodads, windows, known_schedules)
 
 
-def load_quest_xp(conn):
-    """``quest_id -> exp`` from only ``QuestActSupplyExp`` detail rows."""
-    xp = defaultdict(int)
+def load_quest_act_exps(conn):
+    """``quest_id -> [exp, ...]`` from only ``QuestActSupplyExp`` acts.
+
+    The server grants each of these immediately when the act runs
+    (`systems/quests/acts.rs` `SupplyExp`), so they are kept separate: the
+    reward ratio applies to the level-based pool, not to these gains.
+    """
+    xp = defaultdict(list)
     exp_rows = {r["id"]: r.get("exp") for r in rows_if(conn, "quest_act_supply_exps")}
     components = {row["id"]: row for row in quest_plan.rows(conn, "quest_components")}
     for act in quest_plan.rows(conn, "quest_acts"):
@@ -372,8 +400,30 @@ def load_quest_xp(conn):
             continue
         value = exp_rows.get(act.get("act_detail_id"))
         if isinstance(value, int):
-            xp[component["quest_context_id"]] += value
+            xp[component["quest_context_id"]].append(value)
     return xp
+
+
+def load_quest_xp(conn):
+    """``quest_id -> summed QuestActSupplyExp`` (tests/diagnostics)."""
+    return {qid: sum(values) for qid, values in load_quest_act_exps(conn).items()}
+
+
+def load_quest_supplies(conn):
+    """``level -> {"exp", "copper"}`` from ``quest_supplies`` (`data.rs:273`)."""
+    supplies = {}
+    for row in rows_if(conn, "quest_supplies"):
+        level = row.get("LEVEL", row.get("level"))
+        exp = row.get("exp")
+        if isinstance(level, int) and isinstance(exp, int):
+            supplies[level] = {"exp": exp, "copper": int_or(row.get("copper"))}
+    return supplies
+
+
+def load_reward_quests(conn):
+    """Quest ids with a Reward component (`t.level` supplies are added there)."""
+    return {row["quest_context_id"] for row in rows_if(conn, "quest_components")
+            if row.get("component_kind_id") == 8}
 
 
 # ---------------------------------------------------------------------------
@@ -610,8 +660,8 @@ class Orderer:
 
     def __init__(self, conn, spawns, race_name, start_level=1, max_level=15,
                  side_margin=2, neighbor_distance=4000.0, kill_xp=0,
-                 gender=None, skip_prologue=False, assume_previous=True,
-                 plan_quests=None):
+                 let_it_done_ratio=1.0, exp_rate=1.0, gender=None,
+                 skip_prologue=False, assume_previous=True, plan_quests=None):
         self.conn = conn
         self.spawns = spawns
         self.race_name = race_name
@@ -621,6 +671,8 @@ class Orderer:
         self.side_margin = side_margin
         self.neighbor_distance = neighbor_distance
         self.kill_xp = kill_xp
+        self.let_it_done_ratio = let_it_done_ratio
+        self.exp_rate = exp_rate
         self.gender = gender
         self.skip_prologue = skip_prologue
         self.assume_previous = assume_previous
@@ -629,7 +681,9 @@ class Orderer:
         self.contexts = {row["id"]: row for row in quest_plan.rows(conn, "quest_contexts")}
         self.components = load_start_data(conn)
         self.levels = load_levels(conn)
-        self.xp_by_quest = load_quest_xp(conn)
+        self.act_exps = load_quest_act_exps(conn)
+        self.supplies = load_quest_supplies(conn)
+        self.reward_quests = load_reward_quests(conn)
         self.zones, self.groups = load_zone_data(conn)
         self.zone_cache = {}
 
@@ -776,6 +830,11 @@ class Orderer:
         return edges
 
     def _eligible_side(self):
+        # The run targets --max-level.  The story chain is still finished
+        # (its quests are capped at that level), but side quests stop once the
+        # character is there: otherwise the "1 -> 15" order keeps cascading.
+        if self.level >= self.max_level:
+            return []
         candidates = []
         for ctx in self.side_candidates:
             qid = ctx["id"]
@@ -821,16 +880,44 @@ class Orderer:
         if anchor is not None:
             self.current_anchor = anchor
 
+    def _quest_xp(self, ctx):
+        """The XP the server grants for completing one quest.
+
+        * ``QuestActSupplyExp`` acts run immediately (`acts.rs` `SupplyExp`);
+          each gain takes ``World.ExpRate`` and truncates (`as i32`).
+        * The level-based ``quest_supplies`` row is added on the Reward step,
+          scaled by the reward ratio and banker's-rounded (`engine.rs`
+          `distribute_rewards`), then takes ``World.ExpRate`` and truncates.
+        """
+        qid = ctx["id"]
+        act_xp = sum(int(value * self.exp_rate)
+                     for value in self.act_exps.get(qid, []))
+        level = level_of(ctx)
+        supply_xp = 0
+        ratio = 1.0
+        if level and qid in self.reward_quests:
+            supply = self.supplies.get(level)
+            if supply:
+                if quest_plan.truth(ctx.get("let_it_done")):
+                    ratio = self.let_it_done_ratio
+                supply_xp = int(round_even(supply["exp"] * ratio) * self.exp_rate)
+        return act_xp + supply_xp, {
+            "act": act_xp,
+            "supply": supply_xp,
+            "ratio": ratio,
+        }
+
     def _schedule(self, ctx, source, state, distance=None):
         qid = ctx["id"]
-        xp = self.xp_by_quest.get(qid, 0)
+        xp, xp_parts = self._quest_xp(ctx)
         level_before = self.level
         if distance is None:
             distance = (float("inf") if source == "prologue"
                         else self._distance_to_anchor(state["start_locations"]))
         self.xp_total += xp + self.kill_xp
         self.level = max(level_before, level_for_xp(self.xp_total, self.levels))
-        entry = self._entry(ctx, source, state, distance, xp, level_before)
+        entry = self._entry(ctx, source, state, distance, xp, xp_parts,
+                            level_before)
         self.scheduled.append(entry)
         self.scheduled_ids.add(qid)
         self.completed.add(qid)
@@ -839,7 +926,7 @@ class Orderer:
         self._next_zone(ctx, state["start_locations"])
         return entry
 
-    def _entry(self, ctx, source, state, distance, xp, level_before):
+    def _entry(self, ctx, source, state, distance, xp, xp_parts, level_before):
         base = dict(self.plan_quests.get(ctx["id"], {}))
         base.setdefault("quest_id", ctx["id"])
         base.setdefault("name", text_of(ctx, "name"))
@@ -865,6 +952,9 @@ class Orderer:
             "chapter_idx": ctx.get("chapter_idx"),
             "quest_idx": ctx.get("quest_idx"),
             "xp": xp,
+            "xp_act": xp_parts["act"],
+            "xp_supply": xp_parts["supply"],
+            "xp_ratio": xp_parts["ratio"],
             "level_before": level_before,
             "level_after": self.level,
             "start_kind": state["start_kind"],
@@ -884,15 +974,21 @@ class Orderer:
             base["plan_note"] = f"plan status is {base.get('status')}"
         return base
 
-    def _harvest_side(self):
-        """Take every currently eligible side quest; repeat as XP opens more."""
-        while True:
+    def _harvest_side_until(self, target_level):
+        """Take local side quests until ``target_level`` (capped at max).
+
+        One quest at a time, so a quest that overshoots the target stops the
+        harvest immediately instead of farming the whole region.
+        """
+        target = min(target_level, self.max_level)
+        while self.level < target:
             candidates = self._eligible_side()
             if not candidates:
-                return
+                return False
             chosen = candidates[0]
             self._schedule(chosen["ctx"], "side", chosen["state"],
                            chosen["distance"])
+        return True
 
     # -- main loop ---------------------------------------------------------
 
@@ -914,44 +1010,53 @@ class Orderer:
                         "level_gate": state["level_gate"],
                     })
 
-        # Story chain with side quests harvested after each story quest.
+        # Story chain, leveling with local side quests only as needed: before a
+        # story step whose intended LEVEL is above the character, fill the gap
+        # with side quests.  The side quests are not farmed after every story
+        # step, which would put the whole region between story steps.
         index = 0
         while index < len(self.story):
             ctx = self.story[index]
+            target = level_of(ctx) or self.level
+            if self.level < target:
+                self._harvest_side_until(target)
             state = quest_state(ctx, self.components, self.level, self.completed,
                                 self.race_id, self.gender, self.spawns)
             if state["runnable"]:
                 self._schedule(ctx, "story", state)
                 index += 1
-                self._harvest_side()
                 continue
-            # The next story quest is blocked (usually by a level gate): let the
-            # side quests provide the levels, then look again.
+            # The next story quest is blocked (usually by an actual unit_req
+            # level gate): push the side quests to --max-level, then retry once.
             before = len(self.scheduled)
-            self._harvest_side()
-            if len(self.scheduled) == before:
+            self._harvest_side_until(self.max_level)
+            state = quest_state(ctx, self.components, self.level, self.completed,
+                                self.race_id, self.gender, self.spawns)
+            if state["runnable"] and len(self.scheduled) > before:
+                continue
+            self.story_blocked.append({
+                "quest_id": ctx["id"],
+                "name": text_of(ctx, "name"),
+                "level": level_of(ctx),
+                "zone_id": ctx.get("zone_id"),
+                "reason": state["reason"] or "requirements_unmet",
+                "level_gate": state["level_gate"],
+            })
+            for rest in self.story[index + 1:]:
                 self.story_blocked.append({
-                    "quest_id": ctx["id"],
-                    "name": text_of(ctx, "name"),
-                    "level": level_of(ctx),
-                    "zone_id": ctx.get("zone_id"),
-                    "reason": state["reason"] or "requirements_unmet",
-                    "level_gate": state["level_gate"],
+                    "quest_id": rest["id"],
+                    "name": text_of(rest, "name"),
+                    "level": level_of(rest),
+                    "zone_id": rest.get("zone_id"),
+                    "reason": "behind_blocker",
+                    "blocked_by": ctx["id"],
                 })
-                for rest in self.story[index + 1:]:
-                    self.story_blocked.append({
-                        "quest_id": rest["id"],
-                        "name": text_of(rest, "name"),
-                        "level": level_of(rest),
-                        "zone_id": rest.get("zone_id"),
-                        "reason": "behind_blocker",
-                        "blocked_by": ctx["id"],
-                    })
-                break
-            # Retry the same story quest after the side XP.
-        else:
-            # Story chain completed: finish every side quest that is still open.
-            self._harvest_side()
+            break
+
+        # Story chain completed (or exhausted): use the remaining local side
+        # quests to reach --max-level.
+        if index >= len(self.story):
+            self._harvest_side_until(self.max_level)
 
         return self._result()
 
@@ -1032,6 +1137,8 @@ class Orderer:
                 no_starter.append(qid)
                 continue
             reason, is_never = self._classify_side_block(state, final_level)
+            if not is_never and self.level >= self.max_level:
+                reason = "stopped_at_max_level"
             entry = {
                 "quest_id": qid,
                 "name": text_of(ctx, "name"),
@@ -1064,6 +1171,8 @@ class Orderer:
             "end_level": self.level,
             "end_xp": self.xp_total,
             "kill_xp_per_quest": self.kill_xp,
+            "let_it_done_ratio": self.let_it_done_ratio,
+            "exp_rate": self.exp_rate,
             "scheduled": {
                 "total": len(self.scheduled),
                 "prologue": sum(1 for q in self.scheduled if q["source"] == "prologue"),
@@ -1094,15 +1203,24 @@ class Orderer:
             "start_level": self.start_level,
             "max_level": self.max_level,
             "assumptions": [
-                "Levels are simulated from quest XP only "
-                "(QuestActSupplyExp.exp summed per quest, thresholds from "
-                "levels.total_exp).",
+                "Quest XP = immediate QuestActSupplyExp acts (not ratio-scaled) "
+                "+ the level-based quest_supplies row scaled by the reward "
+                "ratio and banker's-rounded; thresholds come from "
+                "levels.total_exp.",
+                f"let_it_done ratio assumption: {self.let_it_done_ratio} "
+                "(0.3 early / 1.0 complete / 1.2 overachieved); plain quests "
+                "use 1.0.",
+                f"World.ExpRate {self.exp_rate:g} is applied to each positive "
+                "AddExp and truncated (as i32), as in "
+                "skills/progress.rs::add_exp_locked.",
                 f"Kill XP is ignored; --kill-xp adds {self.kill_xp} XP per "
                 "completed quest for sensitivity runs.",
                 "Zone membership comes from quest_contexts.zone_id; adjacency "
                 "is approximated from zone_groups rectangles "
                 f"(same group or <= {self.neighbor_distance:g} m apart).",
-                "Side quests are capped at --max-level + --side-level-margin.",
+                "Side quests are capped at --max-level + --side-level-margin, "
+                "taken one at a time only to meet the next story quest's LEVEL "
+                "and (after the chain) --max-level.",
                 "Requirements other than level/race/gender/max-level/quest "
                 "completion are treated as satisfiable and listed as "
                 "unverified.",
@@ -1293,6 +1411,12 @@ def parse_args(argv=None):
                              "(metres, default 4000)")
     parser.add_argument("--kill-xp", type=int, default=0,
                         help="estimated kill XP per completed quest (default 0: ignored)")
+    parser.add_argument("--let-it-done-ratio", choices=sorted(LET_IT_DONE_RATIOS),
+                        default="complete",
+                        help="let_it_done reward ratio: early 0.3 / complete 1.0 / "
+                             "overachieved 1.2 (default complete)")
+    parser.add_argument("--exp-rate", type=float, default=1.0,
+                        help="World.ExpRate applied to quest XP (default 1.0)")
     parser.add_argument("--gender", choices=["m", "f"], default=None,
                         help="evaluate gender requirements (default: either)")
     parser.add_argument("--skip-prologue", action="store_true",
@@ -1329,6 +1453,8 @@ def main(argv=None):
             conn, spawns, args.race, start_level=args.level,
             max_level=args.max_level, side_margin=args.side_level_margin,
             neighbor_distance=args.neighbor_distance, kill_xp=args.kill_xp,
+            let_it_done_ratio=LET_IT_DONE_RATIOS[args.let_it_done_ratio],
+            exp_rate=args.exp_rate,
             gender=1 if args.gender == "m" else (2 if args.gender == "f" else None),
             skip_prologue=args.skip_prologue,
             assume_previous=not args.no_assume_previous,
