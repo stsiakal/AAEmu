@@ -31,6 +31,7 @@ use crate::login::LoginClient;
 use crate::quest::{self, QuestInfo};
 use crate::record::Recorder;
 use crate::scenario::BotConfig;
+use crate::valuecheck::{QuestWindow, ValueChecker, ValueReport, ValueSnapshot};
 
 /// Unit-appearance wait after a teleport.
 const APPEAR_WAIT: Duration = Duration::from_secs(15);
@@ -633,6 +634,10 @@ pub struct QuestResult {
     /// Prerequisites of this quest that were forced to completion earlier in the run.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub forced_prereqs: Vec<u32>,
+    /// Reward / kill value checks of a completed quest (player-mode design §4): the packets
+    /// observed in the quest window against `compact.sqlite3`. Suspects only, never bugs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value_checks: Option<ValueReport>,
 }
 
 /// The whole run's result.
@@ -1506,6 +1511,18 @@ pub async fn run(
     // The craft tables of the same database for the `craft` item sources (a missing database
     // only makes those sources record `runner_unsupported`).
     let craft_db = craftrun::open_craft_db(opts.compact_db.as_deref()).ok();
+    // Value checks (task E) open the same compact database read-only. A checker that cannot
+    // load only disables the reward / kill comparisons; the quest run itself is unchanged.
+    let value_checker = match compact_db.as_ref() {
+        Some(db) => match ValueChecker::open(db.path()) {
+            Ok(checker) => Some(checker),
+            Err(e) => {
+                tracing::warn!("value checks disabled: {e:#}");
+                None
+            }
+        },
+        None => None,
+    };
     let (mut game, character) = setup_world(cfg, &rec, opts).await?;
     // God mode keeps the bot alive while it stands in the spawns; `/level` is issued per quest.
     game.gm("godmode true", Duration::from_secs(1)).await.ok();
@@ -1592,6 +1609,7 @@ pub async fn run(
                     &mut world_tracker,
                     compact_db.as_ref(),
                     craft_db.as_ref(),
+                    value_checker.as_ref(),
                     opts.step_timeout,
                     opts,
                     &mut forced,
@@ -1753,6 +1771,7 @@ fn missing_quest_result(id: u32, character: &RunCharacter) -> QuestResult {
         ),
         forced_complete: false,
         forced_prereqs: Vec::new(),
+        value_checks: None,
     }
 }
 
@@ -1781,6 +1800,7 @@ fn disconnected_result(quest: &PlanQuest, character: &RunCharacter) -> QuestResu
         ),
         forced_complete: false,
         forced_prereqs: Vec::new(),
+        value_checks: None,
     }
 }
 
@@ -1820,6 +1840,7 @@ fn recovery_failed_result(
         ),
         forced_complete: false,
         forced_prereqs: Vec::new(),
+        value_checks: None,
     }
 }
 
@@ -2274,7 +2295,7 @@ async fn create_and_wait(
 /// (created for `--new-character` or when the account is empty), select, spawn and notify.
 /// The returned [`RunCharacter`] is the selected character's race / gender / level as the
 /// server reports them.
-async fn setup_world(
+pub(crate) async fn setup_world(
     cfg: &BotConfig,
     rec: &Recorder,
     opts: &RunOptions,
@@ -2427,6 +2448,7 @@ async fn run_quest(
     world_tracker: &mut WorldTracker,
     compact_db: Option<&CompactDb>,
     craft_db: Option<&CraftDb>,
+    value_checker: Option<&ValueChecker>,
     step_timeout: Duration,
     opts: &RunOptions,
     forced: &mut BTreeSet<u32>,
@@ -2463,9 +2485,13 @@ async fn run_quest(
             Blocker::default(),
             forced_prereqs,
             false,
+            None,
         );
     }
 
+    // Set just before the accept; `None` only on the pre-accept gate paths below, which never
+    // reach the value checks (they need a completed quest).
+    let mut value_start: Option<ValueSnapshot> = None;
     let (outcome, failed_step) = 'run: {
         if let Some(gate) = plan_gate(quest) {
             break 'run (gate, None);
@@ -2535,6 +2561,10 @@ async fn run_quest(
                 }),
             );
         }
+
+        // Value-check window (task E): every reward / kill observation from just before the
+        // accept to the completion is compared against `compact.sqlite3` in `valuecheck`.
+        value_start = Some(ValueSnapshot::capture(&game.state));
 
         // `unit_reqs` the runner can decide (race / gender / level from the selected character,
         // faction / mother faction, quest contexts, own items). Unknown kinds do not block: the
@@ -3025,6 +3055,37 @@ async fn run_quest(
         }
     }
 
+    // Value checks (task E): compare the reward / kill packets observed since the window
+    // start against the same compact data the server loaded. Only a completed quest has a
+    // full reward picture; every other outcome leaves the field unset.
+    let value_checks = match (outcome, value_checker, value_start.as_ref()) {
+        (QuestOutcome::Completed, Some(checker), Some(value_start)) => {
+            let state = &game.state;
+            let window = QuestWindow {
+                self_obj: value_start.self_obj(),
+                selected_reward: 0,
+                bag_free_slots: value_start.free_slots(),
+                bag_before: value_start.bag(),
+                exp_changes: state
+                    .exp_changes
+                    .get(value_start.exp()..)
+                    .unwrap_or_default(),
+                events: state.events.get(value_start.events()..).unwrap_or_default(),
+                kills: state
+                    .kill_log
+                    .get(value_start.kills()..)
+                    .unwrap_or_default(),
+                loot: state.loot_log.get(value_start.loot()..).unwrap_or_default(),
+            };
+            Some(
+                checker
+                    .check(quest.quest_id, &window)
+                    .unwrap_or_else(|e| ValueReport::note(format!("value checks failed: {e:#}"))),
+            )
+        }
+        _ => None,
+    };
+
     finish_quest(
         game,
         quest,
@@ -3040,6 +3101,7 @@ async fn run_quest(
         blocker,
         forced_prereqs,
         forced_complete,
+        value_checks,
     )
 }
 
@@ -3089,6 +3151,7 @@ fn finish_quest(
     blocker: Blocker,
     forced_prereqs: Vec<u32>,
     forced_complete: bool,
+    value_checks: Option<ValueReport>,
 ) -> QuestResult {
     result_line(
         game,
@@ -3105,6 +3168,7 @@ fn finish_quest(
         blocker,
         forced_complete,
         forced_prereqs,
+        value_checks,
     )
 }
 
@@ -3124,6 +3188,7 @@ fn result_line(
     blocker: Blocker,
     forced_complete: bool,
     forced_prereqs: Vec<u32>,
+    value_checks: Option<ValueReport>,
 ) -> QuestResult {
     let live = game.state.quests.get(&quest.quest_id);
     let final_info = live.cloned().or(last_info);
@@ -3150,6 +3215,7 @@ fn result_line(
         blocker,
         forced_complete,
         forced_prereqs,
+        value_checks,
     }
 }
 
@@ -6639,9 +6705,13 @@ async fn step_obj_level(
         )));
     };
     if level >= 2 {
+        // `/level` adds the missing experience; those SCExpChanged packets are not quest
+        // rewards, so the value-check window does not count them.
+        let exp_mark = game.state.exp_changes.len();
         game.gm(&format!("level {level}"), Duration::from_secs(2))
             .await
             .ok();
+        game.state.exp_changes.truncate(exp_mark);
     }
     let advanced = wait_progress(game, quest_id, objective, 1, deadline)
         .await
@@ -7933,6 +8003,7 @@ mod tests {
             blocker: Blocker::default(),
             forced_complete: false,
             forced_prereqs: Vec::new(),
+            value_checks: None,
         }
     }
 
@@ -9226,6 +9297,7 @@ mod tests {
             ),
             forced_complete: true,
             forced_prereqs: vec![61],
+            value_checks: None,
         };
         assert_eq!(
             serde_json::to_value(&result).unwrap(),

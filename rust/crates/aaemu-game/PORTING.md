@@ -950,6 +950,30 @@ is no longer mirrored (see "Known deviations", dead NPC returned and healed).
   fabricated. Historical RedeemBuff/ExplodeBuff formulas, recipe/account/cinema placeholders,
   several other special actions and generic Anchor/Flowgraph still need authoritative behavior
   or protocol evidence. Passing covered tests does not certify every data-defined skill.
+* systems::skills (2026-10-19, `check_obstacle`): the C# tree had no obstacle check at all
+  (`git show a2ab80abd^:AAEmu.Game/Models/Game/Skills/Skill.cs`), but the 1.2 skills data has
+  the retail column. The **1.2 client is the primary oracle** (unpacked `x2game.dll`, Ghidra
+  `aa12u`; full notes `D:/aaemu-audits/research/oracle/obstacle-ray-1.2.md`):
+  `FUN_390B5650` shortens `to` by the target radius and **casts no ray when `dist <= radius`**,
+  then `FUN_390B5540` calls `RayWorldIntersection(Game)` with objtypes **7** (static +
+  sleeping rigid + rigid), or **0x107** when `check_terrain` is set, and ray flags **0x2048F**
+  (colltype-any, collision class 2, ignore back faces, pierceability 15), one hit max.
+  Unit targets (`FUN_390B5C60` -> `FUN_3989C0D0`) run at unit position height (no eye offset)
+  from the source to the target surface and skip the source and target physics objects;
+  position (ground) targets (`FUN_390B5A30` -> `FUN_390B5790`) use radius **0.5** and skip
+  only the source. The order is TOO_CLOSE, TOO_FAR, height, angle, then OBSTACLE. The 10.x
+  client confirms the same rule (`X2::Unit::ValidateLocation` 0x3923C370; `ClientRaycaster`
+  callback 0x3923C5A0 -> `sub_3923B970`; unit path 0x39B8E360). Not modelled: the 1.2
+  multi-part target variant `FUN_3989DAE0` (loops the target's sub-shapes and passes if any
+  part passes). The former Rust ray was 1 m above both ends, used static+terrain (0x101) and
+  the default collision class; it rejected ground-anchored doodad interactions through nearby
+  doodad colliders (entrance doodad template 3674 / skill 10999, exit 4535 / skill 16560) and
+  re-checked at fire time with the same wrong rule. `check_terrain`, the radius gate and the
+  0.5 m position-target radius are now enforced. Rejections are logged at `warn` with
+  character, skill, target and result key. Live: the entrance 10999 and instance exit 16560
+  casts succeed with no `skill_obstacle` rejections (2026-10-19 lane run); the flow tests in
+  `cast_validation_tests.rs` prove a class-2 static wall still blocks and cover the radius
+  gate and position radius.
 * systems::skills: the labor margin requirement uses `GetMaxLabor(Payment.PremiumState)`; every
   connection has the default C# `AccountPayment` (premium until 2030), so the cap is 5000.
 * systems::skills: `Character.DoDie` is complete (exp / durability loss, escalating respawn timer,
@@ -1018,7 +1042,7 @@ is no longer mirrored (see "Known deviations", dead NPC returned and healed).
   operation (null decoration design / doodad template / taxation, missing furniture item), the
   operation is aborted and logged.
 
-* systems::instances: the dungeon loader awaits the spawn tasks before registering the indun events again (C# does not await `Task.WhenAll`, a race) and reads the spawn files there instead of in `CreateWorldInstance`; `DestroyInstantGame` cleans the instance up and releases its id right away (C#: the finalizer, later); `Environment.TickCount` is a process-relative monotonic clock; the `World.Template.SpawnPosition` mutation in `MoveCharacterTo*` is a local value; paths that throw in C# (missing action / room / zone / rule set, `_members[x]` of a non-member, a destroyed dungeon's `World`) log and return, keeping the side effects done before the throw; `EndGame().Start()` throwing after a victory is modelled as "the rest of `OnKill` (respawn) does not run"; the cross-instance region switch removes the object from every old neighbour once (no double notification of its own sector).
+* systems::instances: the dungeon loader awaits the spawn tasks before registering the indun events again (C# does not await `Task.WhenAll`, a race) and reads the spawn files there instead of in `CreateWorldInstance`; `DestroyInstantGame` cleans the instance up and releases its id right away (C#: the finalizer, later); `Environment.TickCount` is a process-relative monotonic clock; the `World.Template.SpawnPosition` mutation in `MoveCharacterTo*` is a local value; paths that throw in C# (missing action / room / zone / rule set, `_members[x]` of a non-member, a destroyed dungeon's `World`) log and return, keeping the side effects done before the throw; `EndGame().Start()` throwing after a victory is modelled as "the rest of `OnKill` (respawn) does not run"; the timed `EndGame` decides the result instead of sending both corps as `Lose` (kill count, then score, equal as a draw; see the ranking note under "Ranking boards"); the cross-instance region switch removes the object from every old neighbour once (no double notification of its own sector).
 * systems::instances (tower defense): the C# command only sent packets to its caller and hard-coded zone group 5. The Rust runtime reserves controller positions from the existing NPC JSON by compact spawner membership; these controllers no longer spawn permanently. Manual controls affect the caller's instance/group. Automatic schedules are disabled by default and validate every selected event at startup. Orphan waves/targets no longer truncate later valid rows. Kill notifications use only `DoDie`, deduplicate the NPC handle and retain id-reuse semantics. Timers use monotonic real seconds; `tod` uses the accelerated game clock and day intervals count from scheduler startup. Spawn effects carry explicit event ownership for cleanup even when Unit.OwnerId is zero. Unsupported `DoodadAlmighty` targets, NPC groups without authored controller positions and reward/victory chains remain unavailable rather than being synthesized.
 * systems::instances (dungeons/mentoring): replaces the mirrored double entry-item charge and unsafe dungeon destruction below. Each character pays once per run; re-entry is free, capacity counts pending admissions, and creation obeys `World.MaxInstances` including concurrent requests. Empty owner/leader resets remove the whole run binding; destruction cancels its loader and returns occupants before removing their world. Party join grants access without inserting a player into another world's object table. Mentor eligibility is captured at boss death for nearby living party members with complementary active quests, rechecked during interactions, and bound to selected chest participants. Four explicit 1.2 quest/chest bindings are verified by a gated real-data test. Missing reward chests use the authored templates at the boss position (two metres apart for the two-chest dungeons); this placement fallback and qualification policy are emulator extensions, not claimed native-server execution parity. Authored phases grant seal items through existing inventory/quest hooks and daily persistence; Gilda is not issued directly by mentoring.
 
@@ -1387,6 +1411,24 @@ is no longer mirrored (see "Known deviations", dead NPC returned and healed).
   them without a packet, like the other silent refusals of `AddSkill`. The C# (and its upstream
   master) has no such check and fails the same way.
 
+* systems::skills timeline ids (2026-10-19, upstream issue #753): the C# `SkillTlIdManager`
+  slowly ran out of its ~65k ids (`0x000A..=0xFFFE`) because several `Skill` / `PlotTree` paths
+  returned without `ReleaseId` (the item-reagent rejection inside `Skill.Cast` and the plot
+  entry failures among them); once full, `GetNextId` logged `Fatal` and returned 0 forever, so
+  every later skill was sent with timeline id 0. The Rust port returns the id on every path: the
+  item-reagent rejection (`stop`), `cast()` on a cancelled skill, plots refused by the dominion
+  runtime or without a tree (`do_plot_end`), and cast / channel / delayed-effect tasks whose
+  scheduler is gone (finished inline). A reused `SkillRun` that still holds an id (auto attack
+  overlapping a delayed apply) has the old id recovered and counted (`replaced`). Exhaustion
+  never blocks or panics: it logs a throttled `warn` with the holders' ages and hands out 0 (the
+  cast continues without a timeline), and the manager exposes in-use / peak / gets / releases /
+  unused / exhaustions / replaced / leaked-over-10-min counters (`TlIdStats`), shown on the Web
+  API `/status` page and in the every-500-gets debug line. Covered by
+  `skills/tasks.rs` unit tests and `skills/tl_id_flow_tests.rs` (a 250-iteration sweep of instant,
+  interrupted, completed and channelled casts, plus failed validation, item-reagent rejection,
+  refused / treeless plots, a replaced reuse and an exhausted pool; every case asserts the pool
+  returns to baseline).
+
 * systems::skills log noise (2026-10-16): `CSStopCasting` with `tl == 0` and a plot tl for a plot
   that already ended (the client repeats it ~30 times per plot) is logged at debug instead of
   the C# warning; no acknowledgement packet is sent (client behaviour unverified; possible
@@ -1426,6 +1468,32 @@ is no longer mirrored (see "Known deviations", dead NPC returned and healed).
   (`item_handlers::CSDestroyItemPacket`) pushes `ItemFx::Consumed` for the destroyed units and
   `ItemContainer::add_or_move_inner` pushes it for the source owner when the item moves between two
   characters' bags (trade), so the objective is recounted when items leave.
+* systems::economy (trade safety, 2026-10-19): a trade is made only when both sides locked and
+  both confirmed (`OkTrade` previously accepted a confirmation with one side locked). Only the
+  put-up amount changes hands: a larger stack is split at finish, the receiver's
+  `SCOtherTradeItemPutupPacket` shows the offered amount, and the giver's `SCTradeMade` task names
+  the slot the item had in the giver's container (the C# moved the whole item and built the
+  removal from the moved object, i.e. the receiver's slot). Negative money put-ups are rejected
+  (the C# stored them unsent and skipped them at finish), money transfers use checked `i64`
+  arithmetic, and trade ids are released on cancel / departure / finish. Live oracle: two
+  `aaemu-testclient` bots (lock one side only -> no trade; negative money -> rejected; 5-unit
+  stack, 2 put up -> only 2 move, 3 stay).
+* systems::economy (shop currency checks, 2026-10-19): `CSBuyItems` refuses when *any* required
+  currency (money, honor or vocation) is short (already so since 80b6411c9; the mirrored
+  entry was stale); the C# checked `money > have && honor > have &&
+  vocation > have`. Checked totals and per-currency `checked_sub` already reject overflow.
+  Covered by `craft_store_tests::shop_checkout_rejects_money_only_and_mixed_currency_shortages`.
+* systems::economy (cash shop, 2026-10-19): loyalty is charged the displayed
+  `DiscountPrice > 0 ? DiscountPrice : Price` (already so since the port, test
+  `checkout_charges_displayed_discount_for_coins_and_loyalty`; the C# debited `Price`); above `level_max` the buyer gets `LEVEL_HIGH_TO_USE` (1.2 `ui_texts`
+  4157, "level too high to use") instead of `INGAME_SHOP_BUY_LOW_LEVEL` (4708, generic "(level)");
+  page 0 still shows page 1 on purpose: the 1.2 `x2ui/baselib/page.alb` page control starts at
+  `currentPage = 1` and clamps previous/next to `1..maxPage`, so the client never sends page 0,
+  and the C# `Skip(itemsPerPage * (page - 1))` clamps the invalid value to the first page.
+* systems::economy (auction, 2026-10-19): the "ExpireDate" sort uses `end_time` (the C# sorted by
+  `PostDate`) and a buyout sends `SCAuctionBidPacket` with `isBuyout = true`, the lot's
+  `direct_money` and the buyer's identity (the C# buyout branch sent nothing although the 1.2
+  packet carries the flag). Seller / item mail delivery is unchanged.
 
 ### Ranking boards (Rust only)
 
@@ -1433,7 +1501,7 @@ The 1.2 C# never answered `CSRankCharacterPacket` (empty, log-only) and has no `
 
 - **Requests.** 0x12f answers `SCRankCharacterPacket` (one row per supported board, zeros where the character has no score; `type_id` 0 because the request carries nothing to echo). 0x130 answers `SCRankSnapshotPacket` with the current period's standings (<= 100 lines); the racing board and unknown boards are not answered. The snapshot scope list stays empty (the raw scope figures are unresolved). The row's "account" string is the character name: the game database does not know the login account names. 0x130 is the one registration the C# registry-parity test exempts.
 - **Persistence.** `character_rank_scores` (one row per character, board and period) and `rank_period_payouts` (periods already paid), loaded at startup and upserted by every `SaveManager` pass (`AfterCharacters`). Every row is rewritten on each save (idempotent, so a rolled-back save loses nothing); `Character::ranking_state` is unused (standings need offline characters, so the store is global).
-- **Events.** The arena board scores at the end of an instant game (`instant_game::record_rankings`, once per game): win/lose/draw/invalid points are `game_rule_sets.rank_*_point` (only rule set 28, the gladiator duel in zone group 77: win 4, lose 1). Because `EndGame` leaves both corps `LOSE` when the timer runs out (mirrored C# bug), a timed-out duel scores both players as losers. The two fishing boards score each trophy fish a player lands (`fishing::record_catch`, from `DoodadFuncConvertFish` and the equipped-fish conversion) in the player's zone group; they only count inside the board's authored window, which ended in 2014, so on the shipped data no catch scores. The racing board is never recorded.
+- **Events.** The arena board scores at the end of an instant game (`instant_game::record_rankings`, once per game): win/lose/draw/invalid points are `game_rule_sets.rank_*_point` (only rule set 28, the gladiator duel in zone group 77: win 4, lose 1). Deviation (timed result): the C# `EndGame` sent both corps as `Lose` with reason `AchievementScore` when the timer ran out, so a timed-out duel scored both players as losers. Here `finish_timeover` decides by the rule set's victory conditions - kills first, then score (`game_score_rules` event 200 gives 30 per kill for rule set 28 against its `victory_score` 60), equal kills and score as a draw - and sends `BFER_TIMEOVER_COMPARE_KILL_COUNT`, the only time-over reason the 1.2 client names; the duel draw text exists (`ui_texts` 3829 "결투에서 비겼습니다.") and the battlefield tip scores a draw 0 (`ui_texts` 5887). A draw pays no winner/loser bonus and no arena points for rule set 28 (`rank_draw_point` 0). The two fishing boards score each trophy fish a player lands (`fishing::record_catch`, from `DoodadFuncConvertFish` and the equipped-fish conversion) in the player's zone group; they only count inside the board's authored window, which ended in 2014, so on the shipped data no catch scores. The racing board is never recorded.
 - **Period close.** A once-a-minute task (first tick at start-up) mails every closed, unpaid period: place -> `rank_scope_links` band -> `rank_rewards` item (count and grade as authored) as a `SYS_EXPRESS` letter (offline winners included), then `SCRankRewardMailPacket` to online winners. The period is marked paid before the letters are built, inside the economy operation gate; a crash between the letters and the next save can therefore lose (never duplicate) the mark. `rank_rewards.weeks` (how long the reward lasts) and appellation rewards (none authored) are not applied.
 - **Not sent.** `SCRankAlarmPacket` (0x205): only the fishing contest authors alarms (`start_time_alarm` -5 / `end_time_alarm` 0 and message strings), that board ended in 2014 and the packet's `kind` / `rank_alarm_kind` values are unresolved, so no trigger is invented.
 
@@ -1591,23 +1659,14 @@ and in NPC wandering / buff remaining times.
   owner). The client is the source of the request and `CanAccept` already warns with the cause.
 * systems::economy: `BindType.HasFlag(...)` on the plain `ItemBindType` enum is a bit test
   (`BindOnUnpack` matches 4..7, `BindOnEquip` matches 3 and 7); mirrored.
-* systems::economy: `CSBuyItems` refuses only when money, honor *and* vocation are all short;
-  `ExpandExpert` adds the vocation cost; craft / backpack / weapon booleans read as numbers are
-  false for `'t'` texts; `Specialty.VendorExist` reads the `id` column.
+* systems::economy: `ExpandExpert` adds the vocation cost; craft / backpack / weapon booleans
+  read as numbers are false for `'t'` texts; `Specialty.VendorExist` reads the `id` column.
 * systems::economy: loot dice pick the lowest positive roll; looting allocates a new item id that
   is never released; `ItemProc` `ignoreRoll` never procs; `HDps` uses the magic DPS grade value;
   fish conversion only uses the first pack.
-* systems::economy: auction — the "ExpireDate" sort still uses PostDate and a buyout
-  sends no SCAuctionBidPacket. Original cancellation-copy and missing balance checks
-  are corrected in the quest/mail audit below.
 * systems::economy: mail — opening a mailbox re-sends a "got mail" per unread received
   mail; FinalizeForBidFail still uses AucOffFail; receiver lookup is case-sensitive.
   The old return failure and sender unread-count bug are corrected below.
-* systems::economy: trade — `OkTrade` proceeds when only one side locked, the put-up amount is only
-  checked (the whole item changes hands), negative money put-ups are accepted, trade ids are never
-  released, the owner's `ItemRemove` in `SCTradeMade` names the receiver's slot.
-* systems::economy: cash shop — loyalty is charged at the undiscounted price, the max-level check
-  sends the low-level error, page 0 behaves like page 1.
 * `systems::instances`: `RegisterIndunEvents` runs in the `Dungeon` constructor and again in the loader, so every indun event handler is subscribed twice; a dungeon kill raises `OnUnitKilled` (and the victim's `OnDeath`) in `PostUpdateCurrentHp` and again in `DoDie` — NPC-killed action chains run four times; `IndunEventDoodadSpawneds.UnSubscribe` adds the handler (`+=`); `AreaClearTick` stops at the first cleared room (`return`); a new dungeon verifies the requirements twice (the entry item is consumed twice) and the creator gets `SCProcessingInstancePacket` twice; `Transform.CloneDetached(character)` / `MainWorldPosition.Clone()` fire `OnZoneChange(0, zone)` (the instance zone chat is never left); `ApplyWorldSpawnPosition` stores the spawn rotation in degrees; leaving an instance sends the (radian) return rotation through `DegToRad` again and `SCLoadInstancePacket` names `MainWorldPosition.WorldId`; `DestroyDungeon` removes the players from the instance without moving them out; `InstantGame.RemovePlayer` looks the corps lists up by 0 / 1 instead of the faction ids (never cleaned); `AddScore` always sends `Corps1` / `score2 = 0`; the kill packet's victim count is the victim corps' kills; entering a battlefield sets the corps faction, so `Character.SetFaction` kicks guild members of another mother faction from their guild and party; offline queue applicants are never pruned (`CharObj` is never null); `RemoveGame` leaves the game in the queue list; battlefields.json loops stop (`return`) at the first orphan row.
 * systems::housing: abandoned-house removal buff 2250 now applies its original effect
   1876 through the normal damage path. C# rejected the house attacking itself, so the
