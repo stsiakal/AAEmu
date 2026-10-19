@@ -69,6 +69,9 @@ pub const DEFAULT_STEP_TIMEOUT: Duration = Duration::from_secs(90);
 /// `/level` cap on the shipped data (`ExperienceManager.PlayerLevelCap`); level 55 also has the
 /// 28 skill points one ability's skill tree needs (`levels.skill_points`).
 const TARGET_LEVEL: u8 = 55;
+/// The caster level the sweep runs at; `skill_effects.start_level` / `end_level` are compared
+/// against it (`Skill.Cast` skips rows outside the caster's level range).
+const SWEEP_CASTER_LEVEL: u8 = TARGET_LEVEL;
 /// `AbilityType.None`.
 const ABILITY_NONE: u8 = 11;
 /// `/spawn npc` training dummy: level 50, passive (`aggression = f`), faction 170.
@@ -89,12 +92,22 @@ const GEAR: [(u32, u8); 4] = [
     (6127, SLOT_RANGED),
     (6177, SLOT_MUSICAL),
 ];
+/// Mainhand weapon of the default setup (the one-hand sword).
+const MELEE_WEAPON_TEMPLATE: u32 = GEAR[0].0;
+/// Level-55 two-handed staff ("Delphinad ... staff", magic DPS) worn for spell-scaled damage so
+/// the weapon term of `DamageEffect.Apply` is not zero on the bare bot.
+const SPELL_WEAPON_TEMPLATE: u32 = 20446;
+/// A cooldown at or below this is not probeable: the player GCD is ~1 s (`Skill.Cast`
+/// `default_gcd`) and the recast answers `SkillResult 8` for the GCD before the skill's own
+/// cooldown can be told apart from it.
+const COOLDOWN_PROBE_MIN_MS: i32 = 3000;
 
 // -------------------------------------------------------------------------------------------
 // Compact database: skill plan data
 // -------------------------------------------------------------------------------------------
 
-/// One `damage_effects` row of a skill, as the server loads it for `DamageEffect.Apply`.
+/// One `damage_effects` row of a skill, as the server loads it for `DamageEffect.Apply`, plus the
+/// `skill_effects` gates the server checks before the row can run.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DamageRow {
     pub effect_id: u32,
@@ -108,9 +121,36 @@ pub struct DamageRow {
     pub dps_multiplier: f64,
     pub health_steal_ratio: i32,
     pub mana_steal_ratio: i32,
+    /// `skill_effects.friendly` / `non_friendly`.
+    #[serde(default)]
+    pub friendly: bool,
+    #[serde(default)]
+    pub non_friendly: bool,
+    /// `skill_effects.chance` / `weight`; a run picks one weighted row of a group.
+    #[serde(default)]
+    pub chance: i32,
+    #[serde(default)]
+    pub weight: i32,
+    /// A source / target buff-tag gate the runner cannot evaluate (a missing hit is not a
+    /// mismatch then, it is recorded as a note).
+    #[serde(default)]
+    pub conditional: bool,
 }
 
-/// One `heal_effects` row of a skill.
+impl DamageRow {
+    /// A row the data leaves no choice about: it runs on every cast with a compatible target.
+    pub fn unconditional(&self, target_self: bool) -> bool {
+        self.chance >= 100 && self.weight == 0 && !self.conditional && self.applies(target_self)
+    }
+
+    /// The `friendly` / `non_friendly` gate of the server (`Skill.Cast`): a hostile-only row does
+    /// not run on the caster, a friendly-only row does not run on a hostile target.
+    pub fn applies(&self, target_self: bool) -> bool {
+        relation_allows(self.friendly, self.non_friendly, target_self)
+    }
+}
+
+/// One `heal_effects` row of a skill (with the same `skill_effects` gates as [`DamageRow`]).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HealRow {
     pub effect_id: u32,
@@ -118,6 +158,125 @@ pub struct HealRow {
     pub fixed_max: i32,
     pub use_level_heal: bool,
     pub level_md: f64,
+    #[serde(default)]
+    pub friendly: bool,
+    #[serde(default)]
+    pub non_friendly: bool,
+    #[serde(default)]
+    pub chance: i32,
+    #[serde(default)]
+    pub weight: i32,
+    #[serde(default)]
+    pub conditional: bool,
+}
+
+impl HealRow {
+    pub fn unconditional(&self, target_self: bool) -> bool {
+        self.chance >= 100 && self.weight == 0 && !self.conditional && self.applies(target_self)
+    }
+
+    pub fn applies(&self, target_self: bool) -> bool {
+        relation_allows(self.friendly, self.non_friendly, target_self)
+    }
+}
+
+/// One `skill_effects` row that applies a buff, with the gates the server checks before the row
+/// can run.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BuffRow {
+    pub buff_id: u32,
+    /// `application_method_id`: 1 Target / 4 SourceToPos apply to the cast target, 2 Source /
+    /// 3 SourceOnce to the caster.
+    pub application_method: i32,
+    pub friendly: bool,
+    pub non_friendly: bool,
+    pub source_buff_tag_id: u32,
+    pub target_buff_tag_id: u32,
+    pub source_no_buff_tag_id: u32,
+    pub target_no_buff_tag_id: u32,
+    pub chance: i32,
+    pub weight: i32,
+    /// Plot event ids carrying this buff (plot skills): the buff only applies when the plot
+    /// reaches one of them.
+    #[serde(default)]
+    pub plot_events: Vec<u32>,
+}
+
+impl BuffRow {
+    /// Buffs the cast target receives (`application_method_id` 1 / 4).
+    pub fn is_target_side(&self) -> bool {
+        matches!(self.application_method, 1 | 4)
+    }
+
+    /// The `friendly` / `non_friendly` gate against the actual target (the dummy is hostile, the
+    /// caster friendly; non-unit targets are left to the data).
+    pub fn applies_to(&self, target_self: bool) -> bool {
+        if self.is_target_side() {
+            relation_allows(self.friendly, self.non_friendly, target_self)
+        } else {
+            // Source side: the caster is its own (friendly) target.
+            relation_allows(self.friendly, self.non_friendly, true)
+        }
+    }
+
+    /// A buff the runner can demand unconditionally: no tag / chance / weight / plot gate.
+    pub fn unconditional(&self, target_self: bool) -> bool {
+        self.chance >= 100
+            && self.weight == 0
+            && self.source_buff_tag_id == 0
+            && self.target_buff_tag_id == 0
+            && self.source_no_buff_tag_id == 0
+            && self.target_no_buff_tag_id == 0
+            && self.plot_events.is_empty()
+            && self.applies_to(target_self)
+    }
+
+    /// Why a gated buff may legitimately not be applied (for the record).
+    pub fn gate_note(&self) -> String {
+        let mut parts = Vec::new();
+        if self.source_buff_tag_id != 0 {
+            parts.push(format!("source buff tag {}", self.source_buff_tag_id));
+        }
+        if self.target_buff_tag_id != 0 {
+            parts.push(format!("target buff tag {}", self.target_buff_tag_id));
+        }
+        if self.source_no_buff_tag_id != 0 {
+            parts.push(format!("source no-buff tag {}", self.source_no_buff_tag_id));
+        }
+        if self.target_no_buff_tag_id != 0 {
+            parts.push(format!("target no-buff tag {}", self.target_no_buff_tag_id));
+        }
+        if self.weight > 0 {
+            parts.push(format!("weight {}", self.weight));
+        }
+        if self.chance < 100 {
+            parts.push(format!("chance {}", self.chance));
+        }
+        if !self.plot_events.is_empty() {
+            parts.push(format!("plot event(s) {:?}", self.plot_events));
+        }
+        if !self.applies_to(true) || !self.applies_to(false) {
+            parts.push("relation gate".to_string());
+        }
+        if parts.is_empty() {
+            parts.push("condition not clear".to_string());
+        }
+        parts.join(", ")
+    }
+}
+
+/// The `friendly` / `non_friendly` gate of one `skill_effects` row for a target that is the
+/// caster itself (friendly) or another unit (the sweep's dummy, hostile). Mirrors `Skill.Cast`:
+/// a hostile-only row is skipped on the caster itself, a friendly-only row on a hostile target;
+/// a row with both flags applies anywhere.
+fn relation_allows(friendly: bool, non_friendly: bool, target_self: bool) -> bool {
+    if !friendly && non_friendly && target_self {
+        return false;
+    }
+    if friendly && !non_friendly && !target_self {
+        return false;
+    }
+    true
 }
 
 /// One `unit_reqs` row owned by the skill (`kind_id`, `value1`, `value2`).
@@ -128,15 +287,12 @@ pub struct ReqRow {
     pub value2: i32,
 }
 
-/// What the skill's `skill_effects` -> `effects` resolve to.
+/// What the skill's `skill_effects` -> `effects` resolve to (level-filtered to the caster level
+/// the sweep raises to).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct EffectSummary {
-    /// `buff_effects.buff_id` of every `BuffEffect` with `application_method` Target (1) /
-    /// SourceToPos (4): the server applies these to the cast target.
-    pub buff_target: Vec<u32>,
-    /// `buff_effects.buff_id` of every `BuffEffect` with `application_method` Source (2) /
-    /// SourceOnce (3): the server applies these to the caster.
-    pub buff_caster: Vec<u32>,
+    /// `BuffEffect` rows with the gates of their `skill_effects` row.
+    pub buff_rows: Vec<BuffRow>,
     pub damage_rows: Vec<DamageRow>,
     pub heal_rows: Vec<HealRow>,
     /// Other effect types (`SpecialEffect`, `DispelEffect`, ...) by row count.
@@ -144,17 +300,37 @@ pub struct EffectSummary {
 }
 
 impl EffectSummary {
-    /// Every buff id the data expects a cast to apply (caster or target side).
+    /// Every buff id the data can apply (caster or target side).
     pub fn expected_buffs(&self) -> Vec<u32> {
-        let mut out: Vec<u32> = self
-            .buff_target
-            .iter()
-            .chain(self.buff_caster.iter())
-            .copied()
-            .collect();
+        let mut out: Vec<u32> = self.buff_rows.iter().map(|r| r.buff_id).collect();
         out.sort_unstable();
         out.dedup();
         out
+    }
+
+    /// Damage rows that can run at all for the actual target (`friendly` / `non_friendly`).
+    pub fn damage_rows_for(&self, target_self: bool) -> Vec<&DamageRow> {
+        self.damage_rows
+            .iter()
+            .filter(|r| r.applies(target_self))
+            .collect()
+    }
+
+    /// Heal rows that can run at all for the actual target; a `DamageType.Heal` damage row
+    /// counts as a heal (the 1.2 data uses both).
+    pub fn heal_rows_for(&self, target_self: bool) -> Vec<&HealRow> {
+        self.heal_rows
+            .iter()
+            .filter(|r| r.applies(target_self))
+            .collect()
+    }
+
+    /// Buff rows that can run at all for the actual target.
+    pub fn buff_rows_for(&self, target_self: bool) -> Vec<&BuffRow> {
+        self.buff_rows
+            .iter()
+            .filter(|r| r.applies_to(target_self))
+            .collect()
     }
 }
 
@@ -191,6 +367,12 @@ pub struct SkillPlan {
     pub or_unit_reqs: bool,
     /// `skills.plot_id` (0 = none): plot skills answer with `SCPlotEvent` packets.
     pub plot_id: u32,
+    /// `skills.plot_only`: the skill returns from `Skill.Use` after `run_plot`, so its
+    /// `skill_effects` never run and the plot tree (mana, buffs, damage) is the whole effect.
+    pub plot_only: bool,
+    /// The plot's `SpecialEffect` 39 `ManaCost` total (plot skills only): every reachable event's
+    /// `value1 + value2 / 6.35`, each truncated as the server truncates on the wire.
+    pub plot_mana_cost: Option<i32>,
     pub effects: EffectSummary,
     pub reqs: Vec<ReqRow>,
 }
@@ -270,6 +452,23 @@ impl SkillPlan {
             || (self.target_type == 6 && self.target_relation != 0)
     }
 
+    /// A damage row that can only hit a hostile target: the sweep must never cast such a skill
+    /// on itself (the server skips the row on a friendly target and godmode swallows the rest).
+    pub fn has_hostile_effects(&self) -> bool {
+        self.effects
+            .damage_rows
+            .iter()
+            .any(|r| !r.friendly && r.non_friendly)
+    }
+
+    /// Spell-scaled damage: a row that scales with the caster level (`level_md`) and has no
+    /// fixed part, so the weapon's DPS term should not be zero (the staff is worn then).
+    pub fn uses_spell_scaling(&self) -> bool {
+        self.effects.damage_rows.iter().any(|r| {
+            r.fixed_min == 0 && r.fixed_max == 0 && (r.level_md > 0.0 || r.damage_type == 2)
+        })
+    }
+
     /// The holdable `EquipmentItemSlot` indices the skill's `unit_reqs` demand.
     pub fn required_gear_slots(&self) -> Vec<u8> {
         let mut out = Vec::new();
@@ -297,6 +496,128 @@ pub struct SkillDb {
     path: PathBuf,
 }
 
+/// What a plot tree contributes to a `plot_only` skill: the total `ManaCost` of its reachable
+/// events and the buff each reachable event's `BuffEffect` row applies.
+struct PlotPlan {
+    mana_cost: i32,
+    /// buff id -> (event id, `PlotEffectTarget`) of reachable events carrying it.
+    buff_events: HashMap<u32, Vec<(u32, i32)>>,
+}
+
+/// Walks the plots of `plot_ids` (`plots` -> root event -> `plot_next_events` children,
+/// transitively) and collects their `SpecialEffect` 39 `ManaCost` (the server's
+/// `special::combat::mana_cost`) and `BuffEffect` rows from `plot_effects`.
+fn load_plots(
+    conn: &rusqlite::Connection,
+    plot_ids: &HashSet<u32>,
+) -> rusqlite::Result<HashMap<u32, PlotPlan>> {
+    let mut roots: HashMap<u32, u32> = HashMap::new();
+    {
+        let mut stmt = conn.prepare("SELECT plot_id, id FROM plot_events WHERE position = 1")?;
+        let rows = stmt.query_map([], |r| Ok((r.get::<_, u32>(0)?, r.get::<_, u32>(1)?)))?;
+        for row in rows {
+            let (plot, event) = row?;
+            if plot_ids.contains(&plot) {
+                roots.entry(plot).or_insert(event);
+            }
+        }
+    }
+    let mut next: HashMap<u32, Vec<u32>> = HashMap::new();
+    {
+        let mut stmt = conn.prepare("SELECT event_id, next_event_id FROM plot_next_events")?;
+        let rows = stmt.query_map([], |r| Ok((r.get::<_, u32>(0)?, r.get::<_, u32>(1)?)))?;
+        for row in rows {
+            let (from, to) = row?;
+            next.entry(from).or_default().push(to);
+        }
+    }
+    let mut mana_by_event: HashMap<u32, i32> = HashMap::new();
+    let mut buff_by_event: HashMap<u32, Vec<(u32, i32)>> = HashMap::new();
+    {
+        let mut stmt = conn.prepare(
+            "SELECT event_id, actual_id, actual_type, target_id FROM plot_effects \
+             WHERE actual_type IN ('SpecialEffect','BuffEffect')",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, u32>(0)?,
+                r.get::<_, u32>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, i32>(3)?,
+            ))
+        })?;
+        for row in rows {
+            let (event, actual_id, actual_type, target_id) = row?;
+            match actual_type.as_str() {
+                "SpecialEffect" => {
+                    let se = conn.query_row(
+                        "SELECT special_effect_type_id, value1, value2 FROM special_effects \
+                         WHERE id = ?1",
+                        [actual_id],
+                        |r| {
+                            Ok((
+                                r.get::<_, i32>(0)?,
+                                r.get::<_, i32>(1)?,
+                                r.get::<_, i32>(2)?,
+                            ))
+                        },
+                    );
+                    if let Ok((39, value1, value2)) = se {
+                        *mana_by_event.entry(event).or_insert(0) +=
+                            (f64::from(value1) + f64::from(value2) / 6.35) as i32;
+                    }
+                }
+                "BuffEffect" => {
+                    if let Ok(buff_id) = conn.query_row(
+                        "SELECT buff_id FROM buff_effects WHERE id = ?1",
+                        [actual_id],
+                        |r| r.get::<_, u32>(0),
+                    ) {
+                        buff_by_event
+                            .entry(event)
+                            .or_default()
+                            .push((buff_id, target_id));
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    let mut out = HashMap::new();
+    for (plot, root) in roots {
+        let mut reachable: HashSet<u32> = HashSet::new();
+        let mut stack = vec![root];
+        while let Some(event) = stack.pop() {
+            if !reachable.insert(event) {
+                continue;
+            }
+            if let Some(children) = next.get(&event) {
+                stack.extend(children.iter().copied());
+            }
+        }
+        let mana_cost = reachable.iter().filter_map(|e| mana_by_event.get(e)).sum();
+        let mut buff_events: HashMap<u32, Vec<(u32, i32)>> = HashMap::new();
+        for event in &reachable {
+            if let Some(buffs) = buff_by_event.get(event) {
+                for (buff, target_id) in buffs {
+                    buff_events
+                        .entry(*buff)
+                        .or_default()
+                        .push((*event, *target_id));
+                }
+            }
+        }
+        out.insert(
+            plot,
+            PlotPlan {
+                mana_cost,
+                buff_events,
+            },
+        );
+    }
+    Ok(out)
+}
+
 impl SkillDb {
     pub fn open(path: &Path) -> anyhow::Result<Self> {
         let conn =
@@ -322,7 +643,8 @@ impl SkillDb {
                  COALESCE(offhand_tool_id,0), \
                  CASE WHEN target_dead='t' THEN 1 ELSE 0 END, \
                  CASE WHEN or_unit_reqs='t' THEN 1 ELSE 0 END, \
-                 COALESCE(plot_id,0) \
+                 COALESCE(plot_id,0), \
+                 CASE WHEN plot_only='t' THEN 1 ELSE 0 END \
                  FROM skills WHERE ability_id BETWEEN 1 AND 10",
             )?;
             let rows = stmt.query_map([], |r| {
@@ -356,6 +678,8 @@ impl SkillDb {
                     target_dead: r.get::<_, i64>(26)? != 0,
                     or_unit_reqs: r.get::<_, i64>(27)? != 0,
                     plot_id: r.get(28)?,
+                    plot_only: r.get::<_, i64>(29)? != 0,
+                    plot_mana_cost: None,
                     effects: EffectSummary::default(),
                     reqs: Vec::new(),
                 })
@@ -396,6 +720,11 @@ impl SkillDb {
                         dps_multiplier: r.get(8)?,
                         health_steal_ratio: r.get(9)?,
                         mana_steal_ratio: r.get(10)?,
+                        friendly: true,
+                        non_friendly: true,
+                        chance: 100,
+                        weight: 0,
+                        conditional: false,
                     },
                 ))
             })?;
@@ -418,6 +747,11 @@ impl SkillDb {
                         fixed_max: r.get(2)?,
                         use_level_heal: r.get::<_, i64>(3)? != 0,
                         level_md: r.get(4)?,
+                        friendly: true,
+                        non_friendly: true,
+                        chance: 100,
+                        weight: 0,
+                        conditional: false,
                     },
                 ))
             })?;
@@ -427,46 +761,107 @@ impl SkillDb {
                 heal.insert(id, h);
             }
 
+            // One row per `skill_effects` entry; the gate columns drive the runner's
+            // expectation (level, relation, buff tags, chance, weight).
+            struct Gate {
+                start_level: u8,
+                end_level: u8,
+                friendly: bool,
+                non_friendly: bool,
+                source_buff_tag_id: u32,
+                target_buff_tag_id: u32,
+                source_no_buff_tag_id: u32,
+                target_no_buff_tag_id: u32,
+                chance: i32,
+                weight: i32,
+            }
+            impl Gate {
+                fn conditional(&self) -> bool {
+                    self.source_buff_tag_id != 0
+                        || self.target_buff_tag_id != 0
+                        || self.source_no_buff_tag_id != 0
+                        || self.target_no_buff_tag_id != 0
+                }
+            }
             let mut stmt = conn.prepare(
                 "SELECT se.skill_id, se.effect_id, ef.actual_type, ef.actual_id, \
-                 se.application_method_id \
+                 se.application_method_id, se.start_level, se.end_level, \
+                 CASE WHEN se.friendly='t' THEN 1 ELSE 0 END, \
+                 CASE WHEN se.non_friendly='t' THEN 1 ELSE 0 END, \
+                 COALESCE(se.source_buff_tag_id,0), COALESCE(se.target_buff_tag_id,0), \
+                 COALESCE(se.source_nobuff_tag_id,0), COALESCE(se.target_nobuff_tag_id,0), \
+                 COALESCE(se.chance,0), COALESCE(se.weight,0) \
                  FROM skill_effects se JOIN effects ef ON ef.id = se.effect_id \
                  WHERE se.skill_id IN (SELECT id FROM skills WHERE ability_id BETWEEN 1 AND 10)",
             )?;
             let rows = stmt.query_map([], |r| {
                 Ok((
-                    r.get::<_, u32>(0)?,
-                    r.get::<_, u32>(1)?,
-                    r.get::<_, String>(2)?,
-                    r.get::<_, u32>(3)?,
-                    r.get::<_, i32>(4)?,
+                    r.get::<_, u32>(0)?,    // skill id
+                    r.get::<_, u32>(1)?,    // effect id
+                    r.get::<_, String>(2)?, // actual type
+                    r.get::<_, u32>(3)?,    // actual id
+                    r.get::<_, i32>(4)?,    // application method
+                    Gate {
+                        start_level: r.get(5)?,
+                        end_level: r.get(6)?,
+                        friendly: r.get::<_, i64>(7)? != 0,
+                        non_friendly: r.get::<_, i64>(8)? != 0,
+                        source_buff_tag_id: r.get(9)?,
+                        target_buff_tag_id: r.get(10)?,
+                        source_no_buff_tag_id: r.get(11)?,
+                        target_no_buff_tag_id: r.get(12)?,
+                        chance: r.get(13)?,
+                        weight: r.get(14)?,
+                    },
                 ))
             })?;
             for row in rows {
-                let (skill_id, effect_id, actual_type, actual_id, method) = row?;
+                let (skill_id, effect_id, actual_type, actual_id, method, gate) = row?;
                 let Some(plan) = skills.get_mut(&skill_id) else {
                     continue;
                 };
+                // The server skips a row outside the caster's level range.
+                if gate.start_level > SWEEP_CASTER_LEVEL || gate.end_level < SWEEP_CASTER_LEVEL {
+                    continue;
+                }
                 match actual_type.as_str() {
                     "BuffEffect" => {
                         let Some(buff_id) = buffs.get(&actual_id).copied() else {
                             continue;
                         };
-                        if matches!(method, 2 | 3) {
-                            plan.effects.buff_caster.push(buff_id);
-                        } else {
-                            plan.effects.buff_target.push(buff_id);
-                        }
+                        plan.effects.buff_rows.push(BuffRow {
+                            buff_id,
+                            application_method: method,
+                            friendly: gate.friendly,
+                            non_friendly: gate.non_friendly,
+                            source_buff_tag_id: gate.source_buff_tag_id,
+                            target_buff_tag_id: gate.target_buff_tag_id,
+                            source_no_buff_tag_id: gate.source_no_buff_tag_id,
+                            target_no_buff_tag_id: gate.target_no_buff_tag_id,
+                            chance: gate.chance,
+                            weight: gate.weight,
+                            plot_events: Vec::new(),
+                        });
                     }
                     "DamageEffect" => {
                         if let Some(mut dmg) = damage.get(&actual_id).cloned() {
                             dmg.effect_id = effect_id;
+                            dmg.friendly = gate.friendly;
+                            dmg.non_friendly = gate.non_friendly;
+                            dmg.chance = gate.chance;
+                            dmg.weight = gate.weight;
+                            dmg.conditional = gate.conditional();
                             plan.effects.damage_rows.push(dmg);
                         }
                     }
                     "HealEffect" => {
                         if let Some(mut h) = heal.get(&actual_id).cloned() {
                             h.effect_id = effect_id;
+                            h.friendly = gate.friendly;
+                            h.non_friendly = gate.non_friendly;
+                            h.chance = gate.chance;
+                            h.weight = gate.weight;
+                            h.conditional = gate.conditional();
                             plan.effects.heal_rows.push(h);
                         }
                     }
@@ -496,6 +891,58 @@ impl SkillDb {
                 let (skill_id, req) = row?;
                 if let Some(plan) = skills.get_mut(&skill_id) {
                     plan.reqs.push(req);
+                }
+            }
+        }
+        // Plot trees of the plot skills: mana is taken by `SpecialEffect` 39 `ManaCost` rows of
+        // reachable events (a `plot_only` skill returns before `Skill.Cast`'s `ConsumeMana`),
+        // buffs only apply when their event is reached.
+        {
+            let plot_ids: HashSet<u32> = skills
+                .values()
+                .map(|p| p.plot_id)
+                .filter(|p| *p != 0)
+                .collect();
+            if !plot_ids.is_empty() {
+                let plots = load_plots(&conn, &plot_ids)?;
+                for plan in skills.values_mut() {
+                    if plan.plot_id == 0 {
+                        continue;
+                    }
+                    let Some(plot) = plots.get(&plan.plot_id) else {
+                        continue;
+                    };
+                    if plan.plot_only {
+                        plan.plot_mana_cost = Some(plot.mana_cost);
+                    }
+                    for row in &mut plan.effects.buff_rows {
+                        if let Some(events) = plot.buff_events.get(&row.buff_id) {
+                            row.plot_events = events.iter().map(|(event, _)| *event).collect();
+                        }
+                    }
+                    // A plot buff the `skill_effects` data does not list is still applied by the
+                    // plot: record it so a reached-but-missing buff shows up. `PlotEffectTarget`
+                    // 1 (caster) / 3 (previous source) apply to the caster side, 2 / 4 / 5 to the
+                    // target side.
+                    for (buff_id, events) in &plot.buff_events {
+                        if plan.effects.buff_rows.iter().any(|r| r.buff_id == *buff_id) {
+                            continue;
+                        }
+                        let caster_side = events.iter().all(|(_, target)| matches!(target, 1 | 3));
+                        plan.effects.buff_rows.push(BuffRow {
+                            buff_id: *buff_id,
+                            application_method: if caster_side { 3 } else { 1 },
+                            friendly: true,
+                            non_friendly: true,
+                            source_buff_tag_id: 0,
+                            target_buff_tag_id: 0,
+                            source_no_buff_tag_id: 0,
+                            target_no_buff_tag_id: 0,
+                            chance: 100,
+                            weight: 0,
+                            plot_events: events.iter().map(|(event, _)| *event).collect(),
+                        });
+                    }
                 }
             }
         }
@@ -615,7 +1062,13 @@ pub struct SkillResult {
     pub learned: bool,
     pub gear_required: Vec<u8>,
     pub gear_missing: Vec<u8>,
+    /// `items.id` of the weapon equipped for the cast (spell-scaled damage gets the staff).
+    pub weapon_used: u32,
+    /// Distance to the training dummy right before the cast (metres).
+    pub dummy_distance_m: Option<f64>,
     pub target: String,
+    /// `self` / `unit` / `doodad` / `position` (what the observed HP delta belongs to).
+    pub target_kind: String,
     // ----- data expectations
     pub target_type: u8,
     pub target_type_name: String,
@@ -628,6 +1081,8 @@ pub struct SkillResult {
     pub expected_buffs: Vec<u32>,
     pub damage_rows: Vec<DamageRow>,
     pub heal_rows: Vec<HealRow>,
+    pub plot_id: u32,
+    pub plot_only: bool,
     /// Channel ticks the data schedules (`(channeling_time - 1) / channeling_tick`).
     pub ticks_expected: Option<i64>,
     // ----- observed
@@ -646,20 +1101,36 @@ pub struct SkillResult {
     pub stopped: bool,
     pub server_errors: Vec<String>,
     pub mana_spent: Option<i32>,
+    /// Where `mana_spent` was read: `first update after the cast response`, `lowest update
+    /// during the cast` (the cost update precedes the response on the wire) or `end of cast`.
+    pub mana_source: String,
     /// Target HP after - before (negative = damage, positive = heal).
     pub target_hp_delta: Option<i32>,
+    /// `SCUnitDamagedPacket`s of this skill on the compare unit (misses included).
+    pub damage_packets: u32,
+    /// Of those, the ones with a miss / immune / dodge / parry / block hit type.
+    pub miss_packets: u32,
+    pub heal_packets: u32,
     pub buffs_created_caster: Vec<u32>,
     pub buffs_created_target: Vec<u32>,
     pub buffs_removed_caster: Vec<u32>,
     pub buffs_removed_target: Vec<u32>,
     pub plot_events: u32,
+    /// `SCPlotEventPacket.event_id`s seen for this skill (bounded to 64).
+    pub plot_event_ids: Vec<u32>,
     pub unit_points_updates_caster: u32,
     pub unit_points_updates_target: u32,
     /// The immediate second cast's `SkillResult` (8 = cooldown as expected); 0 = accepted,
     /// `None` = no answer.
     pub recast_result: Option<u8>,
+    /// `probed`, or why the cooldown probe was skipped (`cooldown <= 3000 ms`, a `skill_req`
+    /// blocking buff, the recast answered `skill_req_fail`).
+    pub cooldown_probe: String,
     pub messages: Vec<String>,
     pub mismatches: Vec<String>,
+    /// Facts that explain an observation without being a data deviation (buffs changed the HP,
+    /// godmode suppressed self damage, a plot-dependent buff was not reached, ...).
+    pub notes: Vec<String>,
     pub elapsed_ms: u64,
 }
 
@@ -730,6 +1201,20 @@ pub fn render_summary(report: &RunReport) -> String {
         out.push_str("\n[skill] top failure reasons:");
         for (reason, n) in top.iter().take(8) {
             out.push_str(&format!("\n  {n}x {reason}"));
+        }
+    }
+    let mut notes: BTreeMap<String, usize> = BTreeMap::new();
+    for r in &report.results {
+        for n in &r.notes {
+            *notes.entry(reason_key(n)).or_default() += 1;
+        }
+    }
+    let mut top: Vec<(&String, &usize)> = notes.iter().collect();
+    top.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
+    if !top.is_empty() {
+        out.push_str("\n[skill] notes (not mismatches):");
+        for (note, n) in top.iter().take(10) {
+            out.push_str(&format!("\n  {n}x {note}"));
         }
     }
     out
@@ -806,6 +1291,7 @@ pub fn skill_result_name(code: u8) -> &'static str {
         47 => "skill_protected_faction",
         48 => "skill_protected_level",
         49 => "skill_unit_reqs_or_fail",
+        50 => "skill_req_fail",
         51 => "backpack_occupied",
         52 => "skill_obstacle_for_spawn_doodad",
         53 => "skill_cannot_spawn_doodad_in_house",
@@ -897,9 +1383,93 @@ pub fn mana_cost_expected(plan: &SkillPlan, ab_level: i32) -> i32 {
     (base * plan.mana_level_md + f64::from(plan.mana_cost)) as i32
 }
 
+/// The mana the cast is expected to take. A `plot_only` skill returns from `Skill.Use` before
+/// `Skill.Cast`'s `ConsumeMana`, so its cost is the plot's `SpecialEffect` 39 `ManaCost`
+/// (`special/combat.rs::mana_cost`); a plot the data gives no cost takes nothing. Every other
+/// skill pays the `Skill.ManaCost` formula. Skill modifiers (which the server applies on top)
+/// are not part of the expectation: the sweep's bot carries none.
+pub fn expected_mana_cost(plan: &SkillPlan, ab_level: i32) -> i32 {
+    if plan.plot_only {
+        plan.plot_mana_cost.unwrap_or(0)
+    } else {
+        mana_cost_expected(plan, ab_level)
+    }
+}
+
+/// Reads the cast's mana from the observed `SCUnitPointsPacket` updates of the caster. The cost
+/// is paid once, at the cast (`Skill.Cast` for a normal skill, during the plot for a
+/// `plot_only` one); the update may precede the cast's first response packet, so the first
+/// update after the response is preferred and the lowest update during the cast is the
+/// fallback. An end-of-cast delta is not used: a channel's regen (or a mana restore effect)
+/// hides the cost behind it.
+fn measure_mana(
+    before: Option<i32>,
+    updates: &[i32],
+    after_response: Option<i32>,
+) -> (Option<i32>, String) {
+    let Some(before) = before else {
+        return (None, "no MP reading before the cast".to_string());
+    };
+    if let Some(after) = after_response {
+        return (
+            Some((before - after).max(0)),
+            "first update after the cast response".to_string(),
+        );
+    }
+    if let Some(min) = updates.iter().min() {
+        return (
+            Some((before - *min).max(0)),
+            "lowest update during the cast".to_string(),
+        );
+    }
+    (None, "no MP update during the cast".to_string())
+}
+
 // -------------------------------------------------------------------------------------------
 // Packet readers
 // -------------------------------------------------------------------------------------------
+
+/// `SCPlotEventPacket` -> `(tl, event, skill)`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PlotEvent {
+    tl: u16,
+    event_id: u32,
+    skill_id: u32,
+}
+
+/// `SCUnitDamagedPacket` -> the hit facts (the sweep sees misses too, which `SCUnitPoints` alone
+/// cannot tell from "no damage at all").
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct DamageHit {
+    skill_id: u32,
+    caster_obj: u32,
+    caster_id: u32,
+    target_id: u32,
+    damage: i32,
+    /// `SkillHitType` (the wire packs it into the low byte of `288 | hitType`).
+    hit_type: u8,
+}
+
+impl DamageHit {
+    /// A miss / immune / dodge / parry / block hit type ("a miss" for the runner).
+    fn is_miss(&self) -> bool {
+        matches!(
+            self.hit_type,
+            0x04 | 0x05 | 0x06 | 0x07 | 0x0A | 0x0E | 0x10 | 0x11 | 0x12 | 0x13 | 0x14
+        )
+    }
+}
+
+/// `SCUnitHealedPacket`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct HealHit {
+    skill_id: u32,
+    caster_obj: u32,
+    target_id: u32,
+    heal_type: u8,
+    hit_type: u8,
+    value: i32,
+}
 
 /// The parts of `SCSkillStartedPacket` the sweep needs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1007,30 +1577,111 @@ fn parse_skill_stopped(p: &Packet) -> Option<(u32, u32)> {
     Some((s.read_bc().ok()?, s.read_u32().ok()?))
 }
 
-/// `SCPlotEventPacket` -> `(tl, skill_id)`: plot skills (`skills.plot_id`) announce their steps
-/// with it instead of `SCSkillStarted` / `SCSkillFired`.
-fn parse_plot_event(p: &Packet) -> Option<(u16, u32)> {
-    let mut s;
-    if p.level == crate::game::LEVEL_COMPRESSED {
-        // The server batches plot events into `CompressedGamePackets`; the inflated payload is
-        // `[u16 0][u16 opcode][body]` per packet without lengths, so only the first inner
-        // packet can be read without knowing every body size.
-        if p.body.len() < 4 || p.body[..2] != [0, 0] {
-            return None;
-        }
-        if u16::from_le_bytes([p.body[2], p.body[3]]) != sc::SCPlotEventPacket {
-            return None;
-        }
-        s = aaemu_commons::PacketStream::from_bytes(p.body[4..].to_vec());
-    } else {
-        if !p.is_sc(sc::SCPlotEventPacket) {
-            return None;
-        }
-        s = p.stream();
+/// `SCPlotEventPacket`: plot skills (`skills.plot_id`) announce their steps with it instead of
+/// `SCSkillStarted` / `SCSkillFired`. The batch it arrives in is split into level-1 packets by
+/// [`crate::game::split_compressed_batch`], so each event is read on its own.
+fn parse_plot_event(p: &Packet) -> Option<PlotEvent> {
+    if !p.is_sc(sc::SCPlotEventPacket) {
+        return None;
     }
+    let mut s = p.stream();
     let tl = s.read_u16().ok()?;
-    let _event = s.read_u32().ok()?;
-    Some((tl, s.read_u32().ok()?))
+    let event_id = s.read_u32().ok()?;
+    let skill_id = s.read_u32().ok()?;
+    Some(PlotEvent {
+        tl,
+        event_id,
+        skill_id,
+    })
+}
+
+/// `SCUnitDamagedPacket`: the cast action identifies the skill (or plot) that ran the damage.
+fn parse_unit_damaged(p: &Packet) -> Option<DamageHit> {
+    if !p.is_sc(sc::SCUnitDamagedPacket) {
+        return None;
+    }
+    let mut s = p.stream();
+    let skill_id = parse_cast_action(&mut s)?;
+    let caster_kind = s.read_u8().ok()?;
+    let caster = SkillCaster::read(caster_kind, &mut s).ok()?;
+    let caster_id = s.read_bc().ok()?;
+    let target_id = s.read_bc().ok()?;
+    s.read_u8().ok()?; // crime state
+    let values = s.read_pisc_w(3).ok()?; // damage, absorbed, 0
+    s.read_pisc_w(3).ok()?; // 0, 0, mana burn
+    s.read_u8().ok()?; // holdable id
+    let packed = s.read_u16().ok()?; // 288 | hit type
+    s.read_u8().ok()?; // flag
+    s.read_u8().ok()?; // result
+    Some(DamageHit {
+        skill_id,
+        caster_obj: caster.obj_id(),
+        caster_id,
+        target_id,
+        damage: values[0] as i32,
+        hit_type: (packed & 0xFF) as u8,
+    })
+}
+
+/// `SCUnitHealedPacket`.
+fn parse_unit_healed(p: &Packet) -> Option<HealHit> {
+    if !p.is_sc(sc::SCUnitHealedPacket) {
+        return None;
+    }
+    let mut s = p.stream();
+    let skill_id = parse_cast_action(&mut s)?;
+    let caster_kind = s.read_u8().ok()?;
+    let caster = SkillCaster::read(caster_kind, &mut s).ok()?;
+    let target_id = s.read_bc().ok()?;
+    let heal_type = s.read_u8().ok()?;
+    let hit_type = s.read_u8().ok()?;
+    let value = s.read_i32().ok()?;
+    Some(HealHit {
+        skill_id,
+        caster_obj: caster.obj_id(),
+        target_id,
+        heal_type,
+        hit_type,
+        value,
+    })
+}
+
+/// `CastAction` -> the id of the skill whose effect applied the packet (0 for a buff / unknown
+/// cast action). `CastAction::Plot` carries the skill id too.
+fn parse_cast_action(s: &mut aaemu_commons::PacketStream) -> Option<u32> {
+    match s.read_u8().ok()? {
+        0 => {
+            let skill_id = s.read_u32().ok()?;
+            s.read_u16().ok()?; // tl
+            Some(skill_id)
+        }
+        1 => {
+            s.read_u32().ok()?; // plot id
+            s.read_u16().ok()?; // tl
+            s.read_u32().ok()?; // event id
+            Some(s.read_u32().ok()?)
+        }
+        2 => {
+            s.read_u32().ok()?;
+            s.read_bc().ok()?;
+            s.read_u32().ok()?;
+            s.read_bool().ok()?;
+            s.read_bool().ok()?;
+            Some(0)
+        }
+        3 => {
+            s.read_i32().ok()?;
+            s.read_i32().ok()?;
+            s.read_bc().ok()?;
+            Some(0)
+        }
+        4 => {
+            s.read_i32().ok()?;
+            s.read_bc().ok()?;
+            Some(0)
+        }
+        _ => None,
+    }
 }
 
 /// `SCPlotEndedPacket` -> `tl`.
@@ -1511,22 +2162,21 @@ impl<'a> Sweep<'a> {
             .max(min + 0.5)
     }
 
-    /// Spawns (or re-uses) the training dummy in front of the bot and returns its object id.
-    async fn ensure_dummy(&mut self) -> anyhow::Result<Result<u32, String>> {
-        let alive = |obj: u32, game: &GameClient| {
-            obj != 0
-                && !game.state.dead_units.contains(&obj)
-                && game
-                    .state
-                    .unit_points
-                    .get(&obj)
-                    .is_none_or(|(hp, _)| *hp > 0)
-        };
-        if alive(self.state.dummy_obj, &self.game) {
-            return Ok(Ok(self.state.dummy_obj));
-        }
-        if self.state.dummy_obj != 0 {
-            let old = self.state.dummy_obj;
+    /// The distance from the bot to `obj` in metres.
+    fn dummy_distance(&self, obj: u32) -> Option<f64> {
+        let me = self.game.state.self_pos;
+        self.game.state.units.get(&obj).map(|u| {
+            let (dx, dy) = (f64::from(u.pos.0 - me.0), f64::from(u.pos.1 - me.1));
+            (dx * dx + dy * dy).sqrt()
+        })
+    }
+
+    /// Respawns the training dummy in front of the bot and returns its fresh object id. The old
+    /// copy is despawned first: a dummy that wandered or was left at half HP from an earlier
+    /// skill made the damage/HP measurements unreliable (and a dead target stays dead).
+    async fn place_dummy(&mut self) -> anyhow::Result<Result<u32, String>> {
+        let old = self.state.dummy_obj;
+        if old != 0 {
             let _ = self
                 .cmd(&format!("despawn npc {old}"), GM_EFFECT_WAIT, Done::Never)
                 .await;
@@ -1539,27 +2189,38 @@ impl<'a> Sweep<'a> {
                 Done::LiveUnitAppears(DUMMY_TEMPLATE),
             )
             .await?;
-        let Some(unit) = self
-            .game
-            .state
-            .units
-            .values()
-            .filter(|u| u.unit_type == 1 && u.id == DUMMY_TEMPLATE)
-            .max_by(|a, b| {
-                let me = self.game.state.self_pos;
-                let da = (a.pos.0 - me.0).powi(2) + (a.pos.1 - me.1).powi(2);
-                let db = (b.pos.0 - me.0).powi(2) + (b.pos.1 - me.1).powi(2);
-                db.total_cmp(&da)
-            })
-            .cloned()
-        else {
-            return Ok(Err(format!(
-                "/spawn npc {DUMMY_TEMPLATE} did not announce a unit"
-            )));
-        };
-        self.state.dummy_obj = unit.obj_id;
-        // The dummy spawns 3 m in front of the bot and fights nothing back.
-        Ok(Ok(unit.obj_id))
+        // The despawned copy can still be in view; the fresh one is the unit with a new object
+        // id. Give its announcement a moment when the first check only saw the old one.
+        let deadline = Instant::now() + Duration::from_millis(1500);
+        loop {
+            let fresh = self
+                .game
+                .state
+                .units
+                .values()
+                .filter(|u| u.unit_type == 1 && u.id == DUMMY_TEMPLATE && u.obj_id != old)
+                .filter(|u| !self.game.state.dead_units.contains(&u.obj_id))
+                .max_by(|a, b| {
+                    let me = self.game.state.self_pos;
+                    let da = (a.pos.0 - me.0).powi(2) + (a.pos.1 - me.1).powi(2);
+                    let db = (b.pos.0 - me.0).powi(2) + (b.pos.1 - me.1).powi(2);
+                    db.total_cmp(&da)
+                })
+                .cloned();
+            if let Some(unit) = fresh {
+                self.state.dummy_obj = unit.obj_id;
+                // The dummy spawns 3 m in front of the bot and fights nothing back.
+                return Ok(Ok(unit.obj_id));
+            }
+            if Instant::now() >= deadline {
+                return Ok(Err(format!(
+                    "/spawn npc {DUMMY_TEMPLATE} did not announce a fresh unit"
+                )));
+            }
+            if let Some(p) = self.game.recv_within(PUMP).await? {
+                self.session.observe(&p);
+            }
+        }
     }
 
     /// Damages the dummy to death with `/kill` (the current target), for skills that require a
@@ -1694,62 +2355,73 @@ impl<'a> Sweep<'a> {
     }
 
     /// Equips the four holdable slots the data can demand (`/item add self` + the client's
-    /// `CSSwapItemsPacket` into the equipment container).
+    /// `CSSwapItemsPacket` into the equipment container). A two-handed staff swap moves the
+    /// shield to the bag; this puts it back.
     async fn ensure_gear(&mut self) -> anyhow::Result<()> {
         for (template, slot) in GEAR {
+            self.ensure_slot(template, slot).await?;
+        }
+        Ok(())
+    }
+
+    /// The weapon the skill's damage scales with: the one-hand sword by default, the level-55
+    /// two-handed staff for spell-scaled damage (`skills` damage rows the sweep marks).
+    async fn ensure_weapon(&mut self, template: u32) -> anyhow::Result<()> {
+        self.ensure_slot(template, SLOT_MAINHAND).await
+    }
+
+    /// Makes `template` the item of `slot` (giving it to the bot when the bag has none).
+    async fn ensure_slot(&mut self, template: u32, slot: u8) -> anyhow::Result<()> {
+        if self
+            .session
+            .equipment
+            .get(&slot)
+            .is_some_and(|item| item.template_id == template)
+        {
+            return Ok(());
+        }
+        if self.game.state.bag_count(&[template]) == 0 {
+            let _ = self
+                .cmd(
+                    &format!("item add self {template} 1"),
+                    GM_EFFECT_WAIT,
+                    Done::BagCount(template, 1),
+                )
+                .await?;
+        }
+        let Some((bag_slot, item_id)) = self
+            .game
+            .state
+            .bag
+            .iter()
+            .find(|(_, item)| item.template_id == template)
+            .map(|(slot, item)| (*slot, item.item_id))
+        else {
+            bail!("the GM give did not create item {template} (equipment slot {slot} stays empty)");
+        };
+        self.game.equip_item(item_id, bag_slot, slot).await?;
+        let deadline = Instant::now() + GM_EFFECT_WAIT;
+        while Instant::now() < deadline {
+            let Some(p) = self.game.recv_within(PUMP).await? else {
+                continue;
+            };
+            self.session.observe(&p);
             if self
                 .session
                 .equipment
                 .get(&slot)
                 .is_some_and(|item| item.template_id == template)
             {
-                continue;
+                break;
             }
-            if self.game.state.bag_count(&[template]) == 0 {
-                let _ = self
-                    .cmd(
-                        &format!("item add self {template} 1"),
-                        GM_EFFECT_WAIT,
-                        Done::BagCount(template, 1),
-                    )
-                    .await?;
-            }
-            let Some((bag_slot, item_id)) = self
-                .game
-                .state
-                .bag
-                .iter()
-                .find(|(_, item)| item.template_id == template)
-                .map(|(slot, item)| (*slot, item.item_id))
-            else {
-                bail!(
-                    "the GM give did not create item {template} (equipment slot {slot} stays empty)"
-                );
-            };
-            self.game.equip_item(item_id, bag_slot, slot).await?;
-            let deadline = Instant::now() + GM_EFFECT_WAIT;
-            while Instant::now() < deadline {
-                let Some(p) = self.game.recv_within(PUMP).await? else {
-                    continue;
-                };
-                self.session.observe(&p);
-                if self
-                    .session
-                    .equipment
-                    .get(&slot)
-                    .is_some_and(|item| item.template_id == template)
-                {
-                    break;
-                }
-            }
-            anyhow::ensure!(
-                self.session
-                    .equipment
-                    .get(&slot)
-                    .is_some_and(|item| item.template_id == template),
-                "item {template} was not equipped into slot {slot}"
-            );
         }
+        anyhow::ensure!(
+            self.session
+                .equipment
+                .get(&slot)
+                .is_some_and(|item| item.template_id == template),
+            "item {template} was not equipped into slot {slot}"
+        );
         Ok(())
     }
 
@@ -1860,6 +2532,7 @@ impl<'a> Sweep<'a> {
                     attempt.started_ms = Some(sent_at.elapsed().as_millis() as u64);
                     attempt.real_cast_ms = Some(started.real_cast_ms);
                     attempt.base_cast_ms = Some(started.base_cast_ms);
+                    attempt.responded = true;
                     if started.result != 0 {
                         attempt.result = Some(started.result);
                         attempt.result_uint = started.result_uint;
@@ -1876,11 +2549,14 @@ impl<'a> Sweep<'a> {
                     attempt.responded = true;
                 }
             }
-            if let Some((tl, skill_id)) = parse_plot_event(&p) {
-                if skill_id == plan.id {
-                    our_tl = Some(tl);
+            if let Some(event) = parse_plot_event(&p) {
+                if event.skill_id == plan.id {
+                    our_tl = Some(event.tl);
                     attempt.plot_events += 1;
                     attempt.responded = true;
+                    if attempt.plot_event_ids.len() < 64 {
+                        attempt.plot_event_ids.push(event.event_id);
+                    }
                     if attempt.started_ms.is_none() {
                         attempt.started_ms = Some(sent_at.elapsed().as_millis() as u64);
                     }
@@ -1925,13 +2601,23 @@ impl<'a> Sweep<'a> {
                     attempt.buffs_removed.push((owner, buff_id));
                 }
             }
-            if let Some((obj, _, _)) = parse_unit_points(&p) {
+            if let Some((obj, _, mp)) = parse_unit_points(&p) {
                 if obj == self_obj {
                     attempt.points_self += 1;
+                    attempt.mp_self.push(mp);
+                    if attempt.responded && attempt.mp_after_response.is_none() {
+                        attempt.mp_after_response = Some(mp);
+                    }
                 }
                 if obj == compare_obj {
                     attempt.points_compare += 1;
                 }
+            }
+            if let Some(hit) = parse_unit_damaged(&p) {
+                attempt.damage_hits.push(hit);
+            }
+            if let Some(hit) = parse_unit_healed(&p) {
+                attempt.heal_hits.push(hit);
             }
             if let Some((e1, e2)) = parse_error(&p) {
                 attempt.errors.push((e1, e2));
@@ -1980,20 +2666,6 @@ impl<'a> Sweep<'a> {
                 }
             }
         }
-    }
-
-    /// Pauses while pumping packets (the GCD window before the cooldown probe).
-    async fn pump_for(&mut self, duration: Duration) -> anyhow::Result<()> {
-        let deadline = Instant::now() + duration;
-        while let Some(left) = deadline.checked_duration_since(Instant::now()) {
-            if left.is_zero() {
-                break;
-            }
-            if let Some(p) = self.game.recv_within(PUMP.min(left)).await? {
-                self.session.observe(&p);
-            }
-        }
-        Ok(())
     }
 
     /// One skill: setup, cast, second-cast cooldown probe, data-vs-observed comparison.
@@ -2047,7 +2719,16 @@ impl<'a> Sweep<'a> {
             .get(&plan.ability_id)
             .is_some_and(|set| set.contains(&plan.id));
 
-        // Gear.
+        // Gear: the four holdable slots the data's unit_reqs can demand (also restores what a
+        // two-handed staff swap moved to the bag), then the weapon the skill's damage scales
+        // with. Spell-scaled damage (`level_md` with no fixed part) gets the staff so the
+        // weapon DPS term is not zero; a skill that needs the offhand slot keeps the sword.
+        if let Err(e) = self.ensure_gear().await {
+            out.result = SkillOutcome::SetupFailed;
+            out.reason = format!("could not equip the sweep's holdables: {e:#}");
+            self.finish(chat_start, start, &mut out);
+            return out;
+        }
         out.gear_required = plan.required_gear_slots();
         out.gear_missing = out
             .gear_required
@@ -2064,8 +2745,23 @@ impl<'a> Sweep<'a> {
             self.finish(chat_start, start, &mut out);
             return out;
         }
+        let spell_scaled = plan.uses_spell_scaling() && !out.gear_required.contains(&SLOT_OFFHAND);
+        let weapon = if spell_scaled {
+            SPELL_WEAPON_TEMPLATE
+        } else {
+            MELEE_WEAPON_TEMPLATE
+        };
+        if let Err(e) = self.ensure_weapon(weapon).await {
+            out.result = SkillOutcome::SetupFailed;
+            out.reason = format!("could not equip weapon {weapon}: {e:#}");
+            self.finish(chat_start, start, &mut out);
+            return out;
+        }
+        out.weapon_used = weapon;
 
         // Target setup: doodad copy, training dummy (also for target_dead corpses) or self.
+        // Hostile skills are never cast on the bot itself (godmode would swallow the self
+        // damage); they go on a freshly placed dummy in front of the bot.
         let self_obj = self.game.state.self_obj;
         let mut compare_obj = self_obj;
         let mut target = SkillCastTarget::Unit(self_obj);
@@ -2075,6 +2771,7 @@ impl<'a> Sweep<'a> {
                 Ok(Ok(obj)) => {
                     target = SkillCastTarget::Doodad(obj);
                     out.target = format!("doodad {DOODAD_TEMPLATE}#{obj}");
+                    out.target_kind = "doodad".into();
                     compare_obj = obj;
                 }
                 Ok(Err(reason)) => {
@@ -2091,7 +2788,7 @@ impl<'a> Sweep<'a> {
                 }
             }
         } else if needs_dummy {
-            match self.ensure_dummy().await {
+            match self.place_dummy().await {
                 Ok(Ok(obj)) => {
                     compare_obj = obj;
                     if plan.target_type == 6 {
@@ -2109,6 +2806,7 @@ impl<'a> Sweep<'a> {
                             self.finish(chat_start, start, &mut out);
                             return out;
                         }
+                        out.dummy_distance_m = self.dummy_distance(obj);
                         target = SkillCastTarget::Position3 {
                             obj_id: 0,
                             x: pos.0,
@@ -2117,9 +2815,11 @@ impl<'a> Sweep<'a> {
                             pitch: 0.0,
                         };
                         out.target = format!("position at npc {DUMMY_TEMPLATE}#{obj}");
+                        out.target_kind = "position".into();
                     } else if plan.target_dead {
                         target = SkillCastTarget::Unit(obj);
                         out.target = format!("dead npc {DUMMY_TEMPLATE}#{obj}");
+                        out.target_kind = "unit".into();
                     } else {
                         if let Some(pos) = self.game.state.units.get(&obj).map(|u| u.pos) {
                             let desired = Self::desired_distance(plan);
@@ -2130,15 +2830,17 @@ impl<'a> Sweep<'a> {
                                 return out;
                             }
                         }
-                        if plan.target_type == 4 {
+                        out.dummy_distance_m = self.dummy_distance(obj);
+                        // Hostile relation or hostile-only effect rows: cast on the dummy,
+                        // never on the bot (godmode would swallow self damage).
+                        let hostile = plan.target_relation == 4 || plan.has_hostile_effects();
+                        if plan.target_type == 4 || (plan.target_type == 5 && hostile) {
                             target = SkillCastTarget::Unit(obj);
                             out.target = format!("npc {DUMMY_TEMPLATE}#{obj}");
                         } else {
-                            // Self-centred area skill with a hostile relation: cast on the
-                            // bot, the dummy stands inside the area.
-                            out.target =
-                                format!("self ({self_obj}), npc {DUMMY_TEMPLATE}#{obj} nearby");
+                            out.target = format!("self ({self_obj})");
                         }
+                        out.target_kind = "unit".into();
                     }
                     self.game.change_target(obj).await.ok();
                     if plan.target_dead && !self.game.state.dead_units.contains(&obj) {
@@ -2186,8 +2888,13 @@ impl<'a> Sweep<'a> {
                 pitch: 0.0,
             };
             out.target = format!("position at self ({self_obj})");
+            out.target_kind = "position".into();
         } else {
             out.target = format!("self ({self_obj})");
+            out.target_kind = "self".into();
+        }
+        if compare_obj == self_obj {
+            out.target_kind = "self".into();
         }
 
         // Refill before the cast (the dummy too, so the HP delta is honest).
@@ -2258,12 +2965,6 @@ impl<'a> Sweep<'a> {
             }
         };
 
-        let mp_after = self
-            .game
-            .state
-            .unit_points
-            .get(&self_obj)
-            .map(|(_, mp)| *mp);
         let hp_after = self
             .game
             .state
@@ -2289,6 +2990,7 @@ impl<'a> Sweep<'a> {
             }
         }
         out.plot_events = attempt.plot_events;
+        out.plot_event_ids = attempt.plot_event_ids.clone();
         out.unit_points_updates_caster = attempt.points_self;
         out.unit_points_updates_target = attempt.points_compare;
         out.started_after_ms = attempt.started_ms;
@@ -2306,14 +3008,34 @@ impl<'a> Sweep<'a> {
             .iter()
             .map(|(e1, e2)| format!("SCErrorMsg {e1}/{e2}"))
             .collect();
-        out.mana_spent = match (mp_before, mp_after) {
-            (Some(before), Some(after)) => Some((before - after).max(0)),
-            _ => None,
-        };
+        // Mana: the cost is paid once, when the cast runs (`Skill.Cast` for a normal skill,
+        // during the plot for a `plot_only` one). The update can precede the cast's response
+        // packet, so the first update after the response is preferred, the lowest update
+        // during the cast is the fallback (an end-of-channel delta would hide the cost behind
+        // regen).
+        let (mana_spent, mana_source) =
+            measure_mana(mp_before, &attempt.mp_self, attempt.mp_after_response);
+        out.mana_spent = mana_spent;
+        out.mana_source = mana_source;
         out.target_hp_delta = match (hp_before, hp_after) {
             (Some(before), Some(after)) => Some(after - before),
             _ => None,
         };
+        out.damage_packets = attempt
+            .damage_hits
+            .iter()
+            .filter(|h| h.skill_id == plan.id && h.target_id == compare_obj)
+            .count() as u32;
+        out.miss_packets = attempt
+            .damage_hits
+            .iter()
+            .filter(|h| h.skill_id == plan.id && h.target_id == compare_obj && h.is_miss())
+            .count() as u32;
+        out.heal_packets = attempt
+            .heal_hits
+            .iter()
+            .filter(|h| h.skill_id == plan.id && h.target_id == compare_obj)
+            .count() as u32;
         out.messages = window_messages(&self.game, chat_start);
 
         // Classification.
@@ -2357,18 +3079,49 @@ impl<'a> Sweep<'a> {
             };
         }
 
-        // The immediate-recast cooldown probe. The player GCD is 1000 ms (`Skill.Cast`
-        // `default_gcd`), so a wait past it makes a `SkillResult 8` the skill's own cooldown.
+        // The cooldown probe: the recast goes out right after the cast ends. A skill cooldown
+        // at or below [`COOLDOWN_PROBE_MIN_MS`] is not probeable (the ~1 s GCD window leaves no
+        // room before the cooldown itself expires), and a `skill_req` buff the cast applied
+        // makes the recast answer `skill_req_fail` before the cooldown check — neither is a
+        // cooldown deviation.
         if out.result == SkillOutcome::Ok && plan.cooldown_time > 0 {
-            let _ = self.pump_for(Duration::from_millis(1250)).await;
-            match self
-                .probe_recast(plan, target, Duration::from_millis(2500))
-                .await
-            {
-                Ok(result) => out.recast_result = result,
-                Err(e) => tracing::debug!("recast probe of skill {} errored: {e:#}", plan.id),
+            if plan.cooldown_time <= COOLDOWN_PROBE_MIN_MS {
+                out.cooldown_probe = format!(
+                    "cooldown not probeable: cooldown {} ms <= {} ms (the GCD window is ~1 s)",
+                    plan.cooldown_time, COOLDOWN_PROBE_MIN_MS
+                );
+            } else {
+                match self
+                    .probe_recast(plan, target, Duration::from_millis(2500))
+                    .await
+                {
+                    Ok(Some(50))
+                        if !out.buffs_created_caster.is_empty()
+                            || !out.buffs_created_target.is_empty() =>
+                    {
+                        out.cooldown_probe = format!(
+                            "cooldown not probeable: recast answered SkillResult 50 \
+                             (skill_req_fail) with buffs from the first cast (caster {:?}, \
+                             target {:?})",
+                            out.buffs_created_caster, out.buffs_created_target
+                        );
+                    }
+                    Ok(result) => {
+                        out.recast_result = result;
+                        out.cooldown_probe = match result {
+                            Some(code) => format!(
+                                "probed: recast answered SkillResult {code} ({})",
+                                skill_result_name(code)
+                            ),
+                            None => "probed: recast got no answer".to_string(),
+                        };
+                    }
+                    Err(e) => {
+                        out.cooldown_probe = format!("probe failed: {e:#}");
+                    }
+                }
+                let _ = self.reset_cooldowns().await;
             }
-            let _ = self.reset_cooldowns().await;
         }
 
         self.compare(plan, &attempt, &mut out);
@@ -2394,6 +3147,7 @@ impl<'a> Sweep<'a> {
         if out.result != SkillOutcome::Ok {
             return;
         }
+        let target_self = out.target_kind == "self";
         // Cast timing.
         if plan.casting_time > 0 {
             if let Some(fired) = attempt.fired_ms {
@@ -2407,9 +3161,11 @@ impl<'a> Sweep<'a> {
                 }
             }
         }
+        // `SCSkillFired.computed_delay` is the wire's `delay / 10 + 10`, so it quantises to
+        // 10 ms; only a delay more than one step below `effect_delay` is a deviation.
         if plan.effect_delay > 0 {
             if let Some(delay) = attempt.fired_delay_ms {
-                if delay < plan.effect_delay {
+                if delay < plan.effect_delay - 10 {
                     out.mismatches.push(format!(
                         "SCSkillFired computed_delay {} ms < effect_delay {} ms",
                         delay, plan.effect_delay
@@ -2426,92 +3182,161 @@ impl<'a> Sweep<'a> {
                     ));
                 }
             }
-        } else if plan.casting_time > 0 || plan.effect_delay > 0 {
-            if let Some(ended) = attempt.ended_ms {
-                let expected = u64::from((plan.casting_time + plan.effect_delay).max(0) as u32);
-                let tolerance = 300 + expected / 5;
-                if ended.abs_diff(expected) > tolerance {
+        }
+        // End timing: the server ends a non-plot cast `computed_delay` (effect delay + the
+        // `combat_sync_time` of the fire animation, `Skill.ScheduleEffects`) after
+        // `SCSkillFired`, plus the channel for a channeled skill (`end_skill` after the
+        // channel). The gap is compared, not the absolute end. A plot skill ends on the plot
+        // timeline (`SCPlotEnded`), which the data does not describe in `skills`.
+        if plan.plot_id == 0 {
+            if let (Some(fired), Some(ended)) = (attempt.fired_ms, attempt.ended_ms) {
+                let gap = ended.saturating_sub(fired) as i64;
+                let effect = i64::from(attempt.fired_delay_ms.unwrap_or(0).max(0));
+                let channel = i64::from(plan.channeling_time.max(0));
+                let expected = effect + channel;
+                let tolerance = 150 + expected / 10;
+                if (gap - expected).abs() > tolerance {
                     out.mismatches.push(format!(
-                        "cast+effect_delay {} ms vs ended after {} ms",
-                        expected, ended
+                        "ended {} ms after SCSkillFired vs computed_delay {} ms + channel {} ms",
+                        gap, effect, channel
                     ));
                 }
             }
         }
         // Mana.
         if let Some(spent) = out.mana_spent {
-            let expected = mana_cost_expected(plan, self.state.raised_level as i32);
+            let expected = expected_mana_cost(plan, self.state.raised_level as i32);
             let tolerance = 5.max(expected / 5);
             if (spent - expected).abs() > tolerance {
                 out.mismatches.push(format!(
-                    "mana cost {} vs observed MP loss {}",
-                    expected, spent
+                    "mana cost {} vs observed MP loss {} ({})",
+                    expected, spent, out.mana_source
                 ));
             }
         }
-        // Buffs.
-        let expected_buffs = plan.effects.expected_buffs();
+        // Buffs: only rows the server would run are demanded. The level filter ran at load; a
+        // tag / chance / weight gated row, a row whose relation excludes the actual target and
+        // a plot-dependent row whose event the plot never reached are notes, not mismatches.
         let applied: HashSet<u32> = out
             .buffs_created_caster
             .iter()
             .chain(out.buffs_created_target.iter())
             .copied()
             .collect();
-        // `skill_effects` lists every buff row of the skill: level-tier variants (e.g. 402 / 403 /
-        // 404) and chance or condition-gated rows apply one at a time, so a side is only a
-        // mismatch when none of its expected buffs showed up.
-        for (side, buffs) in [
-            ("caster", &plan.effects.buff_caster),
-            ("target", &plan.effects.buff_target),
-        ] {
-            let wanted: Vec<u32> = expected_buffs
+        for row in plan.effects.buff_rows_for(target_self) {
+            let side = if row.is_target_side() {
+                "target"
+            } else {
+                "caster"
+            };
+            let applied_here = applied.contains(&row.buff_id);
+            if row.unconditional(target_self) {
+                if !applied_here {
+                    out.mismatches.push(format!(
+                        "expected {side} buff {} was not applied during the cast",
+                        row.buff_id
+                    ));
+                }
+                continue;
+            }
+            if applied_here {
+                continue;
+            }
+            let plot_reached = row
+                .plot_events
                 .iter()
-                .copied()
-                .filter(|b| buffs.contains(b))
-                .collect();
-            if !wanted.is_empty() && wanted.iter().all(|b| !applied.contains(b)) {
+                .any(|event| out.plot_event_ids.contains(event));
+            if plan.plot_only && !row.plot_events.is_empty() && plot_reached {
                 out.mismatches.push(format!(
-                    "none of the expected {side} buffs {wanted:?} was applied during the cast"
+                    "the plot reached buff {}'s event(s) {:?} but the {side} buff was not applied",
+                    row.buff_id, row.plot_events
+                ));
+            } else {
+                out.notes.push(format!(
+                    "{side} buff {} not applied ({})",
+                    row.buff_id,
+                    row.gate_note()
                 ));
             }
         }
         // Damage / heal rows vs the compare unit's HP delta.
-        let damage_rows = plan
-            .effects
-            .damage_rows
+        let all_damage: Vec<&DamageRow> = plan.effects.damage_rows_for(target_self);
+        let damage_rows: Vec<&DamageRow> = all_damage
             .iter()
+            .copied()
             .filter(|r| r.damage_type != 5)
+            .collect();
+        let heal_rows: Vec<&HealRow> = plan.effects.heal_rows_for(target_self);
+        let heal_damage: Vec<&DamageRow> = all_damage
+            .iter()
+            .copied()
+            .filter(|r| r.damage_type == 5)
+            .collect();
+        let damage_count = damage_rows.len();
+        let heal_count = heal_rows.len() + heal_damage.len();
+        let unconditional_damage = damage_rows
+            .iter()
+            .filter(|r| r.unconditional(target_self))
             .count();
-        let heal_rows = plan.effects.heal_rows.len()
-            + plan
-                .effects
-                .damage_rows
-                .iter()
-                .filter(|r| r.damage_type == 5)
-                .count();
-        if let Some(delta) = out.target_hp_delta {
-            if damage_rows > 0 && delta >= 0 {
-                out.mismatches.push(format!(
-                    "{} damage row(s) exist but target HP delta is {}",
-                    damage_rows, delta
+        let unconditional_heal = heal_rows
+            .iter()
+            .filter(|r| r.unconditional(target_self))
+            .count();
+        if plan.plot_only {
+            // A `plot_only` skill never runs `skill_effects`; the plot tree decides what
+            // happens, so its rows are not an expectation.
+            if (damage_count > 0 || heal_count > 0)
+                && (out.damage_packets == 0 || out.target_hp_delta == Some(0))
+            {
+                out.notes.push(format!(
+                    "plot_only skill: {} damage / {} heal skill_effects row(s) never run (the plot tree carries the effects)",
+                    damage_count, heal_count
                 ));
             }
-            // Plot skills run their effects from the plot tree (`plot_effects`), not `skill_effects`.
-            if damage_rows == 0 && heal_rows == 0 && delta != 0 && plan.plot_id == 0 {
-                out.mismatches.push(format!(
-                    "target HP delta {} without a damage_effects / heal_effects row",
-                    delta
+        } else if let Some(delta) = out.target_hp_delta {
+            if damage_count > 0 && delta >= 0 && out.damage_packets == 0 {
+                if unconditional_damage > 0 {
+                    out.mismatches.push(format!(
+                        "{unconditional_damage} unconditional damage row(s) exist but no SCUnitDamagedPacket and no target HP loss (delta {delta})"
+                    ));
+                } else {
+                    out.notes.push(format!(
+                        "{damage_count} damage row(s) exist, no damage packet and no HP loss (delta {delta}): the row's gates were not met"
+                    ));
+                }
+            }
+            if out.miss_packets > 0 && delta >= 0 {
+                out.notes.push(format!(
+                    "{} of {} damage packet(s) missed (hit type); target HP delta {}",
+                    out.miss_packets, out.damage_packets, delta
                 ));
             }
-            if heal_rows > 0 && delta < 0 {
+            if damage_count == 0 && heal_count == 0 && delta != 0 {
+                if applied.is_empty() && plan.effects.buff_rows_for(target_self).is_empty() {
+                    out.mismatches.push(format!(
+                        "target HP delta {} without a damage_effects / heal_effects row",
+                        delta
+                    ));
+                } else {
+                    out.notes.push(format!(
+                        "target HP delta {delta} attributed to the buff effects of the cast"
+                    ));
+                }
+            }
+            if heal_count > 0 && delta < 0 && unconditional_heal > 0 {
                 out.mismatches.push(format!(
-                    "{} heal row(s) exist but target HP delta is {}",
-                    heal_rows, delta
+                    "{unconditional_heal} unconditional heal row(s) exist but target HP delta is {delta}"
+                ));
+            }
+            if target_self && damage_count > 0 && delta == 0 && out.damage_packets > 0 {
+                out.notes.push(format!(
+                    "self-target damage suppressed by godmode ({} SCUnitDamagedPacket(s), HP delta 0)",
+                    out.damage_packets
                 ));
             }
         }
         // Channel ticks.
-        if plan.channeling_time > 0 && plan.channeling_tick > 0 && damage_rows > 0 {
+        if plan.channeling_time > 0 && plan.channeling_tick > 0 && damage_count > 0 {
             let ticks = i64::from((plan.channeling_time - 1) / plan.channeling_tick);
             out.ticks_expected = Some(ticks);
             if ticks >= 2 && attempt.points_compare == 0 {
@@ -2523,8 +3348,8 @@ impl<'a> Sweep<'a> {
         } else if plan.channeling_time > 0 && plan.channeling_tick > 0 {
             out.ticks_expected = Some(i64::from((plan.channeling_time - 1) / plan.channeling_tick));
         }
-        // Cooldown.
-        if plan.cooldown_time > 0 {
+        // Cooldown (only when the probe ran; see `run_one` for the skip rules).
+        if plan.cooldown_time > 0 && out.cooldown_probe.starts_with("probed") {
             match out.recast_result {
                 Some(8) => {}
                 Some(other) => out.mismatches.push(format!(
@@ -2541,8 +3366,8 @@ impl<'a> Sweep<'a> {
         }
         // Repeat effects (`skills.effect_repeat_count` / `effect_repeat_tick`).
         if plan.effect_repeat_count > 1 && plan.effect_repeat_tick > 0 {
-            out.mismatches.push(format!(
-                "note: effect_repeat_count {} x {} ms (tick packets are not separable on the wire)",
+            out.notes.push(format!(
+                "effect_repeat_count {} x {} ms (tick packets are not separable on the wire)",
                 plan.effect_repeat_count, plan.effect_repeat_tick
             ));
         }
@@ -2563,7 +3388,10 @@ impl<'a> Sweep<'a> {
             learned: false,
             gear_required: Vec::new(),
             gear_missing: Vec::new(),
+            weapon_used: 0,
+            dummy_distance_m: None,
             target: String::new(),
+            target_kind: String::new(),
             target_type: plan.target_type,
             target_type_name: plan.target_type_name().to_string(),
             casting_time_ms: plan.casting_time,
@@ -2571,11 +3399,12 @@ impl<'a> Sweep<'a> {
             channeling_tick_ms: plan.channeling_tick,
             effect_delay_ms: plan.effect_delay,
             cooldown_time_ms: plan.cooldown_time,
-            mana_cost_expected: mana_cost_expected(plan, self.state.raised_level as i32),
+            mana_cost_expected: expected_mana_cost(plan, self.state.raised_level as i32),
             expected_buffs: plan.effects.expected_buffs(),
             damage_rows: plan.effects.damage_rows.clone(),
             heal_rows: plan.effects.heal_rows.clone(),
-            plot_events: 0,
+            plot_id: plan.plot_id,
+            plot_only: plan.plot_only,
             ticks_expected: None,
             started_after_ms: None,
             fired_after_ms: None,
@@ -2589,16 +3418,24 @@ impl<'a> Sweep<'a> {
             stopped: false,
             server_errors: Vec::new(),
             mana_spent: None,
+            mana_source: String::new(),
             target_hp_delta: None,
+            damage_packets: 0,
+            miss_packets: 0,
+            heal_packets: 0,
             buffs_created_caster: Vec::new(),
             buffs_created_target: Vec::new(),
             buffs_removed_caster: Vec::new(),
             buffs_removed_target: Vec::new(),
+            plot_events: 0,
+            plot_event_ids: Vec::new(),
             unit_points_updates_caster: 0,
             unit_points_updates_target: 0,
             recast_result: None,
+            cooldown_probe: String::new(),
             messages: Vec::new(),
             mismatches: Vec::new(),
+            notes: Vec::new(),
             elapsed_ms: 0,
         }
     }
@@ -2631,6 +3468,14 @@ struct CastAttempt {
     points_compare: u32,
     buffs_created: Vec<(u32, u32)>,
     buffs_removed: Vec<(u32, u32)>,
+    /// The caster's `SCUnitPointsPacket.mp` values, in arrival order, during the cast.
+    mp_self: Vec<i32>,
+    /// The first `mp_self` value that arrived after the cast's first response packet.
+    mp_after_response: Option<i32>,
+    /// `SCPlotEventPacket.event_id`s of the cast.
+    plot_event_ids: Vec<u32>,
+    damage_hits: Vec<DamageHit>,
+    heal_hits: Vec<HealHit>,
 }
 
 // -------------------------------------------------------------------------------------------
@@ -2825,6 +3670,8 @@ pub async fn run(cfg: &BotConfig, opts: &RunOptions) -> anyhow::Result<RunReport
                     target_dead: false,
                     or_unit_reqs: false,
                     plot_id: 0,
+                    plot_only: false,
+                    plot_mana_cost: None,
                     effects: EffectSummary::default(),
                     reqs: Vec::new(),
                 },
@@ -2876,7 +3723,14 @@ mod tests {
             opcode: sc::SCPlotEventPacket,
             body: vec![7, 0, 1, 0, 0, 0, 0x9e, 0x2b, 0, 0],
         };
-        assert_eq!(parse_plot_event(&ev), Some((7, 11166)));
+        assert_eq!(
+            parse_plot_event(&ev),
+            Some(PlotEvent {
+                tl: 7,
+                event_id: 1,
+                skill_id: 11166
+            })
+        );
         for (op, f) in [
             (
                 sc::SCPlotEndedPacket,
@@ -2893,12 +3747,6 @@ mod tests {
             assert_eq!(f(&p), Some(9));
         }
         assert_eq!(parse_plot_ended(&ev), None);
-        let batch = Packet {
-            level: crate::game::LEVEL_COMPRESSED,
-            opcode: 2,
-            body: vec![0, 0, 0xae, 0, 7, 0, 1, 0, 0, 0, 0x9e, 0x2b, 0, 0],
-        };
-        assert_eq!(parse_plot_event(&batch), Some((7, 11166)));
     }
 
     #[test]
@@ -2978,6 +3826,8 @@ mod tests {
             target_dead: false,
             or_unit_reqs: false,
             plot_id: 0,
+            plot_only: false,
+            plot_mana_cost: None,
             effects: EffectSummary::default(),
             reqs: Vec::new(),
         };
@@ -3020,6 +3870,8 @@ mod tests {
             target_dead: false,
             or_unit_reqs: false,
             plot_id: 0,
+            plot_only: false,
+            plot_mana_cost: None,
             effects: EffectSummary::default(),
             reqs: Vec::new(),
         };
@@ -3041,29 +3893,195 @@ mod tests {
         assert_eq!(done.len(), 2);
     }
 
+    /// Opens the game's `compact.sqlite3` for the data-driven tests: `AAEMU_COMPACT_DB` first,
+    /// then the two default locations. A placeholder file (a fresh lane worktree has a 0-byte
+    /// `compact.sqlite3`) is skipped.
+    fn test_compact_db() -> Option<SkillDb> {
+        let candidates = [
+            std::env::var("AAEMU_COMPACT_DB").ok(),
+            Some(DEFAULT_COMPACT_DB.to_string()),
+            Some(DEFAULT_COMPACT_DB_FROM_RUST.to_string()),
+        ];
+        for candidate in candidates.into_iter().flatten() {
+            let path = PathBuf::from(&candidate);
+            let real = std::fs::metadata(&path)
+                .map(|m| m.len() > 1_000_000)
+                .unwrap_or(false);
+            if real {
+                return SkillDb::open(&path).ok();
+            }
+        }
+        None
+    }
+
     #[test]
     fn skill_db_loads_the_running_game_data_when_present() {
-        let path = Path::new(DEFAULT_COMPACT_DB);
-        if !path.exists() {
+        let Some(db) = test_compact_db() else {
             return;
-        }
-        let db = SkillDb::open(path).unwrap();
+        };
         let all = db.all();
         assert_eq!(all.len(), 170);
         // Ability 1 (Fight) has 21 skills; 10644 (Ground Smash) wants a mainhand weapon.
         assert_eq!(db.by_ability(1).len(), 21);
         let smash = db.skill(10644).unwrap();
-        assert_eq!(smash.target_type, 4);
+        assert_eq!(smash.target_type, 0);
+        assert_eq!(smash.target_relation, 4);
         assert!(smash.reqs.iter().any(|r| r.kind == 8 && r.value1 == 15));
-        assert!(smash.effects.damage_rows.iter().any(|r| r.damage_type != 0));
-        // 10375 (Impenetrable Defense, Defense) applies the six BuffEffect rows to the caster.
+        assert!(smash.effects.buff_rows.iter().any(|r| r.buff_id == 240));
+        // 19050 (a hostile strike) carries a damage row.
+        assert!(db
+            .skill(19050)
+            .unwrap()
+            .effects
+            .damage_rows
+            .iter()
+            .any(|r| r.damage_type != 0));
+        // 10375 (Impenetrable Defense, Defense) applies the level-50..99 BuffEffect rows to the
+        // caster; the level-30..39 rows (buff 328) are filtered out at caster level 55.
         let defense = db.skill(10375).unwrap();
-        assert!(defense.effects.expected_buffs().contains(&328));
+        let expected = defense.effects.expected_buffs();
+        assert!(expected.contains(&330) && expected.contains(&2208));
+        assert!(!expected.contains(&328));
         // 10488 (Play Dead) is a 60 s channel.
         assert_eq!(db.skill(10488).unwrap().channeling_time, 60_000);
         // 10546 (Resurrect) needs a dead target.
         assert!(db.skill(10546).unwrap().target_dead);
         // 10694 (Glide) is the one toggle skill of the ten abilities.
         assert_eq!(db.skill(10694).unwrap().toggle_buff_id, 181);
+    }
+
+    #[test]
+    fn plot_only_skills_take_the_plots_mana_cost() {
+        let Some(db) = test_compact_db() else {
+            return;
+        };
+        // 10644 (Ground Smash): plot_only, plot 649's ManaCost is 530 / 6.35 = 83.46 -> 83 (the
+        // server truncates per `ManaCost` apply). The `skills` formula would be 411.
+        let smash = db.skill(10644).unwrap();
+        assert!(smash.plot_only);
+        assert_eq!(smash.plot_mana_cost, Some(83));
+        assert_eq!(expected_mana_cost(smash, 55), 83);
+        assert_ne!(mana_cost_expected(smash, 55), 83);
+        // 14810: plot 1078, ManaCost = 24 + 0.
+        assert_eq!(expected_mana_cost(db.skill(14810).unwrap(), 55), 24);
+        // A non-plot skill keeps the `Skill.ManaCost` formula.
+        let basic = db.skill(10372).unwrap();
+        assert!(!basic.plot_only);
+        assert_eq!(expected_mana_cost(basic, 55), mana_cost_expected(basic, 55));
+    }
+
+    #[test]
+    fn buff_rows_carry_their_gates() {
+        let Some(db) = test_compact_db() else {
+            return;
+        };
+        // 18131's buff 3842 row is `end_level 1`: the level filter drops it for a level-55
+        // caster (`Skill.Cast` skips rows outside the caster's level range).
+        let skill = db.skill(18131).unwrap();
+        assert!(skill.effects.buff_rows.iter().all(|r| r.buff_id != 3842));
+        // 23587's buff 7543 row needs the source buff tag 1476.
+        let skill = db.skill(23587).unwrap();
+        let row = skill
+            .effects
+            .buff_rows
+            .iter()
+            .find(|r| r.buff_id == 7543)
+            .unwrap();
+        assert_eq!(row.source_buff_tag_id, 1476);
+        assert!(!row.unconditional(true));
+        // 11973's buff 821 row needs the target buff tag 155.
+        let skill = db.skill(11973).unwrap();
+        let row = skill
+            .effects
+            .buff_rows
+            .iter()
+            .find(|r| r.buff_id == 821)
+            .unwrap();
+        assert_eq!(row.target_buff_tag_id, 155);
+        assert!(!row.unconditional(true));
+        // 18955's buff rows are hostile-only: they cannot apply to the caster itself.
+        let skill = db.skill(18955).unwrap();
+        let row = skill
+            .effects
+            .buff_rows
+            .iter()
+            .find(|r| r.buff_id == 4210)
+            .unwrap();
+        assert!(!row.applies_to(true));
+        // 10710 (plot_only, plot 580): the plot carries buff 5932 (as a new plot-dependent row);
+        // the `skill_effects` buff 797 row (source tag 108) is not in the plot tree.
+        let skill = db.skill(10710).unwrap();
+        assert!(skill.plot_only);
+        let plot_buff = skill
+            .effects
+            .buff_rows
+            .iter()
+            .find(|r| r.buff_id == 5932)
+            .unwrap();
+        assert_eq!(plot_buff.plot_events, vec![7533]);
+        assert!(!plot_buff.unconditional(true));
+        let tag_buff = skill
+            .effects
+            .buff_rows
+            .iter()
+            .find(|r| r.buff_id == 797)
+            .unwrap();
+        assert_eq!(tag_buff.source_buff_tag_id, 108);
+        assert!(tag_buff.plot_events.is_empty());
+    }
+
+    #[test]
+    fn mana_is_measured_at_the_cost_update() {
+        // Instant cast: the cost update arrives before the response, so the lowest update of
+        // the cast is the measurement.
+        assert_eq!(
+            measure_mana(Some(100), &[80, 95], None),
+            (Some(20), "lowest update during the cast".to_string())
+        );
+        // Plot / channel: the first update after the response.
+        assert_eq!(
+            measure_mana(Some(100), &[100, 90, 95], Some(90)),
+            (Some(10), "first update after the cast response".to_string())
+        );
+        // No update at all: nothing to compare.
+        assert_eq!(measure_mana(Some(100), &[], None).0, None);
+    }
+
+    #[test]
+    fn buff_row_gates_follow_the_target_relation() {
+        let mut row = BuffRow {
+            buff_id: 1,
+            application_method: 1,
+            friendly: true,
+            non_friendly: false,
+            source_buff_tag_id: 0,
+            target_buff_tag_id: 0,
+            source_no_buff_tag_id: 0,
+            target_no_buff_tag_id: 0,
+            chance: 100,
+            weight: 0,
+            plot_events: Vec::new(),
+        };
+        // A friendly-only target row applies on the bot, not on the hostile dummy.
+        assert!(row.applies_to(true));
+        assert!(!row.applies_to(false));
+        assert!(row.unconditional(true));
+        assert!(!row.unconditional(false));
+        // A both-ways row applies to either.
+        row.friendly = true;
+        row.non_friendly = true;
+        assert!(row.unconditional(true));
+        assert!(row.unconditional(false));
+        // A hostile-only row cannot apply to the caster (source side is always the caster).
+        row.application_method = 3;
+        row.friendly = false;
+        assert!(!row.applies_to(true));
+        // A tag-gated row is never demanded unconditionally.
+        row.application_method = 1;
+        row.friendly = true;
+        row.non_friendly = true;
+        row.target_buff_tag_id = 155;
+        assert!(!row.unconditional(true));
+        assert!(row.gate_note().contains("155"));
     }
 }
