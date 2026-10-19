@@ -126,6 +126,98 @@ async fn dispatch(
     to_axum(on_received_request(&server, request).await)
 }
 
+/// Outcome of the web API token check.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TokenCheck {
+    /// Public route, or the token matched.
+    Allowed,
+    /// No token is configured: the route is refused.
+    NotConfigured,
+    /// Missing or wrong token.
+    Denied,
+}
+
+/// Routes reachable without the token (read-only server status).
+fn is_public_path(path: &str) -> bool {
+    path == "/status"
+}
+
+/// Constant-time byte comparison (the length is not secret).
+fn token_eq(a: &str, b: &str) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    a.bytes().zip(b.bytes()).fold(0u8, |d, (x, y)| d | (x ^ y)) == 0
+}
+
+/// Deviation from the C# server (no authentication at all): every route except `/status`
+/// needs the configured token as `Authorization: Bearer <token>` or `X-Api-Key: <token>`.
+pub fn check_token(
+    path: &str,
+    authorization: Option<&str>,
+    api_key: Option<&str>,
+    token: &str,
+) -> TokenCheck {
+    if is_public_path(path) {
+        return TokenCheck::Allowed;
+    }
+    if token.is_empty() {
+        return TokenCheck::NotConfigured;
+    }
+    let bearer = authorization.and_then(|a| {
+        a.get(..7)
+            .filter(|p| p.eq_ignore_ascii_case("bearer "))
+            .map(|_| a[7..].trim())
+    });
+    if [bearer, api_key.map(str::trim)]
+        .into_iter()
+        .flatten()
+        .any(|given| token_eq(given, token))
+    {
+        TokenCheck::Allowed
+    } else {
+        TokenCheck::Denied
+    }
+}
+
+async fn require_token(
+    State(token): State<Arc<str>>,
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    let check = {
+        let header = |name: &str| req.headers().get(name).and_then(|v| v.to_str().ok());
+        check_token(
+            req.uri().path(),
+            header("authorization"),
+            header("x-api-key"),
+            &token,
+        )
+    };
+    let (status, message) = match check {
+        TokenCheck::Allowed => return next.run(req).await,
+        TokenCheck::NotConfigured => (
+            403,
+            "WebApiNetwork.Token is not configured; this route is disabled",
+        ),
+        TokenCheck::Denied => (401, "Unauthorized"),
+    };
+    let mut response = HttpResponse::new(status);
+    response.set_body(message);
+    to_axum(response)
+}
+
+/// The axum router: the dispatcher behind the token check.
+pub fn router(api: Arc<WebApiServer>, token: &str) -> axum::Router {
+    axum::Router::new()
+        .fallback(dispatch)
+        .with_state(api)
+        .layer(axum::middleware::from_fn_with_state(
+            Arc::<str>::from(token),
+            require_token,
+        ))
+}
+
 /// `WebApiService` (`IHostedService`): starts / stops the HTTP listener.
 #[derive(Default)]
 pub struct WebApiService {
@@ -142,7 +234,10 @@ impl std::fmt::Debug for WebApiService {
 
 /// `config.Host.Equals("*") ? IPAddress.Any : IPAddress.Parse(config.Host)`.
 pub fn bind_address(config: &NetworkConfig) -> anyhow::Result<SocketAddr> {
-    let ip: IpAddr = if config.host == "*" {
+    // Rust deviation: an empty host binds loopback (the C# default was any address).
+    let ip: IpAddr = if config.host.is_empty() {
+        IpAddr::V4(Ipv4Addr::LOCALHOST)
+    } else if config.host == "*" {
         IpAddr::V4(Ipv4Addr::UNSPECIFIED)
     } else {
         config
@@ -172,7 +267,18 @@ impl WebApiService {
         };
         let token = CancellationToken::new();
         let stop = token.clone();
-        let app = axum::Router::new().fallback(dispatch).with_state(api);
+        if config.token.is_empty() {
+            tracing::warn!(
+                "WebApiNetwork.Token is not set: every web API route except /status is refused"
+            );
+        }
+        if !addr.ip().is_loopback() {
+            tracing::warn!(
+                "WebApi listens on {} (not loopback); the token is sent in clear text",
+                config.host
+            );
+        }
+        let app = router(api, &config.token);
         let task = tokio::spawn(async move {
             let serve = axum::serve(listener, app).with_graceful_shutdown(async move {
                 stop.cancelled().await;

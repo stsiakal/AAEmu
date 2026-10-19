@@ -258,6 +258,7 @@ Economy hooks (`server.systems.housing.hooks`): installed by `economy::bridges::
 | `QuestManager.Load` (contexts, components, base acts, all 64 `quest_act_*` detail tables, supplies, item / NPC groups, `UpdateQuestComponentActs`) | `systems/quests/data.rs`, `templates.rs` | done | Same table order (act order inside a component = objective indices), first-base-act linking, tutorial category skipped. Validated against compact.sqlite3 (`real_compact_db_quest_tables`: 4775 quests, 17720 components, 19047 acts, per-type counts). Exhaustive record accounting and outstanding gameplay failures: `Docs/wiki/Quest-Audit.md`, `rust/tools/quest_audit/audit.py`; port coverage does not certify every quest as playable. |
 | `Models/Game/Quests` (`Quest`, `NewQuestCode`, `QuestStep`, `QuestComponent`, `QuestAct`, all `Acts/*` + `UnusedActs/*`) | `state.rs`, `engine.rs`, `acts.rs` | done | Live quests on `Character::quest_state` (handles + act paths instead of object references); `c.quests` rows re-derived after every operation. Step machine, objective status / percent, rewards, drop / cleanup, event subscriptions in invocation-list order (`-=` removes the last occurrence). |
 | `CharacterQuests` (AddQuest*, DropQuest, completed flags, reset / daily reset, LetItDone, item destroy, `GetActiveActsWithUseItem`, Load) | `engine.rs`, `events.rs` | done | Save = existing `Character.Save` rows. |
+| `Quest.DistributeRewards` exp / copper pool | `engine.rs` (`distribute_rewards`), `acts.rs` (`SupplyExp` / `SupplyCopper`) | deviation | **Deviation:** a Reward component `QuestActSupplyExp` / `QuestActSupplyCopper` act replaces the level-based `quest_supplies` exp / copper instead of being added on top of it (the C# added both). 1.2 client oracle + 2014 data, details in the deviations list. |
 | `QuestManagerEvents` + other C# entry points (OnItemUse, OnKill, cinema, mate level) | `events.rs` | done | Public event API; nested calls from hooks are queued. |
 | `QuestManager` evaluation queue / timers / daily reset task | `mod.rs` | done | `QuestManagerRunQueueTask` as a 1 ms tokio task; timers as tokio tasks; daily reset at 00:00 UTC. |
 | `UnitRequirementsGameData` (`CanComponentRun`, `CanTriggerSphere`) + `UnitReqs.Validate` | `unit_reqs.rs` | done | `ReqSubject` / `ReqEnv` traits (owner = locked character, target = snapshot). `CanUseSkill` is the skills subsystem's (can reuse `validate`). |
@@ -835,6 +836,22 @@ is no longer mirrored (see "Known deviations", dead NPC returned and healed).
   switch): they abort the event invocation list / sphere tick. Out-of-range objective reads
   that would throw in RunAct / score sums read 0 (no 1.2 quest triggers them).
 * systems::quests: the daily reset runs at 00:00 UTC (C# cron in server local time).
+* systems::quests (reward exp / copper pool, 1.2 oracle): the Reward component's own
+  `QuestActSupplyExp` / `QuestActSupplyCopper` act **replaces** the level-based
+  `quest_supplies` value instead of being added on top of it (`engine.rs`
+  `distribute_rewards`). The act itself still runs immediately (`acts.rs` `SupplyExp` /
+  `SupplyCopper`): the immediate exp keeps its unscaled grant, and the let_it_done reward
+  ratio keeps scaling whatever lands in the reward pool — the copper act pool when the
+  copper act is present, the level supply otherwise — as before. The C# added both
+  (`Quest.cs` `DistributeRewards`). Sources: the 1.2 client's
+  `X2Quest.GetQuestContextRewardExp` / copper lookup (`x2game` FUN_394a1370 / FUN_394a0fd0)
+  scans the Reward component for act type 0x18 / 0x19 and falls back to `quest_supplies`
+  only when the act is absent, and the Oct–Dec 2014 archeagedatabase.net export shows
+  exactly the act value on 103 quests and the level supply on 897 others (quest 2785
+  level 35: 8,400, not 8,400 + 3,224; quest 1213: 110, not 110 + 420). Open suspect: the
+  client decompile also scales the level supply by `quest_contexts.degree` (x0.5..x1.5),
+  but the 2014 site shows unscaled values for all 221 non-degree-3 quests; degree scaling
+  is not implemented until that conflict is resolved.
 * systems::quests: the October 2026 quest audit corrects timer event isolation, explicit NPC
   reporting, per-quest NPC/doodad reporting, doodad reward selection/finalization, and OR
   requirement evaluation. Timed saved deadlines, aggro credit, CheckSphere, and authored
@@ -1492,6 +1509,21 @@ The 1.2 C# never answered `CSRankCharacterPacket` (empty, log-only) and has no `
 - **Period close.** A once-a-minute task (first tick at start-up) mails every closed, unpaid period: place -> `rank_scope_links` band -> `rank_rewards` item (count and grade as authored) as a `SYS_EXPRESS` letter (offline winners included), then `SCRankRewardMailPacket` to online winners. The period is marked paid before the letters are built, inside the economy operation gate; a crash between the letters and the next save can therefore lose (never duplicate) the mark. `rank_rewards.weeks` (how long the reward lasts) and appellation rewards (none authored) are not applied.
 - **Not sent.** `SCRankAlarmPacket` (0x205): only the fishing contest authors alarms (`start_time_alarm` -5 / `end_time_alarm` 0 and message strings), that board ended in 2014 and the packet's `kind` / `rank_alarm_kind` values are unresolved, so no trigger is invented.
 
+### Hosting hardening (Rust only, RPA-19/20)
+
+Security deviations from the C# servers (no retail oracle needed; the C# had none of these):
+
+- Login internal port: only `GLRegisterGameServer` with the shared `SecretKey` is honoured from
+  an unregistered peer; any other packet closes the connection. A bad secret closes it after the
+  error reply. Unregistered peers: 10 s handshake window, at most 8 at once. `GLPlayerEnter` and
+  `GLPlayerReconnect` are bound to the registered game server (or its mirrors). Shipped
+  `InternalNetwork.Host` is `127.0.0.1`, `AutoAccount` is `false` (`cargo xtask dev` sets it).
+- Web API: every route except `/status` needs `WebApiNetwork.Token` (`Authorization: Bearer` or
+  `X-Api-Key`); no token configured = those routes answer 403. An empty host binds loopback.
+- Level-0 commands are pinned to `help`, `online`, `soloparty`, `dungeon`, `collectdominion`,
+  `joinsiege`, `leavesiege` by a shipped-config test (`/fly`, `/teleport` are 50).
+- Compose: MySQL published on `127.0.0.1` only, Adminer behind `--profile tools`.
+
 ### Startup warnings (Rust only)
 
 - **`FamilyIdManager` and family 0.** `characters.family` is 0 for a character without a family. The C# `FamilyIdManager` passes `Exclude = []`, so every start logged "Object ID 0 in DB is less than 1". `IdManagerSpec` now carries the C# `_exclude` list (checked before the first-id warning, as in `IdManager.Initialize`) and `FAMILY_ID` excludes 0. Every other manager keeps an empty list and still warns about ids below its first id.
@@ -1620,8 +1652,6 @@ and in NPC wandering / buff remaining times.
 * `CharacterManager.Load`: `character_supplies` creates `_abilityItems` entries that
   `character_equip_packs` then `Add`s again (throws for an ability with both).
 * `FriendMananger.Load` keys all friends by `id` although the table key is `(id, owner)`.
-* `ItemManager.LoadUserItems`: a stacked item (merged into an existing stack while loading) keeps
-  its own DB row, which is loaded again next time.
 * `SCUnitStatePacket.Write` adds buffs 8000011 / 8000012 to the character ("Wrong place"), and an
   exception inside any `Write` (e.g. no `VisualOptions.Stp`) truncates the packet, because
   `PacketStream.Write(PacketMarshaler)` swallows it. Both reproduced.
@@ -1632,25 +1662,46 @@ and in NPC wandering / buff remaining times.
 * `systems::npcs`: the "spawn all" schedule check is inverted; `DoRandomSpawn` leaks an obj id and spawns twice; a doodad despawn may release its obj id twice; gimmick spawn rotations are not converted from degrees; scheduled doodad spawns stack cron tasks; the player-in-radius check scans every player; NPCs are not despawned when players leave.
 * `systems::npcs`: dated game schedules compare `StartTime` / `EndTime` (usually 0) instead of the start / end hours (a one-day event counts as ended at 00:00); the cron builder tests the captured day of week instead of its parameter, and undated schedules produce day / month 0 (rejected by the cron parser); `VendorExist` reads the `id` column; deleting a portal sends no packet; `NotifySubZone` re-sends the portal book once per recall portal of the sub zone; the exit portal's yaw is the book rotation in degrees.
 * `systems::npcs`: corrected coin double credit and failed trade-pack acquisition; `BuyFish` uses the checked economy sale. Phase operations reserve live object identity, honor interaction counts, enter functions on time-of-day changes, and cancel superseded timers. Saves/deletes use a FIFO writer drained by the save lifecycle; partial interaction counts use the doodad-interactions SQL update. Scheduled spawns recreate deleted doodads, deduplicate cron callbacks, and retain original world identity. Logic links/families route matching true/false pulses with per-object state and cycle guards; client-created wires require ownership and reach. Immediate gates are supported; delay descriptors 2/3 need reference behavior. `SpawnGimmick` creates the authored object with offsets/faction/kinematic motion; `SpawnMgmt` requires explicit authored `SpawnGroupId` membership. Prefab flow graphs are client-owned. `CheckGrowth` still runs funcs with `nextPhase = 0`; child metadata templates (e.g. `DoodadFuncBuyFishItem`) remain in the phase dictionary.
-* systems::economy: `AddOrMoveExistingItem` merging an item from another container into a stack
-  removes it from the source without releasing it (the DB row stays); it is kept as a loose item.
-  The mail branch of the acquire / consume events reads `item.SlotType` after it was overwritten,
-  so moving an item into a mail container raises no quest event.
-* systems::economy: `SplitOrMoveItemEx` gives the split item owner 0, assigns the *source* owner to
-  the moved source item and passes `fromSlot` as the previous slot of the target item's leave
-  event; `CSWithdrawMoneyPacket` reports `ItemTaskType.DepositMoney`; `ExpandSlot` never sends its
-  `MoneyChange` task.
 * systems::economy: the two "is not welcome in this container" rejections of `SplitOrMoveItemEx`
   (an item the target / source container refuses, e.g. armor sent to a wrong equipment slot) are
   logged at `warn` (C#: `Error`) and include the whole request (from / to type, slot, item ids,
   owner). The client is the source of the request and `CanAccept` already warns with the cause.
 * systems::economy: `BindType.HasFlag(...)` on the plain `ItemBindType` enum is a bit test
   (`BindOnUnpack` matches 4..7, `BindOnEquip` matches 3 and 7); mirrored.
+* systems::economy: loot dice are won by the highest roll (the C# sorted the rolled values
+  ascending and took the first positive one, so the lowest bidder won). The 1.2 client presents
+  the roll as an item bid and only reports values: `ui_texts` 4305 `loot_dice_roll` = "Roll"
+  (입찰), 4318 `loot_dice_title` = "Item Bid" (아이템 입찰), 2412 `msg_dice_value` = "$1 rolled a
+  $2 on the dice. (1-$3)"; its `loot_dice.alb` bytecode only calls `X2Loot.DoDiceAction` /
+  `RequestNextDiceItem`, so the winner is the server's decision and a bid over 1-100 is won by
+  the highest value.
+* systems::economy: `CSWithdrawMoneyPacket` reports `ItemTaskType.WithdrawMoney` (84; the C#
+  handler called `ChangeMoney` without a task type, so it defaulted to `DepositMoney`) and
+  `ExpandSlot` sends its `MoneyChange(-price)` task with the expansion (the C# collected the task
+  into a list it never sent, in both the economy and the services copies).
+* systems::economy: taking loot releases the item id it allocates for the grant checks once
+  `AcquireDefaultItem` created its own item (the C# leaked one id per non-coin, non-trade-pack
+  loot grant).
+* systems::economy: `AddOrMoveExistingItem` releases a stack that is merged into another
+  container's stack (the C# removed it from the source without releasing it and kept it as a
+  loose item, so its row stayed and a mail attachment merged into a bag stack was saved as an
+  orphan `slot_type Mail` row; the same fix as the fork's C# `47a3a9e77`). The mail acquired /
+  consumed event uses the slot type captured before the move (the C# read the overwritten
+  `item.SlotType`, so moving an item into a mail container raised no quest event).
+* systems::economy: `ItemProc` `ignoreRoll` never procs; `HDps` uses the magic DPS grade value;
+  fish conversion only uses the first pack.
+* systems::economy: `ItemManager.LoadUserItems` deletes the row of a loaded stack that was merged
+  into an existing stack (the C# kept it, so the same units were loaded and merged again on every
+  start; related to upstream issue #1189, "sold items reappear after relogin"). The id is freed
+  and the row is removed by the next save.
+* systems::economy: `SplitOrMoveItemEx` gives every item the owner of the container that holds it
+  after the operation (a split item belongs to the target container, and a moved / swapped item
+  to its new holder; the C# assigned the *source* owner to the moved source item and the
+  *target* owner wherever the target ended up) and the target item's leave event names its
+  previous target slot (`toSlot`; the C# passed `fromSlot`). The split item used to keep owner 0
+  and could be lost on relogin (upstream issue #412).
 * systems::economy: `ExpandExpert` adds the vocation cost; craft / backpack / weapon booleans
   read as numbers are false for `'t'` texts; `Specialty.VendorExist` reads the `id` column.
-* systems::economy: loot dice pick the lowest positive roll; looting allocates a new item id that
-  is never released; `ItemProc` `ignoreRoll` never procs; `HDps` uses the magic DPS grade value;
-  fish conversion only uses the first pack.
 * systems::economy: mail — opening a mailbox re-sends a "got mail" per unread received
   mail; FinalizeForBidFail still uses AucOffFail; receiver lookup is case-sensitive.
   The old return failure and sender unread-count bug are corrected below.
@@ -1757,8 +1808,8 @@ and in NPC wandering / buff remaining times.
   clamped value carries over to the next recipient); `AuctionController.SearchAuctionItems`
   throws on lots without bidder when filtering by `BidderName`; `CommandController` passes the
   raw regex group (query string included) as the command name.
-* systems::services: `Inventory.ExpandSlot` deducts the price without sending the `MoneyChange` item
-  task; `CharacterActability.ExpandExpert` adds the vocation cost (`ChangeGamePoints(Vocation,
+* systems::services: `CharacterActability.ExpandExpert` adds the vocation cost
+  (`ChangeGamePoints(Vocation,
   +LifePoint)`) instead of paying it; `CSBroadcastVisualOptionPacket` keeps the members the new
   flag does not mention.
 * systems::services: `CSExpressEmotionPacket` passes the animation id as the emotion id to

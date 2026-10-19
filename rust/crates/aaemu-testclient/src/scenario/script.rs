@@ -20,6 +20,13 @@
 //! item <template> <count>            `/item add self` and remember the stack id
 //! icast <skill> <item template> <npc template|self>
 //!                                    cast from the remembered item stack
+//! bag                                list the bag contents (slot / id / template / count)
+//! split <from slot> <to slot> <count>
+//!                                    `CSSplitBagItemPacket` for the bag item in `from slot`
+//! swap <from slot> <to slot>         `CSSwapItemsPacket` between two bag slots
+//! deposit|withdraw <amount>          `CSDepositMoneyPacket` / `CSWithdrawMoneyPacket`
+//! expand [slot type]                 `CSExpandSlotsPacket` (default 2 = inventory)
+//! sell <slot> <npc template>         sell the bag item to the nearest merchant NPC
 //! others                             the other player units in sight (the first is the trade peer)
 //! tstart                             CSCanStartTrade (the invitation) to the trade peer
 //! taccept                            wait (60 s) for SCCanStartTrade and answer CSStartTrade
@@ -438,6 +445,125 @@ pub(super) async fn run(
                     show_quiet(game, 0.8).await?;
                 }
                 println!("    mate walked to {at:?}");
+            }
+            "bag" => {
+                let mut slots: Vec<(u8, crate::inventory::ItemInfo)> = game
+                    .state
+                    .bag
+                    .iter()
+                    .map(|(slot, item)| (*slot, *item))
+                    .collect();
+                slots.sort_by_key(|(slot, _)| *slot);
+                println!(
+                    "    {} bag item(s), {} slot(s):",
+                    slots.len(),
+                    game.state.bag_slots
+                );
+                for (slot, item) in slots {
+                    println!(
+                        "    slot {slot} id {} tpl {} count {}",
+                        item.item_id, item.template_id, item.count
+                    );
+                }
+            }
+            "split" => {
+                let from_slot: u8 = num(&parts, 0)?;
+                let to_slot: u8 = num(&parts, 1)?;
+                let count: i32 = num(&parts, 2)?;
+                let item = game
+                    .state
+                    .bag
+                    .get(&from_slot)
+                    .copied()
+                    .with_context(|| format!("no bag item in slot {from_slot}"))?;
+                let mut b = aaemu_commons::PacketStream::new();
+                b.write_u64(item.item_id)
+                    .write_u64(0)
+                    .write_u8(2)
+                    .write_u8(from_slot)
+                    .write_u8(2)
+                    .write_u8(to_slot)
+                    .write_i32(count);
+                game.send_cs(aaemu_game::opcodes::cs::CSSplitBagItemPacket, b.as_bytes())
+                    .await?;
+                let got = game
+                    .drain(Duration::from_millis(1200), Duration::from_secs(6))
+                    .await?;
+                show(&got);
+            }
+            "swap" => {
+                let from_slot: u8 = num(&parts, 0)?;
+                let to_slot: u8 = num(&parts, 1)?;
+                let from = game
+                    .state
+                    .bag
+                    .get(&from_slot)
+                    .copied()
+                    .with_context(|| format!("no bag item in slot {from_slot}"))?;
+                let to_item = game.state.bag.get(&to_slot).map_or(0, |i| i.item_id);
+                game.swap_items(from.item_id, from_slot, to_item, to_slot)
+                    .await?;
+                let got = game
+                    .drain(Duration::from_millis(1200), Duration::from_secs(6))
+                    .await?;
+                show(&got);
+            }
+            "deposit" | "withdraw" => {
+                let amount: i32 = num(&parts, 0)?;
+                let mut b = aaemu_commons::PacketStream::new();
+                b.write_i32(amount).write_i32(0);
+                let opcode = if cmd == "deposit" {
+                    aaemu_game::opcodes::cs::CSDepositMoneyPacket
+                } else {
+                    aaemu_game::opcodes::cs::CSWithdrawMoneyPacket
+                };
+                game.send_cs(opcode, b.as_bytes()).await?;
+                let got = game
+                    .drain(Duration::from_millis(1200), Duration::from_secs(6))
+                    .await?;
+                show(&got);
+            }
+            "expand" => {
+                let slot_type: i32 = parts.first().and_then(|x| x.parse().ok()).unwrap_or(2);
+                let mut b = aaemu_commons::PacketStream::new();
+                b.write_i32(slot_type).write_bool(false);
+                game.send_cs(aaemu_game::opcodes::cs::CSExpandSlotsPacket, b.as_bytes())
+                    .await?;
+                let got = game
+                    .drain(Duration::from_millis(1200), Duration::from_secs(6))
+                    .await?;
+                show(&got);
+                println!("    bag slots now {}", game.state.bag_slots);
+            }
+            "sell" => {
+                let slot: u8 = num(&parts, 0)?;
+                let tpl: u32 = num(&parts, 1)?;
+                let npc = nearest(game, tpl).with_context(|| format!("NPC {tpl} not in sight"))?;
+                let item = game
+                    .state
+                    .bag
+                    .get(&slot)
+                    .copied()
+                    .with_context(|| format!("no bag item in slot {slot}"))?;
+                clock += 1500;
+                game.move_to((npc.pos.0 + 1.0, npc.pos.1, npc.pos.2), clock)
+                    .await?;
+                game.drain(Duration::from_millis(300), Duration::from_secs(1))
+                    .await?;
+                let mut b = aaemu_commons::PacketStream::new();
+                b.write_bc(npc.obj_id)
+                    .write_bc(0)
+                    .write_u8(1)
+                    .write_u8(2)
+                    .write_u8(slot)
+                    .write_u64(item.item_id)
+                    .write_u32(0);
+                game.send_cs(aaemu_game::opcodes::cs::CSSellItemsPacket, b.as_bytes())
+                    .await?;
+                let got = game
+                    .drain(Duration::from_millis(1500), Duration::from_secs(8))
+                    .await?;
+                show(&got);
             }
             "others" => {
                 let me = game.state.self_obj;

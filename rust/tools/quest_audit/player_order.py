@@ -105,6 +105,11 @@ server uses are modelled:
   (complete) or ``1.2`` (overachieved), chosen with
   ``--let-it-done-ratio`` (default ``complete``).  The result is banker's
   rounded (``round_even`` in the engine).
+* a ``QuestActSupplyExp`` act **on the Reward component** replaces that level
+  supply (1.2 client oracle: the client scans the Reward component and falls
+  back to ``quest_supplies`` only when the act is absent; see ``PORTING.md``).
+  The act XP stays immediate and unscaled, so such a quest gains its act XP
+  only.
 
 Both gains pass through ``World.ExpRate`` in
 ``systems/skills/progress.rs::add_exp_locked`` (positive XP is multiplied and
@@ -409,6 +414,24 @@ def load_quest_xp(conn):
     return {qid: sum(values) for qid, values in load_quest_act_exps(conn).items()}
 
 
+def load_reward_act_quests(conn, act_type):
+    """Quest ids with an act of ``act_type`` on a Reward component.
+
+    A Reward component (``component_kind_id`` 8) act ``QuestActSupplyExp`` /
+    ``QuestActSupplyCopper`` replaces the level based ``quest_supplies`` value
+    instead of adding to it (1.2 client oracle, see ``PORTING.md``).
+    """
+    components = {row["id"]: row for row in quest_plan.rows(conn, "quest_components")}
+    quests = set()
+    for act in quest_plan.rows(conn, "quest_acts"):
+        if act.get("act_detail_type") != act_type:
+            continue
+        component = components.get(act.get("quest_component_id"))
+        if component and component.get("component_kind_id") == 8:
+            quests.add(component["quest_context_id"])
+    return quests
+
+
 def load_quest_supplies(conn):
     """``level -> {"exp", "copper"}`` from ``quest_supplies`` (`data.rs:273`)."""
     supplies = {}
@@ -684,6 +707,7 @@ class Orderer:
         self.act_exps = load_quest_act_exps(conn)
         self.supplies = load_quest_supplies(conn)
         self.reward_quests = load_reward_quests(conn)
+        self.reward_exp_quests = load_reward_act_quests(conn, "QuestActSupplyExp")
         self.zones, self.groups = load_zone_data(conn)
         self.zone_cache = {}
 
@@ -885,9 +909,13 @@ class Orderer:
 
         * ``QuestActSupplyExp`` acts run immediately (`acts.rs` `SupplyExp`);
           each gain takes ``World.ExpRate`` and truncates (`as i32`).
-        * The level-based ``quest_supplies`` row is added on the Reward step,
-          scaled by the reward ratio and banker's-rounded (`engine.rs`
-          `distribute_rewards`), then takes ``World.ExpRate`` and truncates.
+        * A ``QuestActSupplyExp`` act on the Reward component **replaces** the
+          level-based ``quest_supplies`` row (1.2 client oracle, see
+          ``PORTING.md``): the act XP is granted and no supply XP is added.
+        * Without that act, the level-based ``quest_supplies`` row is added on
+          the Reward step, scaled by the reward ratio and banker's-rounded
+          (`engine.rs` `distribute_rewards`), then takes ``World.ExpRate`` and
+          truncates.
         """
         qid = ctx["id"]
         act_xp = sum(int(value * self.exp_rate)
@@ -895,7 +923,8 @@ class Orderer:
         level = level_of(ctx)
         supply_xp = 0
         ratio = 1.0
-        if level and qid in self.reward_quests:
+        replaces_supply = qid in self.reward_exp_quests
+        if level and qid in self.reward_quests and not replaces_supply:
             supply = self.supplies.get(level)
             if supply:
                 if quest_plan.truth(ctx.get("let_it_done")):
@@ -1203,10 +1232,11 @@ class Orderer:
             "start_level": self.start_level,
             "max_level": self.max_level,
             "assumptions": [
-                "Quest XP = immediate QuestActSupplyExp acts (not ratio-scaled) "
-                "+ the level-based quest_supplies row scaled by the reward "
-                "ratio and banker's-rounded; thresholds come from "
-                "levels.total_exp.",
+                "Quest XP = immediate QuestActSupplyExp acts (not ratio-scaled); "
+                "a QuestActSupplyExp act on the Reward component replaces the "
+                "level-based quest_supplies row, otherwise that row is scaled "
+                "by the reward ratio and banker's-rounded; thresholds come "
+                "from levels.total_exp.",
                 f"let_it_done ratio assumption: {self.let_it_done_ratio} "
                 "(0.3 early / 1.0 complete / 1.2 overachieved); plain quests "
                 "use 1.0.",
