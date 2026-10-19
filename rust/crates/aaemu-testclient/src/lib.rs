@@ -16,6 +16,7 @@ pub mod questrun;
 pub mod record;
 pub mod scenario;
 pub mod skillrun;
+pub mod social;
 pub mod stream;
 pub mod valuecheck;
 pub mod walk;

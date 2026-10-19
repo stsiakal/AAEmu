@@ -689,6 +689,10 @@ pub struct GameState {
     /// Absolute labor power from the select snapshot, kept current by
     /// `SCCharacterLaborPowerChangedPacket` (the live durability checks read it after a relog).
     pub labor: Option<i32>,
+    /// Duel / team / faction / loot-dice / zone-state notifications in arrival order
+    /// ([`crate::social`]), so the two-bot script commands can wait for an event a `drain`
+    /// already read.
+    pub social: Vec<crate::social::SocialEvent>,
     pub disconnected: bool,
 }
 
@@ -989,6 +993,9 @@ impl GameClient {
 /// Applies one received packet to `state` (a free function so tests can drive the parsing
 /// without a connection).
 pub(crate) fn observe_into(st: &mut GameState, p: &Packet) -> anyhow::Result<()> {
+    if let Some(ev) = crate::social::decode(p) {
+        st.social.push(ev);
+    }
     let mut s = p.stream();
     if p.is(LEVEL_PROXY, pp::ChangeStatePacket) {
         st.last_change_state = Some(s.read_i32()?);
