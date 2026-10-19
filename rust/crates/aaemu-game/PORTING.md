@@ -933,6 +933,23 @@ is no longer mirrored (see "Known deviations", dead NPC returned and healed).
   fabricated. Historical RedeemBuff/ExplodeBuff formulas, recipe/account/cinema placeholders,
   several other special actions and generic Anchor/Flowgraph still need authoritative behavior
   or protocol evidence. Passing covered tests does not certify every data-defined skill.
+* systems::skills (2026-10-19, `check_obstacle`): the C# tree had no obstacle check at all
+  (`git show a2ab80abd^:AAEmu.Game/Models/Game/Skills/Skill.cs`), but the 1.2 skills data has
+  the retail column. The 10.x client's `X2::Unit::ValidateLocation` is the oracle
+  (`x2game.dll` 0x3923C370; local `ClientRaycaster` vtable 0x39E1C060, ray callback
+  0x3923C5A0 -> `sub_3923B970`): the ray runs at **unit position height** (Unit offsets
+  120/128/136) from the source to the **target's surface** (target position minus its radius,
+  offset 144; doodad/object targets use the aim point, 0x39B8E360 / 0x39B8F850), skips the
+  source and target physics objects, and uses objtypes **7** (static + sleeping rigid + rigid),
+  plus terrain (0x100) only when `check_terrain` is set (0x107), with ray flags **0x2048F**
+  (colltype-any, collision class 2, ignore back faces, pierceability 15). The former Rust ray
+  was 1 m above both ends, used static+terrain (0x101) and the default collision class; it
+  rejected ground-anchored doodad interactions through nearby doodad colliders (entrance doodad
+  template 3674 / skill 10999, exit 4535 / skill 16560) and re-checked at fire time with the same
+  wrong rule. `check_terrain` is now enforced. Rejections are logged at `warn` with character,
+  skill, target and result key. Live: the entrance 10999 and instance exit 16560 casts succeed
+  with no `skill_obstacle` rejections (2026-10-19 lane run); the flow test in
+  `cast_validation_tests.rs` proves a class-2 static wall still blocks.
 * systems::skills: the labor margin requirement uses `GetMaxLabor(Payment.PremiumState)`; every
   connection has the default C# `AccountPayment` (premium until 2030), so the cap is 5000.
 * systems::skills: `Character.DoDie` is complete (exp / durability loss, escalating respawn timer,

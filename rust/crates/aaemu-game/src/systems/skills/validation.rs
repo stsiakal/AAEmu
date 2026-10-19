@@ -11,6 +11,18 @@ fn fail(key: &str) -> Result<(), (u8, u32)> {
     Err((skill_result_for_key(key), 0))
 }
 
+/// The physics collider kind of a world object (matches the keys `ai::collision` registers).
+fn collision_kind(obj: &WorldObject) -> crate::systems::ai::collision::world::ObjKind {
+    use crate::systems::ai::collision::world::ObjKind;
+    match obj {
+        WorldObject::Doodad(_) => ObjKind::Doodad,
+        WorldObject::House(_) => ObjKind::House,
+        WorldObject::Slave(_) | WorldObject::Shipyard(_) => ObjKind::Ship,
+        WorldObject::Gimmick(_) => ObjKind::Gimmick,
+        _ => ObjKind::Unit,
+    }
+}
+
 fn in_water(server: &GameServer, target: &Target) -> bool {
     if target
         .as_obj()
@@ -202,37 +214,52 @@ pub(super) fn check(
         return fail("skill_too_far_range");
     }
     if template.check_obstacle && !target.as_obj().is_some_and(|o| o.same(caster)) {
-        // Doodad transforms anchor crops/furniture at the ground. A ray ending at that
-        // anchor hits the terrain itself and prevents normal harvesting and recovery.
-        let end_z = if target
-            .as_obj()
-            .is_some_and(|o| o.is_unit() || o.as_doodad().is_some())
-        {
-            destination.z + 1.0
+        // `X2::Unit::ValidateLocation` (10.x client 0x3923C370 -> 0x39B8E360/0x39B8F850):
+        // the ray runs at unit position height from the source to the target's surface
+        // (target position minus its radius). `check_terrain` adds terrain to the
+        // static/sleeping/rigid mask; the source and target colliders are skipped. The
+        // ray's collision class is 2 (0x2048F), not the default "everything" class.
+        let mut to = [destination.x, destination.y, destination.z];
+        let dx = destination.x - source.x;
+        let dy = destination.y - source.y;
+        let dz = destination.z - source.z;
+        let len = (dx * dx + dy * dy + dz * dz).sqrt();
+        let target_radius = super::geometry::model_size(server, target);
+        if len > 0.0 && target_radius > 0.0 {
+            to[0] -= dx / len * target_radius;
+            to[1] -= dy / len * target_radius;
+            to[2] -= dz / len * target_radius;
+        }
+        let mut ignored = vec![(collision_kind(caster), caster.obj_id())];
+        if let Some(obj) = target.as_obj() {
+            ignored.push((collision_kind(obj), obj.obj_id()));
+        }
+        let objtypes = if template.check_terrain {
+            crate::systems::ai::collision::query::mask::SOLID_TERRAIN
         } else {
-            destination.z
+            crate::systems::ai::collision::query::mask::SOLID
         };
-        let ignored: Vec<_> = target
-            .as_obj()
-            .and_then(WorldObject::as_doodad)
-            .map(|d| {
-                (
-                    crate::systems::ai::collision::world::ObjKind::Doodad,
-                    d.obj_id,
-                )
-            })
-            .into_iter()
-            .collect();
         if let Some(Some(hit)) = crate::systems::ai::collision::raycast_ignoring_objects(
             server,
             caster.transform().instance_id,
-            [source.x, source.y, source.z + 1.0],
-            [destination.x, destination.y, end_z],
-            crate::systems::ai::collision::query::mask::STATIC_TERRAIN,
-            crate::systems::ai::collision::query::ray_flags::DEFAULT,
+            [source.x, source.y, source.z],
+            to,
+            objtypes,
+            crate::systems::ai::collision::query::ray_flags::SKILL_OBSTACLE,
             &ignored,
         ) {
-            tracing::debug!(skill = template.id, from = ?source, to = ?destination, ?hit, "Skill line of sight blocked");
+            let character = caster.with_base_unit(|b| b.name().to_string());
+            tracing::warn!(
+                character = %character,
+                skill = template.id,
+                target = target.obj_id(),
+                result_key = "skill_obstacle",
+                check_terrain = template.check_terrain,
+                from = ?source,
+                to = ?to,
+                ?hit,
+                "Skill line of sight blocked"
+            );
             return fail("skill_obstacle");
         }
     }
