@@ -10,6 +10,7 @@ pub mod game;
 pub mod inventory;
 pub mod load;
 pub mod login;
+pub mod player;
 pub mod quest;
 pub mod questrun;
 pub mod record;

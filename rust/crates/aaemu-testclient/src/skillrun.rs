@@ -1612,12 +1612,12 @@ struct PlotEvent {
 /// `SCUnitDamagedPacket` -> the hit facts (the sweep sees misses too, which `SCUnitPoints` alone
 /// cannot tell from "no damage at all").
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct DamageHit {
+pub(crate) struct DamageHit {
     skill_id: u32,
-    caster_obj: u32,
+    pub(crate) caster_obj: u32,
     caster_id: u32,
-    target_id: u32,
-    damage: i32,
+    pub(crate) target_id: u32,
+    pub(crate) damage: i32,
     /// `SkillHitType` (the wire packs it into the low byte of `288 | hitType`).
     hit_type: u8,
 }
@@ -1768,7 +1768,7 @@ fn parse_plot_event(p: &Packet) -> Option<PlotEvent> {
 }
 
 /// `SCUnitDamagedPacket`: the cast action identifies the skill (or plot) that ran the damage.
-fn parse_unit_damaged(p: &Packet) -> Option<DamageHit> {
+pub(crate) fn parse_unit_damaged(p: &Packet) -> Option<DamageHit> {
     if !p.is_sc(sc::SCUnitDamagedPacket) {
         return None;
     }

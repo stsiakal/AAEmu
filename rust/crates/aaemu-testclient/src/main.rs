@@ -17,6 +17,10 @@
 //!                         [--race name|id] [--gender m|f] [--compact-db path]
 //!                         [--force-blocked|--no-force]
 //!                         [--out results.jsonl] [--step-timeout-secs N] [--summary]
+//!                         [--player [--to-level N] [--resume] [--state state.json]
+//!                          [--select-character NAME] [--stop-on any|story]
+//!                          [--max-runtime-secs N] [--game-pak path] [--app-path path]
+//!                          [--summary-file summary.md]]
 //! aaemu-testclient craft  [--config F] [--login H:P] (--craft ID...|--sample N|--all)
 //!                         [--limit N] [--new-character] [--race name|id] [--gender m|f]
 //!                         [--compact-db path] [--out results.jsonl] [--step-timeout-secs N]
@@ -327,7 +331,60 @@ async fn main() -> anyhow::Result<()> {
                 force_blocked: args.has("force-blocked")
                     || (args.has("all-ok") && !args.has("no-force")),
                 combat_skill: cfg.skill_id,
+                player: None,
             };
+            let mut opts = opts;
+            if args.has("player") {
+                let out = args.get("out").map(PathBuf::from);
+                let base = out
+                    .clone()
+                    .unwrap_or_else(|| PathBuf::from("player-run.jsonl"));
+                let state_path = args
+                    .get("state")
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| base.with_extension("state.json"));
+                let mut blocker_path = base.clone();
+                blocker_path.set_extension("blocker.json");
+                let summary_path = args
+                    .get("summary-file")
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| base.with_file_name("summary.md"));
+                opts.player = Some(aaemu_testclient::player::PlayerOptions {
+                    to_level: args.get("to-level").unwrap_or("15").parse()?,
+                    game_pak: args
+                        .get("game-pak")
+                        .map(PathBuf::from)
+                        .or_else(|| std::env::var_os("AAEMU_GAME_PAK").map(PathBuf::from))
+                        .unwrap_or_else(|| PathBuf::from("D:/AA1.2/game_pak")),
+                    app_path: args.get("app-path").map(PathBuf::from).unwrap_or_else(|| {
+                        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../aaemu-game/app")
+                    }),
+                    state_path,
+                    resume: args.has("resume"),
+                    stop_on: match args.get("stop-on").unwrap_or("story") {
+                        "any" => aaemu_testclient::player::StopOn::Any,
+                        "story" => aaemu_testclient::player::StopOn::Story,
+                        other => bail!("--stop-on needs any|story, not {other:?}"),
+                    },
+                    max_runtime: Duration::from_secs(
+                        args.get("max-runtime-secs").unwrap_or("7200").parse()?,
+                    ),
+                    plan_path: plan_path.clone(),
+                    blocker_path,
+                    character: args
+                        .get("select-character")
+                        .map(PathBuf::from)
+                        .map(|p| p.to_string_lossy().into_owned()),
+                    strict_order: args.has("strict-order"),
+                    out,
+                    summary_path,
+                });
+                // A walking bot needs far more than the GM runner's per-step budget.
+                if args.get("step-timeout-secs").is_none() {
+                    opts.step_timeout = Duration::from_secs(600);
+                }
+            }
+            let opts = opts;
             let report = questrun::run(&cfg, &plan, &requested, &opts).await?;
             let completed = report
                 .results
@@ -501,7 +558,12 @@ async fn main() -> anyhow::Result<()> {
                     print!("{}", terrain.slope_profile(from, target)?);
                 }
                 if args.has("plan-route") {
-                    match terrain.route(from, target, &config) {
+                    match terrain
+                        .route_with_source(from, target, &config)
+                        .map(|(route, source)| {
+                            println!("route source: {source}");
+                            route
+                        }) {
                         Some(route) => {
                             let route_m: f32 = std::iter::once(from)
                                 .chain(route.iter().copied())

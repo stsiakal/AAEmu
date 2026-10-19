@@ -477,7 +477,7 @@ pub struct LootTook {
 
 /// Milliseconds since the first value-check observation of this process. The kill-XP pairing
 /// needs the `SCExpChangedPacket` the server sends immediately before the death packet.
-fn observation_ms() -> u64 {
+pub(crate) fn observation_ms() -> u64 {
     static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
     START
         .get_or_init(std::time::Instant::now)
@@ -689,6 +689,11 @@ pub struct GameState {
     /// Absolute labor power from the select snapshot, kept current by
     /// `SCCharacterLaborPowerChangedPacket` (the live durability checks read it after a relog).
     pub labor: Option<i32>,
+    /// Attackers of our own character: object id -> `observation_ms` of the last
+    /// `SCUnitDamagedPacket` that hit us (player mode answers the ones still alive).
+    pub attackers: HashMap<u32, u64>,
+    /// The selected character's active abilities (`SCCharacterStatePacket`; None until read).
+    pub abilities: Option<[u8; 3]>,
     pub disconnected: bool,
 }
 
@@ -738,6 +743,9 @@ pub struct GameClient {
     /// Inner packets of the last `CompressedGamePackets` batch, decoded once and returned one
     /// by one (the sweep needs every packet of a batch, not only the batch itself).
     pending: VecDeque<Packet>,
+    /// Player mode: walking instead of `/move`, real fights instead of `/kill`, GM shortcuts
+    /// counted (see `crate::player`). `None` for every other runner.
+    pub player: Option<Box<crate::player::PlayerMode>>,
 }
 
 impl GameClient {
@@ -780,6 +788,7 @@ impl GameClient {
             last_ping: None,
             started: Instant::now(),
             pending: VecDeque::new(),
+            player: None,
         })
     }
 
@@ -1092,6 +1101,10 @@ pub(crate) fn observe_into(st: &mut GameState, p: &Packet) -> anyhow::Result<()>
         let hp = s.read_i32()? / 100;
         let mp = s.read_i32()? / 100;
         st.unit_points.insert(obj_id, (hp, mp));
+        // A revived unit (the own character after the resurrection) is alive again.
+        if hp > 0 {
+            st.dead_units.remove(&obj_id);
+        }
     } else if p.is_sc(sc::SCUnitDeathPacket) {
         let obj_id = s.read_bc()?;
         st.dead_units.insert(obj_id);
@@ -1137,6 +1150,12 @@ pub(crate) fn observe_into(st: &mut GameState, p: &Packet) -> anyhow::Result<()>
         if obj_id == st.self_obj {
             if let Some(info) = st.self_info.as_mut() {
                 info.level = level;
+            }
+        }
+    } else if p.is_sc(sc::SCUnitDamagedPacket) {
+        if let Some(hit) = crate::skillrun::parse_unit_damaged(p) {
+            if hit.target_id == st.self_obj && hit.caster_obj != st.self_obj && hit.damage > 0 {
+                st.attackers.insert(hit.caster_obj, observation_ms());
             }
         }
     } else if p.is_sc(sc::SCLootItemTookPacket) {
@@ -1294,6 +1313,9 @@ pub(crate) fn observe_into(st: &mut GameState, p: &Packet) -> anyhow::Result<()>
         s.read_i32()?; // rwd
         st.self_info = Some(read_character_head(&mut s)?);
         st.labor = crate::craftrun::parse_state_labor(&p.body).ok();
+        st.abilities = crate::craftrun::parse_state_equipment(&p.body)
+            .ok()
+            .map(|(_, _, abilities)| abilities);
         // A character-select snapshot starts here; the quest / completed packets follow.
         st.quests.clear();
         st.completed_quests.clear();
@@ -1560,7 +1582,19 @@ impl GameClient {
     /// client handshake (`CSTeleportEndedPacket` clears the server's disabled-set-position flag
     /// and re-sends the visible objects; the landing move then applies the new position), so
     /// the region-change `SCUnitsRemovedPacket`s that follow prune the stale units.
+    ///
+    /// In player mode (`self.player`) this walks to the position instead (see
+    /// `crate::player::walk_to`); the GM teleport stays available as a counted fallback
+    /// ([`GameClient::teleport_gm`]).
     pub async fn teleport(&mut self, pos: (f32, f32, f32)) -> anyhow::Result<()> {
+        if self.player.is_some() {
+            return crate::player::walk_to(self, pos).await;
+        }
+        self.teleport_gm(pos).await
+    }
+
+    /// The `/move` GM teleport itself.
+    pub async fn teleport_gm(&mut self, pos: (f32, f32, f32)) -> anyhow::Result<()> {
         let command = format!("{COMMAND_PREFIX}move {} {} {}", pos.0, pos.1, pos.2);
         self.chat(chat_type::WHITE, &command).await?;
         self.wait_sc(sc::SCTeleportUnitPacket).await?;
@@ -1584,6 +1618,10 @@ impl GameClient {
     /// `SCChatMessagePacket` texts received within `wait` (the command replies are system
     /// chat).
     pub async fn gm(&mut self, command: &str, wait: Duration) -> anyhow::Result<Vec<String>> {
+        // Player mode: forbidden commands are refused, every other one is a counted fallback.
+        if let Some(player) = self.player.as_mut() {
+            player.gm_command(command)?;
+        }
         let text = if command.starts_with(COMMAND_PREFIX) {
             command.to_string()
         } else {

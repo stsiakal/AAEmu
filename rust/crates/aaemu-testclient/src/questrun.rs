@@ -671,6 +671,8 @@ pub struct RunOptions {
     pub force_blocked: bool,
     /// Combat skill used for `QuestActObjAggro` (the bot's own attack, `BotConfig.skill_id`).
     pub combat_skill: u32,
+    /// Player mode (`--player`): walking, real fights, counted GM fallbacks, checkpoint.
+    pub player: Option<crate::player::PlayerOptions>,
 }
 
 /// The character a run drives: recorded in every result line and used for the requirement
@@ -1472,6 +1474,14 @@ pub async fn run(
             .map(|i| Selected::Plan(&plan[i]))
             .chain(unknown.into_iter().map(Selected::Unknown))
             .collect()
+    } else if opts.player.is_some() {
+        // Player mode: the plan is already in play order (`player_order.py`); a blocked or
+        // auxiliary record cannot be played and is left out.
+        ordering_cyclic = 0;
+        plan.iter()
+            .filter(|q| q.status != "blocked" && q.status != "auxiliary")
+            .map(Selected::Plan)
+            .collect()
     } else if opts.all_ok {
         // Prerequisites first: stable topological order over the plan order.
         let selected_indices: Vec<usize> = plan
@@ -1487,7 +1497,7 @@ pub async fn run(
             .map(|i| Selected::Plan(&plan[i]))
             .collect()
     } else {
-        bail!("the quest command needs --quest <id> (repeatable) and/or --all-ok");
+        bail!("the quest command needs --quest <id> (repeatable), --all-ok or --player");
     };
     if ordering_cyclic > 0 {
         tracing::warn!("prerequisite cycles: kept plan order for {ordering_cyclic} quest(s)");
@@ -1524,8 +1534,15 @@ pub async fn run(
         None => None,
     };
     let (mut game, character) = setup_world(cfg, &rec, opts).await?;
-    // God mode keeps the bot alive while it stands in the spawns; `/level` is issued per quest.
-    game.gm("godmode true", Duration::from_secs(1)).await.ok();
+    let mut player_run = match &opts.player {
+        Some(popts) => Some(start_player_mode(&mut game, &character, opts, popts)?),
+        None => {
+            // God mode keeps the bot alive while it stands in the spawns; `/level` is issued
+            // per quest.
+            game.gm("godmode true", Duration::from_secs(1)).await.ok();
+            None
+        }
+    };
 
     let mut raised_level = u32::from(character.start_level).max(1);
     let mut world_tracker = WorldTracker::default();
@@ -1542,7 +1559,44 @@ pub async fn run(
         ordering_cyclic,
         ..RunReport::default()
     };
-    for target in selected {
+    let mut stop_reason = String::from("the plan is exhausted");
+    let mut remaining: Vec<Selected> = selected;
+    while !remaining.is_empty() {
+        // Player mode walks: among the next quests of the play order take the one that is
+        // playable now and closest to where the character stands (`--strict-order` keeps the
+        // plan order); prerequisite chains and level demands keep the story in order.
+        let pick = match &opts.player {
+            Some(popts) if !popts.strict_order => nearest_playable(&game, &remaining),
+            _ => 0,
+        };
+        let target = remaining.remove(pick);
+        if let (Some(popts), Some(pr)) = (&opts.player, player_run.as_mut()) {
+            let level = game.state.self_info.as_ref().map_or(1, |i| i.level);
+            if level >= popts.to_level {
+                stop_reason = format!("reached level {level} (target {})", popts.to_level);
+                break;
+            }
+            if pr.started.elapsed() >= popts.max_runtime {
+                stop_reason = format!("the {:?} time limit", popts.max_runtime);
+                break;
+            }
+            if let Selected::Plan(quest) = &target {
+                // `--resume`: quests the server reports completed are skipped silently.
+                let repeatable = compact_db
+                    .as_ref()
+                    .and_then(|db| db.quest_repeatable(quest.quest_id).ok().flatten())
+                    .unwrap_or(false);
+                if game.state.completed_quests.contains(&quest.quest_id) && !repeatable {
+                    continue;
+                }
+            }
+            if crate::player::revive_if_dead(&mut game)
+                .await
+                .unwrap_or(false)
+            {
+                tracing::warn!("the character was dead between quests; revived");
+            }
+        }
         if game.state.disconnected {
             // The connection dropped between two quests: still write the error line.
             let result = match target {
@@ -1637,14 +1691,291 @@ pub async fn run(
             (result.blocker.class.clone(), class_reason),
         );
         emit(&mut writer, &result)?;
+        let player_stop = match (&opts.player, player_run.as_ref()) {
+            (Some(popts), Some(pr)) => {
+                let source = pr
+                    .sources
+                    .get(&result.quest_id)
+                    .map_or("story", String::as_str)
+                    .to_string();
+                finish_player_quest(&mut game, popts, &result, &source)
+            }
+            _ => None,
+        };
         report.results.push(result);
         if game.state.disconnected {
             report.aborted = true;
             break;
         }
+        if let Some(reason) = player_stop {
+            stop_reason = reason;
+            break;
+        }
+    }
+    if let (Some(popts), Some(pr)) = (&opts.player, player_run.as_ref()) {
+        if report.aborted {
+            stop_reason = "the connection was lost".into();
+        }
+        finish_player_run(&mut game, popts, pr, &stop_reason);
     }
     leave(&mut game).await;
     Ok(report)
+}
+
+/// How many upcoming quests of the play order [`nearest_playable`] looks at.
+const PICK_WINDOW: usize = 16;
+/// The head of the play order keeps this much of a lead over a nearer quest.
+const HEAD_BONUS_M: f32 = 300.0;
+
+/// The first location a quest sends the player to (its accept NPC).
+fn quest_start_location(quest: &PlanQuest) -> Option<(f32, f32, f32)> {
+    quest
+        .steps
+        .iter()
+        .flat_map(|s| s.locations.iter())
+        .find(|l| l.world.eq_ignore_ascii_case(MAIN_WORLD))
+        .map(|l| (l.x, l.y, l.z))
+}
+
+/// Index into `remaining` of the quest to play next in player mode.
+fn nearest_playable(game: &GameClient, remaining: &[Selected<'_>]) -> usize {
+    let level = u32::from(game.state.self_info.as_ref().map_or(1, |i| i.level));
+    let me = game.state.self_pos;
+    let mut best: Option<(usize, f32)> = None;
+    for (i, target) in remaining.iter().take(PICK_WINDOW).enumerate() {
+        let Selected::Plan(quest) = target else {
+            continue;
+        };
+        if game.state.completed_quests.contains(&quest.quest_id) {
+            return i;
+        }
+        if level_demand(quest) > level
+            || !missing_prerequisites(&quest.prereq_quests, &game.state.completed_quests).is_empty()
+        {
+            continue;
+        }
+        let Some(at) = quest_start_location(quest) else {
+            continue;
+        };
+        let mut d = dist2(me, at).sqrt();
+        if i == 0 {
+            d = (d - HEAD_BONUS_M).max(0.0);
+        }
+        if best.is_none_or(|(_, bd)| d < bd) {
+            best = Some((i, d));
+        }
+    }
+    best.map_or(0, |(i, _)| i)
+}
+
+/// Player-mode run state that lives next to the loop of [`run`].
+struct PlayerRun {
+    started: Instant,
+    /// Quest id -> plan `source` (`prologue` / `story` / `side`).
+    sources: HashMap<u32, String>,
+}
+
+/// Loads the walking terrain / navmesh and the combat session, resumes or starts the
+/// checkpoint and hangs the [`crate::player::PlayerMode`] on the client.
+fn start_player_mode(
+    game: &mut GameClient,
+    character: &RunCharacter,
+    opts: &RunOptions,
+    popts: &crate::player::PlayerOptions,
+) -> anyhow::Result<PlayerRun> {
+    use crate::player::{Checkpoint, PlayerMode};
+    let terrain = std::sync::Arc::new(crate::walk::Terrain::load(
+        &popts.game_pak,
+        &popts.app_path,
+    )?);
+    let mut cfg = crate::walk::WalkerConfig::default();
+    if let Some(db) = opts.compact_db.as_deref() {
+        if let Ok(speed) = crate::walk::base_run_speed(db, character.race) {
+            cfg.speed_mps = speed;
+        }
+    }
+    let abilities = game.state.abilities.unwrap_or([1, 11, 11]);
+    let fight_opts = crate::fight::RunOptions {
+        compact_db: opts.compact_db.clone(),
+        resurrect_in_place: true,
+        combat_timeout: Duration::from_secs(90),
+        ..crate::fight::RunOptions::default()
+    };
+    let combat = crate::fight::Session::new(opts.compact_db.as_deref(), abilities, fight_opts)?;
+    let hash = crate::player::plan_hash(&popts.plan_path)?;
+    let mut checkpoint = match (popts.resume, Checkpoint::load(&popts.state_path)?) {
+        (true, Some(cp)) => {
+            anyhow::ensure!(
+                cp.character == character.name,
+                "the checkpoint {} belongs to character {:?}, but {:?} was selected \
+                 (--select-character)",
+                popts.state_path.display(),
+                cp.character,
+                character.name
+            );
+            if cp.plan_sha256 != hash {
+                tracing::warn!("the plan changed since the checkpoint was written");
+            }
+            tracing::info!(
+                "resuming {}: quest {:?} step {:?}, {} completed in earlier runs",
+                cp.character,
+                cp.current_quest,
+                cp.current_step,
+                cp.completed.len()
+            );
+            cp
+        }
+        (true, None) => bail!(
+            "--resume: no checkpoint at {} (start without --resume first)",
+            popts.state_path.display()
+        ),
+        (false, _) => Checkpoint::fresh(&popts.plan_path),
+    };
+    checkpoint.character = character.name.clone();
+    checkpoint.race = character.race;
+    checkpoint.gender = character.gender;
+    checkpoint.plan_path = popts.plan_path.display().to_string();
+    checkpoint.plan_sha256 = hash;
+    checkpoint.runs += 1;
+    checkpoint.blocker = None;
+    // Quest sources come from the plan file next to the typed quests.
+    let mut sources = HashMap::new();
+    if let Ok(text) = std::fs::read_to_string(&popts.plan_path) {
+        let text = text.strip_prefix('\u{feff}').unwrap_or(&text);
+        if let Ok(values) = serde_json::from_str::<Vec<serde_json::Value>>(text) {
+            for v in values {
+                if let (Some(id), Some(src)) = (
+                    v.get("quest_id").and_then(|x| x.as_u64()),
+                    v.get("source").and_then(|x| x.as_str()),
+                ) {
+                    sources.insert(id as u32, src.to_string());
+                }
+            }
+        }
+    }
+    let mut pm = PlayerMode::new(
+        terrain,
+        cfg,
+        combat,
+        checkpoint,
+        popts.state_path.clone(),
+        std::env::var_os("AAEMU_WALK_TRACE").is_some(),
+    );
+    pm.save();
+    game.player = Some(Box::new(pm));
+    Ok(PlayerRun {
+        started: Instant::now(),
+        sources,
+    })
+}
+
+/// After a quest of a player run: counts its fallbacks, updates and saves the checkpoint and
+/// writes the blocker report. Returns the stop reason when the run must end.
+fn finish_player_quest(
+    game: &mut GameClient,
+    popts: &crate::player::PlayerOptions,
+    result: &QuestResult,
+    source: &str,
+) -> Option<String> {
+    use crate::player::{RunBlocker, StopOn};
+    let level = game.state.self_info.as_ref().map_or(1, |i| i.level);
+    let pos = game.state.self_pos;
+    let pm = game.player.as_mut()?;
+    for f in &result.fallbacks {
+        pm.checkpoint.count_fallback(f);
+    }
+    pm.checkpoint.level = level;
+    let ok = matches!(
+        result.result,
+        QuestOutcome::Completed | QuestOutcome::AlreadyCompleted
+    );
+    if result.result == QuestOutcome::Completed {
+        pm.checkpoint.completed.push(result.quest_id);
+    }
+    pm.checkpoint.current_quest = None;
+    pm.checkpoint.current_step = None;
+    let mut stop = None;
+    if !ok {
+        let blocker = RunBlocker {
+            quest_id: result.quest_id,
+            name: result.name.clone(),
+            result: result.result,
+            failed_step: result.failed_step.clone(),
+            blocker: result.blocker.clone(),
+            fallbacks: result.fallbacks.clone(),
+            level,
+            position: [pos.0, pos.1, pos.2],
+            messages: result.messages.iter().rev().take(20).cloned().collect(),
+        };
+        if let Err(e) = std::fs::write(
+            &popts.blocker_path,
+            serde_json::to_string_pretty(&blocker).unwrap_or_default(),
+        ) {
+            tracing::warn!("blocker report write failed: {e:#}");
+        }
+        let stops = match popts.stop_on {
+            StopOn::Any => true,
+            StopOn::Story => source != "side",
+        };
+        if stops {
+            stop = Some(format!(
+                "quest {} {} could not be completed ({})",
+                result.quest_id,
+                result.name,
+                result.result.name()
+            ));
+            pm.checkpoint.blocker = Some(blocker);
+        } else if pm.checkpoint.blocker.is_none() {
+            // A skipped side quest is remembered as the first blocker seen.
+            pm.checkpoint.blocker = Some(blocker);
+        }
+    }
+    pm.save();
+    stop
+}
+
+/// Writes the final checkpoint and `summary.md` of a player run.
+fn finish_player_run(
+    game: &mut GameClient,
+    popts: &crate::player::PlayerOptions,
+    pr: &PlayerRun,
+    stop_reason: &str,
+) {
+    let level = game.state.self_info.as_ref().map_or(1, |i| i.level);
+    let Some(pm) = game.player.as_mut() else {
+        return;
+    };
+    pm.checkpoint.level = level;
+    pm.checkpoint.elapsed_s += pr.started.elapsed().as_secs_f32();
+    pm.save();
+    let results = popts
+        .out
+        .as_deref()
+        .map(crate::player::read_results)
+        .unwrap_or_default();
+    let mut summary = crate::player::render_summary(
+        &results,
+        &pm.checkpoint,
+        &pm.walk.stats,
+        level,
+        pr.started.elapsed().as_secs_f32(),
+    );
+    summary.push_str(&format!("\n## Stop reason\n\n- {stop_reason}\n"));
+    let commands = if pm.gm_commands.is_empty() {
+        "- none".to_string()
+    } else {
+        pm.gm_commands
+            .iter()
+            .map(|(k, n)| format!("- /{k}: {n}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    summary.push_str(&format!(
+        "\n## GM commands issued in player mode\n\n{commands}\n"
+    ));
+    if let Err(e) = std::fs::write(&popts.summary_path, summary) {
+        tracing::warn!("summary write failed: {e:#}");
+    }
 }
 
 /// Every item template the selected quests may need: step targets, the items of their
@@ -2384,12 +2715,21 @@ pub(crate) async fn setup_world(
             .find(|c| c.name == created.name)
             .cloned()
             .with_context(|| format!("created character {:?} is not in the list", created.name))?,
-        None => game
-            .state
-            .characters
-            .first()
-            .cloned()
-            .context("the account has no character to select")?,
+        None => match opts.player.as_ref().and_then(|p| p.character.as_ref()) {
+            Some(name) => game
+                .state
+                .characters
+                .iter()
+                .find(|c| &c.name == name)
+                .cloned()
+                .with_context(|| format!("character {name:?} is not in the account's list"))?,
+            None => game
+                .state
+                .characters
+                .first()
+                .cloned()
+                .context("the account has no character to select")?,
+        },
     };
     let mut character = character.unwrap_or_else(|| RunCharacter {
         name: target.name.clone(),
@@ -2461,6 +2801,9 @@ async fn run_quest(
     let mut last_info = None;
     let mut level_raised_to = None;
     let mut journal = QuestJournal::default();
+    if let Some(pm) = game.player.as_mut() {
+        pm.at_step(quest.quest_id, &quest.name, None);
+    }
     let forced_prereqs = forced_prereqs_of(quest, forced);
 
     // A quest the character already completed (the select snapshot or this session) that is not
@@ -2529,7 +2872,20 @@ async fn run_quest(
         // adds the missing experience, never lowers, and the ensured level carries over to the
         // next quests. The raise (and the level it reached) is recorded in the result line.
         let demand = level_demand(quest).max(craft_level_demand(quest, craft_db));
-        if demand >= 2 && demand > *raised_level {
+        if game.player.is_some() {
+            // Player mode never uses `/level`: the character has the level it earned.
+            let have = u32::from(game.state.self_info.as_ref().map_or(1, |i| i.level));
+            *raised_level = have;
+            if demand >= 2 && demand > have {
+                break 'run (
+                    QuestOutcome::RequirementUnmet,
+                    Some(gate_failed_step(format!(
+                        "level {demand} required, the character is level {have} (player mode \
+                         never uses /level)"
+                    ))),
+                );
+            }
+        } else if demand >= 2 && demand > *raised_level {
             game.gm(&format!("level {demand}"), Duration::from_secs(2))
                 .await
                 .ok();
@@ -2682,6 +3038,13 @@ async fn run_quest(
             let t0 = Instant::now();
             let deadline = t0 + step_timeout;
             let action = step_action(step);
+            if let Some(pm) = game.player.as_mut() {
+                pm.at_step(
+                    quest.quest_id,
+                    &quest.name,
+                    Some((step.act_id, step.act_type.as_str())),
+                );
+            }
             // Other worlds: enter the world this step targets (leaving one first when coming from
             // another); the world is left again after the quest. Steps that run nothing (skip /
             // passive) or fail before touching the world (unsupported / needs_trigger) stay where
@@ -3086,6 +3449,9 @@ async fn run_quest(
         _ => None,
     };
 
+    if let Some(pm) = game.player.as_mut() {
+        journal.fallbacks.extend(pm.take_fallbacks());
+    }
     finish_quest(
         game,
         quest,
@@ -5608,15 +5974,8 @@ async fn gather_source(
                         let Some(npc) = target else {
                             break;
                         };
-                        game.change_target(npc.obj_id)
-                            .await
-                            .map_err(StepFailure::io)?;
-                        let messages = game.gm("kill", KILL_WAIT).await.map_err(StepFailure::io)?;
                         avoid.insert(npc.obj_id);
-                        if messages
-                            .iter()
-                            .any(|m| m.contains("already dead") || m.contains("Cannot kill"))
-                        {
+                        if !kill_unit(game, npc.obj_id).await? {
                             continue;
                         }
                         kills += 1;
@@ -7541,6 +7900,21 @@ async fn wait_after_kill(
     Ok(goal_reached(game, goal, kills))
 }
 
+/// Kills one unit: a real fight in player mode (`Ok(true)` = it died), else the GM `/kill`
+/// (`Ok(false)` when the server refused it).
+async fn kill_unit(game: &mut GameClient, obj_id: u32) -> Result<bool, StepFailure> {
+    if game.player.is_some() {
+        return crate::player::fight(game, obj_id)
+            .await
+            .map_err(StepFailure::io);
+    }
+    game.change_target(obj_id).await.map_err(StepFailure::io)?;
+    let messages = game.gm("kill", KILL_WAIT).await.map_err(StepFailure::io)?;
+    Ok(!messages
+        .iter()
+        .any(|m| m.contains("Cannot kill") || m.contains("already dead")))
+}
+
 /// `/kill` one visible target of `ids` (credits the bot; `kill.rs` ->
 /// `combat::reduce_current_hp(.., Some(self), Gm)` -> the quest `on_kill`). Returns the killed
 /// object id; `Ok(None)` on a rejected kill.
@@ -7552,15 +7926,9 @@ async fn kill_visible(
     let Some(npc) = nearest_target(game, ids, avoid) else {
         return Ok(None);
     };
-    game.change_target(npc.obj_id)
-        .await
-        .map_err(StepFailure::io)?;
-    let messages = game.gm("kill", KILL_WAIT).await.map_err(StepFailure::io)?;
-    let rejected = messages
-        .iter()
-        .any(|m| m.contains("Cannot kill") || m.contains("already dead"));
     avoid.insert(npc.obj_id);
-    Ok((!rejected).then_some(npc.obj_id))
+    let killed = kill_unit(game, npc.obj_id).await?;
+    Ok(killed.then_some(npc.obj_id))
 }
 
 /// Hunts `ids` until `goal` is reached or `deadline`; teleports through `positions` (may be
@@ -7683,17 +8051,10 @@ async fn spawn_and_kill(
         }
         match nearest_target(game, &[template_id], &avoid) {
             Some(npc) => {
-                game.change_target(npc.obj_id)
-                    .await
-                    .map_err(StepFailure::io)?;
-                let messages = game.gm("kill", KILL_WAIT).await.map_err(StepFailure::io)?;
                 avoid.insert(npc.obj_id);
                 // A corpse still in the unit list answers "already dead"; it is not a kill and
                 // must not advance the loop (the v8 fallback counted them and stalled).
-                if messages
-                    .iter()
-                    .any(|m| m.contains("already dead") || m.contains("Cannot kill"))
-                {
+                if !kill_unit(game, npc.obj_id).await? {
                     continue;
                 }
                 killed.push(npc.obj_id);
@@ -7887,12 +8248,8 @@ async fn step_aggro(
             break;
         }
         // Still alive: the GM kill raises the kill event with the aggro table filled by the hit.
-        let messages = game.gm("kill", KILL_WAIT).await.map_err(StepFailure::io)?;
         avoid.insert(npc.obj_id);
-        if messages
-            .iter()
-            .any(|m| m.contains("already dead") || m.contains("Cannot kill"))
-        {
+        if !kill_unit(game, npc.obj_id).await? {
             continue;
         }
         let until = (Instant::now() + Duration::from_secs(3)).min(deadline);

@@ -1054,7 +1054,7 @@ struct NpcInfo {
 }
 
 struct Fighter<'a> {
-    game: GameClient,
+    game: &'a mut GameClient,
     db: FightDb,
     opts: &'a RunOptions,
     character: RunCharacter,
@@ -1592,7 +1592,7 @@ impl<'a> Fighter<'a> {
                     ));
                     announced = true;
                 }
-                approach.approach(&mut self.game, point, None).await?;
+                approach.approach(self.game, point, None).await?;
                 // Give the server a moment to announce the units around the new spot.
                 let wait_until = Instant::now() + Duration::from_secs(2);
                 while Instant::now() < wait_until {
@@ -1672,9 +1672,7 @@ impl<'a> Fighter<'a> {
             let dist = dist3(me, unit.pos);
             if dist > range - RANGE_SLACK || dist < skill.min_range + 0.2 {
                 let stand = self.stand_point(unit.pos, MELEE_STAND_RANGE);
-                approach
-                    .approach(&mut self.game, stand, Some(unit.pos))
-                    .await?;
+                approach.approach(self.game, stand, Some(unit.pos)).await?;
                 self.tick(CAST_SETTLE).await?;
                 continue;
             }
@@ -1756,7 +1754,7 @@ impl<'a> Fighter<'a> {
             "retreating to rest at {:.0}% hp",
             self.hp_pct() * 100.0
         ));
-        approach.approach(&mut self.game, rest_point, None).await?;
+        approach.approach(self.game, rest_point, None).await?;
         self.engaged.clear();
         self.last_target = 0;
         let deadline = Instant::now() + REST_TIMEOUT;
@@ -1789,7 +1787,7 @@ impl<'a> Fighter<'a> {
                 "temple"
             }
         ));
-        resurrect(&mut self.game, self.opts.resurrect_in_place).await?;
+        resurrect(self.game, self.opts.resurrect_in_place).await?;
         self.resurrected = false;
         let deadline = Instant::now() + Duration::from_secs(10);
         loop {
@@ -1845,6 +1843,201 @@ pub async fn resurrect(game: &mut GameClient, in_place: bool) -> anyhow::Result<
 }
 
 // -------------------------------------------------------------------------------------------
+// Player-mode session (the quest runner's combat)
+// -------------------------------------------------------------------------------------------
+
+/// How one [`Session::kill`] ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KillOutcome {
+    /// The target died (its corpse was looted).
+    Killed,
+    /// The character died and was revived.
+    Died,
+    /// The target vanished or the engagement budget ran out.
+    Timeout,
+}
+
+/// Combat knowledge of one character across a whole quest run: the class skill rows, the
+/// skills the server accepted and the totals the run report needs. Each [`Session::kill`]
+/// builds a short-lived fighter around the quest runner's own `GameClient`, so the fight uses
+/// the same connection and `GameState` as the quest steps.
+pub struct Session {
+    db: FightDb,
+    rows: HashMap<u32, FightSkillRow>,
+    abilities: [u8; 3],
+    learned: BTreeSet<u32>,
+    /// The level the learn sweep last ran at (0 = never).
+    learned_level: u8,
+    opts: RunOptions,
+    pub kills: u32,
+    pub deaths: u32,
+    pub resurrects: u32,
+    pub timeouts: u32,
+    pub loot_items: BTreeMap<u32, i64>,
+    pub events: Vec<String>,
+}
+
+impl Session {
+    pub fn new(
+        compact_db: Option<&Path>,
+        abilities: [u8; 3],
+        opts: RunOptions,
+    ) -> anyhow::Result<Self> {
+        let db = FightDb::open_default(compact_db)?;
+        let mut rows = HashMap::new();
+        for row in db.ability_skills()? {
+            rows.insert(row.id, row);
+        }
+        Ok(Self {
+            db,
+            rows,
+            abilities,
+            learned: BTreeSet::new(),
+            learned_level: 0,
+            opts,
+            kills: 0,
+            deaths: 0,
+            resurrects: 0,
+            timeouts: 0,
+            loot_items: BTreeMap::new(),
+            events: Vec::new(),
+        })
+    }
+
+    /// `npcs.LEVEL` / `npcs.faction_id` of a template.
+    pub fn npc(&self, template_id: u32) -> Option<(u8, u32)> {
+        self.db.npc(template_id).ok().flatten()
+    }
+
+    /// Fights `obj` (a unit in the game state) until it dies, the character dies (revived in
+    /// place) or the engagement budget ends, and loots the corpse of a kill.
+    pub async fn kill(
+        &mut self,
+        game: &mut GameClient,
+        obj: u32,
+        approach: &mut dyn Approach,
+    ) -> anyhow::Result<KillOutcome> {
+        let Some(unit) = game.state.units.get(&obj).cloned() else {
+            return Ok(KillOutcome::Timeout);
+        };
+        let Some(info) = game.state.self_info.clone() else {
+            bail!("no own character info for the fight");
+        };
+        let level = info.level.max(1);
+        let self_faction = info.faction;
+        let target = FightTarget {
+            obj_id: obj,
+            template_id: unit.id,
+            level: unit.level,
+            pos: unit.pos,
+            dead: false,
+        };
+        let opts = self.opts.clone();
+        let mut fighter = Fighter {
+            game,
+            db: FightDb::open(self.db.path())?,
+            opts: &opts,
+            character: RunCharacter {
+                name: info.name.clone(),
+                race: info.race,
+                gender: info.gender,
+                start_level: level,
+            },
+            abilities: self.abilities,
+            self_faction,
+            level,
+            started: Instant::now(),
+            rows: self.rows.clone(),
+            npcs: HashMap::new(),
+            learned: self.learned.clone(),
+            scheduler: SkillScheduler::new(Vec::new()),
+            hp: None,
+            mp: None,
+            max_hp_seen: 0,
+            potion_cooldown_until: 0,
+            potion_skill: None,
+            engaged: HashMap::new(),
+            killed: HashSet::new(),
+            avoid: HashMap::new(),
+            last_target: 0,
+            looting: None,
+            loot_seen: None,
+            dead: false,
+            resurrected: false,
+            learn_pending: self.learned_level != level,
+            facts: Facts::default(),
+        };
+        // The current HP seeds the retreat logic (no packet may arrive before the first tick).
+        if let Some((hp, mp)) = fighter
+            .game
+            .state
+            .unit_points
+            .get(&fighter.game.state.self_obj)
+        {
+            fighter.hp = Some(*hp);
+            fighter.mp = Some(*mp);
+            fighter.max_hp_seen = *hp;
+        }
+        if fighter.learn_pending {
+            fighter.learn_sweep().await?;
+            self.learned_level = level;
+        } else {
+            fighter.rebuild_scheduler();
+        }
+        if fighter.scheduler.skills().is_empty() {
+            bail!(
+                "no castable skill: abilities {:?}, level {level}",
+                fighter.abilities
+            );
+        }
+        let outcome = match fighter.engage(approach, target).await? {
+            Engage::Killed => {
+                fighter.loot_corpse(obj).await?;
+                KillOutcome::Killed
+            }
+            Engage::PlayerDead => {
+                fighter.revive().await?;
+                KillOutcome::Died
+            }
+            Engage::Timeout => KillOutcome::Timeout,
+        };
+        self.learned = fighter.learned.clone();
+        // A level-up during the fight must be learned before the next one.
+        if fighter.level != level {
+            self.learned_level = 0;
+        }
+        self.kills += fighter.facts.kills;
+        self.deaths += fighter.facts.deaths;
+        self.resurrects += fighter.facts.resurrects;
+        self.timeouts += fighter.facts.timeouts;
+        for (item, count) in &fighter.facts.loot {
+            *self.loot_items.entry(*item).or_insert(0) += *count;
+        }
+        for e in &fighter.facts.events {
+            if self.events.len() < 500 {
+                self.events.push(e.clone());
+            }
+        }
+        Ok(outcome)
+    }
+
+    /// Answers a death seen outside a fight (walking, a quest step) with the revive.
+    pub async fn revive(&mut self, game: &mut GameClient) -> anyhow::Result<()> {
+        self.resurrects += 1;
+        resurrect(game, self.opts.resurrect_in_place).await?;
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let me = game.state.self_obj;
+        while Instant::now() < deadline {
+            game.recv_within(PUMP).await?;
+            if !game.state.dead_units.contains(&me) {
+                break;
+            }
+        }
+        Ok(())
+    }
+}
+
+// -------------------------------------------------------------------------------------------
 // Run
 // -------------------------------------------------------------------------------------------
 
@@ -1857,7 +2050,7 @@ pub async fn run(
     anyhow::ensure!(!opts.template_ids.is_empty(), "no --tpl target");
     let rec = Recorder::new(true);
     rec.step("setup");
-    let (game, character, abilities) = setup_world(cfg, opts, &rec).await?;
+    let (mut game, character, abilities) = setup_world(cfg, opts, &rec).await?;
     let db = FightDb::open_default(opts.compact_db.as_deref())?;
     let mut rows: HashMap<u32, FightSkillRow> = HashMap::new();
     for row in db.ability_skills()? {
@@ -1887,7 +2080,7 @@ pub async fn run(
             None => None,
         };
     let mut fighter = Fighter {
-        game,
+        game: &mut game,
         db,
         opts,
         character: character.clone(),
@@ -1992,7 +2185,7 @@ pub async fn run(
         }
     }
     rec.step("leave");
-    leave(&mut fighter.game).await;
+    leave(&mut *fighter.game).await;
     if let Some(path) = &opts.capture {
         rec.save(path)?;
     }
