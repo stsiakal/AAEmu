@@ -58,7 +58,9 @@ pub fn quest_rows(body: &[u8]) -> anyhow::Result<Vec<QuestInfo>> {
     Ok(rows)
 }
 
-/// `SCCompletedQuestsPacket` body (`[i32 count]([u16 quest id][u8; 8 flags])*`).
+/// `SCCompletedQuestsPacket` body (`[i32 count]([u16 block][u8; 8 flags])*`): a row is the
+/// block `questId / 64` (`CompletedQuest.id`) and a 64-bit `BitArray` whose bit `i` (byte
+/// `i / 8`, bit `i % 8`) marks quest `block * 64 + i` completed. Returns the quest ids.
 pub fn completed_quest_rows(body: &[u8]) -> anyhow::Result<Vec<u32>> {
     let mut s = PacketStream::from_bytes(body.to_vec());
     let count = s.read_i32()?;
@@ -68,8 +70,13 @@ pub fn completed_quest_rows(body: &[u8]) -> anyhow::Result<Vec<u32>> {
     );
     let mut ids = Vec::new();
     for _ in 0..count {
-        ids.push(u32::from(s.read_u16()?));
-        s.read_u64()?; // completed flags (BitArray of 64)
+        let block = u32::from(s.read_u16()?);
+        let flags = s.read_u64()?.to_le_bytes();
+        for bit in 0..64u32 {
+            if flags[(bit / 8) as usize] & (1 << (bit % 8)) != 0 {
+                ids.push(block * 64 + bit);
+            }
+        }
     }
     Ok(ids)
 }
@@ -312,7 +319,12 @@ mod tests {
     fn completed_snapshot_adds_the_quest_ids() {
         let mut body = PacketStream::new();
         SCCompletedQuestsPacket {
-            quests: vec![CompletedQuest::new(330), CompletedQuest::new(331)],
+            // Block 5 (quests 320..383): bits 10 and 11 are quests 330 and 331.
+            quests: vec![{
+                let mut block = CompletedQuest::new(5);
+                block.body[1] = 0b0000_1100;
+                block
+            }],
         }
         .write(&mut body);
         let mut st = GameState::default();
@@ -323,6 +335,7 @@ mod tests {
         .unwrap();
         assert!(st.completed_quests.contains(&330));
         assert!(st.completed_quests.contains(&331));
+        assert_eq!(st.completed_quests.len(), 2);
         // The snapshot does not count as a live completion of this session.
         assert_eq!(st.last_completed, None);
     }

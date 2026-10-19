@@ -185,7 +185,6 @@ impl PlayerMode {
     pub fn save(&mut self) {
         self.checkpoint.deaths = self.combat.deaths;
         self.checkpoint.kills = self.combat.kills;
-        self.checkpoint.elapsed_s += 0.0;
         self.checkpoint.updated_unix = unix_now();
         for (kind, n) in self.walk.stats.teleports.iter() {
             self.checkpoint
@@ -617,7 +616,7 @@ pub fn render_summary(
         out,
         "- time: this run {:.0} min, all runs {:.0} min ({} run(s))",
         elapsed_s / 60.0,
-        (cp.elapsed_s + elapsed_s) / 60.0,
+        cp.elapsed_s / 60.0,
         cp.runs
     );
     let _ = writeln!(
