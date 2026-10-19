@@ -1078,6 +1078,13 @@ pub(crate) fn observe_into(st: &mut GameState, p: &Packet) -> anyhow::Result<()>
         st.events
             .push(GameEvent::ItemTask(parse_item_task(&p.body)));
         inventory::apply_item_task_success(&mut st.bag, &mut st.item_templates, &p.body)?;
+    } else if p.is_sc(sc::SCInvenExpandedPacket) {
+        // `SCInvenExpandedPacket { slot_type: u8, num_slots: u8 }` (`item_packets.rs`).
+        let slot_type = s.read_u8()?;
+        let num_slots = s.read_u8()?;
+        if slot_type == inventory::SLOT_TYPE_INVENTORY {
+            st.bag_slots = st.bag_slots.max(num_slots);
+        }
     } else if p.is_sc(sc::SCDoodadCreatedPacket) {
         let doodad = read_doodad(&mut s)?;
         st.doodads.insert(doodad.obj_id, doodad);
@@ -1135,8 +1142,10 @@ pub(crate) fn observe_into(st: &mut GameState, p: &Packet) -> anyhow::Result<()>
         st.quests.remove(&quest_id);
     } else if p.is_sc(sc::SCCharacterStatePacket) {
         // `unit_state::character_state`: instance id, guid (sized bytes), rwd, then
-        // `Character.Write` (id, name, race, gender, level, ...).
-        s.read_u32()?; // instance id
+        // `Character.Write` (id, name, race, gender, level, ...). The select snapshot is
+        // authoritative for the world instance (character select forces the main world,
+        // `world/session.rs::select_character`).
+        st.world_instance = s.read_u32()?;
         let guid_len = s.read_u16()?;
         s.read_bytes(usize::from(guid_len))?;
         s.read_i32()?; // rwd
@@ -1570,6 +1579,53 @@ impl GameClient {
             target,
         )
         .await
+    }
+
+    /// `CSBuyItemsPacket`: buy `count` of `item_id` from merchant `npc_obj` (or purchase doodad
+    /// `doodad_obj` when `npc_obj` is 0), money currency. The server checks the pack, the 3 m
+    /// distance and the price (`systems/economy/store.rs`).
+    pub async fn buy_item(
+        &mut self,
+        npc_obj: u32,
+        doodad_obj: u32,
+        item_id: u32,
+        count: i32,
+    ) -> anyhow::Result<()> {
+        let mut s = PacketStream::new();
+        s.write_bc(npc_obj)
+            .write_bc(doodad_obj)
+            .write_u32(0) // unk id
+            .write_u8(1) // buy count
+            .write_u8(0) // buy-back count
+            .write_u32(item_id)
+            .write_u8(0) // grade
+            .write_i32(count)
+            .write_u8(0) // currency: money
+            .write_bool(false); // use AA point
+        self.send_cs(cs::CSBuyItemsPacket, s.as_bytes()).await
+    }
+
+    /// `CSDestroyItemPacket`: destroy `count` of the bag item `item_id` at `slot`
+    /// (`slot_type::INVENTORY` = 2; `economy/item_handlers.rs`). Count <= 0 destroys the stack.
+    pub async fn destroy_item(&mut self, item_id: u64, slot: u8, count: i32) -> anyhow::Result<()> {
+        let mut s = PacketStream::new();
+        s.write_u64(item_id)
+            .write_u8(2) // SlotType.Inventory
+            .write_u8(slot)
+            .write_i32(count);
+        self.send_cs(cs::CSDestroyItemPacket, s.as_bytes()).await
+    }
+
+    /// `CSExpandSlotsPacket`: ask the server to expand the bag (`slot_type` 2, `inventory.rs
+    /// ::expand_slot` consumes the expansion item / money it requires).
+    pub async fn expand_slots(
+        &mut self,
+        slot_type: i32,
+        auto_use_aa_point: bool,
+    ) -> anyhow::Result<()> {
+        let mut s = PacketStream::new();
+        s.write_i32(slot_type).write_bool(auto_use_aa_point);
+        self.send_cs(cs::CSExpandSlotsPacket, s.as_bytes()).await
     }
 
     /// `CSLootOpenBagPacket` with `lootAll`: the server `OpenBag(.., true)` auto-takes every
@@ -2229,6 +2285,8 @@ mod body_tests {
                 faction: 113,
             })
         );
+        // The snapshot's instance id is tracked too (0 = the main world).
+        assert_eq!(st.world_instance, 100);
     }
 
     /// `SCLoadInstancePacket`: the server moved the character to another world instance; the
