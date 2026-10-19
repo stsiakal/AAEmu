@@ -8,6 +8,7 @@
 //! gm <command line>                  GM chat command (without the leading slash)
 //! tp <x> <y> <z>                     /move there, acknowledge the teleport, wait for the area
 //! pump <secs>                        just read packets
+//! labor                              the current labor power decoded from the server
 //! units [<npc template>...]          NPCs in sight (all within 60 m when no template given)
 //! doodads [<doodad template>...]     doodads in sight (all within 40 m when none given)
 //! sq <quest> <npc template|0>        CSStartQuestContext from the nearest NPC of that template
@@ -181,6 +182,10 @@ pub(super) async fn run(
                 show(&got);
             }
             "pump" => show(&pump(game, num(&parts, 0)?).await?),
+            "labor" => match game.state.labor {
+                Some(labor) => println!("    labor {labor}"),
+                None => println!("    labor unknown (no select snapshot decoded)"),
+            },
             "units" => {
                 let tpls: Vec<u32> = parts.iter().filter_map(|p| p.parse().ok()).collect();
                 let me = game.state.self_pos;
