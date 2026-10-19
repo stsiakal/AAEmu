@@ -25,6 +25,11 @@
 //!                         [--limit N] [--new-character] [--race name|id] [--gender m|f]
 //!                         [--compact-db path] [--out results.jsonl] [--step-timeout-secs N]
 //!                         [--summary]
+//! aaemu-testclient walk   [--config F] [--login H:P] --to x,y,z [--from x,y,z]
+//!                         [--game-pak path] [--app-path path] [--pak-info]
+//!                         [--speed MPS] [--stuck-timeout-secs N] [--max-slope-deg D]
+//!                         [--water-z Z] [--new-character] [--race name|id] [--gender m|f]
+//!                         [--compact-db path] [--out report.json] [--timeout-secs N]
 //! aaemu-testclient fight  [--config F] [--login H:P] --tpl TEMPLATE... [--kills N]
 //!                         [--at X,Y,Z...] [--max-level-delta N] [--potion ITEM]
 //!                         [--temple-resurrect] [--max-deaths N] [--max-timeouts N]
@@ -49,6 +54,7 @@ use aaemu_testclient::questrun::{self, QuestOutcome};
 use aaemu_testclient::record::{self, Recorder};
 use aaemu_testclient::scenario::{self, BotConfig, Kind, Outcome};
 use aaemu_testclient::skillrun;
+use aaemu_testclient::walk;
 use anyhow::{bail, Context};
 use tracing_subscriber::EnvFilter;
 
@@ -444,6 +450,100 @@ async fn main() -> anyhow::Result<()> {
                 bail!("connection lost during the craft run");
             }
         }
+        "walk" => {
+            let target = parse_point(args.get("to").context("--to x,y,z is required")?)?;
+            let from = match args.get("from") {
+                Some(value) => parse_point(value)?,
+                None => target,
+            };
+            let game_pak = args
+                .get("game-pak")
+                .map(PathBuf::from)
+                .or_else(|| std::env::var_os("AAEMU_GAME_PAK").map(PathBuf::from))
+                .unwrap_or_else(|| PathBuf::from("D:/AA1.2/game_pak"));
+            let app_path = args.get("app-path").map(PathBuf::from).unwrap_or_else(|| {
+                PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../aaemu-game/app")
+            });
+            let race = match args.get("race") {
+                Some(value) => questrun::parse_race(value)?,
+                None => 1,
+            };
+            let gender = match args.get("gender") {
+                Some(value) => questrun::parse_gender(value)?,
+                None => 1,
+            };
+            let water_z = args
+                .get("water-z")
+                .map(|v| v.parse::<f32>().context("--water-z needs metres"))
+                .transpose()?;
+            let mut config = walk::WalkerConfig {
+                speed_mps: args
+                    .get("speed")
+                    .map(|v| v.parse::<f32>().context("--speed needs m/s"))
+                    .transpose()?
+                    .unwrap_or(walk::DEFAULT_RUN_SPEED_MPS),
+                stuck_timeout: Duration::from_secs(
+                    args.get("stuck-timeout-secs").unwrap_or("8").parse()?,
+                ),
+                max_slope_deg: args
+                    .get("max-slope-deg")
+                    .map(|v| v.parse::<f32>().context("--max-slope-deg needs degrees"))
+                    .transpose()?
+                    .unwrap_or(65.0),
+                water_level: water_z,
+                ..Default::default()
+            };
+            if args.has("pak-info") {
+                let terrain = walk::Terrain::load(&game_pak, &app_path)?;
+                config.water_level = config.water_level.or(Some(terrain.ocean_level));
+                print!("{}", terrain.pak_info(from, target)?);
+                if args.has("profile") {
+                    print!("{}", terrain.slope_profile(from, target)?);
+                }
+                if args.has("plan-route") {
+                    match terrain.route(from, target, &config) {
+                        Some(route) => {
+                            let route_m: f32 = std::iter::once(from)
+                                .chain(route.iter().copied())
+                                .collect::<Vec<_>>()
+                                .windows(2)
+                                .map(|w| {
+                                    ((w[1].0 - w[0].0).powi(2) + (w[1].1 - w[0].1).powi(2)).sqrt()
+                                })
+                                .sum();
+                            println!("planned route: {} waypoint(s), {route_m:.1} m", route.len());
+                            for (i, p) in route.iter().enumerate() {
+                                if route.len() <= 20 || i % 20 == 0 || i + 1 == route.len() {
+                                    println!("  [{i}] {:.1}, {:.1}, {:.1}", p.0, p.1, p.2);
+                                }
+                            }
+                        }
+                        None => println!("planned route: none (target unreachable on terrain)"),
+                    }
+                }
+                return Ok(());
+            }
+            let cfg = bot_config(&args)?;
+            let opts = walk::WalkOptions {
+                target,
+                game_pak,
+                app_path,
+                compact_db: args.get("compact-db").map(PathBuf::from),
+                speed_mps: args
+                    .get("speed")
+                    .map(|v| v.parse::<f32>().context("--speed needs m/s"))
+                    .transpose()?,
+                new_character: args.has("new-character"),
+                race,
+                gender,
+                config,
+                timeout: Duration::from_secs(args.get("timeout-secs").unwrap_or("300").parse()?),
+                out: args.get("out").map(PathBuf::from),
+                trace: args.has("trace"),
+            };
+            let report = walk::walk(&cfg, opts).await?;
+            println!("{}", serde_json::to_string_pretty(&report)?);
+        }
         "fight" => {
             let cfg = bot_config(&args)?;
             let race = match args.get("race") {
@@ -510,4 +610,17 @@ async fn main() -> anyhow::Result<()> {
         }
     }
     Ok(())
+}
+
+/// `x,y,z` (the plan / `--to` point format).
+fn parse_point(value: &str) -> anyhow::Result<(f32, f32, f32)> {
+    let parts: Vec<&str> = value.split(',').map(str::trim).collect();
+    if parts.len() != 3 {
+        bail!("expected x,y,z, got '{value}'");
+    }
+    Ok((
+        parts[0].parse().context("x")?,
+        parts[1].parse().context("y")?,
+        parts[2].parse().context("z")?,
+    ))
 }
