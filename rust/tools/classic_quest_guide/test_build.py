@@ -294,6 +294,7 @@ class BuilderTests(unittest.TestCase):
         self.temp.cleanup()
 
     def build(self, output=None, **kwargs):
+        kwargs.setdefault("data_only", True)
         return build.run_build(
             self.db, self.worlds, output or self.output,
             code_commit="test-commit", **kwargs,
@@ -472,7 +473,7 @@ class BuilderTests(unittest.TestCase):
         fake_tool.mkdir()
         with self.assertRaises(build.BuildError):
             build.run_build(self.db, self.worlds, fake_tool / "package",
-                            source_dir=fake_tool)
+                            source_dir=fake_tool, data_only=True)
 
         foreign = self.root / "foreign" / "aaemu_quest_guide" / "data"
         foreign.mkdir(parents=True)
@@ -519,7 +520,7 @@ class BuilderTests(unittest.TestCase):
         shutil.copyfile(self.db, weird)
         out = self.root / "out-special"
         manifest, _ = build.run_build(
-            weird, self.worlds, out, code_commit="test-commit")
+            weird, self.worlds, out, code_commit="test-commit", data_only=True)
         self.assertEqual(manifest["inputs"]["db"]["file"], weird.name)
         self.assertTrue((out / "aaemu_quest_guide" / "data" / "index.lua").is_file())
 

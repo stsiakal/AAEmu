@@ -1036,6 +1036,13 @@ def check_safe_data_dir(output: Path, data_dir: Path):
 
 
 def check_output_target(output: Path, data_dir: Path):
+    package_folder = data_dir.parent
+    if package_folder != output and package_folder.exists() and package_folder.is_dir():
+        siblings = [entry for entry in package_folder.iterdir() if entry.name != data_dir.name]
+        if siblings and not (data_dir / MARKER_NAME).is_file():
+            raise BuildError(
+                f"refusing to write into foreign package folder {package_folder}: "
+                "it contains files but no generated data marker")
     usable_data = not data_dir.exists()
     if data_dir.exists():
         if data_dir.is_dir():
@@ -1119,7 +1126,8 @@ def write_output(output: Path, files: dict[str, str], manifest: dict,
 def run_build(db_path: Path, worlds_path: Path, output_path: Path,
               spheres_path: Path | None = None, chunk_size: int = DEFAULT_CHUNK_SIZE,
               code_commit: str | None = None, timestamp: bool = False,
-              classic_build: str = "unknown", source_dir: Path | None = None):
+              classic_build: str = "unknown", source_dir: Path | None = None,
+              data_only: bool = False):
     if chunk_size < 1:
         raise BuildError("--chunk-size must be at least 1")
     source_dir = (source_dir or Path(__file__).resolve().parent).resolve()
@@ -1254,6 +1262,12 @@ def run_build(db_path: Path, worlds_path: Path, output_path: Path,
 
     data_dir = output / "aaemu_quest_guide" / "data"
     manifest, summary = write_output(output, files, manifest, summary, data_dir)
+    if not data_only:
+        import package_addon
+        try:
+            manifest, summary, _zip = package_addon.package_addon(output, source_dir)
+        except package_addon.PackageError as error:
+            raise BuildError(str(error)) from error
     return manifest, summary
 
 
@@ -1276,12 +1290,15 @@ def main(argv=None):
                         help="include the current UTC time in manifest/summary")
     parser.add_argument("--classic-build", default="unknown",
                         help="observed Classic build label; default unknown")
+    parser.add_argument("--data-only", action="store_true",
+                        help="write only the generated data catalog (no runtime/ZIP)")
     args = parser.parse_args(argv)
     try:
         manifest, summary = run_build(
             args.db, args.worlds, args.output, args.spheres,
             chunk_size=args.chunk_size, code_commit=args.code_commit,
             timestamp=args.timestamp, classic_build=args.classic_build,
+            data_only=args.data_only,
         )
     except BuildError as error:
         print("error: " + str(error), file=sys.stderr)
@@ -1292,6 +1309,7 @@ def main(argv=None):
         "status": summary["status"],
         "chunks": summary["chunks"]["count"],
         "files": summary["files"],
+        "package": summary.get("package"),
         "code_commit": manifest["generator"]["code_commit"],
         "data_version": summary["data_version"],
     }, ensure_ascii=False, indent=2))
