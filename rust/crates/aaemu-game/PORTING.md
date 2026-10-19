@@ -2144,6 +2144,27 @@ memberless spawners, and no invented positions for the 543 effect rows with no p
 client. The tool, reproduction commands and parser tests are in `rust/tools/spawn_import/`;
 generated entries carry a `Title` naming the 10.x source (the loader ignores it).
 
+### 1.2 `npc_map` placements missing from `main_world/npc_spawns.json` (small batch)
+
+The 1.2 client's `game/worlds/main_world/map_data/npc_map/*.dat` (retail 1.2 data) lists 326 placements (176 ids) that the shipped JSON lacked. Git history (`git log --all -- '*main_world/npc_spawns.json'`): all of them were once in the file; they were dropped by upstream rewrites (2022-06-19 `277753513`, the raw-export rewrite, 54; 2024-04-24 `58cdf34c6`, "Z height and added NPCs", 63; 2023-06-13 `5a0b59496`, 8) and by our own ambient revert `1ff1eaa9c` (15), none with a per-entry reason. Added: 58 entries, with `Title` `1.2 client npc_map (<zone>)`.
+
+Left out, with the reason:
+
+* 181 records whose NPC id has no `npcs` row (and no spawner) in the 1.2 `compact.sqlite3`: nothing can spawn them.
+* 52 within 5 m of an existing placement of the same id (curated position tweak) and 21 within 2 m of a placement of another id (curated id swap, e.g. 4228 over another NPC): already covered.
+* 8 `Arcum Iris`/Rainbow Field event caravan NPCs (12007/12008/12009/12124): `5a0b59496` removed them deliberately ("npc that weren't there in 1.2"); kept out.
+* 13878/14033 (Korean Liberation Day event NPCs, no schedule in the 1.2 data, would stand permanently) and 14745 (zone-name marker NPC "Shining Shore", empty comment): not ambient world NPCs.
+
+Every added id has a 1.2 `npc_spawner_npcs` row. Positions are the client map's own metres (no yaw in the format).
+
+### Plot `ManaCost` special effect (type 39)
+
+The C# charged `value1 + value2 / 6.35` (with a TODO: "value2 is based on skill level somehow"). The 1.2 data shows `value1` = the skill's `mana_cost` and `value2` = `mana_level_md * 100` for 59 of the 68 plot-only skills that carry the effect (e.g. 11854: md 1.55, effect 0/155; 18132: mana_cost 30, effect 30/0). The 1.2 client shows the cost in the skill tooltip as `mana_cost + mana_level_md * f(ability level)` (Ghidra `aa12u`, x2game `FUN_3941e750` -> `manaCost` of `FUN_394ace10`, via the unit formulas 12 and 13: `(ab_level * 1.6 + 8) * 3 / 3.65`), and the cast pre-check (`validation.rs`) already requires exactly that amount. The effect therefore now charges `value1 + value2 / 100 * scale` with the same scale as `skill::mana_cost`; at ability level 55 skill 11854 costs 120 instead of 24. Deviation from the C#: the charge side is inferred from the tooltip/data (no retail charge capture); the 9 plot-only skills whose effect differs from the skill row follow the same rule.
+
+### Premium for every account (`Account.PremiumForAll`)
+
+The C# `AccountPayment` is never loaded from anywhere (TODO "Load payment and account tier information"), so every account is premium (`Premium`, location 1, until 2030-01-01): it feeds `SCAccountInfo`, labor limits/regen, the offline-labor tick, the schedule-item patron check and the `max_labor` unit requirement. This stays the default, now an explicit option `Account.PremiumForAll` (`Configurations/CharacterSettings.json`, default `true`); `false` makes every connection `PaymentMethodType::None` with no validity window (non-premium). The value is read once at startup (`net::connection::set_premium_for_all`); there is still no per-account payment source.
+
 ## Achievement producers (live wiring)
 
 The achievement subsystem has no 1.2 C# manager; the behaviour follows `rust/docs/achievement-hook-audit.txt`
