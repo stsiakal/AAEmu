@@ -720,6 +720,27 @@ impl SpawnManager {
         server: &GameServer,
         def: NpcSpawnerDef,
     ) -> Result<usize, String> {
+        self.add_npc_spawner_impl(server, def, false)
+    }
+
+    /// [`Self::add_npc_spawner`] for the GM commands: the spawner is always generated from
+    /// template 1 for exactly this NPC, even when the game data has natural spawners for it
+    /// (the memberwise clones of those carry the natural schedules and populations, so a
+    /// command-placed NPC would only appear when its natural spawner happens to be active).
+    pub fn add_generated_npc_spawner(
+        &self,
+        server: &GameServer,
+        def: NpcSpawnerDef,
+    ) -> Result<usize, String> {
+        self.add_npc_spawner_impl(server, def, true)
+    }
+
+    fn add_npc_spawner_impl(
+        &self,
+        server: &GameServer,
+        def: NpcSpawnerDef,
+        force_generated: bool,
+    ) -> Result<usize, String> {
         let data = &server.game_data.systems.npcs.npc_spawners;
         let spawns = &server.systems.npcs.spawns;
         let mut inner = self.inner();
@@ -794,7 +815,7 @@ impl SpawnManager {
             let game_data_ids = data.get_spawner_ids(b.unit_id).unwrap_or_default();
             let mut spawners = Vec::new();
             let mut added = 0;
-            if game_data_ids.is_empty() {
+            if game_data_ids.is_empty() || force_generated {
                 // No pre-defined spawner: generate one from template 1 ("Test Warrior").
                 tracing::trace!("SpawnerIds for Npc={} doesn't exist", b.unit_id);
                 let id = spawns.fake_spawner_id.load(Ordering::SeqCst);
@@ -1037,11 +1058,17 @@ impl SpawnManager {
                     def.base.position.y,
                     def.base.position.z,
                 );
-                if stored.get(&unit_id).is_some_and(|v| {
-                    v.iter().any(|&(sx, sy, sz)| {
-                        (sx - x).abs() < 2.0 && (sy - y).abs() < 2.0 && (sz - z).abs() < 2.0
+                let event = !def.npc_spawner_ids.is_empty() && def.npc_spawner_ids != [0];
+                // Event spawners are keyed by their spawner id and several effects may place the
+                // same NPC at one anchor (room waves). Drop only ordinary duplicates; an event
+                // entry must stay registered or its `GetNpcSpawner(id)` finds nothing.
+                if !event
+                    && stored.get(&unit_id).is_some_and(|v| {
+                        v.iter().any(|&(sx, sy, sz)| {
+                            (sx - x).abs() < 2.0 && (sy - y).abs() < 2.0 && (sz - z).abs() < 2.0
+                        })
                     })
-                }) {
+                {
                     tracing::trace!(
                         "Duplicate NPC spawner found in {} (UnitId: {unit_id})",
                         path.display()
@@ -1059,7 +1086,6 @@ impl SpawnManager {
                     continue;
                 }
                 self.fix_position(server, &mut def.base.position, true);
-                let event = !def.npc_spawner_ids.is_empty() && def.npc_spawner_ids != [0];
                 let fake_before = server.systems.npcs.spawns.peek_fake_spawner_id();
                 let added = self.add_npc_spawner(server, def)?;
                 if event {
@@ -2020,6 +2046,12 @@ impl SpawnManager {
 
     /// `GetNpcSpawner(spawnerId)`: the event spawners with that `Id` (retargets their last
     /// template member to `UnitId`, as the C# does).
+    ///
+    /// 16 shipped spawn/despawn effect rows point at ordinary `npc_spawners` ids instead of
+    /// event ids. The C# `GetNpcSpawner` only looked in `NpcEventSpawners`, so those effects
+    /// never found their spawner (see `SPAWNS.md` in the spawn audit). When no event spawner
+    /// matches, fall back to the ordinary spawners whose template id is `spawner_id`; do not
+    /// retarget their members (they are authored templates, not effect-created ones).
     pub fn get_npc_spawner(&self, spawner_id: u32) -> Vec<Arc<NpcSpawner>> {
         let inner = self.inner();
         let mut ret = Vec::new();
@@ -2030,6 +2062,16 @@ impl SpawnManager {
                 }
                 s.retarget_last_template_npc();
                 ret.push(s.clone());
+            }
+        }
+        if !ret.is_empty() {
+            return ret;
+        }
+        for spawners in inner.npc_spawners.values() {
+            for s in spawners {
+                if s.spawner_id == spawner_id {
+                    ret.push(s.clone());
+                }
             }
         }
         ret
