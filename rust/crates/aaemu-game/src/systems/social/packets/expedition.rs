@@ -171,11 +171,13 @@ cs_packet!(
 );
 
 cs_packet!(
-    /// `CSRenameExpeditionPacket` (logged only, as in C#).
+    /// `CSRenameExpeditionPacket` (logged only in the C#; see `expedition::rename_expedition`).
     CSRenameExpeditionPacket { id: u32, name: String, is_expedition: bool }
     read |s| { Ok(Self { id: s.read_u32()?, name: s.read_string()?, is_expedition: s.read_bool()? }) }
     handle |self, server, conn| {
         tracing::debug!("RenameExpedition, Id: {}, Name: {}, IsExpedition: {}", self.id, self.name, self.is_expedition);
+        let p = active_char!(conn);
+        expedition::rename_expedition(server, &p, self.id, &self.name).await;
         Ok(())
     }
 );

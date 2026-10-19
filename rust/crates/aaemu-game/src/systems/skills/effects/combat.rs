@@ -403,6 +403,10 @@ pub fn damage(
         }
         _ => final_damage *= ts[7] as f32,
     }
+    // "damage <= aoe diminishing": the 10.x zone multiplies the damage by the target's rank rate.
+    if let Some(rate) = args.source.aoe_diminishing {
+        final_damage *= rate;
+    }
     let value = (final_damage * reduction_mul) as i32;
     let absorbed = (final_damage * (1.0 - reduction_mul)) as i32;
     let health_stolen = (value as f32 * (e.health_steal_ratio as f32 / 100.0)) as i32;

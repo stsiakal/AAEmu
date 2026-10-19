@@ -235,6 +235,12 @@ pub struct AccountConfig {
     pub delete_release_name: bool,
     #[serde(rename = "deletetimings")]
     pub delete_timings: Vec<AccountDeleteDelayTiming>,
+    /// `PremiumForAll` (not in the C#): every account counts as premium until 2030, like the C#
+    /// default `AccountPayment` (true, the default). False gives every account the non-premium
+    /// payment (`PaymentMethodType::None`); no per-account payment info exists yet.
+    /// Read once at startup.
+    #[serde(rename = "premiumforall", deserialize_with = "lenient")]
+    pub premium_for_all: bool,
 }
 
 impl Default for AccountConfig {
@@ -246,6 +252,7 @@ impl Default for AccountConfig {
             access_level_first_character: 100,
             delete_release_name: false,
             delete_timings: Vec::new(),
+            premium_for_all: true,
         }
     }
 }
@@ -1234,6 +1241,19 @@ mod tests {
         let cfg = AppConfig::load_from(&dir, Some(&secrets), env, &args).unwrap();
         assert_eq!(cfg.world.exp_rate, 5.0);
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn premium_for_all_defaults_to_true_and_can_be_switched_off() {
+        assert!(
+            AppConfig::from_value(json!({}))
+                .unwrap()
+                .account
+                .premium_for_all
+        );
+        let cfg =
+            AppConfig::from_value(json!({ "Account": { "PremiumForAll": "false" } })).unwrap();
+        assert!(!cfg.account.premium_for_all);
     }
 
     #[test]

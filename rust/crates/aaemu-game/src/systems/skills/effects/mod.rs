@@ -35,6 +35,9 @@ pub struct EffectSource {
     pub is_trigger: bool,
     /// The individual SkillEffect bypasses the cast's miss roll.
     pub always_hit: bool,
+    /// `aoe_diminishings` damage multiplier of this target (a plot event with
+    /// `aoe_diminishing` set; `None` = undiminished).
+    pub aoe_diminishing: Option<f32>,
 }
 
 impl EffectSource {

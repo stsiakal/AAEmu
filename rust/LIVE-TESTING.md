@@ -557,7 +557,7 @@ id on every unit other than the caster (an area skill hits them all): a miss, an
 
 The mana expectation comes from the skill's path: a `plot_only` skill *with a `plot_id`*
 returns from `Skill.Use` before `Skill.Cast`'s `ConsumeMana` and pays the plot's
-`SpecialEffect` 39 `ManaCost` (`value1 + value2 / 6.35` per apply, walked in `plot_events` /
+`SpecialEffect` 39 `ManaCost` (`value1 + value2 / 100 * scale(ab_level)` per apply, the tooltip formula, walked in `plot_events` /
 `plot_effects` / `special_effects`; only caster-side rows count) -- and only when the carrying
 event ran (`plot_mana_events` vs `plot_event_ids`); a `plot_only` row without a `plot_id` and
 every other skill pays the `Skill.ManaCost` formula. `mana_spent` is read at the largest
