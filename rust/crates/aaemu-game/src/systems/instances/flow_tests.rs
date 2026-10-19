@@ -1987,6 +1987,65 @@ async fn battlefield_zero_victory_score_waits_for_timeover() {
 }
 
 #[tokio::test]
+async fn battlefield_timeover_tie_is_a_draw() {
+    // Gladiator duel rule set 28 (`game_score_rules` 200 = 30 per kill, `victory_score` 60).
+    // The 1.2 client knows only the `BFER_TIMEOVER_COMPARE_KILL_COUNT` time-over verdict and
+    // has win / lose / draw duel texts (`ui_texts` 3825 / 3826 / 3829; the battlefield tip
+    // `ui_texts` 5887 scores a draw 0). The C# sent both corps as `Lose`, so a 0:0 duel
+    // scored both players as losers; the timeout verdict here is a draw.
+    let server = camp_server_with(1, 60, 0, |r| {
+        r.id = 28;
+        r.battlefield_id = 11;
+        r.victory_score = 60;
+        r.bonus_winner = 20;
+        r.bonus_loser = 5;
+        r.rank_win_point = 4;
+        r.rank_lose_point = 1;
+    });
+    let (mut a, mut b, game) = started_1v1(&server).await;
+    instant_game::finish_timeover(&server, &game);
+    assert_eq!(
+        end_reason(&a.frames()),
+        Some(instant_game::ENDING_TIMEOVER_COMPARE_KILL_COUNT)
+    );
+    assert_eq!(
+        end_reason(&b.frames()),
+        Some(instant_game::ENDING_TIMEOVER_COMPARE_KILL_COUNT)
+    );
+    let st = game.st();
+    assert_eq!(st.corps1.state, instant_game::victory_state::DRAW);
+    assert_eq!(st.corps2.state, instant_game::victory_state::DRAW);
+    assert_eq!(st.members[0].bonus, 0, "a draw pays no winner/loser bonus");
+    assert_eq!(st.members[1].bonus, 0);
+}
+
+#[tokio::test]
+async fn battlefield_timeover_score_breaks_a_kill_tie() {
+    // A rule set whose score does not come from kills only; the timeout compares kills and
+    // then score (`finish_timeover`).
+    let server = camp_server_kills(1, 0, 0);
+    let (mut a, _b, game) = started_1v1(&server).await;
+    let a_corps = {
+        let mut st = game.st();
+        st.members[0].score = 5;
+        st.members[0].result
+    };
+    instant_game::finish_timeover(&server, &game);
+    let st = game.st();
+    let (a_state, b_state) = if a_corps == corps::CORPS1 {
+        (st.corps1.state, st.corps2.state)
+    } else {
+        (st.corps2.state, st.corps1.state)
+    };
+    assert_eq!(a_state, instant_game::victory_state::WIN);
+    assert_eq!(b_state, instant_game::victory_state::LOSE);
+    assert_eq!(
+        end_reason(&a.frames()),
+        Some(instant_game::ENDING_TIMEOVER_COMPARE_KILL_COUNT)
+    );
+}
+
+#[tokio::test]
 async fn battlefield_victory_kill_count_ends_game() {
     let server = camp_server_kills(1, 0, 1);
     let (mut a, b, _game) = started_1v1(&server).await;
