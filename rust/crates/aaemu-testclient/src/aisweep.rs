@@ -1513,17 +1513,18 @@ impl Sweep {
     // ---- S3: alert -> attack timing -------------------------------------------------------
 
     async fn test_s3(&mut self) -> anyhow::Result<()> {
+        // 11 m: outside the aggression radius, inside the alert (sight) radius.
         self.alert_case(
             10011,
             0,
-            8.0,
+            11.0,
             3000,
             "default alertDuration 3 s (no param row)",
         )
         .await?;
         self.alert_case(8023, 0, 8.0, 0, "param 1220 alertDuration = 0")
             .await?;
-        self.alert_case(528, 8, 8.5, 10000, "param 318 alertDuration = 10")
+        self.alert_case(528, 8, 11.0, 10000, "param 318 alertDuration = 10")
             .await?;
         Ok(())
     }
@@ -1573,7 +1574,7 @@ impl Sweep {
                 return Ok(());
             }
             let t0 = self.obs.now_ms();
-            self.pump_for(Duration::from_millis(2500)).await?;
+            self.pump_for(Duration::from_millis(4500)).await?;
             let alert = self
                 .obs
                 .alert_onset(spawned.obj, bot, t0, self.obs.now_ms());
@@ -1616,16 +1617,11 @@ impl Sweep {
         let alert = self.obs.alert_onset(spawned.obj, bot, 0, until);
         let hostile = self.obs.hostile_onset(spawned.obj, bot, 0, until);
         let cleared = alert.and_then(|a| self.obs.alert_cleared(spawned.obj, a, until));
-        let (alert_base, hostile_base) = match (alert, hostile.as_ref()) {
-            (Some(a), Some((h, _))) => (a, *h),
-            (Some(a), None) => (a, a),
-            (None, Some((h, _))) => (*h, *h),
-            (None, None) => (t0, t0),
-        };
+        // The attack onset is measured from the alert onset (from the attack itself when the NPC
+        // never alerted, which makes it 0).
+        let alert_base = alert.or(hostile.as_ref().map(|(h, _)| *h)).unwrap_or(t0);
         let behavior = self.poll_behavior(spawned.obj).await?;
-        let onset = hostile
-            .as_ref()
-            .map(|(t, _)| t.saturating_sub(hostile_base));
+        let onset = hostile.as_ref().map(|(t, _)| t.saturating_sub(alert_base));
         let alert_len = cleared.zip(alert).map(|(c, a)| c.saturating_sub(a));
         let classification = if alert.is_none() {
             // No alert target change: the NPC attacked straight away (or only after the watch).
