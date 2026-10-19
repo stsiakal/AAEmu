@@ -2274,7 +2274,7 @@ async fn create_and_wait(
 /// (created for `--new-character` or when the account is empty), select, spawn and notify.
 /// The returned [`RunCharacter`] is the selected character's race / gender / level as the
 /// server reports them.
-async fn setup_world(
+pub(crate) async fn setup_world(
     cfg: &BotConfig,
     rec: &Recorder,
     opts: &RunOptions,
