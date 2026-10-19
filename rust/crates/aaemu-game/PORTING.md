@@ -1718,7 +1718,7 @@ and in NPC wandering / buff remaining times.
 * systems::quests: `QuestActObjZoneMonsterHunt` (non-score) needs `count > Count` but the
   objective is capped at `Count`: never completes.
 * `systems::npcs`: the "spawn all" schedule check is inverted; `DoRandomSpawn` leaks an obj id and spawns twice; a doodad despawn may release its obj id twice; gimmick spawn rotations are not converted from degrees; scheduled doodad spawns stack cron tasks; the player-in-radius check scans every player; NPCs are not despawned when players leave.
-* `systems::npcs`: dated game schedules compare `StartTime` / `EndTime` (usually 0) instead of the start / end hours (a one-day event counts as ended at 00:00); the cron builder tests the captured day of week instead of its parameter, and undated schedules produce day / month 0 (rejected by the cron parser); `VendorExist` reads the `id` column; deleting a portal sends no packet; `NotifySubZone` re-sends the portal book once per recall portal of the sub zone; the exit portal's yaw is the book rotation in degrees.
+* `systems::npcs`: dated game schedules compare `StartTime` / `EndTime` (usually 0) instead of the start / end hours (a one-day event counts as ended at 00:00); the cron builder tests the captured day of week instead of its parameter, and undated schedules produce day / month 0 (rejected by the cron parser); `VendorExist` reads the `id` column; deleting a portal sent no packet (now `SCPortalDeleted`, see the portal gaps entry at the end); `NotifySubZone` re-sends the portal book once per recall portal of the sub zone; the exit portal's yaw is the book rotation in degrees.
 * `systems::npcs`: corrected coin double credit and failed trade-pack acquisition; `BuyFish` uses the checked economy sale. Phase operations reserve live object identity, honor interaction counts, enter functions on time-of-day changes, and cancel superseded timers. Saves/deletes use a FIFO writer drained by the save lifecycle; partial interaction counts use the doodad-interactions SQL update. Scheduled spawns recreate deleted doodads, deduplicate cron callbacks, and retain original world identity. Logic links/families route matching true/false pulses with per-object state and cycle guards; client-created wires require ownership and reach. Immediate gates are supported; delay descriptors 2/3 need reference behavior. `SpawnGimmick` creates the authored object with offsets/faction/kinematic motion; `SpawnMgmt` requires explicit authored `SpawnGroupId` membership. Prefab flow graphs are client-owned. `CheckGrowth` still runs funcs with `nextPhase = 0`; child metadata templates (e.g. `DoodadFuncBuyFishItem`) remain in the phase dictionary.
 * systems::economy: the two "is not welcome in this container" rejections of `SplitOrMoveItemEx`
   (an item the target / source container refuses, e.g. armor sent to a wrong equipment slot) are
@@ -2351,3 +2351,33 @@ Doc-only items:
   client uses `CSAskRiskyTeamAction`), **M21** (new factions get `political_system 1`, native
   rename needs 0), **M23** (actability downgrade clamp): per Bevy RE notes, not re-verified and not
   changed; each needs a reproduction against the real client before a fix.
+
+## Portal gaps (2026-10-20)
+
+Oracles: the 1.2 localized texts of `compact.sqlite3` (skill 11216 `desc`: "Worldgates remain open
+for 30 seconds (or 60 seconds for characters Lv20+ in Occultism)"; `ui_texts` 1291: "Opens a
+worldgate with 1000 HP, 5 meters away, that takes 30 seconds to open. An Occultism skillset of
+Lv20+ increases this duration to 60 seconds") and the unpacked 1.2 `x2game.dll` (Ghidra
+`proj-aa12u`, scratch copy): `FUN_391d38e0` (`OnPortalDeleted`) reads a type (1 = district list,
+2 = private list) and an id and removes that row; `FUN_391d3970` (`OnUnitPortalUsed`) looks the
+unit id up in the client's objects and plays an effect (`FUN_393558e0`) on it when found;
+`FUN_391dc8c0` (`OnNaviTeleport`) moves the camera/player to the sent position.
+
+* `OpenPortalEffect` range: the C# test `x > pos.X + d || y > pos.Y + d` passed every point behind
+  or beside the caster and refused forward points beyond `d` in the +x/+y directions. Now a 2D
+  distance: within `max(open_portal_effects.distance, 5 m) + 1 m` of the caster. The data column is
+  3.0 but the tooltip (and so the client, which places the gate "5 meters away") says 5 m, so 3.0
+  would refuse the real client's own spot. No in-front rule: the data has none (skill 11216
+  `front_angle` is 0).
+* Portal lifetime: 30 s, or 60 s when the owner's Occultism (`AbilityType.Death` = 5) level, read
+  from the ability exp like the quest requirements do, is 20 or more (C#: fixed 30 s).
+* `CSDeletePortal` now answers `SCPortalDeleted(type, id)` when an entry was removed (C#: silent).
+  The district portal list is still not rebuilt (mirrored).
+* `SCUnitPortalUsed(user obj id)` is sent to the bystanders around the user just before a portal
+  teleport (C#: never sent). Which unit the client expects is not confirmed (user vs. portal);
+  the effect is cosmetic.
+* Not changed, no oracle: `CSUseTeleport` (no NPC has `teleporter` = 't' in the data), and
+  `CSNaviTeleport` / `CSNaviOpenPortal` stay logged no-ops. The C# only logged them, the
+  `doodad_func_navi_teleports` / `_open_portals` tables hold only ids, and the one real use, the
+  White Dress Portrait (doodad 3347, skill 15193), already works through its `Return` special
+  effect (worldgate 304) without the packet. `SCNaviTeleport` stays unsent.

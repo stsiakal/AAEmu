@@ -185,6 +185,16 @@ async fn safe_portal_mode_uses_character_owner_and_preserves_public_sharing() {
         vec![(sc::SCTeleportUnitPacket, expected_teleport.clone())]
     );
     assert!(owner.data().disabled_set_position);
+    // The bystander sees the owner use the portal.
+    assert_eq!(
+        peer_client.drain(),
+        vec![(
+            sc::SCUnitPortalUsedPacket,
+            body(&SCUnitPortalUsedPacket {
+                unit_id: owner.obj_id
+            })
+        )]
+    );
     let peer_before = peer.data().clone();
     request_portal(&server, &mut peer_client, portal.obj_id, true).await;
     assert_eq!(
@@ -577,7 +587,7 @@ async fn portal_book_delete_and_notify_sub_zone() {
     notify_sub_zone(&server, &me, 78);
     assert!(client.drain().is_empty());
 
-    // CSDeletePortal: private (type != 1) and district (type 1); no packet.
+    // CSDeletePortal: private (type != 1) and district (type 1); each answers SCPortalDeleted.
     CSDeletePortalPacket {
         portal_type: 2,
         portal_id: 4097,
@@ -595,7 +605,26 @@ async fn portal_book_delete_and_notify_sub_zone() {
     .unwrap();
     delete_portal(&server, &me, 1, 5);
     delete_portal(&server, &me, 2, 999);
-    assert!(client.drain().is_empty());
+    let frames = client.drain();
+    assert_eq!(
+        frames,
+        vec![
+            (
+                sc::SCPortalDeletedPacket,
+                body(&SCPortalDeletedPacket {
+                    portal_type: 2,
+                    portal_id: 4097
+                })
+            ),
+            (
+                sc::SCPortalDeletedPacket,
+                body(&SCPortalDeletedPacket {
+                    portal_type: 1,
+                    portal_id: 5
+                })
+            ),
+        ]
+    );
     {
         let c = me.data();
         assert!(c.portals.private_portals.is_empty());
@@ -709,5 +738,80 @@ fn real_compact_db_portal_tables() {
         t.world_gates.len(),
         t.open_portal_inland_reagents.len(),
         t.open_portal_outland_reagents.len()
+    );
+}
+
+#[test]
+fn open_portal_spot_distance_is_a_real_distance() {
+    // The data column (3.0) is below the 5 m of the tooltip: the tooltip's distance counts, plus
+    // the slack.
+    let caster = (100.0, 100.0);
+    assert!(portal_spot_in_range(caster, (105.0, 100.0), 3.0));
+    assert!(portal_spot_in_range(caster, (100.0, 105.9), 3.0));
+    assert!(!portal_spot_in_range(caster, (106.5, 100.0), 3.0));
+    // Behind / beside the caster is no longer free (the C# only compared `x > pos + d`).
+    assert!(!portal_spot_in_range(caster, (50.0, 100.0), 3.0));
+    assert!(!portal_spot_in_range(caster, (100.0, 20.0), 3.0));
+    assert!(portal_spot_in_range(caster, (96.0, 97.0), 3.0));
+    // A larger data distance wins.
+    assert!(portal_spot_in_range(caster, (108.0, 100.0), 8.0));
+    assert!(!portal_spot_in_range(caster, (110.0, 100.0), 8.0));
+}
+
+#[test]
+fn portal_lifetime_follows_the_occultism_level() {
+    assert_eq!(portal_lifetime_for_level(0), Duration::from_secs(30));
+    assert_eq!(portal_lifetime_for_level(19), Duration::from_secs(30));
+    assert_eq!(portal_lifetime_for_level(20), Duration::from_secs(60));
+    assert_eq!(portal_lifetime_for_level(50), Duration::from_secs(60));
+}
+
+#[tokio::test]
+async fn portal_lifetime_reads_the_occultism_ability() {
+    let server = test_server_with(data());
+    let client = TestClient::new(&server, 1, 1);
+    let me = spawn_player(
+        &server,
+        &client,
+        test_character(1, "Alice", 100.0, 100.0),
+        0x10,
+    );
+    // No experience table in the test data: the level reads 0 -> 30 s.
+    assert_eq!(portal_lifetime(&server, &me), PORTAL_LIFETIME);
+    assert_eq!(OCCULTISM_ABILITY_ID, 5);
+}
+
+#[tokio::test]
+async fn use_portal_tells_the_bystanders() {
+    let server = test_server_with(data());
+    let mut user = TestClient::new(&server, 1, 1);
+    let mut watcher = TestClient::new(&server, 2, 2);
+    let me = spawn_player(
+        &server,
+        &user,
+        test_character(1, "Alice", 100.0, 100.0),
+        0x10,
+    );
+    let _other = spawn_player(
+        &server,
+        &watcher,
+        test_character(2, "Bob", 101.0, 100.0),
+        0x20,
+    );
+    let portal = portal_npc(&server, (102.0, 100.0));
+    user.drain();
+    watcher.drain();
+    use_portal(&server, &me, portal.obj_id);
+    assert!(user
+        .drain_ops()
+        .iter()
+        .all(|op| *op != sc::SCUnitPortalUsedPacket));
+    let frames = watcher.drain();
+    assert!(
+        frames.contains(&(
+            sc::SCUnitPortalUsedPacket,
+            body(&SCUnitPortalUsedPacket { unit_id: me.obj_id })
+        )),
+        "{frames:?}"
     );
 }
