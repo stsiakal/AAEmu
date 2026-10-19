@@ -1420,7 +1420,8 @@ is no longer mirrored (see "Known deviations", dead NPC returned and healed).
   `aaemu-testclient` bots (lock one side only -> no trade; negative money -> rejected; 5-unit
   stack, 2 put up -> only 2 move, 3 stay).
 * systems::economy (shop currency checks, 2026-10-19): `CSBuyItems` refuses when *any* required
-  currency (money, honor or vocation) is short; the C# checked `money > have && honor > have &&
+  currency (money, honor or vocation) is short (already so since 80b6411c9; the mirrored
+  entry was stale); the C# checked `money > have && honor > have &&
   vocation > have`. Checked totals and per-currency `checked_sub` already reject overflow.
   Covered by `craft_store_tests::shop_checkout_rejects_money_only_and_mixed_currency_shortages`.
 * systems::economy (cash shop, 2026-10-19): loyalty is charged the displayed
