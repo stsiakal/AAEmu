@@ -571,6 +571,10 @@ pub struct GameState {
     pub doodads: HashMap<u32, DoodadInfo>,
     /// Bag contents by slot (`SCCharacterInvenContentsPacket` + `SCItemTaskSuccessPacket`).
     pub bag: Bag,
+    /// Item id -> template id of every item the task stream named (`SCItemTaskSuccessPacket`
+    /// create rows): `ItemMove` tasks (action 8) carry no template, so bag / equipment moves
+    /// are resolved with it.
+    pub item_templates: HashMap<u64, u32>,
     /// Active quests by template id (`SCQuestsPacket`, whose select snapshot is sent in chunks
     /// of 20, and the `SCQuestContext*` updates).
     pub quests: BTreeMap<u32, QuestInfo>,
@@ -1073,7 +1077,7 @@ pub(crate) fn observe_into(st: &mut GameState, p: &Packet) -> anyhow::Result<()>
     } else if p.is_sc(sc::SCItemTaskSuccessPacket) {
         st.events
             .push(GameEvent::ItemTask(parse_item_task(&p.body)));
-        inventory::apply_item_task_success(&mut st.bag, &p.body)?;
+        inventory::apply_item_task_success(&mut st.bag, &mut st.item_templates, &p.body)?;
     } else if p.is_sc(sc::SCDoodadCreatedPacket) {
         let doodad = read_doodad(&mut s)?;
         st.doodads.insert(doodad.obj_id, doodad);

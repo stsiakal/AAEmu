@@ -44,7 +44,7 @@ use anyhow::{bail, Context};
 use serde::{Deserialize, Serialize};
 
 use crate::compactdb::{DEFAULT_COMPACT_DB, DEFAULT_COMPACT_DB_FROM_RUST};
-use crate::craftrun::{equipment_tasks, EquippedItem, RunCharacter};
+use crate::craftrun::{equipment_tasks, EquipmentChanges, EquippedItem, RunCharacter};
 use crate::game::{chat_text, GameClient, Packet};
 use crate::login::LoginClient;
 use crate::record::Recorder;
@@ -84,6 +84,8 @@ const SLOT_MAINHAND: u8 = 15;
 const SLOT_OFFHAND: u8 = 16;
 const SLOT_RANGED: u8 = 17;
 const SLOT_MUSICAL: u8 = 18;
+/// `SlotType.Equipment` of `SCItemTaskSuccessPacket` rows.
+const SLOT_TYPE_EQUIPMENT: u8 = 1;
 /// One-hand sword (first-steps long sword), shield, bow and string instrument; the four cover
 /// every holdable `unit_reqs` can demand (`equip_slot` 8, `equip_shield` 21, `equip_ranged` 29).
 const GEAR: [(u32, u8); 4] = [
@@ -1760,6 +1762,9 @@ fn parse_error(p: &Packet) -> Option<(i16, i16)> {
 struct SkillSession {
     /// Equipment items by `EquipmentItemSlot` index.
     equipment: HashMap<u8, EquippedItem>,
+    /// Item id -> template id of every item the session has seen (equipment / bag snapshots
+    /// and item tasks): an `ItemMove` task carries only item ids.
+    item_templates: HashMap<u64, u32>,
     /// `SCUnitPointsPacket` count per unit (monotonic; lets a command wait for a refill).
     points_count: HashMap<u32, u32>,
     /// Last `SCSkillLearnedPacket`.
@@ -1776,13 +1781,9 @@ impl SkillSession {
             *self.points_count.entry(obj).or_insert(0) += 1;
         }
         if p.is_sc(sc::SCItemTaskSuccessPacket) {
-            if let Ok(changes) = equipment_tasks(&p.body) {
-                for slot in changes.removed_slots {
-                    self.equipment.remove(&slot);
-                }
-                for row in changes.created {
-                    self.equipment.insert(row.slot, row);
-                }
+            match equipment_tasks(&p.body) {
+                Ok(changes) => self.apply_equipment_changes(changes),
+                Err(e) => tracing::debug!("equipment task of an SCItemTaskSuccess not parsed: {e}"),
             }
         }
         if p.is_sc(sc::SCSkillLearnedPacket) {
@@ -1798,6 +1799,114 @@ impl SkillSession {
             if let Ok(obj) = p.stream().read_bc() {
                 self.death = obj;
             }
+        }
+    }
+
+    /// Applies an `SCItemTaskSuccessPacket`'s equipment rows. `ItemMove` tasks carry no
+    /// templates: the moved item's template comes from [`Self::item_templates`] (fed by the
+    /// create / snapshot rows) or from the equipment row it came from.
+    fn apply_equipment_changes(&mut self, changes: EquipmentChanges) {
+        for (item_id, template_id) in &changes.templates {
+            self.item_templates.insert(*item_id, *template_id);
+        }
+        for row in &changes.created {
+            tracing::debug!(
+                "equipment: slot {} <- template {} (item {})",
+                row.slot,
+                row.template_id,
+                row.item_id
+            );
+            self.equipment.insert(
+                row.slot,
+                EquippedItem {
+                    item_id: row.item_id,
+                    template_id: row.template_id,
+                    slot: row.slot,
+                },
+            );
+        }
+        for slot in changes.removed_slots {
+            self.equipment.remove(&slot);
+        }
+        for mv in changes.moves {
+            let from_template = self
+                .item_templates
+                .get(&mv.from_item_id)
+                .copied()
+                .or_else(|| {
+                    self.equipment
+                        .values()
+                        .find(|i| i.item_id == mv.from_item_id)
+                        .map(|i| i.template_id)
+                });
+            let to_template = self
+                .item_templates
+                .get(&mv.to_item_id)
+                .copied()
+                .or_else(|| {
+                    self.equipment
+                        .get(&mv.to_slot)
+                        .filter(|i| i.item_id == mv.to_item_id)
+                        .map(|i| i.template_id)
+                });
+            if mv.to_item_id != 0 {
+                // The displaced item moves to the source slot (an equipment <-> equipment
+                // swap; a bag source just gets it back).
+                if mv.from_slot_type == SLOT_TYPE_EQUIPMENT {
+                    if let Some(template_id) = to_template {
+                        self.equipment.insert(
+                            mv.from_slot,
+                            EquippedItem {
+                                item_id: mv.to_item_id,
+                                template_id,
+                                slot: mv.from_slot,
+                            },
+                        );
+                    } else {
+                        self.equipment.remove(&mv.from_slot);
+                    }
+                }
+            }
+            if mv.from_slot_type == SLOT_TYPE_EQUIPMENT {
+                self.equipment.remove(&mv.from_slot);
+            }
+            if mv.to_slot_type == SLOT_TYPE_EQUIPMENT {
+                match from_template {
+                    Some(template_id) => {
+                        tracing::debug!(
+                            "equipment: slot {} <- template {} (item {}, moved)",
+                            mv.to_slot,
+                            template_id,
+                            mv.from_item_id
+                        );
+                        self.equipment.insert(
+                            mv.to_slot,
+                            EquippedItem {
+                                item_id: mv.from_item_id,
+                                template_id,
+                                slot: mv.to_slot,
+                            },
+                        );
+                    }
+                    None => {
+                        tracing::debug!(
+                            "equipment: slot {} <- unknown item {} (no template seen)",
+                            mv.to_slot,
+                            mv.from_item_id
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// Seeds the item id -> template map from the selection snapshot's bag and equipment.
+    fn seed_known_items(&mut self, game: &GameClient) {
+        for item in game.state.bag.values() {
+            self.item_templates.insert(item.item_id, item.template_id);
+        }
+        for row in self.equipment.values() {
+            self.item_templates.insert(row.item_id, row.template_id);
         }
     }
 
@@ -1994,6 +2103,9 @@ async fn setup_world(
             }
         }
     }
+    // The item id -> template map the template-less `ItemMove` tasks need: the selection
+    // snapshot's equipment and the bag rows the inventory packets carried.
+    session.seed_known_items(&game);
     if let Some(info) = game.state.self_info.clone() {
         character = RunCharacter {
             name: info.name,
@@ -2399,6 +2511,11 @@ impl<'a> Sweep<'a> {
         else {
             bail!("the GM give did not create item {template} (equipment slot {slot} stays empty)");
         };
+        tracing::debug!(
+            "equip: template {template} item {item_id} bag slot {bag_slot} -> equipment slot {slot} \
+             (mainhand {:?})",
+            self.session.equipment.get(&SLOT_MAINHAND).map(|i| i.template_id)
+        );
         self.game.equip_item(item_id, bag_slot, slot).await?;
         let deadline = Instant::now() + GM_EFFECT_WAIT;
         while Instant::now() < deadline {
@@ -3693,6 +3810,7 @@ pub async fn run(cfg: &BotConfig, opts: &RunOptions) -> anyhow::Result<RunReport
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::craftrun::EquipmentMove;
     use aaemu_commons::{Marshal, PacketStream};
 
     fn started_packet(result: u8, real_ms: u16, base_ms: u16) -> Packet {
@@ -4028,6 +4146,64 @@ mod tests {
             .unwrap();
         assert_eq!(tag_buff.source_buff_tag_id, 108);
         assert!(tag_buff.plot_events.is_empty());
+    }
+
+    #[test]
+    fn equipment_moves_resolve_templates_from_seen_items() {
+        let mut session = SkillSession::default();
+        // `/item add self` created the sword in the bag (a create row in another container).
+        session.apply_equipment_changes(EquipmentChanges {
+            templates: vec![(0x11, 5569)],
+            ..Default::default()
+        });
+        // Bag slot 0 -> equipment slot 15 with an empty target (`to_item_id` 0): the moved item
+        // is `from_item_id`, not the target's previous id.
+        session.apply_equipment_changes(EquipmentChanges {
+            moves: vec![EquipmentMove {
+                from_slot_type: 2,
+                from_slot: 0,
+                from_item_id: 0x11,
+                to_slot_type: SLOT_TYPE_EQUIPMENT,
+                to_slot: SLOT_MAINHAND,
+                to_item_id: 0,
+            }],
+            ..Default::default()
+        });
+        assert_eq!(
+            session.equipment.get(&SLOT_MAINHAND).map(|i| i.template_id),
+            Some(5569)
+        );
+        // Swap the sword out for the staff (both slots occupied).
+        session.apply_equipment_changes(EquipmentChanges {
+            templates: vec![(0x22, SPELL_WEAPON_TEMPLATE)],
+            moves: vec![EquipmentMove {
+                from_slot_type: 2,
+                from_slot: 1,
+                from_item_id: 0x22,
+                to_slot_type: SLOT_TYPE_EQUIPMENT,
+                to_slot: SLOT_MAINHAND,
+                to_item_id: 0x11,
+            }],
+            ..Default::default()
+        });
+        assert_eq!(
+            session.equipment.get(&SLOT_MAINHAND).map(|i| i.template_id),
+            Some(SPELL_WEAPON_TEMPLATE)
+        );
+        // The staff leaves the mainhand for the bag.
+        session.apply_equipment_changes(EquipmentChanges {
+            removed_slots: vec![SLOT_MAINHAND],
+            moves: vec![EquipmentMove {
+                from_slot_type: SLOT_TYPE_EQUIPMENT,
+                from_slot: SLOT_MAINHAND,
+                from_item_id: 0x22,
+                to_slot_type: 2,
+                to_slot: 1,
+                to_item_id: 0,
+            }],
+            ..Default::default()
+        });
+        assert!(!session.equipment.contains_key(&SLOT_MAINHAND));
     }
 
     #[test]

@@ -11,6 +11,8 @@
 
 use std::collections::BTreeMap;
 
+use std::collections::HashMap;
+
 use aaemu_commons::PacketStream;
 
 /// One bag item: what the runner needs to count, select and use it.
@@ -100,15 +102,20 @@ fn read_task_item_details(s: &mut PacketStream) -> anyhow::Result<(u64, u32, i32
 }
 
 /// Applies one `SCItemTaskSuccessPacket` body (`systems/economy/item_packets.rs` +
-/// `models/item_task.rs`) to the bag. Only `INVENTORY` rows are tracked; tasks whose item data
-/// is not on the wire (equipment moves into the bag) are ignored — the next full bag snapshot
-/// corrects those.
-pub fn apply_item_task_success(bag: &mut Bag, body: &[u8]) -> anyhow::Result<()> {
+/// `models/item_task.rs`) to the bag. Only `INVENTORY` rows are tracked; a slot swap that moves
+/// an item between the bag and an equipment slot is resolved with `item_templates` (the item id
+/// -> template map fed by the create rows and the snapshot), because an `ItemMove` task carries
+/// no template.
+pub fn apply_item_task_success(
+    bag: &mut Bag,
+    item_templates: &mut HashMap<u64, u32>,
+    body: &[u8],
+) -> anyhow::Result<()> {
     let mut s = PacketStream::from_bytes(body.to_vec());
     let _action = s.read_u8()?;
     let count = s.read_u8()?;
     for _ in 0..count {
-        apply_task(bag, &mut s)?;
+        apply_task(bag, item_templates, &mut s)?;
     }
     let forced = s.read_u8()?;
     for _ in 0..forced {
@@ -118,7 +125,11 @@ pub fn apply_item_task_success(bag: &mut Bag, body: &[u8]) -> anyhow::Result<()>
     Ok(())
 }
 
-fn apply_task(bag: &mut Bag, s: &mut PacketStream) -> anyhow::Result<()> {
+fn apply_task(
+    bag: &mut Bag,
+    item_templates: &mut HashMap<u64, u32>,
+    s: &mut PacketStream,
+) -> anyhow::Result<()> {
     use aaemu_game::models::item_task::item_action;
     let action = s.read_u8()?;
     match action {
@@ -172,6 +183,7 @@ fn apply_task(bag: &mut Bag, s: &mut PacketStream) -> anyhow::Result<()> {
             let slot_type = s.read_u8()?;
             let slot = s.read_u8()?;
             let (item_id, template_id, count) = read_task_item_details(s)?;
+            item_templates.insert(item_id, template_id);
             if slot_type == SLOT_TYPE_INVENTORY {
                 bag.insert(
                     slot,
@@ -204,7 +216,8 @@ fn apply_task(bag: &mut Bag, s: &mut PacketStream) -> anyhow::Result<()> {
             let to_id = s.read_u64()?;
             let _flags = s.read_i32()?;
             // The task carries no templates: a bag -> bag swap of known rows is tracked, a move
-            // out of the bag removes its row, anything else is left to the next snapshot.
+            // out of the bag removes its row; the item that came the other way (an equipment
+            // slot's previous item) is resolved through `item_templates`.
             let from = (from_type == SLOT_TYPE_INVENTORY)
                 .then(|| bag.get(&from_slot).copied())
                 .flatten()
@@ -213,6 +226,12 @@ fn apply_task(bag: &mut Bag, s: &mut PacketStream) -> anyhow::Result<()> {
                 .then(|| bag.get(&to_slot).copied())
                 .flatten()
                 .filter(|i| i.item_id == to_id);
+            let displaced = |templates: &HashMap<u64, u32>, item_id: u64, slot: u8| ItemInfo {
+                item_id,
+                template_id: templates.get(&item_id).copied().unwrap_or(0),
+                count: 1,
+                slot,
+            };
             match (from, to) {
                 (Some(f), Some(t)) => {
                     let mut f = f;
@@ -228,13 +247,27 @@ fn apply_task(bag: &mut Bag, s: &mut PacketStream) -> anyhow::Result<()> {
                         let mut f = f;
                         f.slot = to_slot;
                         bag.insert(to_slot, f);
+                    } else if to_id != 0 {
+                        // The target slot had an item: it moves into the freed bag slot (the
+                        // common two-handed-weapon swap).
+                        bag.insert(from_slot, displaced(item_templates, to_id, from_slot));
                     }
                 }
                 (None, Some(t)) => {
                     bag.remove(&to_slot);
-                    let _ = t; // moved out of the bag
+                    let _ = t; // the row's item moved out of the bag
+                    if from_type != SLOT_TYPE_INVENTORY && from_id != 0 {
+                        // An equipment item moved into the occupied bag slot.
+                        bag.insert(to_slot, displaced(item_templates, from_id, to_slot));
+                    }
                 }
-                (None, None) => {}
+                (None, None) => {
+                    // An equipment item moved into an empty bag slot (an empty row lookup: no
+                    // bag row existed for either id).
+                    if from_type != SLOT_TYPE_INVENTORY && to_type == SLOT_TYPE_INVENTORY {
+                        bag.insert(to_slot, displaced(item_templates, from_id, to_slot));
+                    }
+                }
             }
         }
         item_action::UPDATE_DETAIL => {
@@ -380,7 +413,8 @@ mod tests {
         }
         .write(&mut body);
         let mut bag = Bag::new();
-        apply_item_task_success(&mut bag, body.as_bytes()).unwrap();
+        let mut templates = HashMap::new();
+        apply_item_task_success(&mut bag, &mut templates, body.as_bytes()).unwrap();
         assert_eq!(
             bag.get(&5).map(|i| (i.template_id, i.count)),
             Some((1000, 2))
@@ -395,7 +429,7 @@ mod tests {
             force_remove: vec![],
         }
         .write(&mut body);
-        apply_item_task_success(&mut bag, body.as_bytes()).unwrap();
+        apply_item_task_success(&mut bag, &mut templates, body.as_bytes()).unwrap();
         assert_eq!(bag.get(&5).map(|i| i.count), Some(7));
 
         // A negative delta consumes the stack; the row disappears at <= 0.
@@ -407,7 +441,7 @@ mod tests {
             force_remove: vec![],
         }
         .write(&mut body);
-        apply_item_task_success(&mut bag, body.as_bytes()).unwrap();
+        apply_item_task_success(&mut bag, &mut templates, body.as_bytes()).unwrap();
         assert!(bag.is_empty());
 
         // The explicit remove task drops the matching row.
@@ -418,7 +452,7 @@ mod tests {
             force_remove: vec![],
         }
         .write(&mut body);
-        apply_item_task_success(&mut bag, body.as_bytes()).unwrap();
+        apply_item_task_success(&mut bag, &mut templates, body.as_bytes()).unwrap();
         let mut body = PacketStream::new();
         SCItemTaskSuccessPacket {
             action: 9,
@@ -426,7 +460,7 @@ mod tests {
             force_remove: vec![],
         }
         .write(&mut body);
-        apply_item_task_success(&mut bag, body.as_bytes()).unwrap();
+        apply_item_task_success(&mut bag, &mut templates, body.as_bytes()).unwrap();
         assert!(bag.is_empty());
     }
 
@@ -436,6 +470,7 @@ mod tests {
         // the first take creates the item (`ItemTask::add`, full count), later takes stack with
         // `ItemTask::count_update(item, add)` deltas (quest 50: 6x item 14635 in slot 4).
         let mut bag = Bag::new();
+        let mut templates = HashMap::new();
         for take in 0..6 {
             let task = if take == 0 {
                 ItemTask::add(&item(14_635, 0x0102_0304, 4, 1))
@@ -449,7 +484,7 @@ mod tests {
                 force_remove: vec![],
             }
             .write(&mut body);
-            apply_item_task_success(&mut bag, body.as_bytes()).unwrap();
+            apply_item_task_success(&mut bag, &mut templates, body.as_bytes()).unwrap();
         }
         assert_eq!(bag.get(&4).map(|i| i.count), Some(6));
         let info = bag.get(&4).copied().unwrap();
@@ -461,6 +496,7 @@ mod tests {
     fn item_task_swap_and_move_out_of_the_bag() {
         use aaemu_game::models::item_task::item_action;
         let mut bag = Bag::new();
+        let mut templates = HashMap::new();
         bag.insert(
             5,
             ItemInfo {
@@ -490,7 +526,7 @@ mod tests {
             .write_u64(0x11)
             .write_u64(0x22)
             .write_i32(0);
-        apply_task(&mut bag, &mut s).unwrap();
+        apply_task(&mut bag, &mut templates, &mut s).unwrap();
         assert_eq!(bag.get(&5).map(|i| i.item_id), Some(0x22));
         assert_eq!(bag.get(&7).map(|i| i.item_id), Some(0x11));
 
@@ -504,9 +540,53 @@ mod tests {
             .write_u64(0x22)
             .write_u64(0)
             .write_i32(0);
-        apply_task(&mut bag, &mut s).unwrap();
+        apply_task(&mut bag, &mut templates, &mut s).unwrap();
         assert_eq!(bag.len(), 1);
         assert_eq!(bag.get(&7).map(|i| i.item_id), Some(0x11));
+
+        // Bag -> equipment with an occupied target (the two-handed weapon swap): the displaced
+        // equipment item lands in the freed bag slot; its template comes from the map.
+        templates.insert(0x33, 3000);
+        bag.insert(
+            5,
+            ItemInfo {
+                item_id: 0x22,
+                template_id: 2000,
+                count: 1,
+                slot: 5,
+            },
+        );
+        let mut s = PacketStream::new();
+        s.write_u8(item_action::SWAP_SLOT)
+            .write_u8(SLOT_TYPE_INVENTORY)
+            .write_u8(5)
+            .write_u8(1)
+            .write_u8(15)
+            .write_u64(0x22)
+            .write_u64(0x33)
+            .write_i32(0);
+        apply_task(&mut bag, &mut templates, &mut s).unwrap();
+        assert_eq!(
+            bag.get(&5).map(|i| (i.item_id, i.template_id)),
+            Some((0x33, 3000))
+        );
+
+        // Equipment -> bag (the shield a two-handed weapon unequips): the row appears.
+        templates.insert(0x44, 4000);
+        let mut s = PacketStream::new();
+        s.write_u8(item_action::SWAP_SLOT)
+            .write_u8(1)
+            .write_u8(16)
+            .write_u8(SLOT_TYPE_INVENTORY)
+            .write_u8(8)
+            .write_u64(0x44)
+            .write_u64(0)
+            .write_i32(0);
+        apply_task(&mut bag, &mut templates, &mut s).unwrap();
+        assert_eq!(
+            bag.get(&8).map(|i| (i.item_id, i.template_id)),
+            Some((0x44, 4000))
+        );
     }
 
     #[test]
