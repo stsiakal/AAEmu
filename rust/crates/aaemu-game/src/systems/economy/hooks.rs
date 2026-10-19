@@ -85,6 +85,9 @@ pub struct NpcShopInfo {
     pub merchant: bool,
     pub merchant_pack_id: u32,
     pub blacksmith: bool,
+    /// `Template.Repairman`: the 1.2 client's `repairman` branch is dead, so this NPC only
+    /// advertises the repair skill; equipment repair itself runs at blacksmiths and repairmen.
+    pub repairman: bool,
     pub auctioneer: bool,
     pub banker: bool,
     pub specialty: bool,

@@ -2150,3 +2150,22 @@ no crafts), Soulforged/Maliceforged weapons and Bane's Bolt/Bloodmist/Abyssal De
 weapon sets 393-395 (buffs only; weapon models), Auroria class sets (no set rows), then lunagems
 (socket tables reshaped, loader check). The Dawnsdrop/Hellforged sets use emulator-custom ids
 (>= 9,000,000) and are refused by the tool. A proc engine is the prerequisite for the 57 item procs.
+
+## Bevy-client server fixes (October 19, 2026)
+
+Found by the open-source Bevy client's reverse-engineering notes (`AABevy1.2/docs/aa-net.md`,
+digest `D:/aaemu-audits/bevy/DIGEST.md`). Items marked "per Bevy RE notes" were not re-derived
+from the unpacked 1.2 client here.
+
+- **Repair reachable (deviation from the C#).** The C# advertised the repair skill (12086) only
+  for `repairman` NPC templates but repaired only at `blacksmith` ones; the data has 331
+  blacksmith-only and a handful of repairman-only templates, so repair was unreachable through
+  NPC interaction. The original client's `npc_interaction` script maps `"blacksmith"` to the
+  repair window and its `"repairman"` branch references an undefined constant (per Bevy RE
+  notes), so the blacksmith is the retail repair NPC. Now the repair handlers accept a
+  blacksmith *or* a repairman, and `CSStartInteraction` appends `REPAIR` to the advertised skill
+  list of every blacksmith/repairman (the primary option, e.g. `USE_STORE`, stays first).
+- **One tick origin (deviation).** `Pong.world/remote` and `SCInstantGameStart/End` counted
+  from two separate `OnceLock<Instant>` origins; the client maps battlefield timers through
+  the Pong samples (per Bevy RE notes, `TimeKeeper::AddSample`), so they were skewed by the
+  difference of the first uses. Both now use `packets::proxy::tick_count`.
