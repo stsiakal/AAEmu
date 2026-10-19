@@ -30,12 +30,17 @@ use std::time::{Duration, Instant};
 
 use aaemu_commons::PacketStream;
 use aaemu_game::data::client_files::ClientFileManager;
-use aaemu_game::data::world_templates::WorldTemplates;
+use aaemu_game::data::world_templates::{WorldTemplate, WorldTemplates, REGION_SIZE};
 use aaemu_game::models::movement::convert_radian_to_direction;
 use aaemu_game::opcodes::cs;
 use aaemu_game::systems::ai::collision::fall::FALL_VEL_UNITS_PER_MPS;
+use aaemu_game::systems::ai::geodata::astar::PathNode;
+use aaemu_game::systems::ai::geodata::bai::UsedAreaNames;
+use aaemu_game::systems::ai::geodata::graph::DEFAULT_AGENT_RADIUS;
+use aaemu_game::systems::ai::geodata::manager::{AiGeoData, GeoError, TerrainHeights};
+use aaemu_game::systems::ai::geodata::ClientBaiFiles;
 use aaemu_game::systems::npcs::heightmap::WorldHeightmap;
-use aaemu_game::systems::skills::controllers::add_distance_to_front;
+use aaemu_game::systems::skills::controllers::{add_distance_to_front, Vec3};
 use anyhow::{bail, Context};
 use serde::Serialize;
 
@@ -59,10 +64,20 @@ const PATH_SECTOR_M: i32 = 256;
 /// `WorldManager.CELL_SIZE`.
 const CELL_SIZE_M: i32 = 1024;
 
+/// One navmesh search covers at most this distance (the server's A* is bounded).
+const NAV_DIRECT_MAX_M: f32 = 450.0;
+/// Length of a navmesh leg of a long route.
+const NAV_LEG_M: f32 = 300.0;
+
+/// A walk route: the waypoints after the start, the last one being the target.
+pub type Route = Vec<(f32, f32, f32)>;
+
 /// Where the walker loads its terrain from.
 pub struct Terrain {
     files: Arc<ClientFileManager>,
-    map: WorldHeightmap,
+    map: Arc<WorldHeightmap>,
+    /// The server's own navmesh (`.bai` files of the 1.2 `game_pak`), when loaded.
+    nav: Option<NavMesh>,
     /// `WorldTemplate.OceanLevel`.
     pub ocean_level: f32,
     pub world_name: String,
@@ -90,10 +105,12 @@ impl Terrain {
         let template = worlds
             .get_world_template_by_name("main_world")
             .context("main_world is not in the game_pak")?;
-        let map = WorldHeightmap::new(template);
+        let map = Arc::new(WorldHeightmap::new(template));
+        let nav = Some(NavMesh::new(template, files.clone(), map.clone()));
         Ok(Self {
             files,
             map,
+            nav,
             ocean_level: template.ocean_level,
             world_name: template.name.clone(),
             cells: (template.cell_x, template.cell_y),
@@ -107,7 +124,8 @@ impl Terrain {
             files: Arc::new(ClientFileManager::new()),
             world_name: map.name.clone(),
             cells: (map.cell_x, map.cell_y),
-            map,
+            map: Arc::new(map),
+            nav: None,
             ocean_level,
         }
     }
@@ -233,23 +251,138 @@ impl Terrain {
         to: (f32, f32, f32),
         config: &WalkerConfig,
     ) -> Option<Vec<(f32, f32, f32)>> {
-        const STEP: f32 = 2.0;
-        const MARGIN: f32 = 500.0;
+        self.route_with_source(from, to, config).map(|(r, _)| r)
+    }
+
+    /// The route and where it came from: `navmesh` (the server's `.bai` navmesh, the same
+    /// `PathNode::find_smooth_path` the AI follows) when it has one, else `heightmap` (the
+    /// terrain grid search of [`Terrain::grid_route`]).
+    pub fn route_with_source(
+        &self,
+        from: (f32, f32, f32),
+        to: (f32, f32, f32),
+        config: &WalkerConfig,
+    ) -> Option<(Route, &'static str)> {
+        let dist = dist_2d(from, to);
+        if let Some(nav) = &self.nav {
+            // The server's A* is bounded (`dist * 20 + 500` expansions), so only short routes
+            // come back complete from one search.
+            if dist <= NAV_DIRECT_MAX_M {
+                if let Some(path) = nav.route(from, to) {
+                    return Some((path, "navmesh"));
+                }
+            }
+        }
+        if dist <= 700.0 {
+            return self.grid_route(from, to, config).map(|r| (r, "heightmap"));
+        }
+        // Long route: a coarse heightmap plan avoids sea and cliffs, then the navmesh refines
+        // every ~300 m leg of it (a leg without a navmesh route keeps its coarse points).
+        let coarse = self.coarse_route(from, to, config)?;
+        let Some(nav) = &self.nav else {
+            return Some((coarse, "heightmap"));
+        };
+        let mut anchors: Vec<usize> = Vec::new();
+        let mut since = 0.0f32;
+        let mut prev = from;
+        for (i, p) in coarse.iter().enumerate() {
+            since += dist_2d(prev, *p);
+            prev = *p;
+            if since >= NAV_LEG_M && i + 1 < coarse.len() {
+                anchors.push(i);
+                since = 0.0;
+            }
+        }
+        anchors.push(coarse.len() - 1);
+        let mut route: Route = Vec::new();
+        let mut legs_nav = 0usize;
+        let mut legs_grid = 0usize;
+        let (mut leg_start, mut leg_from) = (0usize, from);
+        for &end in &anchors {
+            let leg_to = coarse[end];
+            match nav.route(leg_from, leg_to) {
+                Some(points) => {
+                    route.extend(points);
+                    legs_nav += 1;
+                }
+                None => {
+                    route.extend(coarse[leg_start..=end].iter().copied());
+                    legs_grid += 1;
+                }
+            }
+            leg_start = end + 1;
+            leg_from = leg_to;
+        }
+        let source = if legs_grid == 0 {
+            "navmesh"
+        } else if legs_nav == 0 {
+            "heightmap"
+        } else {
+            "navmesh+heightmap"
+        };
+        Some((route, source))
+    }
+
+    /// A coarse heightmap route for a long walk: the grid grows from 2 m until the search
+    /// fits, the margin is a fifth of the distance.
+    fn coarse_route(
+        &self,
+        from: (f32, f32, f32),
+        to: (f32, f32, f32),
+        config: &WalkerConfig,
+    ) -> Option<Route> {
+        let dist = dist_2d(from, to);
+        let margin = (dist * 0.2).clamp(500.0, 1500.0);
+        for step in [2.0f32, 4.0, 6.0, 8.0, 12.0, 16.0] {
+            let w = ((to.0 - from.0).abs() + 2.0 * margin) / step + 2.0;
+            let h = ((to.1 - from.1).abs() + 2.0 * margin) / step + 2.0;
+            if w * h <= 850_000.0 {
+                return self.grid_route_with(from, to, config, step, margin);
+            }
+        }
+        None
+    }
+
+    /// Whether the `.bai` navmesh is loaded for the walker.
+    pub fn has_navmesh(&self) -> bool {
+        self.nav.is_some()
+    }
+
+    /// The terrain-only planner (2 m grid A* over the heightmap, no navmesh).
+    pub fn grid_route(
+        &self,
+        from: (f32, f32, f32),
+        to: (f32, f32, f32),
+        config: &WalkerConfig,
+    ) -> Option<Vec<(f32, f32, f32)>> {
+        self.grid_route_with(from, to, config, 2.0, 500.0)
+    }
+
+    /// [`Terrain::grid_route`] with a coarser grid for long distances: the same A* over a grid
+    /// of `step` metres inside the bounding box of the route grown by `margin`.
+    pub fn grid_route_with(
+        &self,
+        from: (f32, f32, f32),
+        to: (f32, f32, f32),
+        config: &WalkerConfig,
+        step: f32,
+        margin: f32,
+    ) -> Option<Vec<(f32, f32, f32)>> {
         const MAX_NODES: usize = 900_000;
-        let (min_x, min_y) = (from.0.min(to.0) - MARGIN, from.1.min(to.1) - MARGIN);
-        let (max_x, max_y) = (from.0.max(to.0) + MARGIN, from.1.max(to.1) + MARGIN);
+        let (min_x, min_y) = (from.0.min(to.0) - margin, from.1.min(to.1) - margin);
+        let (max_x, max_y) = (from.0.max(to.0) + margin, from.1.max(to.1) + margin);
         let min_x = min_x.max(0.0);
         let min_y = min_y.max(0.0);
         let max_x = max_x.min(self.cells.0 as f32 * CELL_SIZE_M as f32);
         let max_y = max_y.min(self.cells.1 as f32 * CELL_SIZE_M as f32);
-        let w = (((max_x - min_x) / STEP).ceil() as i32 + 1).max(2);
-        let h = (((max_y - min_y) / STEP).ceil() as i32 + 1).max(2);
+        let w = (((max_x - min_x) / step).ceil() as i32 + 1).max(2);
+        let h = (((max_y - min_y) / step).ceil() as i32 + 1).max(2);
         let n = w as usize * h as usize;
         if n > MAX_NODES || w < 2 || h < 2 {
             return None;
         }
         let idx = |ix: i32, iy: i32| (ix * h + iy) as usize;
-        let pos = |ix: i32, iy: i32| (min_x + ix as f32 * STEP, min_y + iy as f32 * STEP);
+        let pos = |ix: i32, iy: i32| (min_x + ix as f32 * step, min_y + iy as f32 * step);
         let mut heights = vec![f32::NAN; n];
         for ix in 0..w {
             for iy in 0..h {
@@ -264,12 +397,12 @@ impl Terrain {
             z.is_finite() && water.is_none_or(|level| z > level + 0.05)
         };
         let goal = (
-            ((to.0 - min_x) / STEP).round() as i32,
-            ((to.1 - min_y) / STEP).round() as i32,
+            ((to.0 - min_x) / step).round() as i32,
+            ((to.1 - min_y) / step).round() as i32,
         );
         let start = (
-            ((from.0 - min_x) / STEP).round() as i32,
-            ((from.1 - min_y) / STEP).round() as i32,
+            ((from.0 - min_x) / step).round() as i32,
+            ((from.1 - min_y) / step).round() as i32,
         );
         if start.0 < 0 || start.1 < 0 || start.0 >= w || start.1 >= h {
             return None;
@@ -338,9 +471,9 @@ impl Terrain {
                     continue;
                 }
                 let d = if dx == 0 || dy == 0 {
-                    STEP
+                    step
                 } else {
-                    STEP * std::f32::consts::SQRT_2
+                    step * std::f32::consts::SQRT_2
                 };
                 let Some(step) = cost(current, ni, d) else {
                     continue;
@@ -457,6 +590,97 @@ impl Terrain {
             max_down.atan().to_degrees()
         );
         Ok(out)
+    }
+}
+
+/// The server's heightmap as the geodata's terrain fallback.
+struct WalkHeights {
+    files: Arc<ClientFileManager>,
+    map: Arc<WorldHeightmap>,
+}
+
+impl TerrainHeights for WalkHeights {
+    fn raw_height(&self, x: i32, y: i32) -> Result<f32, GeoError> {
+        self.map
+            .get_raw_height_map_height(&self.files, x, y)
+            .map_err(|_| GeoError)
+    }
+
+    fn height(&self, x: f32, y: f32) -> Result<f32, GeoError> {
+        self.map.get_height(&self.files, x, y).map_err(|_| GeoError)
+    }
+}
+
+/// The 1.2 `game_pak`'s `.bai` navmesh behind the server's own [`AiGeoData`]: the same files
+/// (`game/worlds/<world>/paths/<x>_<y>/netmission*.bai`, 256 m blocks loaded per cell on first
+/// use) and the same smooth-path search the NPCs chase with, so a bot path is a path an NPC
+/// could walk too.
+pub struct NavMesh {
+    geo: AiGeoData,
+    template: WorldTemplate,
+}
+
+impl NavMesh {
+    pub fn new(
+        template: &WorldTemplate,
+        files: Arc<ClientFileManager>,
+        map: Arc<WorldHeightmap>,
+    ) -> Self {
+        let terrain: Arc<dyn TerrainHeights> = Arc::new(WalkHeights {
+            files: files.clone(),
+            map,
+        });
+        let bai = Arc::new(ClientBaiFiles(files));
+        let geo = AiGeoData::new(
+            template,
+            true,
+            bai,
+            Arc::new(UsedAreaNames::default()),
+            Some(terrain),
+        );
+        Self {
+            geo,
+            template: template.clone(),
+        }
+    }
+
+    /// The zone key of a position (`ZoneKeyByRegions`).
+    fn zone_key(&self, p: (f32, f32)) -> u32 {
+        self.template
+            .zone_key_at(p.0 as i32 / REGION_SIZE, p.1 as i32 / REGION_SIZE)
+            .unwrap_or(0)
+    }
+
+    /// The navmesh route from `from` to `to` without the start point (the last point is `to`),
+    /// `None` when the navmesh has no triangle at either end or no complete corridor.
+    pub fn route(
+        &self,
+        from: (f32, f32, f32),
+        to: (f32, f32, f32),
+    ) -> Option<Vec<(f32, f32, f32)>> {
+        let mut node = PathNode {
+            zone_key: self.zone_key((from.0, from.1)),
+            ..PathNode::default()
+        };
+        let start = Vec3::new(from.0, from.1, from.2);
+        let goal = Vec3::new(to.0, to.1, to.2);
+        let smooth = node
+            .find_smooth_path(&self.geo, start, goal, DEFAULT_AGENT_RADIUS)
+            .ok()
+            .flatten()?;
+        let mut points: Vec<(f32, f32, f32)> = smooth
+            .points
+            .iter()
+            .skip(1)
+            .map(|p| (p.x, p.y, p.z))
+            .collect();
+        if points.is_empty() {
+            points.push(to);
+        }
+        // The last point is the requested target itself (its height comes from the terrain).
+        let last = points.len() - 1;
+        points[last] = to;
+        Some(points)
     }
 }
 
@@ -874,7 +1098,7 @@ fn rotate(dx: f32, dy: f32, degrees: f32) -> (f32, f32) {
     (dx * cos - dy * sin, dx * sin + dy * cos)
 }
 
-fn dist_2d(a: (f32, f32, f32), b: (f32, f32, f32)) -> f32 {
+pub fn dist_2d(a: (f32, f32, f32), b: (f32, f32, f32)) -> f32 {
     ((b.0 - a.0).powi(2) + (b.1 - a.1).powi(2)).sqrt()
 }
 
@@ -947,6 +1171,7 @@ pub async fn walk(cfg: &BotConfig, opts: WalkOptions) -> anyhow::Result<WalkRepo
         out: None,
         force_blocked: false,
         combat_skill: cfg.skill_id,
+        player: None,
     };
     let rec = Recorder::new(true);
     let (mut game, character) = questrun::setup_world(cfg, &rec, &run_opts).await?;
@@ -1011,7 +1236,7 @@ pub async fn walk(cfg: &BotConfig, opts: WalkOptions) -> anyhow::Result<WalkRepo
                 Step::Arrived { .. } => arrived = true,
                 Step::Teleport { at, reason } => {
                     walker.check_teleport_budget()?;
-                    game.teleport(near(walker.pos(), at)).await?;
+                    game.teleport(near_point(walker.pos(), at)).await?;
                     walker.teleported(game.state.self_pos, started.elapsed());
                     println!(
                         "[walk] teleport fallback: {} -> {:.1},{:.1},{:.1}",
@@ -1052,7 +1277,7 @@ pub async fn walk(cfg: &BotConfig, opts: WalkOptions) -> anyhow::Result<WalkRepo
 
 /// A point 1.5 m before `target` along the approach (the GM `/move` landing must not be inside
 /// the NPC).
-fn near(from: (f32, f32, f32), target: (f32, f32, f32)) -> (f32, f32, f32) {
+pub fn near_point(from: (f32, f32, f32), target: (f32, f32, f32)) -> (f32, f32, f32) {
     let (dx, dy) = (target.0 - from.0, target.1 - from.1);
     let dist = (dx * dx + dy * dy).sqrt();
     if dist <= 2.0 {
@@ -1062,7 +1287,7 @@ fn near(from: (f32, f32, f32), target: (f32, f32, f32)) -> (f32, f32, f32) {
     (from.0 + dx * k, from.1 + dy * k, target.2)
 }
 
-async fn pump(game: &mut GameClient, wait: Duration) -> anyhow::Result<()> {
+pub async fn pump(game: &mut GameClient, wait: Duration) -> anyhow::Result<()> {
     let deadline = Instant::now() + wait;
     loop {
         let left = deadline.saturating_duration_since(Instant::now());
@@ -1076,7 +1301,7 @@ async fn pump(game: &mut GameClient, wait: Duration) -> anyhow::Result<()> {
 }
 
 /// `CSMoveUnitPacket` (`MoveTypeEnum.Unit`) with the walker's velocity / yaw / fall velocity.
-async fn send_move(game: &mut GameClient, m: MoveStep, time: u32) -> anyhow::Result<()> {
+pub async fn send_move(game: &mut GameClient, m: MoveStep, time: u32) -> anyhow::Result<()> {
     let mut s = PacketStream::new();
     let actor_flags = if m.fall_vel.is_some() { 0x82 } else { 0x02 };
     s.write_bc(game.state.self_obj)
