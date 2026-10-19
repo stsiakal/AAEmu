@@ -3,12 +3,16 @@
 //! Given the quest that completed and the packets observed during it, the checks compare the
 //! rewards and kills against the same `compact.sqlite3` the game server loaded:
 //!
-//! * XP: the `QuestActSupplyExp` acts of the quest plus the level supply (`quest_supplies`,
-//!   added by `engine.rs::distribute_rewards` at the Reward step) against the quest window's
-//!   `SCExpChangedPacket` deltas. The server scales positive gains by `World:ExpRate`
-//!   (`skills/progress.rs::add_exp_locked`); the lane config ships `1.0`.
-//! * gold: `QuestActSupplyCopper` acts plus the level supply's copper against the money tasks
+//! * XP: the `QuestActSupplyExp` acts of the quest, plus the level supply (`quest_supplies`)
+//!   **only when the Reward component has no supply exp act**: retail replaces the level supply
+//!   with the reward act (1.2 client `FUN_394a1370`, archdb 2014; see
+//!   `D:/aaemu-audits/research/oracle/quest-xp-and-prices.md`). The server scales positive
+//!   gains by `World:ExpRate` (`skills/progress.rs::add_exp_locked`; the lane config ships 1.0).
+//! * gold: `QuestActSupplyCopper` acts, with the level supply's copper only when the Reward
+//!   component has no supply copper act (`FUN_394a0fd0`), against the money tasks
 //!   (`ItemTaskType.DepositMoney` = 83) of the window, minus the coins taken from loot bags.
+//!   A server that grants both is reported as the labelled suspect "server adds level supply on
+//!   top of act XP/copper (oracle: ...)".
 //! * items: `QuestActSupplyItem` / `QuestActSupplySelectiveItem` acts against the
 //!   `ItemTaskType.QuestSupplyItems` (= 38) create tasks. An act that ran before the Reward step
 //!   only tops the character up to its count (`acts.rs::SupplyItem`), so items already owned at
@@ -266,6 +270,11 @@ impl ValueChecker {
         let mut item_expected: BTreeMap<u32, ItemExpectation> = BTreeMap::new();
         let mut selective: Vec<(i64, u8, u32, i32)> = Vec::new();
         let mut aggro = false;
+        // Retail replaces the level supply with the reward component's own supply acts when
+        // those exist (1.2 client `FUN_394a1370` / `FUN_394a0fd0`, archdb 2014; see
+        // `D:/aaemu-audits/research/oracle/quest-xp-and-prices.md` §1).
+        let mut reward_exp_act = false;
+        let mut reward_copper_act = false;
 
         for act in &acts {
             // Fail / Drop components never run on a completed quest.
@@ -275,6 +284,9 @@ impl ValueChecker {
             match act.kind.as_str() {
                 "QuestActSupplyExp" => {
                     if let Some(exp) = self.supply_exp(act.detail_id)? {
+                        if act.component_kind == KIND_REWARD {
+                            reward_exp_act = true;
+                        }
                         expected_exp += i64::from(exp);
                         exp_sources.push(format!(
                             "quest_act_supply_exps id {} exp {exp}",
@@ -284,6 +296,9 @@ impl ValueChecker {
                 }
                 "QuestActSupplyCopper" => {
                     if let Some(amount) = self.supply_copper(act.detail_id)? {
+                        if act.component_kind == KIND_REWARD {
+                            reward_copper_act = true;
+                        }
                         expected_copper += i64::from(amount);
                         copper_sources.push(format!(
                             "quest_act_supply_coppers id {} amount {amount}",
@@ -350,17 +365,38 @@ impl ValueChecker {
             ));
         }
 
+        // The level supply is the fallback only: a reward-component supply act replaces it
+        // (1.2 client FUN_394a1370 / FUN_394a0fd0; archdb 2014 agrees).
+        let mut level_exp: Option<i32> = None;
+        let mut level_copper: Option<i32> = None;
         if level > 0 {
             if let Some((exp, copper)) = self.level_supply(level)? {
-                expected_exp += i64::from(exp);
-                expected_copper += i64::from(copper);
-                exp_sources.push(format!(
-                    "quest_supplies[LEVEL={level}] exp {exp} (engine.rs::distribute_rewards)"
-                ));
-                copper_sources.push(format!(
-                    "quest_supplies[LEVEL={level}] copper {copper} \
-                     (engine.rs::distribute_rewards)"
-                ));
+                level_exp = Some(exp);
+                level_copper = Some(copper);
+                if reward_exp_act {
+                    exp_sources.push(format!(
+                        "level supply exp {exp} not added (reward component has \
+                         QuestActSupplyExp; 1.2 client FUN_394a1370 + archdb)"
+                    ));
+                } else {
+                    expected_exp += i64::from(exp);
+                    exp_sources.push(format!(
+                        "quest_supplies[LEVEL={level}] exp {exp} \
+                         (engine.rs::distribute_rewards)"
+                    ));
+                }
+                if reward_copper_act {
+                    copper_sources.push(format!(
+                        "level supply copper {copper} not added (reward component has \
+                         QuestActSupplyCopper; 1.2 client FUN_394a0fd0 + archdb)"
+                    ));
+                } else {
+                    expected_copper += i64::from(copper);
+                    copper_sources.push(format!(
+                        "quest_supplies[LEVEL={level}] copper {copper} \
+                         (engine.rs::distribute_rewards)"
+                    ));
+                }
             }
         }
 
@@ -569,17 +605,27 @@ impl ValueChecker {
             delta: expected_exp - quest_xp,
         };
         if !reward_ratio_explained && xp.delta != 0 {
-            report.suspects.push(format!(
-                "quest {quest_id}: observed {quest_xp} quest XP (+{kill_xp} paired kill XP) but \
-                 expected {expected_exp} = {} (World:ExpRate scales gains, \
-                 skills/progress.rs::add_exp_locked; acts.rs::QuestActSupplyExp adds act XP \
-                 immediately, engine.rs::distribute_rewards adds the level supply)",
-                if exp_sources.is_empty() {
-                    "no quest XP act / level supply".to_string()
-                } else {
-                    exp_sources.join(" + ")
-                }
-            ));
+            let added_supply = reward_exp_act
+                && level_exp
+                    .is_some_and(|exp| exp > 0 && xp.observed - xp.expected == i64::from(exp));
+            if added_supply {
+                report.suspects.push(format!(
+                    "quest {quest_id}: observed {quest_xp} quest XP (+{kill_xp} paired kill XP) \
+                     but expected {expected_exp} = {}; server adds level supply on top of act XP \
+                     (oracle: client FUN_394a1370 + archdb), extra {} XP",
+                    join_sources(&exp_sources, "no quest XP act / level supply"),
+                    level_exp.unwrap_or(0)
+                ));
+            } else {
+                report.suspects.push(format!(
+                    "quest {quest_id}: observed {quest_xp} quest XP (+{kill_xp} paired kill XP) \
+                     but expected {expected_exp} = {} (World:ExpRate scales gains, \
+                     skills/progress.rs::add_exp_locked; acts.rs::QuestActSupplyExp adds act XP \
+                     immediately, engine.rs::distribute_rewards adds the level supply only when \
+                     the reward component has no supply exp act)",
+                    join_sources(&exp_sources, "no quest XP act / level supply")
+                ));
+            }
         }
         if xp.expected == 0 && xp.observed == 0 && xp.observed_kill == 0 {
             xp = XpCheck::default();
@@ -592,16 +638,28 @@ impl ValueChecker {
             delta: expected_copper - quest_money,
         };
         if !reward_ratio_explained && gold.delta != 0 {
-            report.suspects.push(format!(
-                "quest {quest_id}: observed {quest_money} copper in DepositMoney tasks (minus \
-                 {looted_copper} looted coin copper) but expected {expected_copper} = {} \
-                 (engine.rs::distribute_rewards -> change_money)",
-                if copper_sources.is_empty() {
-                    "no quest copper act / level supply".to_string()
-                } else {
-                    copper_sources.join(" + ")
-                }
-            ));
+            let added_supply = reward_copper_act
+                && level_copper.is_some_and(|copper| {
+                    copper > 0 && gold.observed - gold.expected == i64::from(copper)
+                });
+            if added_supply {
+                report.suspects.push(format!(
+                    "quest {quest_id}: observed {quest_money} copper in DepositMoney tasks \
+                     (minus {looted_copper} looted coin copper) but expected {expected_copper} = \
+                     {}; server adds level supply copper on top of act copper (oracle: client \
+                     FUN_394a0fd0 + archdb), extra {} copper",
+                    join_sources(&copper_sources, "no quest copper act / level supply"),
+                    level_copper.unwrap_or(0)
+                ));
+            } else {
+                report.suspects.push(format!(
+                    "quest {quest_id}: observed {quest_money} copper in DepositMoney tasks \
+                     (minus {looted_copper} looted coin copper) but expected {expected_copper} = \
+                     {} (engine.rs::distribute_rewards -> change_money adds the level supply only \
+                     when the reward component has no supply copper act)",
+                    join_sources(&copper_sources, "no quest copper act / level supply")
+                ));
+            }
         }
         report.gold = Some(gold);
 
@@ -858,6 +916,15 @@ fn clamp_i32(value: i64) -> i32 {
     i32::try_from(value.clamp(i64::from(i32::MIN), i64::from(i32::MAX))).unwrap_or(0)
 }
 
+/// The cited reward rows of a check, or a fallback when the data grants nothing.
+fn join_sources(sources: &[String], fallback: &str) -> String {
+    if sources.is_empty() {
+        fallback.to_string()
+    } else {
+        sources.join(" + ")
+    }
+}
+
 /// The compact database stores booleans as `'t'` / `'f'` text (or 0/1 in fixtures).
 fn truthy(value: ValueRef<'_>) -> bool {
     match value {
@@ -943,6 +1010,10 @@ mod tests {
         INSERT INTO quest_act_supply_selective_items VALUES (1005, 300, 1, 0);
         INSERT INTO quest_supplies VALUES (1, 5, 30, 7);
 
+        -- Quest 3: no supply act in the Reward component, so the level supply applies.
+        INSERT INTO quest_contexts VALUES (3, 5, 'f');
+        INSERT INTO quest_components VALUES (30, 3, 8);
+
         -- Quest 2: one kill of npc 777 at level 5, loot pack 9 with item 400.
         INSERT INTO quest_contexts VALUES (2, 1, 'f');
         INSERT INTO quest_components VALUES (20, 2, 4), (21, 2, 8);
@@ -1003,7 +1074,60 @@ mod tests {
     }
 
     #[test]
-    fn clean_quest_matches_acts_level_supply_items_and_money() {
+    fn clean_quest_uses_reward_acts_instead_of_the_level_supply() {
+        let events = vec![
+            item_task(TASK_QUEST_SUPPLY_ITEMS, vec![task_item(100, 2)], 0),
+            item_task(TASK_DEPOSIT_MONEY, Vec::new(), 10),
+            item_task(TASK_QUEST_SUPPLY_ITEMS, vec![task_item(200, 1)], 0),
+            item_task(TASK_QUEST_SUPPLY_ITEMS, vec![task_item(300, 1)], 0),
+        ];
+        // Reward-component acts 70 XP / 10 copper replace the level-5 supply (30 / 7).
+        let exp = vec![change(50, 1), change(70, 2)];
+        let bag = BTreeMap::new();
+        let report = checker()
+            .check(1, &window(&bag, &exp, &events, &[], &[]))
+            .unwrap();
+        assert!(report.suspects.is_empty(), "{report:?}");
+        assert_eq!(
+            report.xp,
+            Some(XpCheck {
+                expected: 120,
+                observed: 120,
+                observed_kill: 0,
+                delta: 0
+            })
+        );
+        assert_eq!(
+            report.gold,
+            Some(GoldCheck {
+                expected: 10,
+                observed: 10,
+                delta: 0
+            })
+        );
+        assert_eq!(report.items.len(), 3);
+        assert!(report.items.iter().all(|i| i.observed == i.expected));
+        assert!(report.kills.is_empty());
+    }
+
+    #[test]
+    fn level_supply_is_used_when_the_reward_component_has_no_supply_act() {
+        let events = vec![item_task(TASK_DEPOSIT_MONEY, Vec::new(), 7)];
+        let exp = vec![change(30, 1)];
+        let bag = BTreeMap::new();
+        let report = checker()
+            .check(3, &window(&bag, &exp, &events, &[], &[]))
+            .unwrap();
+        assert!(report.suspects.is_empty(), "{report:?}");
+        assert_eq!(report.xp.as_ref().unwrap().expected, 30);
+        assert_eq!(report.xp.as_ref().unwrap().observed, 30);
+        assert_eq!(report.gold.as_ref().unwrap().expected, 7);
+        assert_eq!(report.gold.as_ref().unwrap().observed, 7);
+    }
+
+    #[test]
+    fn server_adding_level_supply_on_top_of_reward_acts_is_labelled() {
+        // The old server behaviour: reward acts 50+70 and level supply 30 all granted.
         let events = vec![
             item_task(TASK_QUEST_SUPPLY_ITEMS, vec![task_item(100, 2)], 0),
             item_task(TASK_DEPOSIT_MONEY, Vec::new(), 17),
@@ -1015,44 +1139,28 @@ mod tests {
         let report = checker()
             .check(1, &window(&bag, &exp, &events, &[], &[]))
             .unwrap();
-        assert!(report.suspects.is_empty(), "{report:?}");
-        assert_eq!(
-            report.xp,
-            Some(XpCheck {
-                expected: 150,
-                observed: 150,
-                observed_kill: 0,
-                delta: 0
-            })
-        );
-        assert_eq!(
-            report.gold,
-            Some(GoldCheck {
-                expected: 17,
-                observed: 17,
-                delta: 0
-            })
-        );
-        assert_eq!(report.items.len(), 3);
-        assert!(report.items.iter().all(|i| i.observed == i.expected));
-        assert!(report.kills.is_empty());
+        assert_eq!(report.xp.as_ref().unwrap().expected, 120);
+        assert_eq!(report.xp.as_ref().unwrap().observed, 150);
+        assert_eq!(report.xp.as_ref().unwrap().delta, -30);
+        assert_eq!(report.gold.as_ref().unwrap().expected, 10);
+        assert_eq!(report.gold.as_ref().unwrap().observed, 17);
+        assert!(report.suspects.iter().any(|s| s.contains(
+            "server adds level supply on top of act XP (oracle: client FUN_394a1370 + archdb)"
+        )));
+        assert!(report.suspects.iter().any(|s| s.contains(
+            "server adds level supply copper on top of act copper (oracle: client FUN_394a0fd0 \
+             + archdb)"
+        )));
     }
 
     #[test]
     fn missing_xp_and_gold_are_suspects_with_the_rows() {
-        let events = vec![
-            item_task(TASK_QUEST_SUPPLY_ITEMS, vec![task_item(100, 2)], 0),
-            item_task(TASK_DEPOSIT_MONEY, Vec::new(), 5),
-            item_task(TASK_QUEST_SUPPLY_ITEMS, vec![task_item(200, 1)], 0),
-            item_task(TASK_QUEST_SUPPLY_ITEMS, vec![task_item(300, 1)], 0),
-        ];
-        let exp = vec![change(50, 1), change(70, 2)];
         let bag = BTreeMap::new();
         let report = checker()
-            .check(1, &window(&bag, &exp, &events, &[], &[]))
+            .check(3, &window(&bag, &[], &[], &[], &[]))
             .unwrap();
         assert_eq!(report.xp.as_ref().unwrap().delta, 30);
-        assert_eq!(report.gold.as_ref().unwrap().delta, 12);
+        assert_eq!(report.gold.as_ref().unwrap().delta, 7);
         assert!(report
             .suspects
             .iter()
@@ -1060,17 +1168,16 @@ mod tests {
         assert!(report
             .suspects
             .iter()
-            .any(|s| s.contains("observd 5 copper") || s.contains("observed 5 copper")));
+            .any(|s| s.contains("quest_supplies[LEVEL=5] copper 7")));
     }
 
     #[test]
     fn pre_owned_items_and_full_bag_are_explained_not_suspects() {
-        let events = vec![item_task(
-            TASK_QUEST_SUPPLY_ITEMS,
-            vec![task_item(100, 1)],
-            0,
-        )];
-        let exp = vec![change(50, 1), change(70, 2), change(30, 3)];
+        let events = vec![
+            item_task(TASK_QUEST_SUPPLY_ITEMS, vec![task_item(100, 1)], 0),
+            item_task(TASK_DEPOSIT_MONEY, Vec::new(), 10),
+        ];
+        let exp = vec![change(50, 1), change(70, 2)];
         let mut bag = BTreeMap::new();
         bag.insert(100, 1);
         let mut w = window(&bag, &exp, &events, &[], &[]);
@@ -1141,14 +1248,14 @@ mod tests {
     #[test]
     fn reward_gain_after_a_death_is_not_paired_as_kill_xp() {
         // Exact live shape (quests 2263 / 2485 / 2491 / 2494): kill XP 50 arrives just before
-        // the death (seq 1, t=10 ms); the quest reward 150 arrives later (t=5 s) and must stay
+        // the death (seq 1, t=10 ms); the quest reward 120 arrives later (t=5 s) and must stay
         // quest XP. Before the time window existed the reward was mispaired and both checks
         // reported suspects.
         let exp = vec![
             change(50, 1),
             ExpChange {
                 obj_id: 0x100,
-                exp: 150,
+                exp: 120,
                 seq: 3,
                 t_ms: 5_000,
             },
@@ -1156,7 +1263,7 @@ mod tests {
         let kills = vec![kill(0x200, 777, 5, 5, 2)];
         let events = vec![
             item_task(TASK_QUEST_SUPPLY_ITEMS, vec![task_item(100, 2)], 0),
-            item_task(TASK_DEPOSIT_MONEY, Vec::new(), 17),
+            item_task(TASK_DEPOSIT_MONEY, Vec::new(), 10),
             item_task(TASK_QUEST_SUPPLY_ITEMS, vec![task_item(200, 1)], 0),
             item_task(TASK_QUEST_SUPPLY_ITEMS, vec![task_item(300, 1)], 0),
         ];
@@ -1168,8 +1275,8 @@ mod tests {
         assert_eq!(
             report.xp,
             Some(XpCheck {
-                expected: 150,
-                observed: 150,
+                expected: 120,
+                observed: 120,
                 observed_kill: 50,
                 delta: 0
             })
