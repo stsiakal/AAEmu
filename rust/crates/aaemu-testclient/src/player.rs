@@ -48,6 +48,8 @@ pub enum StopOn {
     Any,
     /// Stop at the first failed prologue / story quest; a failed side quest is skipped.
     Story,
+    /// Never stop on a failed quest (every blocker is reported, the run goes on).
+    Never,
 }
 
 /// The player-mode settings (`quest --player ...`).
@@ -505,7 +507,8 @@ async fn walk_inner(
             let me = game.state.self_obj;
             if game.state.dead_units.contains(&me) {
                 let Some(c) = combat.as_deref_mut() else {
-                    bail!("the character died while approaching");
+                    // Inside a fight: the fight loop sees the death and revives.
+                    return Ok(());
                 };
                 c.revive(game).await?;
                 ctx.stats.revives += 1;

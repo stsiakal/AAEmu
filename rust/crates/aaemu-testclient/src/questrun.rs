@@ -1916,6 +1916,7 @@ fn finish_player_quest(
         let stops = match popts.stop_on {
             StopOn::Any => true,
             StopOn::Story => source != "side",
+            StopOn::Never => false,
         };
         if stops {
             stop = Some(format!(

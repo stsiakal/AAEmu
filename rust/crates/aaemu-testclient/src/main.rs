@@ -18,7 +18,7 @@
 //!                         [--force-blocked|--no-force]
 //!                         [--out results.jsonl] [--step-timeout-secs N] [--summary]
 //!                         [--player [--to-level N] [--resume] [--state state.json]
-//!                          [--select-character NAME] [--stop-on any|story]
+//!                          [--select-character NAME] [--stop-on any|story|never]
 //!                          [--max-runtime-secs N] [--game-pak path] [--app-path path]
 //!                          [--summary-file summary.md]]
 //! aaemu-testclient craft  [--config F] [--login H:P] (--craft ID...|--sample N|--all)
@@ -364,7 +364,8 @@ async fn main() -> anyhow::Result<()> {
                     stop_on: match args.get("stop-on").unwrap_or("story") {
                         "any" => aaemu_testclient::player::StopOn::Any,
                         "story" => aaemu_testclient::player::StopOn::Story,
-                        other => bail!("--stop-on needs any|story, not {other:?}"),
+                        "never" => aaemu_testclient::player::StopOn::Never,
+                        other => bail!("--stop-on needs any|story|never, not {other:?}"),
                     },
                     max_runtime: Duration::from_secs(
                         args.get("max-runtime-secs").unwrap_or("7200").parse()?,

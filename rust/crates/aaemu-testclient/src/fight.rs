@@ -1626,6 +1626,16 @@ impl<'a> Fighter<'a> {
         let started = Instant::now();
         loop {
             self.scheduler.tick(self.now_ms());
+            // A death whose packet was consumed while walking (the approach pumps the
+            // connection itself) is still in the game state.
+            let me = self.game.state.self_obj;
+            if !self.dead && self.game.state.dead_units.contains(&me) {
+                self.dead = true;
+                self.facts.deaths += 1;
+                self.facts
+                    .events
+                    .push(format!("died at {} ms (seen in the state)", self.now_ms()));
+            }
             if self.facts.deaths > deaths_before {
                 self.engaged.remove(&target.obj_id);
                 return Ok(Engage::PlayerDead);
@@ -2023,6 +2033,7 @@ impl Session {
 
     /// Answers a death seen outside a fight (walking, a quest step) with the revive.
     pub async fn revive(&mut self, game: &mut GameClient) -> anyhow::Result<()> {
+        self.deaths += 1;
         self.resurrects += 1;
         resurrect(game, self.opts.resurrect_in_place).await?;
         let deadline = Instant::now() + Duration::from_secs(10);
