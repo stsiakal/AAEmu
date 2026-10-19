@@ -25,7 +25,18 @@ fn main() {
     let (mut ok, mut failed) = (0, 0);
     for name in names.lines().map(str::trim).filter(|l| !l.is_empty()) {
         let existed = pak.file_exists(name);
-        match pak.add_file_from_file(Path::new(root).join(name), name, false) {
+        let source = Path::new(root).join(name);
+        if existed {
+            let same = match (pak.read_file(name), std::fs::read(&source)) {
+                (Ok(Some(old)), Ok(new)) => old == new,
+                _ => false,
+            };
+            if same {
+                println!("UNCHANGED {name}");
+                continue;
+            }
+        }
+        match pak.add_file_from_file(&source, name, false) {
             Ok(_) => {
                 println!("{} {name}", if existed { "REPLACED" } else { "ADDED" });
                 ok += 1;
