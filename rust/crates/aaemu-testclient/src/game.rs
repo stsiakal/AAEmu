@@ -13,7 +13,7 @@ use aaemu_commons::PacketStream;
 use aaemu_game::opcodes::{cs, name_of, pp, sc};
 use aaemu_game::systems::quests::model::status as quest_status;
 use aaemu_game::systems::services::commands::COMMAND_PREFIX;
-use aaemu_game::systems::skills::types::{SkillCastTarget, SkillCaster};
+use aaemu_game::systems::skills::types::{SkillCastTarget, SkillCaster, SkillObject};
 use aaemu_game::systems::social::chat::chat_type;
 use anyhow::{anyhow, bail, ensure, Context};
 use futures::{SinkExt, StreamExt};
@@ -62,6 +62,257 @@ pub fn packet_name(dir: Dir, level: u8, opcode: u16) -> &'static str {
         (Dir::C2S, _) => cs::NAMES,
     };
     name_of(table, opcode).unwrap_or("Unknown")
+}
+
+/// Splits the inflated payload of a `CompressedGamePackets` batch
+/// (`([u16 0][u16 opcode][body])*`) into its packets. The inner bodies carry no length, so each
+/// one is measured by decoding its codec's fields; the first opcode whose body cannot be decoded
+/// ends the split (the packets before it are returned).
+pub fn split_compressed_batch(payload: &[u8]) -> Vec<(u16, Vec<u8>)> {
+    let mut out = Vec::new();
+    let mut pos = 0usize;
+    while pos + 4 <= payload.len() {
+        if payload[pos..pos + 2] != [0, 0] {
+            break;
+        }
+        let opcode = u16::from_le_bytes([payload[pos + 2], payload[pos + 3]]);
+        let Some(len) = inner_body_len(opcode, &payload[pos + 4..]) else {
+            break;
+        };
+        if pos + 4 + len > payload.len() {
+            break;
+        }
+        out.push((opcode, payload[pos + 4..pos + 4 + len].to_vec()));
+        pos += 4 + len;
+    }
+    out
+}
+
+/// Wire length of one inner batch packet body, decoded from the body itself.
+fn inner_body_len(opcode: u16, body: &[u8]) -> Option<usize> {
+    let mut s = PacketStream::from_bytes(body.to_vec());
+    match opcode {
+        sc::SCUnitPointsPacket => {
+            s.read_bc().ok()?;
+            s.read_i32().ok()?;
+            s.read_i32().ok()?;
+        }
+        sc::SCSkillStartedPacket => {
+            s.read_u32().ok()?;
+            s.read_u16().ok()?;
+            skip_skill_caster(&mut s)?;
+            skip_cast_target(&mut s)?;
+            skip_skill_object(&mut s)?;
+            s.read_u16().ok()?; // real cast time / 10
+            s.read_u16().ok()?; // base cast time / 10
+            s.read_u8().ok()?; // synergy
+            let flags = s.read_u8().ok()?;
+            if flags & 1 != 0 {
+                s.read_u8().ok()?;
+            }
+            if flags & 2 != 0 {
+                s.read_u16().ok()?;
+            }
+            if flags & 4 != 0 {
+                s.read_u32().ok()?;
+            }
+        }
+        sc::SCSkillFiredPacket => {
+            s.read_u32().ok()?;
+            s.read_u16().ok()?;
+            skip_skill_caster(&mut s)?;
+            skip_cast_target(&mut s)?;
+            skip_skill_object(&mut s)?;
+            s.read_i16().ok()?; // computed delay / 10 + 10
+            s.read_i16().ok()?; // channeling time / 10 + 10
+            s.read_u8().ok()?; // f
+            s.read_u32().ok()?; // fire anim id
+            s.read_u8().ok()?; // flag
+        }
+        sc::SCSkillEndedPacket => {
+            s.read_u16().ok()?;
+        }
+        sc::SCSkillStoppedPacket => {
+            s.read_bc().ok()?;
+            s.read_u32().ok()?;
+        }
+        sc::SCCastingStoppedPacket => {
+            s.read_u16().ok()?;
+            s.read_u32().ok()?;
+        }
+        sc::SCBuffCreatedPacket => {
+            skip_skill_caster(&mut s)?;
+            s.read_u32().ok()?; // caster id
+            s.read_bc().ok()?; // owner obj id
+            s.read_u32().ok()?; // index
+            s.read_u32().ok()?; // buff id
+            s.read_u8().ok()?; // caster level
+            s.read_i16().ok()?; // ab level
+            s.read_u32().ok()?; // skill id
+            s.read_pisc_w(4).ok()?; // charge, duration, 0, tick
+        }
+        sc::SCBuffRemovedPacket => {
+            s.read_bc().ok()?;
+            s.read_u32().ok()?;
+        }
+        sc::SCUnitDamagedPacket => {
+            skip_cast_action(&mut s)?;
+            skip_skill_caster(&mut s)?;
+            s.read_bc().ok()?; // caster id
+            s.read_bc().ok()?; // target id
+            s.read_u8().ok()?; // crime state
+            s.read_pisc_w(3).ok()?; // damage, absorbed, 0
+            s.read_pisc_w(3).ok()?; // 0, 0, mana burn
+            s.read_u8().ok()?; // holdable id
+            s.read_u16().ok()?; // 288 | hit type
+            s.read_u8().ok()?; // flag
+            s.read_u8().ok()?; // result
+        }
+        sc::SCUnitHealedPacket => {
+            skip_cast_action(&mut s)?;
+            skip_skill_caster(&mut s)?;
+            s.read_bc().ok()?; // target id
+            s.read_u8().ok()?; // heal type
+            s.read_u8().ok()?; // heal hit type
+            s.read_i32().ok()?; // value
+            s.read_i32().ok()?; // o
+            s.read_u8().ok()?; // result
+        }
+        sc::SCUnitDeathPacket => {
+            s.read_bc().ok()?;
+            s.read_u8().ok()?; // kill reason
+            s.read_i32().ok()?; // resurrect wait
+            s.read_i32().ok()?; // lost exp
+            s.read_u8().ok()?; // durability loss rate
+            let killer = s.read_bc().ok()?;
+            if killer != 0 {
+                s.read_u8().ok()?; // game type
+                s.read_u16().ok()?; // kill streak
+                s.read_u8().ok()?;
+                s.read_u8().ok()?;
+                s.read_u8().ok()?;
+                s.read_string().ok()?; // killer name
+            }
+        }
+        sc::SCAiAggroPacket => {
+            s.read_bc().ok()?;
+            let count = s.read_i32().ok()?;
+            if count > 0 {
+                s.read_bc().ok()?; // hostile unit id
+                s.read_i32().ok()?; // summarize damage
+                s.read_i32().ok()?; // val2
+                s.read_i32().ok()?; // val3
+                s.read_u8().ok()?; // top flags
+            }
+        }
+        sc::SCSkillCooldownResetPacket => {
+            s.read_bc().ok()?;
+            s.read_u32().ok()?; // skill id
+            s.read_u32().ok()?; // tag id
+            s.read_bool().ok()?;
+        }
+        sc::SCPlotEventPacket => {
+            s.read_u16().ok()?; // tl
+            s.read_u32().ok()?; // event id
+            s.read_u32().ok()?; // skill id
+            skip_plot_object(&mut s)?; // caster
+            skip_plot_object(&mut s)?; // target
+            s.read_u64().ok()?; // item id
+            s.read_bc().ok()?; // obj id
+            s.read_u16().ok()?; // casting time
+            s.read_bc().ok()?;
+            s.read_i16().ok()?;
+            let targets = s.read_u8().ok()?;
+            for _ in 0..targets {
+                s.read_bc().ok()?;
+            }
+            let flag = s.read_u8().ok()?;
+            if (flag >> 3) & 1 == 1 {
+                for _ in 0..13 {
+                    s.read_i32().ok()?;
+                }
+            }
+        }
+        sc::SCPlotEndedPacket => {
+            s.read_u16().ok()?;
+        }
+        sc::SCPlotCastingStoppedPacket | sc::SCPlotChannelingStoppedPacket => {
+            s.read_u16().ok()?; // tl
+            s.read_u32().ok()?; // duration
+            s.read_u8().ok()?; // last event
+        }
+        _ => return None,
+    }
+    Some(s.pos())
+}
+
+fn skip_skill_caster(s: &mut PacketStream) -> Option<()> {
+    let kind = s.read_u8().ok()?;
+    SkillCaster::read(kind, s).ok()?;
+    Some(())
+}
+
+fn skip_cast_target(s: &mut PacketStream) -> Option<()> {
+    let kind = s.read_u8().ok()?;
+    SkillCastTarget::read(kind, s).ok()?;
+    Some(())
+}
+
+fn skip_skill_object(s: &mut PacketStream) -> Option<()> {
+    let flag = s.read_u8().ok()?;
+    SkillObject::read(flag, s).ok()?;
+    Some(())
+}
+
+fn skip_cast_action(s: &mut PacketStream) -> Option<()> {
+    match s.read_u8().ok()? {
+        0 => {
+            s.read_u32().ok()?;
+            s.read_u16().ok()?;
+        }
+        1 => {
+            s.read_u32().ok()?;
+            s.read_u16().ok()?;
+            s.read_u32().ok()?;
+            s.read_u32().ok()?;
+        }
+        2 => {
+            s.read_u32().ok()?;
+            s.read_bc().ok()?;
+            s.read_u32().ok()?;
+            s.read_bool().ok()?;
+            s.read_bool().ok()?;
+        }
+        3 => {
+            s.read_i32().ok()?;
+            s.read_i32().ok()?;
+            s.read_bc().ok()?;
+        }
+        4 => {
+            s.read_i32().ok()?;
+            s.read_bc().ok()?;
+        }
+        _ => return None,
+    }
+    Some(())
+}
+
+/// `PlotObject`: `[u8 1][bc objId]` for a unit, `[u8 2][9-byte position][i8 roll][i8 pitch]
+/// [i8 yaw]` for a position.
+fn skip_plot_object(s: &mut PacketStream) -> Option<()> {
+    match s.read_u8().ok()? {
+        1 => {
+            s.read_bc().ok()?;
+        }
+        2 => {
+            s.read_position().ok()?;
+            s.read_i8().ok()?;
+            s.read_i8().ok()?;
+            s.read_i8().ok()?;
+        }
+        _ => return None,
+    }
+    Some(())
 }
 
 /// A character of `SCCharacterListPacket` / `SCCreateCharacterResponsePacket`. The first
@@ -142,6 +393,17 @@ fn read_doodad(s: &mut PacketStream) -> anyhow::Result<DoodadInfo> {
         quest_glow,
         data,
     })
+}
+
+/// One buff a unit carries, tracked from `SCBuffCreatedPacket` / `SCBuffRemovedPacket`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BuffInfo {
+    /// `buffs.id` of the applied buff.
+    pub buff_id: u32,
+    /// `Skill.Template.Id` when the buff is a skill's toggle buff, else 0.
+    pub skill_id: u32,
+    /// The owner's buff slot (`SCBuffRemovedPacket.index` removes by it).
+    pub index: u32,
 }
 
 /// The last `SCMateSpawnedPacket`: the owner's own view of the summoned mate.
@@ -309,6 +571,10 @@ pub struct GameState {
     pub doodads: HashMap<u32, DoodadInfo>,
     /// Bag contents by slot (`SCCharacterInvenContentsPacket` + `SCItemTaskSuccessPacket`).
     pub bag: Bag,
+    /// Item id -> template id of every item the task stream named (`SCItemTaskSuccessPacket`
+    /// create rows): `ItemMove` tasks (action 8) carry no template, so bag / equipment moves
+    /// are resolved with it.
+    pub item_templates: HashMap<u64, u32>,
     /// Active quests by template id (`SCQuestsPacket`, whose select snapshot is sent in chunks
     /// of 20, and the `SCQuestContext*` updates).
     pub quests: BTreeMap<u32, QuestInfo>,
@@ -333,6 +599,9 @@ pub struct GameState {
     pub bag_slots: u8,
     /// Latest `SCUnitPointsPacket` per unit: `(hp, mp)` (the wire carries them times 100).
     pub unit_points: HashMap<u32, (i32, i32)>,
+    /// Buffs per unit object id, by the owner's buff slot (`SCBuffCreatedPacket` /
+    /// `SCBuffRemovedPacket`); the skill sweep reads what a cast applied.
+    pub buffs: HashMap<u32, BTreeMap<u32, BuffInfo>>,
     /// Units announced dead by `SCUnitDeathPacket` (and not removed since).
     pub dead_units: HashSet<u32>,
     /// Last `SCMateSpawnedPacket`.
@@ -391,6 +660,9 @@ pub struct GameClient {
     pub ping_every: Duration,
     last_ping: Option<Instant>,
     started: Instant,
+    /// Inner packets of the last `CompressedGamePackets` batch, decoded once and returned one
+    /// by one (the sweep needs every packet of a batch, not only the batch itself).
+    pending: VecDeque<Packet>,
 }
 
 impl GameClient {
@@ -432,6 +704,7 @@ impl GameClient {
             ping_every: Duration::from_secs(3),
             last_ping: None,
             started: Instant::now(),
+            pending: VecDeque::new(),
         })
     }
 
@@ -483,26 +756,49 @@ impl GameClient {
         let level = frame[1];
         if level == LEVEL_COMPRESSED {
             // `CompressedGamePackets`: [dd][04][u16 count][raw deflate of
-            // ([u16 0][u16 typeId][body])*]. The inner packets carry no lengths; the capture
-            // keeps the inflated batch (C# and Rust compress differently, the content is what
-            // must match).
+            // ([u16 0][u16 typeId][body])*]. The inner packets carry no lengths; the split
+            // decodes each body with its codec's field sizes. The capture keeps the inflated
+            // batch (C# and Rust compress differently, the content is what must match); the
+            // inner packets are handed out one by one like normal level-1 packets, so every
+            // parser and `wait_for` sees them.
             let count = u16::from_le_bytes([frame[2], frame[3]]);
             let body = miniz_oxide::inflate::decompress_to_vec(&frame[4..])
                 .map_err(|e| anyhow!("DD04 inflate failed: {e:?}"))?;
-            let p = Packet {
-                level,
-                opcode: count,
-                body,
-            };
             self.rec.push(
                 Channel::Game,
                 Dir::S2C,
                 level,
                 count,
                 "CompressedGamePackets",
-                &p.body,
+                &body,
             );
-            return Ok(p);
+            let packets = split_compressed_batch(&body);
+            if packets.len() != usize::from(count) {
+                tracing::debug!(
+                    "CompressedGamePackets: decoded {} of {} inner packets",
+                    packets.len(),
+                    count
+                );
+            }
+            for (opcode, inner) in packets {
+                let p = Packet {
+                    level: LEVEL_GAME,
+                    opcode,
+                    body: inner,
+                };
+                if let Err(e) = self.observe(&p) {
+                    tracing::debug!("could not parse {}: {e}", p.name());
+                }
+                self.pending.push_back(p);
+            }
+            if let Some(p) = self.pending.pop_front() {
+                return Ok(p);
+            }
+            return Ok(Packet {
+                level,
+                opcode: count,
+                body,
+            });
         }
         let (opcode, body) = if level == LEVEL_GAME {
             if frame.len() < 6 {
@@ -553,6 +849,10 @@ impl GameClient {
 
     /// Next packet, or `None` after `wait` without one. Sends keep-alive pings as needed.
     pub async fn recv_within(&mut self, wait: Duration) -> anyhow::Result<Option<Packet>> {
+        // Inner packets of a received batch come first, in batch order.
+        if let Some(p) = self.pending.pop_front() {
+            return Ok(Some(p));
+        }
         self.keep_alive().await?;
         let wait = wait.min(self.ping_every);
         match tokio::time::timeout(wait, self.rx.recv()).await {
@@ -707,6 +1007,7 @@ pub(crate) fn observe_into(st: &mut GameState, p: &Packet) -> anyhow::Result<()>
             st.units.remove(&id);
             st.unit_points.remove(&id);
             st.dead_units.remove(&id);
+            st.buffs.remove(&id);
         }
     } else if p.is_sc(sc::SCUnitPointsPacket) {
         let obj_id = s.read_bc()?;
@@ -715,6 +1016,32 @@ pub(crate) fn observe_into(st: &mut GameState, p: &Packet) -> anyhow::Result<()>
         st.unit_points.insert(obj_id, (hp, mp));
     } else if p.is_sc(sc::SCUnitDeathPacket) {
         st.dead_units.insert(s.read_bc()?);
+    } else if p.is_sc(sc::SCBuffCreatedPacket) {
+        // `SCBuffCreatedPacket::write`: caster (type byte + body), caster id, owner obj id,
+        // index, buff id, caster level, ab level, skill id, then `Buff.WriteData`.
+        let caster_kind = s.read_u8()?;
+        SkillCaster::read(caster_kind, &mut s)?;
+        s.read_u32()?; // caster_id (character id; 0 for a pure unit caster)
+        let owner_obj_id = s.read_bc()?;
+        let index = s.read_u32()?;
+        let buff_id = s.read_u32()?;
+        s.read_u8()?; // caster_level
+        s.read_i16()?; // ab_level
+        let skill_id = s.read_u32()?;
+        st.buffs.entry(owner_obj_id).or_default().insert(
+            index,
+            BuffInfo {
+                buff_id,
+                skill_id,
+                index,
+            },
+        );
+    } else if p.is_sc(sc::SCBuffRemovedPacket) {
+        let obj_id = s.read_bc()?;
+        let index = s.read_u32()?;
+        if let Some(buffs) = st.buffs.get_mut(&obj_id) {
+            buffs.remove(&index);
+        }
     } else if p.is_sc(sc::SCErrorMsgPacket) {
         st.events.push(GameEvent::ErrorMsg(s.read_i16()?));
     } else if p.is_sc(sc::SCMateSpawnedPacket) {
@@ -750,7 +1077,7 @@ pub(crate) fn observe_into(st: &mut GameState, p: &Packet) -> anyhow::Result<()>
     } else if p.is_sc(sc::SCItemTaskSuccessPacket) {
         st.events
             .push(GameEvent::ItemTask(parse_item_task(&p.body)));
-        inventory::apply_item_task_success(&mut st.bag, &p.body)?;
+        inventory::apply_item_task_success(&mut st.bag, &mut st.item_templates, &p.body)?;
     } else if p.is_sc(sc::SCInvenExpandedPacket) {
         // `SCInvenExpandedPacket { slot_type: u8, num_slots: u8 }` (`item_packets.rs`).
         let slot_type = s.read_u8()?;
@@ -869,6 +1196,7 @@ pub(crate) fn observe_into(st: &mut GameState, p: &Packet) -> anyhow::Result<()>
         st.self_pos = pos;
         st.units.clear();
         st.doodads.clear();
+        st.buffs.clear();
     }
     Ok(())
 }
@@ -1139,6 +1467,56 @@ impl GameClient {
     pub async fn teleport_ended(&mut self, pos: (f32, f32, f32)) -> anyhow::Result<()> {
         let body = teleport_ended_body(pos);
         self.send_cs(cs::CSTeleportEndedPacket, &body).await
+    }
+
+    /// `CSLearnSkillPacket` (0x092): learn a skill of an active ability (the server answers
+    /// `SCSkillLearnedPacket`, or stays silent when the ability is inactive / points are short).
+    pub async fn learn_skill(&mut self, skill_id: u32) -> anyhow::Result<()> {
+        self.send_cs(cs::CSLearnSkillPacket, &learn_skill_body(skill_id))
+            .await
+    }
+
+    /// `CSSwapAbilityPacket` (0x096): replace the active ability `old_ability` with `ability`
+    /// (the server resets the old ability's learned skills).
+    pub async fn swap_ability(&mut self, old_ability: u8, ability: u8) -> anyhow::Result<()> {
+        let body = swap_ability_body(self.state.self_obj, old_ability, ability);
+        self.send_cs(cs::CSSwapAbilityPacket, &body).await
+    }
+
+    /// `CSResetSkillsPacket` (0x094): reset the learned skills of `ability_id`.
+    pub async fn reset_skills(&mut self, ability_id: u8) -> anyhow::Result<()> {
+        self.send_cs(cs::CSResetSkillsPacket, &reset_skills_body(ability_id))
+            .await
+    }
+
+    /// `CSSwapItemsPacket` between any slot types (`MoveArgs` block).
+    pub async fn move_item(
+        &mut self,
+        from_item: u64,
+        from_slot_type: u8,
+        from_slot: u8,
+        to_item: u64,
+        to_slot_type: u8,
+        to_slot: u8,
+    ) -> anyhow::Result<()> {
+        let mut s = PacketStream::new();
+        s.write_u64(from_item)
+            .write_u64(to_item)
+            .write_u8(from_slot_type)
+            .write_u8(from_slot)
+            .write_u8(to_slot_type)
+            .write_u8(to_slot);
+        self.send_cs(cs::CSSwapItemsPacket, s.as_bytes()).await
+    }
+
+    /// Equips a bag item into an `EquipmentItemSlot` index (`1` = equipment container).
+    pub async fn equip_item(
+        &mut self,
+        item_id: u64,
+        bag_slot: u8,
+        equip_slot: u8,
+    ) -> anyhow::Result<()> {
+        self.move_item(item_id, 2, bag_slot, 0, 1, equip_slot).await
     }
 
     /// `CSStartSkillPacket`: unit caster (us) on a unit target.
@@ -1575,6 +1953,28 @@ fn start_skill_body(skill_id: u32, caster: &SkillCaster, target: &SkillCastTarge
     s.into_bytes()
 }
 
+/// `CSLearnSkillPacket` body: just the skill id (`systems/skills/handlers.rs` `read`).
+fn learn_skill_body(skill_id: u32) -> Vec<u8> {
+    skill_id.to_le_bytes().to_vec()
+}
+
+/// `CSSwapAbilityPacket` body: `objId` (24-bit), old ability, new ability, `auap` bool.
+fn swap_ability_body(obj_id: u32, old_ability: u8, ability: u8) -> Vec<u8> {
+    let mut s = PacketStream::new();
+    s.write_bc(obj_id)
+        .write_u8(old_ability)
+        .write_u8(ability)
+        .write_bool(false);
+    s.into_bytes()
+}
+
+/// `CSResetSkillsPacket` body: ability id and the `ausp` bool.
+fn reset_skills_body(ability_id: u8) -> Vec<u8> {
+    let mut s = PacketStream::new();
+    s.write_u8(ability_id).write_bool(false);
+    s.into_bytes()
+}
+
 /// `CSTeleportEndedPacket` body (`systems/npcs/portal/packets.rs` `read`): the fixed point x/y,
 /// z and 16 orientation bytes (the identity quaternion).
 fn teleport_ended_body(pos: (f32, f32, f32)) -> Vec<u8> {
@@ -1679,6 +2079,69 @@ mod body_tests {
         .unwrap();
         assert_eq!((p.x, p.y, p.z), (1234.5, -678.25, 78.5));
         assert_eq!(p.ori, TELEPORT_ENDED_ORIENTATION);
+    }
+
+    #[test]
+    fn learn_swap_and_reset_bodies_decode_with_the_server_readers() {
+        use aaemu_game::systems::skills::handlers::{
+            CSLearnSkillPacket, CSResetSkillsPacket, CSSwapAbilityPacket,
+        };
+
+        let p = CSLearnSkillPacket::read(&mut PacketStream::from_bytes(learn_skill_body(10375)))
+            .unwrap();
+        assert_eq!(p.skill_id, 10375);
+
+        let p = CSSwapAbilityPacket::read(&mut PacketStream::from_bytes(swap_ability_body(
+            0x1234, 11, 7,
+        )))
+        .unwrap();
+        assert_eq!((p.obj_id, p.old_ability, p.ability), (0x1234, 11, 7));
+        assert!(!p.auap);
+
+        let p =
+            CSResetSkillsPacket::read(&mut PacketStream::from_bytes(reset_skills_body(4))).unwrap();
+        assert_eq!(p.ability_id, 4);
+        assert!(!p.ausp);
+    }
+
+    #[test]
+    fn buff_packets_track_created_and_removed() {
+        use aaemu_game::systems::skills::packets::{SCBuffCreatedPacket, SCBuffRemovedPacket};
+
+        let mut st = GameState::default();
+        let created = SCBuffCreatedPacket {
+            skill_caster: SkillCaster::Unit(0x100),
+            caster_id: 42,
+            owner_obj_id: 0x100,
+            index: 3,
+            buff_id: 2206,
+            caster_level: 55,
+            ab_level: 55,
+            skill_id: 10375,
+            charge: 1,
+            duration: 10_000,
+            tick: 0.0,
+        };
+        let mut body = PacketStream::new();
+        created.write(&mut body);
+        observe_into(&mut st, &packet(sc::SCBuffCreatedPacket, body.into_bytes())).unwrap();
+        assert_eq!(
+            st.buffs[&0x100][&3],
+            BuffInfo {
+                buff_id: 2206,
+                skill_id: 10375,
+                index: 3,
+            }
+        );
+
+        let mut body = PacketStream::new();
+        SCBuffRemovedPacket {
+            obj_id: 0x100,
+            index: 3,
+        }
+        .write(&mut body);
+        observe_into(&mut st, &packet(sc::SCBuffRemovedPacket, body.into_bytes())).unwrap();
+        assert!(st.buffs[&0x100].is_empty());
     }
 
     #[test]
@@ -1958,5 +2421,285 @@ mod body_tests {
         )
         .unwrap();
         assert!(st.doodads.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod compressed_batch_tests {
+    use super::*;
+    use aaemu_game::systems::skills::packets::{
+        body_of, deflate_stored, CompressedGamePackets, SCAiAggroPacket, SCBuffCreatedPacket,
+        SCBuffRemovedPacket, SCPlotEndedPacket, SCPlotEventPacket, SCSkillEndedPacket,
+        SCSkillStartedPacket, SCUnitDamagedPacket,
+    };
+    use aaemu_game::systems::skills::types::{CastAction, PlotObject};
+
+    /// The exact payload the server builds in `CompressedGamePackets::raw_payload`.
+    fn payload(packets: &[CompressedGamePackets]) -> Vec<u8> {
+        packets.iter().flat_map(|p| p.raw_payload()).collect()
+    }
+
+    fn unit_points() -> CompressedGamePackets {
+        let mut b = CompressedGamePackets::new();
+        b.add(&aaemu_game::packets::world::SCUnitPointsPacket {
+            obj_id: 0x1234,
+            hp: 555,
+            mp: 777,
+        });
+        b
+    }
+
+    fn skill_started() -> CompressedGamePackets {
+        let mut b = CompressedGamePackets::new();
+        let mut p = SCSkillStartedPacket::new(
+            10375,
+            7,
+            SkillCaster::Unit(0x100),
+            SkillCastTarget::Unit(0x200),
+            SkillObject::default(),
+        );
+        p.real_cast_time_div10 = 150;
+        p.base_cast_time_div10 = 150;
+        p.set_skill_result(8);
+        p.set_result_uint(0xDEAD_BEEF);
+        b.add(&p);
+        b
+    }
+
+    fn buff_created() -> CompressedGamePackets {
+        let mut b = CompressedGamePackets::new();
+        b.add(&SCBuffCreatedPacket {
+            skill_caster: SkillCaster::Unit(0x100),
+            caster_id: 42,
+            owner_obj_id: 0x100,
+            index: 3,
+            buff_id: 870,
+            caster_level: 55,
+            ab_level: 55,
+            skill_id: 10644,
+            charge: 2,
+            duration: 10_000,
+            tick: 1.5,
+        });
+        b
+    }
+
+    fn plot_event() -> CompressedGamePackets {
+        let mut b = CompressedGamePackets::new();
+        b.add(&SCPlotEventPacket {
+            tl: 9,
+            event_id: 5315,
+            skill_id: 10644,
+            caster: PlotObject::Unit(0x100),
+            target: PlotObject::Position {
+                x: 10.0,
+                y: 20.0,
+                z: 30.0,
+                roll: 1,
+                pitch: 2,
+                yaw: 3,
+            },
+            obj_id: 0,
+            casting_time: 0,
+            flag: 2,
+            item_id: 0,
+            target_unit_count: 1,
+        });
+        b
+    }
+
+    fn unit_damaged() -> CompressedGamePackets {
+        let mut b = CompressedGamePackets::new();
+        let mut p = SCUnitDamagedPacket::new(
+            CastAction::Skill {
+                skill_id: 19050,
+                tl_id: 9,
+            },
+            SkillCaster::Unit(0x100),
+            0x100,
+            0x200,
+            163,
+            0,
+        );
+        p.mana_burn = 12;
+        p.holdable_id = 3;
+        p.hit_type = aaemu_game::systems::skills::types::SkillHitType::MeleeHit;
+        b.add(&p);
+        b
+    }
+
+    #[test]
+    fn decodes_every_inner_packet_of_a_batch() {
+        let batch = payload(&[
+            unit_points(),
+            skill_started(),
+            buff_created(),
+            {
+                let mut b = CompressedGamePackets::new();
+                b.add(&SCBuffRemovedPacket {
+                    obj_id: 0x100,
+                    index: 3,
+                });
+                b
+            },
+            plot_event(),
+            {
+                let mut b = CompressedGamePackets::new();
+                b.add(&SCPlotEndedPacket { tl: 9 });
+                b
+            },
+            unit_damaged(),
+            {
+                let mut b = CompressedGamePackets::new();
+                b.add(&SCSkillEndedPacket { tl: 7 });
+                b
+            },
+            {
+                let mut b = CompressedGamePackets::new();
+                b.add(&SCAiAggroPacket {
+                    npc_id: 0x200,
+                    count: 1,
+                    hostile_unit_id: 0x100,
+                    summarize_damage: 163,
+                    val2: 0,
+                    val3: 0,
+                });
+                b
+            },
+        ]);
+
+        let decoded = split_compressed_batch(&batch);
+        let expected = vec![
+            (
+                sc::SCUnitPointsPacket,
+                body_of(&aaemu_game::packets::world::SCUnitPointsPacket {
+                    obj_id: 0x1234,
+                    hp: 555,
+                    mp: 777,
+                }),
+            ),
+            (
+                sc::SCSkillStartedPacket,
+                body_of(&{
+                    let mut p = SCSkillStartedPacket::new(
+                        10375,
+                        7,
+                        SkillCaster::Unit(0x100),
+                        SkillCastTarget::Unit(0x200),
+                        SkillObject::default(),
+                    );
+                    p.real_cast_time_div10 = 150;
+                    p.base_cast_time_div10 = 150;
+                    p.set_skill_result(8);
+                    p.set_result_uint(0xDEAD_BEEF);
+                    p
+                }),
+            ),
+            (
+                sc::SCBuffCreatedPacket,
+                body_of(&SCBuffCreatedPacket {
+                    skill_caster: SkillCaster::Unit(0x100),
+                    caster_id: 42,
+                    owner_obj_id: 0x100,
+                    index: 3,
+                    buff_id: 870,
+                    caster_level: 55,
+                    ab_level: 55,
+                    skill_id: 10644,
+                    charge: 2,
+                    duration: 10_000,
+                    tick: 1.5,
+                }),
+            ),
+            (
+                sc::SCBuffRemovedPacket,
+                body_of(&SCBuffRemovedPacket {
+                    obj_id: 0x100,
+                    index: 3,
+                }),
+            ),
+            (
+                sc::SCPlotEventPacket,
+                body_of(&SCPlotEventPacket {
+                    tl: 9,
+                    event_id: 5315,
+                    skill_id: 10644,
+                    caster: PlotObject::Unit(0x100),
+                    target: PlotObject::Position {
+                        x: 10.0,
+                        y: 20.0,
+                        z: 30.0,
+                        roll: 1,
+                        pitch: 2,
+                        yaw: 3,
+                    },
+                    obj_id: 0,
+                    casting_time: 0,
+                    flag: 2,
+                    item_id: 0,
+                    target_unit_count: 1,
+                }),
+            ),
+            (sc::SCPlotEndedPacket, body_of(&SCPlotEndedPacket { tl: 9 })),
+            (
+                sc::SCUnitDamagedPacket,
+                body_of(&{
+                    let mut p = SCUnitDamagedPacket::new(
+                        CastAction::Skill {
+                            skill_id: 19050,
+                            tl_id: 9,
+                        },
+                        SkillCaster::Unit(0x100),
+                        0x100,
+                        0x200,
+                        163,
+                        0,
+                    );
+                    p.mana_burn = 12;
+                    p.holdable_id = 3;
+                    p.hit_type = aaemu_game::systems::skills::types::SkillHitType::MeleeHit;
+                    p
+                }),
+            ),
+            (
+                sc::SCSkillEndedPacket,
+                body_of(&SCSkillEndedPacket { tl: 7 }),
+            ),
+            (
+                sc::SCAiAggroPacket,
+                body_of(&SCAiAggroPacket {
+                    npc_id: 0x200,
+                    count: 1,
+                    hostile_unit_id: 0x100,
+                    summarize_damage: 163,
+                    val2: 0,
+                    val3: 0,
+                }),
+            ),
+        ];
+        assert_eq!(decoded, expected);
+    }
+
+    #[test]
+    fn the_deflated_wire_batch_decodes_to_the_same_packets() {
+        let batch = payload(&[unit_points(), plot_event()]);
+        let wire = deflate_stored(&batch);
+        let inflated = miniz_oxide::inflate::decompress_to_vec(&wire).unwrap();
+        assert_eq!(inflated, batch);
+        let decoded = split_compressed_batch(&inflated);
+        assert_eq!(decoded.len(), 2);
+        assert_eq!(decoded[0].0, sc::SCUnitPointsPacket);
+        assert_eq!(decoded[1].0, sc::SCPlotEventPacket);
+    }
+
+    #[test]
+    fn an_unknown_inner_opcode_stops_the_split() {
+        let mut raw = payload(&[unit_points()]);
+        let before = raw.len();
+        raw.extend_from_slice(&[0, 0, 0x34, 0x12, 1, 2, 3]);
+        let decoded = split_compressed_batch(&raw);
+        assert_eq!(decoded.len(), 1);
+        assert_eq!(decoded[0].0, sc::SCUnitPointsPacket);
+        assert_eq!(decoded[0].1.len(), before - 4);
     }
 }

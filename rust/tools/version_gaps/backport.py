@@ -32,6 +32,7 @@ import os
 import re
 import shutil
 import sqlite3
+import subprocess
 import sys
 import time
 from collections import OrderedDict, defaultdict
@@ -41,6 +42,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from gaps import CUSTOM_ID_MIN, Db, camel_to_snake, names_compatible
 
+MONEY_ITEM_ID = 500
 NAMED_SETS = {"obsidian-armor": list(range(35581, 35626))}
 
 TABLE_ORDER = (
@@ -647,6 +649,14 @@ class Borrower:
             for row in self.ref.rows(
                 f'select * from "{table}" where craft_id = ? order by id', (craft_id,)
             ):
+                if table == "craft_materials" and row.get("item_id") == MONEY_ITEM_ID:
+                    # 3.0 lists the coin cost as a material; 1.2 has no such rows (the
+                    # server would need item 500 in the bag, which cannot exist).
+                    skipped = self.report.setdefault("money_materials_skipped", [])
+                    skipped.append(
+                        {"craft_id": craft_id, "amount": row.get("amount")}
+                    )
+                    continue
                 self.plan_row(table, row)
         if self.ref.has("craft_pack_crafts"):
             count = len(
@@ -755,7 +765,8 @@ class Borrower:
         for item_id in sorted(item_ids):
             rows = self.ref.rows(
                 "select * from localized_texts where tbl_name = 'items'"
-                " and idx = ? and tbl_column_name in ('name', 'description')"
+                " and idx = ? and tbl_column_name in ('name', 'description',"
+                " 'buff_modifier_tooltip', 'skill_modifier_tooltip')"
                 " order by tbl_column_name",
                 (item_id,),
             )
@@ -778,6 +789,56 @@ class Borrower:
                 self.seen_ids.setdefault("localized_texts", set()).add(row["id"])
                 self.report["borrowed_rows"]["localized_texts"] += 1
                 borrowed += 1
+        return borrowed
+
+    EXTRA_LOCALIZED = (
+        ("buffs", ("name", "desc")),
+        ("crafts", ("title", "desc")),
+        ("skills", ("name", "desc", "web_desc")),
+    )
+
+    def borrow_localized_extra(self):
+        """English texts for the buffs, crafts and skills the backport adds.
+
+        Without them the client falls back to the Korean column of the row itself
+        (equip effect line, recipe titles in the folio).
+        """
+        if not self.ref.has("localized_texts"):
+            return 0
+        borrowed = 0
+        missing = self.report.setdefault("localized_missing", [])
+        for table, columns in self.EXTRA_LOCALIZED:
+            for source in sorted(self.rows.get(table, []), key=lambda r: r["id"]):
+                row_id = source["id"]
+                for column in columns:
+                    if row_id >= CUSTOM_ID_MIN:
+                        missing.append([table, column, row_id, "synthesized id"])
+                        continue
+                    ref_row = self.ref.row(
+                        "select * from localized_texts where tbl_name = ?"
+                        " and tbl_column_name = ? and idx = ?",
+                        (table, column, row_id),
+                    )
+                    if not ref_row or not (ref_row.get("en_us") or "").strip():
+                        missing.append([table, column, row_id, "no en_us in 3.0"])
+                        continue
+                    row = {
+                        "id": self.next_synth_id("localized_texts"),
+                        "tbl_name": table,
+                        "tbl_column_name": column,
+                        "idx": row_id,
+                        "ko": source.get(column) or "",
+                        "ko_ver": 0,
+                        "en_us": ref_row["en_us"],
+                        "en_us_ver": 0,
+                    }
+                    for locale in ("zh_cn", "ja", "ru", "zh_tw", "de", "fr"):
+                        row[locale] = ""
+                        row[locale + "_ver"] = 0
+                    self.rows.setdefault("localized_texts", []).append(row)
+                    self.seen_ids.setdefault("localized_texts", set()).add(row["id"])
+                    self.report["borrowed_rows"]["localized_texts"] += 1
+                    borrowed += 1
         return borrowed
 
 
@@ -845,6 +906,7 @@ def build_backport(base, ref, item_ids):
     borrower.borrow_localized_items(
         [row["id"] for row in borrower.rows.get("items", [])], item_names
     )
+    borrower.borrow_localized_extra()
     material_ids = [
         item_id
         for item_id in closure["items"]
@@ -1359,7 +1421,225 @@ def print_summary(report):
     print(f"db copy: {report['outputs']['db']}")
 
 
+# ---------------------------------------------------------------------------
+# Client-side patch: a COPY of the 1.2 client (loose game/db/compact.sqlite3 +
+# game_pak) gets the same rows and the 10.x-only asset files.
+# ---------------------------------------------------------------------------
+
+PROTECTED_CLIENT_ROOTS = ("d:/aa1.2",)
+
+
+def _norm_path(path):
+    return os.path.realpath(path).replace("\\", "/").lower().rstrip("/")
+
+
+def refuse_protected_client(client_root):
+    """The read-only originals must never be patched."""
+    norm = _norm_path(client_root)
+    if "/archeage returns" in norm:
+        raise SystemExit(f"refusing to patch the 10.x client at {client_root}")
+    # D: is a subst on the reference machine, so compare both spellings.
+    for protected in PROTECTED_CLIENT_ROOTS:
+        for candidate in (protected, _norm_path(protected)):
+            if norm == candidate or norm.startswith(candidate + "/"):
+                raise SystemExit(
+                    f"refusing to patch the read-only client at {client_root}"
+                )
+    if not os.path.isfile(os.path.join(client_root, "game_pak")):
+        raise SystemExit(f"{client_root} has no game_pak")
+
+
+def _columns(conn, schema, table):
+    return [r[1] for r in conn.execute(f'PRAGMA {schema}.table_info("{table}")')]
+
+
+def _mostly_null_columns(conn, table, cols, threshold=0.95, min_rows=100):
+    """Positions of columns the client's own rows leave NULL (>= threshold).
+
+    The 3.0 data stores 0 where the 1.2 data stores NULL (exp_date, more_asset_id,
+    ...). The 1.2 client reads a 0 there as a real value: exp_date 0 makes the
+    tooltip say "Item expired.", so those zeros are written as NULL.
+    """
+    total = conn.execute(f'SELECT COUNT(*) FROM main."{table}"').fetchone()[0]
+    result = []
+    if total < min_rows:
+        return result
+    for pos, col in enumerate(cols):
+        if col.lower() == "id":
+            continue
+        nulls = conn.execute(
+            f'SELECT COUNT(*) FROM main."{table}" WHERE "{col}" IS NULL'
+        ).fetchone()[0]
+        if nulls / total >= threshold:
+            result.append(pos)
+    return result
+
+
+def patch_client_db(client_db, base_db, patched_db):
+    """Insert the backported rows into the loose client db (idempotent).
+
+    A row is "backported" when its id exists in `patched_db` but not in
+    `base_db` (the 1.2 server db the backport started from). Only the client
+    table's columns are written (case-insensitive intersection); rows whose id
+    already exists in the client db are skipped (identical) or reported
+    (different). Icons get name = file stem when blank (the client needs it),
+    and every icon_id/male_icon_id/over_icon_id of a patched item must resolve.
+    """
+    conn = sqlite3.connect(client_db)
+    conn.execute("ATTACH DATABASE ? AS base", (str(base_db),))
+    conn.execute("ATTACH DATABASE ? AS src", (str(patched_db),))
+    report = {"inserted": {}, "conflicts": {}, "already_present": {}, "missing_icons": []}
+    try:
+        for table in TABLE_ORDER:
+            ccols = _columns(conn, "main", table)
+            scols = _columns(conn, "src", table)
+            bcols = {c.lower() for c in _columns(conn, "base", table)}
+            lower = {c.lower() for c in scols}
+            cols = [c for c in ccols if c.lower() in lower]
+            low = [c.lower() for c in cols]
+            if not ccols or not scols or "id" not in low or "id" not in bcols:
+                continue
+            col_list = ", ".join(f'"{c}"' for c in cols)
+            sel = ", ".join(f's."{c}"' for c in cols)
+            rows = conn.execute(
+                f'SELECT {sel} FROM src."{table}" s '
+                f'WHERE s.id NOT IN (SELECT id FROM base."{table}") ORDER BY s.id'
+            ).fetchall()
+            inserted = present = 0
+            conflicts = []
+            idx = low.index("id")
+            null_cols = _mostly_null_columns(conn, table, cols)
+            normalized = report.setdefault("zero_to_null", {})
+            for row in rows:
+                row = list(row)
+                for pos in null_cols:
+                    if row[pos] in (0, ""):
+                        row[pos] = None
+                        key = f"{table}.{cols[pos]}"
+                        normalized[key] = normalized.get(key, 0) + 1
+                if table == "icons" and "name" in low and "filename" in low:
+                    ni, fi = low.index("name"), low.index("filename")
+                    if not row[ni] and row[fi]:
+                        row[ni] = os.path.splitext(os.path.basename(row[fi]))[0]
+                existing = conn.execute(
+                    f'SELECT {col_list} FROM main."{table}" WHERE id = ?', (row[idx],)
+                ).fetchone()
+                if existing is None:
+                    marks = ", ".join("?" for _ in cols)
+                    conn.execute(
+                        f'INSERT INTO main."{table}" ({col_list}) VALUES ({marks})', row
+                    )
+                    inserted += 1
+                elif list(existing) == row:
+                    present += 1
+                else:
+                    conflicts.append(row[idx])
+            report["inserted"][table] = inserted
+            report["already_present"][table] = present
+            if conflicts:
+                report["conflicts"][table] = conflicts
+        item_cols = {c.lower(): c for c in _columns(conn, "main", "items")}
+        for col in ("icon_id", "male_icon_id", "over_icon_id"):
+            if col not in item_cols:
+                continue
+            name = item_cols[col]
+            for item_id, icon_id in conn.execute(
+                f'SELECT i.id, i."{name}" FROM main.items i WHERE i.id IN '
+                "(SELECT id FROM src.items WHERE id NOT IN (SELECT id FROM base.items)) "
+                f'AND i."{name}" IS NOT NULL AND i."{name}" != 0 '
+                f'AND i."{name}" NOT IN (SELECT id FROM main.icons)'
+            ).fetchall():
+                report["missing_icons"].append([item_id, col, icon_id])
+        conn.commit()
+    finally:
+        conn.close()
+    return report
+
+
+def pak_names_to_write(assets_list, pak12):
+    """Asset paths the 1.2 pak does not have (the asset list minus the 1.2 listing)."""
+    names = set()
+    for line in Path(assets_list).read_text(encoding="utf-8").splitlines():
+        name = line.strip().lower()
+        if name and name not in pak12:
+            names.add(name)
+    return sorted(names)
+
+
+def patch_client_pak(client_root, names, source_root, pakwrite_exe):
+    missing = [n for n in names if not os.path.isfile(os.path.join(source_root, n))]
+    # Files the 10.x pak itself lacks (dangling mtl references) cannot be written;
+    # they are reported, not fatal.
+    names = [n for n in names if n not in set(missing)]
+    list_path = os.path.join(client_root, "pakwrite-names.tmp")
+    Path(list_path).write_text("\n".join(names) + "\n", encoding="utf-8")
+    try:
+        result = subprocess.run(
+            [
+                pakwrite_exe,
+                "add",
+                os.path.join(client_root, "game_pak"),
+                source_root,
+                list_path,
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    finally:
+        os.remove(list_path)
+    if result.returncode != 0:
+        raise SystemExit(f"pakwrite failed: {result.stderr.strip()}")
+    counts = defaultdict(int)
+    for line in result.stdout.splitlines():
+        counts[line.split(" ", 1)[0]] += 1
+    counts = dict(counts)
+    if missing:
+        counts["MISSING_SOURCE"] = len(missing)
+        counts["missing_source_files"] = sorted(missing)
+    return counts
+
+
+def patch_client(
+    client_root, base_db, patched_db, assets_list, pak12_listing, source_root, pakwrite_exe
+):
+    refuse_protected_client(client_root)
+    db_report = patch_client_db(
+        os.path.join(client_root, "game", "db", "compact.sqlite3"), base_db, patched_db
+    )
+    names = pak_names_to_write(assets_list, read_listing(pak12_listing))
+    pak_report = patch_client_pak(client_root, names, source_root, pakwrite_exe)
+    return {"db": db_report, "pak": pak_report, "pak_files_needed": len(names)}
+
+
+def patch_client_main(argv):
+    parser = argparse.ArgumentParser(prog="backport.py patch-client")
+    parser.add_argument("--client-root", required=True, help="COPY of the 1.2 client")
+    parser.add_argument("--base", required=True, help="1.2 server compact.sqlite3")
+    parser.add_argument("--patched", required=True, help="backported compact copy")
+    parser.add_argument("--assets-list", required=True)
+    parser.add_argument("--pak12-listing", required=True)
+    parser.add_argument("--assets-root", required=True, help="extracted 10.x files")
+    parser.add_argument("--pakwrite", required=True, help="pakwrite example executable")
+    args = parser.parse_args(argv)
+    report = patch_client(
+        args.client_root,
+        args.base,
+        args.patched,
+        args.assets_list,
+        args.pak12_listing,
+        args.assets_root,
+        args.pakwrite,
+    )
+    print(json.dumps(report, ensure_ascii=False, indent=2))
+    return 0
+
+
 def main(argv=None):
+    if argv is None:
+        argv = sys.argv[1:]
+    if argv and argv[0] == "patch-client":
+        return patch_client_main(argv[1:])
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--base", required=True, help="1.2 compact.sqlite3 (read-only)")
     parser.add_argument("--ref", required=True, help="3.0.4.2 compact.sqlite3 (read-only)")

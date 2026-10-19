@@ -500,6 +500,105 @@ naming that: `CraftHooks::start_craft_cast` (`systems/economy/bridges.rs`) disca
 `Skill.Use`'s result, so those rejections are silent where `CharacterCraft.Craft`'s own checks
 send `SCErrorMsg` pairs.
 
+### Skill sweep
+
+The `skill` subcommand casts every class skill (`skills.ability_id` 1..10, 170 rows on the
+shipped data) once on the live server and checks the outcome against the same
+`compact.sqlite3` (`skills`, `skill_effects` -> `effects` -> `buff_effects` / `damage_effects` /
+`heal_effects`, `unit_reqs`). GM account needed (access level 100), like `craft`.
+
+Per skill the runner makes the skill's ability one of `ability1..3` (`CSSwapAbilityPacket`),
+`/level 55`, learns the skill (`CSLearnSkillPacket`), equips the holdable slots the data's
+`unit_reqs` demand (one-hand sword, shield, bow, instrument) and, for spell-scaled damage
+(a `level_md` damage row with no fixed part), a level-55 two-handed staff so the weapon term is
+not zero -- the weapon used is recorded as `weapon_used`; a skill that needs the offhand slot
+keeps the sword. `/heal` refills HP/MP, `/buff -<id>` clears buffs left by earlier skills and
+`/resetcd` resets cooldowns.
+
+Targets by `skills.target_type_id`: hostile skills on a training dummy (NPC 13013) that is
+respawned in front of the bot before every skill (the distance is recorded as
+`dummy_distance_m`; a wandering or half-health dummy used to poison the damage measurement)
+and that the bot faces at a distance inside `min_range..max_range`; a self-target skill whose
+`target_relation` is hostile goes on the dummy too (its plot events expect a hostile target);
+an area skill (`target_area_radius` with `target_selection_id` 2) gets a **second** dummy
+inside the area because the server's `around_radius` excludes the cast target itself; a
+position skill without a hostile relation casts 3 m ahead of the bot (a cast at the own
+position has no direction and answers `skill_outof_angle`); doodad skills on a spawned doodad.
+Hostile-only effect rows are never cast on the bot itself (the `godmode true` safety net makes
+player damage vanish), so they always go on the dummy. A skill whose `unit_reqs` include kind
+12 (`skill_urk_combat`) waits out the server's 15 s combat timeout first (the caster must be
+out of battle). Other target types and `target_dead` skills with a friendly target are
+`unsupported` with the reason. The cast is `CSStartSkillPacket`.
+
+Observed: `SCSkillStarted` (cast times, `SkillResult`), `SCSkillFired` (effect delay, channel
+time), `SCSkillEnded` / `SCSkillStopped`, plot skills' `SCPlotEvent` / `SCPlotEnded`, plot
+events' `SCUnitDamaged` / `SCUnitHealed`, `SCErrorMsg`, `SCUnitPoints` (mana spent, target HP
+delta), `SCBuffCreated` / `SCBuffRemoved` on caster and target, and a second immediate cast for
+the cooldown check. **Every inner packet of a `CompressedGamePackets` (`DD04`) batch is
+decoded** (`game::split_compressed_batch` measures each lengthless body with its codec's field
+sizes) and handed out as a normal level-1 packet, so plot events, unit points, buff and damage
+packets inside a batch are seen like any other. Damage and heal packets are matched by skill
+id on every unit other than the caster (an area skill hits them all): a miss, an absorbed hit
+(packet damage 0) and a row whose gates were not met are `notes`, not mismatches.
+
+The mana expectation comes from the skill's path: a `plot_only` skill *with a `plot_id`*
+returns from `Skill.Use` before `Skill.Cast`'s `ConsumeMana` and pays the plot's
+`SpecialEffect` 39 `ManaCost` (`value1 + value2 / 6.35` per apply, walked in `plot_events` /
+`plot_effects` / `special_effects`; only caster-side rows count) -- and only when the carrying
+event ran (`plot_mana_events` vs `plot_event_ids`); a `plot_only` row without a `plot_id` and
+every other skill pays the `Skill.ManaCost` formula. `mana_spent` is read at the largest
+`SCUnitPoints` drop of the cast (the cost update can precede the cast's response: an instant
+cast pays before `SCSkillFired`, a plot applies its effects before its event batch is sent);
+`mana_source` says which. A skill with a `RestoreManaEffect` and an end-of-channel delta are
+not compared (the net delta is not the cost there).
+
+The immediate-recast cooldown probe goes out right after the cast. It is skipped (recorded as
+`cooldown not probeable` in `cooldown_probe`) when `skills.cooldown_time` is 3000 ms or less
+(the ~1 s GCD window leaves no room to tell the GCD from the skill cooldown), when the skill's
+own effects reset its cooldown (`SpecialEffect` 43), when the recast answers `SkillResult 50`
+(`skill_req_fail`) after the first cast applied a buff, and when the recast is rejected by
+range / angle (`14..=16`: the target moved or the first cast turned the caster, which comes
+before the cooldown check).
+
+Expectations are gated the way the server gates them: `skill_effects` rows outside the
+caster's `start_level..end_level` are dropped at load; a row with a source / target buff tag,
+a chance below 100 or a weight is only a note when its buff does not show up (`notes`, not
+`mismatches`). A skill with a `plot_id` never runs `skill_effects`: its buffs are demanded
+from the plot tree (`plot_effects`) and only when the run reached the carrying event
+(`plot_event_ids`). Buffs are cleared *before* the heal so a max-HP buff from an earlier cast
+cannot fill the target to a buffed maximum and then clamp it down after the clear (the heal
+sets the true baseline; a short settle lets the clamp and refill updates land). A non-zero HP
+delta is only a note when the cast applied a DoT/HoT buff (an HP tick effect) or a max-HP
+modifier buff; anything else is an `unverified target HP delta` mismatch. A damage row the
+baseline's gates skipped is named exactly (`target buff tag 121 absent`, `target buff tags 27,
+373 absent`, `chance 15`, `weighted row`), and self-target damage rows are a note (`CanAttack`
+refuses the caster itself).
+
+Each line of the JSONL records the data fields next to the observed ones (cast / channel /
+effect-delay times, `mana_cost_expected` vs `mana_spent` + `mana_source`, `cooldown_time_ms`,
+`recast_result` + `cooldown_probe`, `expected_buffs` vs `buffs_created_*`, `damage_rows` /
+`heal_rows` vs `target_hp_delta`, `damage_packets` / `miss_packets` / `dealt_damage`,
+`plot_events` / `plot_event_ids`, `weapon_used`, `dummy_distance_m`, `target_kind`) and a
+`mismatches` array with one short reason per deviation plus a `notes` array for explained
+observations. `result` is `ok` (the cast ran), `rejected` (a `SkillResult` or `SCErrorMsg`, or
+a plot skill that sent no plot event), `timeout` (a non-plot cast the server dropped silently
+for 6 s), `unsupported` or `setup_failed`. The reference `--all` run of the 170 class skills
+ends `ok=169 unsupported=1` (10546, a friendly resurrect that needs a dead player) with no
+mismatches.
+
+```sh
+$TC skill --config testclient.local.json --login 127.0.0.1:21237           --compact-db rust/crates/aaemu-game/app/Data/compact.sqlite3           --new-character --all --out skill-audit.jsonl --summary
+$TC skill ... --skill 10377 --skill 10644      # single skills (repeatable)
+$TC skill ... --ability 3 --limit 10           # one ability, first 10 skills
+```
+
+`--ability` selects an ability id (1..10, repeatable), `--all` all 170, `--limit N` caps the
+list, `--new-character` / `--race` / `--gender` create a bot character, `--step-timeout-secs`
+(default 90) bounds one skill and `--summary` prints the result counts, the top mismatch reasons
+and the top failure reasons. **Resume:** an existing `--out` file makes the run skip every
+skill id already recorded in it. The account allows 6 characters, so use a fresh test account
+after a few `--new-character` runs. A whole sweep takes about 25 minutes.
+
 Run `login` last in a parity session: a world cookie that is never used leaves a pending entry
 on the game server, which makes the C# game server stop answering the login server (fixed in
 the Rust server, see `aaemu-game/PORTING.md`).

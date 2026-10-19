@@ -861,12 +861,30 @@ pub struct EquippedItem {
     pub slot: u8,
 }
 
+/// One `ItemMove` task (action 8): the item `from_item_id` moves from (`from_slot_type`,
+/// `from_slot`) to (`to_slot_type`, `to_slot`); `to_item_id` is the item that was in the target
+/// slot (0 when it was empty). The task carries no templates, so the caller resolves them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EquipmentMove {
+    pub from_slot_type: u8,
+    pub from_slot: u8,
+    pub from_item_id: u64,
+    pub to_slot_type: u8,
+    pub to_slot: u8,
+    pub to_item_id: u64,
+}
+
 /// Equipment-slot effects of one `SCItemTaskSuccessPacket`.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct EquipmentChanges {
     pub created: Vec<EquippedItem>,
     /// Slots whose item left the equipment container (`REMOVE` / `SEIZE` / a swap out).
     pub removed_slots: Vec<u8>,
+    /// `ItemMove` tasks (a plain slot swap; the templates must be resolved by the caller).
+    pub moves: Vec<EquipmentMove>,
+    /// (item id, template id) of every create / take / change-owner row, in any container: the
+    /// caller's item id -> template map for the template-less `ItemMove` tasks.
+    pub templates: Vec<(u64, u32)>,
 }
 
 /// The equipment rows of an `SCItemTaskSuccessPacket`. Trade-pack products are auto-equipped
@@ -921,6 +939,7 @@ pub fn equipment_tasks(body: &[u8]) -> anyhow::Result<EquipmentChanges> {
                 s.read_u8()?;
                 s.read_i64()?;
                 s.read_i64()?;
+                out.templates.push((item_id, template_id));
                 if slot_type == SLOT_TYPE_EQUIPMENT {
                     out.created.push(EquippedItem {
                         item_id,
@@ -943,19 +962,22 @@ pub fn equipment_tasks(body: &[u8]) -> anyhow::Result<EquipmentChanges> {
                 let from_slot = s.read_u8()?;
                 let to_type = s.read_u8()?;
                 let to_slot = s.read_u8()?;
-                let _from_id = s.read_u64()?;
-                let to_id = s.read_u64()?;
+                let from_item_id = s.read_u64()?;
+                let to_item_id = s.read_u64()?;
                 s.read_i32()?;
                 if from_type == SLOT_TYPE_EQUIPMENT {
                     out.removed_slots.push(from_slot);
                 }
-                if to_type == SLOT_TYPE_EQUIPMENT {
-                    out.created.push(EquippedItem {
-                        item_id: to_id,
-                        template_id: 0,
-                        slot: to_slot,
-                    });
-                }
+                // The task carries no templates; the caller resolves the moved / displaced
+                // items (`SkillSession` keeps an item id -> template map).
+                out.moves.push(EquipmentMove {
+                    from_slot_type: from_type,
+                    from_slot,
+                    from_item_id,
+                    to_slot_type: to_type,
+                    to_slot,
+                    to_item_id,
+                });
             }
             item_action::UPDATE_DETAIL => {
                 s.read_u8()?;
@@ -1012,10 +1034,10 @@ pub fn parse_state_labor(body: &[u8]) -> anyhow::Result<i32> {
     Ok(parse_state_equipment(body)?.0)
 }
 
-/// `SCCharacterStatePacket` -> `(labor_power, equipment rows)`. The equipment list is the
-/// container's `EquipmentItemSlot` order; `slot` is the row index
-/// (`EquipmentItemSlot.Backpack` = 26).
-pub fn parse_state_equipment(body: &[u8]) -> anyhow::Result<(i32, Vec<EquippedItem>)> {
+/// `SCCharacterStatePacket` -> `(labor_power, equipment rows, active abilities)`. The equipment
+/// list is the container's `EquipmentItemSlot` order; `slot` is the row index
+/// (`EquipmentItemSlot.Backpack` = 26); the abilities are `ability1..3` (`models/char_data.rs`).
+pub fn parse_state_equipment(body: &[u8]) -> anyhow::Result<(i32, Vec<EquippedItem>, [u8; 3])> {
     use aaemu_game::models::unit_model::UnitCustomModelParams;
     let mut s = PacketStream::from_bytes(body.to_vec());
     s.read_u32()?; // instance id
@@ -1047,12 +1069,12 @@ pub fn parse_state_equipment(body: &[u8]) -> anyhow::Result<(i32, Vec<EquippedIt
             });
         }
     }
-    s.read_bytes(3)?; // ability1..3
+    let abilities = [s.read_u8()?, s.read_u8()?, s.read_u8()?]; // ability1..3
     s.read_i64()?; // x
     s.read_i64()?; // y
     s.read_f32()?; // z
     let _model = UnitCustomModelParams::read(&mut s)?;
-    Ok((s.read_i16()? as i32, equipment))
+    Ok((s.read_i16()? as i32, equipment, abilities))
 }
 
 /// The fixed `Character.Write` head before the equipment rows.
@@ -1325,7 +1347,7 @@ async fn setup_world(
     for p in select_packets.iter().chain(spawn_packets.iter()) {
         session.observe(p);
         if p.is_sc(sc::SCCharacterStatePacket) {
-            if let Ok((labor, equipment)) = parse_state_equipment(&p.body) {
+            if let Ok((labor, equipment, _abilities)) = parse_state_equipment(&p.body) {
                 session.labor = Some(labor);
                 for item in equipment {
                     session.equipment.insert(item.slot, item);
@@ -3038,10 +3060,12 @@ mod tests {
                     slot: 26,
                 }],
                 removed_slots: Vec::new(),
+                moves: Vec::new(),
+                templates: vec![(0x1234, 24920)],
             }
         );
 
-        // A bag row is not an equipment row.
+        // A bag row is not an equipment row, but its template is still surfaced.
         it.slot_type = SLOT_TYPE_INVENTORY;
         let mut body = PacketStream::new();
         SCItemTaskSuccessPacket {
@@ -3052,6 +3076,7 @@ mod tests {
         .write(&mut body);
         let bag_row = equipment_tasks(body.as_bytes()).unwrap();
         assert!(bag_row.created.is_empty() && bag_row.removed_slots.is_empty());
+        assert_eq!(bag_row.templates, vec![(0x1234, 24920)]);
 
         // A destroy of the equipped pack surfaces as a removal (the sweep waits for it).
         it.slot_type = 1;
@@ -3171,8 +3196,9 @@ mod tests {
         UnitCustomModelParams::default().write(&mut s);
         s.write_i16(77); // labor
 
-        let (labor, equipment) = parse_state_equipment(s.as_bytes()).unwrap();
+        let (labor, equipment, abilities) = parse_state_equipment(s.as_bytes()).unwrap();
         assert_eq!(labor, 77);
+        assert_eq!(abilities, [0, 0, 0]);
         assert_eq!(
             equipment,
             vec![
