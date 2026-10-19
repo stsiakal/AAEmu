@@ -423,6 +423,8 @@ pub struct TaskItem {
     /// Template id (0 for tasks that do not carry it, e.g. `UpdateDetail`).
     pub template: u32,
     pub id: u64,
+    /// Stack size of the task (0 for `UpdateDetail`).
+    pub count: i32,
     /// `SummonMate` detail block: `(exp, dead flag, level)`; a non-zero dead flag marks a corpse.
     pub mate: Option<(i32, u8, u8)>,
 }
@@ -491,15 +493,16 @@ pub fn parse_item_task(body: &[u8]) -> ItemTaskInfo {
                     s.read_u8()?; // slot
                     let template = s.read_u32()?;
                     let id = s.read_u64()?;
+                    s.read_u8()?; // grade
+                    s.read_u8()?; // flags
+                    let count = s.read_i32()?;
                     info.items.push(TaskItem {
                         task,
                         template,
                         id,
+                        count,
                         mate: None,
                     });
-                    s.read_u8()?; // grade
-                    s.read_u8()?; // flags
-                    s.read_i32()?; // count
                     let mate = details(s)?;
                     if let Some(item) = info.items.last_mut() {
                         item.mate = mate;
@@ -520,6 +523,7 @@ pub fn parse_item_task(body: &[u8]) -> ItemTaskInfo {
                         task,
                         template: 0,
                         id,
+                        count: 0,
                         mate,
                     });
                 }

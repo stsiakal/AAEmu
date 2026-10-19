@@ -46,6 +46,12 @@ mysql_up() { "${MYSQL[@]}" -N -e "select 1" >/dev/null 2>&1; }
 # The lane whose worktree contains $PWD (or the script), unless a name was given.
 current() {
   local n=${1:-}
+  # A lane worktree's git dir is .git/worktrees/<lane>: unlike paths, this survives drive
+  # aliases (D: is a subst of C:\AAEMU_DISK, so one worktree has two `pwd -P` spellings).
+  if [ -z "$n" ]; then
+    local gd; gd=$(git rev-parse --absolute-git-dir 2>/dev/null || true)
+    case "$gd" in */worktrees/*) [ -f "$LANES/${gd##*/}.env" ] && n=${gd##*/} ;; esac
+  fi
   if [ -z "$n" ]; then
     local here; here=$(pwd -P)
     for f in "$LANES"/*.env; do
