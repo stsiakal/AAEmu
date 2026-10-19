@@ -18214,5 +18214,2106 @@
             "Y": 415.837,
             "Z": 188.358
         }
+    },
+    {
+        "UnitId": 14578,
+        "Title": "spawn-fill: 10.x event spawner 134234 (member 14578)",
+        "NpcSpawnerIds": [ 134234 ],
+        "Position": {
+            "X": 2836.5,
+            "Y": 1823,
+            "Z": 129.5,
+            "Yaw": -180
+        }
+    },
+    {
+        "UnitId": 14577,
+        "Title": "spawn-fill: 10.x event spawner 134235 (member 14577)",
+        "NpcSpawnerIds": [ 134235 ],
+        "Position": {
+            "X": 2863.5,
+            "Y": 1823,
+            "Z": 129.5,
+            "Yaw": -180
+        }
+    },
+    {
+        "UnitId": 14611,
+        "Title": "spawn-fill: 10.x event spawner 135179 (member 14611)",
+        "NpcSpawnerIds": [ 135179 ],
+        "Position": {
+            "X": 3676.957,
+            "Y": 420.418,
+            "Z": 188.012,
+            "Yaw": -50
+        }
+    },
+    {
+        "UnitId": 14611,
+        "Title": "spawn-fill: 10.x event spawner 135180 (member 14611)",
+        "NpcSpawnerIds": [ 135180 ],
+        "Position": {
+            "X": 3678.721,
+            "Y": 459.585,
+            "Z": 188.023,
+            "Yaw": -137
+        }
+    },
+    {
+        "UnitId": 14611,
+        "Title": "spawn-fill: 10.x event spawner 135181 (member 14611)",
+        "NpcSpawnerIds": [ 135181 ],
+        "Position": {
+            "X": 3717.152,
+            "Y": 460.401,
+            "Z": 188.011,
+            "Yaw": 136
+        }
+    },
+    {
+        "UnitId": 14611,
+        "Title": "spawn-fill: 10.x event spawner 135182 (member 14611)",
+        "NpcSpawnerIds": [ 135182 ],
+        "Position": {
+            "X": 3716.938,
+            "Y": 422.037,
+            "Z": 188.002,
+            "Yaw": 51
+        }
+    },
+    {
+        "UnitId": 14612,
+        "Title": "spawn-fill: 10.x event spawner 135186 (member 14612)",
+        "NpcSpawnerIds": [ 135186 ],
+        "Position": {
+            "X": 3724.183,
+            "Y": 440.603,
+            "Z": 187.993,
+            "Yaw": 89
+        }
+    },
+    {
+        "UnitId": 14612,
+        "Title": "spawn-fill: 10.x event spawner 135193 (member 14612)",
+        "NpcSpawnerIds": [ 135193 ],
+        "Position": {
+            "X": 3670.475,
+            "Y": 441.14,
+            "Z": 187.993,
+            "Yaw": -89
+        }
+    },
+    {
+        "UnitId": 14651,
+        "Title": "spawn-fill: 10.x event spawner 135195 (member 14651)",
+        "NpcSpawnerIds": [ 135195 ],
+        "Position": {
+            "X": 3689.558,
+            "Y": 413.682,
+            "Z": 188.013,
+            "Yaw": 0
+        }
+    },
+    {
+        "UnitId": 14611,
+        "Title": "spawn-fill: 10.x event spawner 135202 (member 14611)",
+        "NpcSpawnerIds": [ 135202 ],
+        "Position": {
+            "X": 3717.31,
+            "Y": 460.243,
+            "Z": 188.011,
+            "Yaw": 136
+        }
+    },
+    {
+        "UnitId": 14612,
+        "Title": "spawn-fill: 10.x event spawner 135203 (member 14612)",
+        "NpcSpawnerIds": [ 135203 ],
+        "Position": {
+            "X": 3697.972,
+            "Y": 467.196,
+            "Z": 187.993,
+            "Yaw": -179
+        }
+    },
+    {
+        "UnitId": 14611,
+        "Title": "spawn-fill: 10.x event spawner 135204 (member 14611)",
+        "NpcSpawnerIds": [ 135204 ],
+        "Position": {
+            "X": 3678.506,
+            "Y": 459.363,
+            "Z": 188.023,
+            "Yaw": -137
+        }
+    },
+    {
+        "UnitId": 14612,
+        "Title": "spawn-fill: 10.x event spawner 135205 (member 14612)",
+        "NpcSpawnerIds": [ 135205 ],
+        "Position": {
+            "X": 3670.477,
+            "Y": 441.267,
+            "Z": 187.993,
+            "Yaw": -89
+        }
+    },
+    {
+        "UnitId": 14611,
+        "Title": "spawn-fill: 10.x event spawner 135206 (member 14611)",
+        "NpcSpawnerIds": [ 135206 ],
+        "Position": {
+            "X": 3676.751,
+            "Y": 420.648,
+            "Z": 188.012,
+            "Yaw": -50
+        }
+    },
+    {
+        "UnitId": 14612,
+        "Title": "spawn-fill: 10.x event spawner 135207 (member 14612)",
+        "NpcSpawnerIds": [ 135207 ],
+        "Position": {
+            "X": 3698.037,
+            "Y": 414.513,
+            "Z": 187.993,
+            "Yaw": 0
+        }
+    },
+    {
+        "UnitId": 14611,
+        "Title": "spawn-fill: 10.x event spawner 135208 (member 14611)",
+        "NpcSpawnerIds": [ 135208 ],
+        "Position": {
+            "X": 3716.593,
+            "Y": 421.737,
+            "Z": 188.002,
+            "Yaw": 51
+        }
+    },
+    {
+        "UnitId": 14612,
+        "Title": "spawn-fill: 10.x event spawner 135209 (member 14612)",
+        "NpcSpawnerIds": [ 135209 ],
+        "Position": {
+            "X": 3724.183,
+            "Y": 441.055,
+            "Z": 187.993,
+            "Yaw": 89
+        }
+    },
+    {
+        "UnitId": 14613,
+        "Title": "spawn-fill: 10.x event spawner 135210 (member 14613)",
+        "NpcSpawnerIds": [ 135210 ],
+        "Position": {
+            "X": 3697.894,
+            "Y": 425.054,
+            "Z": 187.993,
+            "Yaw": 0
+        }
+    },
+    {
+        "UnitId": 14576,
+        "Title": "spawn-fill: 10.x event spawner 135221 (member 14576)",
+        "NpcSpawnerIds": [ 135221 ],
+        "Position": {
+            "X": 2863.5,
+            "Y": 1760.5,
+            "Z": 129.5,
+            "Yaw": 0
+        }
+    },
+    {
+        "UnitId": 14575,
+        "Title": "spawn-fill: 10.x event spawner 135222 (member 14575)",
+        "NpcSpawnerIds": [ 135222 ],
+        "Position": {
+            "X": 2836.5,
+            "Y": 1760.5,
+            "Z": 129.5,
+            "Yaw": 0
+        }
+    },
+    {
+        "UnitId": 14652,
+        "Title": "spawn-fill: 10.x event spawner 135225 (member 14652)",
+        "NpcSpawnerIds": [ 135225 ],
+        "Position": {
+            "X": 3689.491,
+            "Y": 414.971,
+            "Z": 188.01,
+            "Yaw": 0
+        }
+    },
+    {
+        "UnitId": 14653,
+        "Title": "spawn-fill: 10.x event spawner 135227 (member 14653)",
+        "NpcSpawnerIds": [ 135227 ],
+        "Position": {
+            "X": 3689.41,
+            "Y": 416.484,
+            "Z": 188.01,
+            "Yaw": 0
+        }
+    },
+    {
+        "UnitId": 14654,
+        "Title": "spawn-fill: 10.x event spawner 135229 (member 14654)",
+        "NpcSpawnerIds": [ 135229 ],
+        "Position": {
+            "X": 3683.624,
+            "Y": 414.772,
+            "Z": 188.01,
+            "Yaw": 0
+        }
+    },
+    {
+        "UnitId": 14655,
+        "Title": "spawn-fill: 10.x event spawner 135231 (member 14655)",
+        "NpcSpawnerIds": [ 135231 ],
+        "Position": {
+            "X": 3686.206,
+            "Y": 415.575,
+            "Z": 188.01,
+            "Yaw": 0
+        }
+    },
+    {
+        "UnitId": 14622,
+        "Title": "spawn-fill: 10.x event spawner 135236 (member 14622)",
+        "NpcSpawnerIds": [ 135236 ],
+        "Position": {
+            "X": 3724.46,
+            "Y": 441.071,
+            "Z": 187.993,
+            "Yaw": 89
+        }
+    },
+    {
+        "UnitId": 14622,
+        "Title": "spawn-fill: 10.x event spawner 135237 (member 14622)",
+        "NpcSpawnerIds": [ 135237 ],
+        "Position": {
+            "X": 3724.464,
+            "Y": 440.604,
+            "Z": 187.993,
+            "Yaw": 89
+        }
+    },
+    {
+        "UnitId": 14631,
+        "Title": "spawn-fill: 10.x event spawner 135238 (member 14631)",
+        "NpcSpawnerIds": [ 135238 ],
+        "Position": {
+            "X": 3670.126,
+            "Y": 441.259,
+            "Z": 187.993,
+            "Yaw": -89
+        }
+    },
+    {
+        "UnitId": 14636,
+        "Title": "spawn-fill: 10.x event spawner 135239 (member 14636)",
+        "NpcSpawnerIds": [ 135239 ],
+        "Position": {
+            "X": 3676.237,
+            "Y": 420.129,
+            "Z": 188.012,
+            "Yaw": -50
+        }
+    },
+    {
+        "UnitId": 14637,
+        "Title": "spawn-fill: 10.x event spawner 135239 (member 14637)",
+        "NpcSpawnerIds": [ 135239 ],
+        "Position": {
+            "X": 3676.237,
+            "Y": 420.129,
+            "Z": 188.012,
+            "Yaw": -50
+        }
+    },
+    {
+        "UnitId": 14631,
+        "Title": "spawn-fill: 10.x event spawner 135240 (member 14631)",
+        "NpcSpawnerIds": [ 135240 ],
+        "Position": {
+            "X": 3698.039,
+            "Y": 413.772,
+            "Z": 187.993,
+            "Yaw": 0
+        }
+    },
+    {
+        "UnitId": 14636,
+        "Title": "spawn-fill: 10.x event spawner 135241 (member 14636)",
+        "NpcSpawnerIds": [ 135241 ],
+        "Position": {
+            "X": 3717.96,
+            "Y": 420.802,
+            "Z": 188.002,
+            "Yaw": 51
+        }
+    },
+    {
+        "UnitId": 14637,
+        "Title": "spawn-fill: 10.x event spawner 135241 (member 14637)",
+        "NpcSpawnerIds": [ 135241 ],
+        "Position": {
+            "X": 3717.96,
+            "Y": 420.802,
+            "Z": 188.002,
+            "Yaw": 51
+        }
+    },
+    {
+        "UnitId": 14631,
+        "Title": "spawn-fill: 10.x event spawner 135242 (member 14631)",
+        "NpcSpawnerIds": [ 135242 ],
+        "Position": {
+            "X": 3725.113,
+            "Y": 440.597,
+            "Z": 187.993,
+            "Yaw": 89
+        }
+    },
+    {
+        "UnitId": 14636,
+        "Title": "spawn-fill: 10.x event spawner 135243 (member 14636)",
+        "NpcSpawnerIds": [ 135243 ],
+        "Position": {
+            "X": 3717.716,
+            "Y": 460.685,
+            "Z": 188.011,
+            "Yaw": 136
+        }
+    },
+    {
+        "UnitId": 14637,
+        "Title": "spawn-fill: 10.x event spawner 135243 (member 14637)",
+        "NpcSpawnerIds": [ 135243 ],
+        "Position": {
+            "X": 3717.716,
+            "Y": 460.685,
+            "Z": 188.011,
+            "Yaw": 136
+        }
+    },
+    {
+        "UnitId": 14631,
+        "Title": "spawn-fill: 10.x event spawner 135244 (member 14631)",
+        "NpcSpawnerIds": [ 135244 ],
+        "Position": {
+            "X": 3697.979,
+            "Y": 467.657,
+            "Z": 187.993,
+            "Yaw": -179
+        }
+    },
+    {
+        "UnitId": 14622,
+        "Title": "spawn-fill: 10.x event spawner 135245 (member 14622)",
+        "NpcSpawnerIds": [ 135245 ],
+        "Position": {
+            "X": 3697.972,
+            "Y": 467.349,
+            "Z": 187.993,
+            "Yaw": -179
+        }
+    },
+    {
+        "UnitId": 14636,
+        "Title": "spawn-fill: 10.x event spawner 135247 (member 14636)",
+        "NpcSpawnerIds": [ 135247 ],
+        "Position": {
+            "X": 3677.916,
+            "Y": 460.276,
+            "Z": 188.023,
+            "Yaw": -137
+        }
+    },
+    {
+        "UnitId": 14637,
+        "Title": "spawn-fill: 10.x event spawner 135247 (member 14637)",
+        "NpcSpawnerIds": [ 135247 ],
+        "Position": {
+            "X": 3677.916,
+            "Y": 460.276,
+            "Z": 188.023,
+            "Yaw": -137
+        }
+    },
+    {
+        "UnitId": 14621,
+        "Title": "spawn-fill: 10.x event spawner 135248 (member 14621)",
+        "NpcSpawnerIds": [ 135248 ],
+        "Position": {
+            "X": 3676.768,
+            "Y": 420.262,
+            "Z": 188.012,
+            "Yaw": -50
+        }
+    },
+    {
+        "UnitId": 14622,
+        "Title": "spawn-fill: 10.x event spawner 135250 (member 14622)",
+        "NpcSpawnerIds": [ 135250 ],
+        "Position": {
+            "X": 3698.046,
+            "Y": 414.262,
+            "Z": 187.993,
+            "Yaw": 0
+        }
+    },
+    {
+        "UnitId": 14628,
+        "Title": "spawn-fill: 10.x event spawner 135252 (member 14628)",
+        "NpcSpawnerIds": [ 135252 ],
+        "Position": {
+            "X": 3724.792,
+            "Y": 440.6,
+            "Z": 187.993,
+            "Yaw": 89
+        }
+    },
+    {
+        "UnitId": 14621,
+        "Title": "spawn-fill: 10.x event spawner 135253 (member 14621)",
+        "NpcSpawnerIds": [ 135253 ],
+        "Position": {
+            "X": 3676.576,
+            "Y": 420.485,
+            "Z": 188.012,
+            "Yaw": -50
+        }
+    },
+    {
+        "UnitId": 14644,
+        "Title": "spawn-fill: 10.x event spawner 135255 (member 14644)",
+        "NpcSpawnerIds": [ 135255 ],
+        "Position": {
+            "X": 3676.266,
+            "Y": 419.737,
+            "Z": 188.012,
+            "Yaw": -50
+        }
+    },
+    {
+        "UnitId": 14621,
+        "Title": "spawn-fill: 10.x event spawner 135256 (member 14621)",
+        "NpcSpawnerIds": [ 135256 ],
+        "Position": {
+            "X": 3678.461,
+            "Y": 459.806,
+            "Z": 188.023,
+            "Yaw": -137
+        }
+    },
+    {
+        "UnitId": 14643,
+        "Title": "spawn-fill: 10.x event spawner 135258 (member 14643)",
+        "NpcSpawnerIds": [ 135258 ],
+        "Position": {
+            "X": 3669.988,
+            "Y": 441.138,
+            "Z": 187.993,
+            "Yaw": -89
+        }
+    },
+    {
+        "UnitId": 14631,
+        "Title": "spawn-fill: 10.x event spawner 135259 (member 14631)",
+        "NpcSpawnerIds": [ 135259 ],
+        "Position": {
+            "X": 3725.102,
+            "Y": 441.058,
+            "Z": 187.993,
+            "Yaw": 89
+        }
+    },
+    {
+        "UnitId": 14644,
+        "Title": "spawn-fill: 10.x event spawner 135260 (member 14644)",
+        "NpcSpawnerIds": [ 135260 ],
+        "Position": {
+            "X": 3677.647,
+            "Y": 460.501,
+            "Z": 188.023,
+            "Yaw": -137
+        }
+    },
+    {
+        "UnitId": 14624,
+        "Title": "spawn-fill: 10.x event spawner 135261 (member 14624)",
+        "NpcSpawnerIds": [ 135261 ],
+        "Position": {
+            "X": 3676.598,
+            "Y": 420.076,
+            "Z": 188.012,
+            "Yaw": -50
+        }
+    },
+    {
+        "UnitId": 14644,
+        "Title": "spawn-fill: 10.x event spawner 135262 (member 14644)",
+        "NpcSpawnerIds": [ 135262 ],
+        "Position": {
+            "X": 3677.428,
+            "Y": 460.283,
+            "Z": 188.023,
+            "Yaw": -137
+        }
+    },
+    {
+        "UnitId": 14636,
+        "Title": "spawn-fill: 10.x event spawner 135263 (member 14636)",
+        "NpcSpawnerIds": [ 135263 ],
+        "Position": {
+            "X": 3717.557,
+            "Y": 460.817,
+            "Z": 188.011,
+            "Yaw": 136
+        }
+    },
+    {
+        "UnitId": 14637,
+        "Title": "spawn-fill: 10.x event spawner 135263 (member 14637)",
+        "NpcSpawnerIds": [ 135263 ],
+        "Position": {
+            "X": 3717.557,
+            "Y": 460.817,
+            "Z": 188.011,
+            "Yaw": 136
+        }
+    },
+    {
+        "UnitId": 14621,
+        "Title": "spawn-fill: 10.x event spawner 135264 (member 14621)",
+        "NpcSpawnerIds": [ 135264 ],
+        "Position": {
+            "X": 3717.461,
+            "Y": 460.398,
+            "Z": 188.011,
+            "Yaw": 136
+        }
+    },
+    {
+        "UnitId": 14636,
+        "Title": "spawn-fill: 10.x event spawner 135265 (member 14636)",
+        "NpcSpawnerIds": [ 135265 ],
+        "Position": {
+            "X": 3676.431,
+            "Y": 419.906,
+            "Z": 188.012,
+            "Yaw": -50
+        }
+    },
+    {
+        "UnitId": 14637,
+        "Title": "spawn-fill: 10.x event spawner 135265 (member 14637)",
+        "NpcSpawnerIds": [ 135265 ],
+        "Position": {
+            "X": 3676.431,
+            "Y": 419.906,
+            "Z": 188.012,
+            "Yaw": -50
+        }
+    },
+    {
+        "UnitId": 14628,
+        "Title": "spawn-fill: 10.x event spawner 135266 (member 14628)",
+        "NpcSpawnerIds": [ 135266 ],
+        "Position": {
+            "X": 3698.042,
+            "Y": 414.02,
+            "Z": 187.993,
+            "Yaw": 0
+        }
+    },
+    {
+        "UnitId": 14624,
+        "Title": "spawn-fill: 10.x event spawner 135267 (member 14624)",
+        "NpcSpawnerIds": [ 135267 ],
+        "Position": {
+            "X": 3677.972,
+            "Y": 459.812,
+            "Z": 188.023,
+            "Yaw": -137
+        }
+    },
+    {
+        "UnitId": 14624,
+        "Title": "spawn-fill: 10.x event spawner 135268 (member 14624)",
+        "NpcSpawnerIds": [ 135268 ],
+        "Position": {
+            "X": 3717.426,
+            "Y": 460.677,
+            "Z": 188.011,
+            "Yaw": 136
+        }
+    },
+    {
+        "UnitId": 14644,
+        "Title": "spawn-fill: 10.x event spawner 135269 (member 14644)",
+        "NpcSpawnerIds": [ 135269 ],
+        "Position": {
+            "X": 3676.061,
+            "Y": 419.948,
+            "Z": 188.012,
+            "Yaw": -50
+        }
+    },
+    {
+        "UnitId": 14624,
+        "Title": "spawn-fill: 10.x event spawner 135270 (member 14624)",
+        "NpcSpawnerIds": [ 135270 ],
+        "Position": {
+            "X": 3676.39,
+            "Y": 420.3,
+            "Z": 188.012,
+            "Yaw": -50
+        }
+    },
+    {
+        "UnitId": 14628,
+        "Title": "spawn-fill: 10.x event spawner 135271 (member 14628)",
+        "NpcSpawnerIds": [ 135271 ],
+        "Position": {
+            "X": 3724.782,
+            "Y": 441.063,
+            "Z": 187.993,
+            "Yaw": 89
+        }
+    },
+    {
+        "UnitId": 14622,
+        "Title": "spawn-fill: 10.x event spawner 135272 (member 14622)",
+        "NpcSpawnerIds": [ 135272 ],
+        "Position": {
+            "X": 3670.362,
+            "Y": 441.139,
+            "Z": 187.993,
+            "Yaw": -89
+        }
+    },
+    {
+        "UnitId": 14644,
+        "Title": "spawn-fill: 10.x event spawner 135273 (member 14644)",
+        "NpcSpawnerIds": [ 135273 ],
+        "Position": {
+            "X": 3717.855,
+            "Y": 460.839,
+            "Z": 188.011,
+            "Yaw": 136
+        }
+    },
+    {
+        "UnitId": 14636,
+        "Title": "spawn-fill: 10.x event spawner 135275 (member 14636)",
+        "NpcSpawnerIds": [ 135275 ],
+        "Position": {
+            "X": 3717.609,
+            "Y": 420.568,
+            "Z": 188.002,
+            "Yaw": 51
+        }
+    },
+    {
+        "UnitId": 14637,
+        "Title": "spawn-fill: 10.x event spawner 135275 (member 14637)",
+        "NpcSpawnerIds": [ 135275 ],
+        "Position": {
+            "X": 3717.609,
+            "Y": 420.568,
+            "Z": 188.002,
+            "Yaw": 51
+        }
+    },
+    {
+        "UnitId": 14644,
+        "Title": "spawn-fill: 10.x event spawner 135276 (member 14644)",
+        "NpcSpawnerIds": [ 135276 ],
+        "Position": {
+            "X": 3717.677,
+            "Y": 460.961,
+            "Z": 188.011,
+            "Yaw": 136
+        }
+    },
+    {
+        "UnitId": 14622,
+        "Title": "spawn-fill: 10.x event spawner 135277 (member 14622)",
+        "NpcSpawnerIds": [ 135277 ],
+        "Position": {
+            "X": 3670.362,
+            "Y": 441.269,
+            "Z": 187.993,
+            "Yaw": -89
+        }
+    },
+    {
+        "UnitId": 14628,
+        "Title": "spawn-fill: 10.x event spawner 135278 (member 14628)",
+        "NpcSpawnerIds": [ 135278 ],
+        "Position": {
+            "X": 3697.979,
+            "Y": 467.515,
+            "Z": 187.993,
+            "Yaw": -179
+        }
+    },
+    {
+        "UnitId": 14624,
+        "Title": "spawn-fill: 10.x event spawner 135279 (member 14624)",
+        "NpcSpawnerIds": [ 135279 ],
+        "Position": {
+            "X": 3717.263,
+            "Y": 420.961,
+            "Z": 188.002,
+            "Yaw": 51
+        }
+    },
+    {
+        "UnitId": 14643,
+        "Title": "spawn-fill: 10.x event spawner 135280 (member 14643)",
+        "NpcSpawnerIds": [ 135280 ],
+        "Position": {
+            "X": 3697.98,
+            "Y": 467.8,
+            "Z": 187.993,
+            "Yaw": -179
+        }
+    },
+    {
+        "UnitId": 14643,
+        "Title": "spawn-fill: 10.x event spawner 135281 (member 14643)",
+        "NpcSpawnerIds": [ 135281 ],
+        "Position": {
+            "X": 3698.039,
+            "Y": 413.546,
+            "Z": 187.993,
+            "Yaw": 0
+        }
+    },
+    {
+        "UnitId": 14644,
+        "Title": "spawn-fill: 10.x event spawner 135282 (member 14644)",
+        "NpcSpawnerIds": [ 135282 ],
+        "Position": {
+            "X": 3717.987,
+            "Y": 420.13,
+            "Z": 188.002,
+            "Yaw": 51
+        }
+    },
+    {
+        "UnitId": 14624,
+        "Title": "spawn-fill: 10.x event spawner 135283 (member 14624)",
+        "NpcSpawnerIds": [ 135283 ],
+        "Position": {
+            "X": 3717.611,
+            "Y": 421.236,
+            "Z": 188.002,
+            "Yaw": 51
+        }
+    },
+    {
+        "UnitId": 14643,
+        "Title": "spawn-fill: 10.x event spawner 135284 (member 14643)",
+        "NpcSpawnerIds": [ 135284 ],
+        "Position": {
+            "X": 3725.389,
+            "Y": 440.595,
+            "Z": 187.993,
+            "Yaw": 89
+        }
+    },
+    {
+        "UnitId": 14643,
+        "Title": "spawn-fill: 10.x event spawner 135286 (member 14643)",
+        "NpcSpawnerIds": [ 135286 ],
+        "Position": {
+            "X": 3669.992,
+            "Y": 441.262,
+            "Z": 187.993,
+            "Yaw": -89
+        }
+    },
+    {
+        "UnitId": 14628,
+        "Title": "spawn-fill: 10.x event spawner 135287 (member 14628)",
+        "NpcSpawnerIds": [ 135287 ],
+        "Position": {
+            "X": 3670.246,
+            "Y": 441.138,
+            "Z": 187.993,
+            "Yaw": -89
+        }
+    },
+    {
+        "UnitId": 14621,
+        "Title": "spawn-fill: 10.x event spawner 135288 (member 14621)",
+        "NpcSpawnerIds": [ 135288 ],
+        "Position": {
+            "X": 3717.298,
+            "Y": 460.535,
+            "Z": 188.011,
+            "Yaw": 136
+        }
+    },
+    {
+        "UnitId": 14624,
+        "Title": "spawn-fill: 10.x event spawner 135289 (member 14624)",
+        "NpcSpawnerIds": [ 135289 ],
+        "Position": {
+            "X": 3717.587,
+            "Y": 460.537,
+            "Z": 188.011,
+            "Yaw": 136
+        }
+    },
+    {
+        "UnitId": 14643,
+        "Title": "spawn-fill: 10.x event spawner 135290 (member 14643)",
+        "NpcSpawnerIds": [ 135290 ],
+        "Position": {
+            "X": 3725.385,
+            "Y": 441.059,
+            "Z": 187.993,
+            "Yaw": 89
+        }
+    },
+    {
+        "UnitId": 14621,
+        "Title": "spawn-fill: 10.x event spawner 135291 (member 14621)",
+        "NpcSpawnerIds": [ 135291 ],
+        "Position": {
+            "X": 3716.94,
+            "Y": 421.346,
+            "Z": 188.002,
+            "Yaw": 51
+        }
+    },
+    {
+        "UnitId": 14631,
+        "Title": "spawn-fill: 10.x event spawner 135293 (member 14631)",
+        "NpcSpawnerIds": [ 135293 ],
+        "Position": {
+            "X": 3670.126,
+            "Y": 441.14,
+            "Z": 187.993,
+            "Yaw": -89
+        }
+    },
+    {
+        "UnitId": 14624,
+        "Title": "spawn-fill: 10.x event spawner 135294 (member 14624)",
+        "NpcSpawnerIds": [ 135294 ],
+        "Position": {
+            "X": 3678.19,
+            "Y": 460.046,
+            "Z": 188.023,
+            "Yaw": -137
+        }
+    },
+    {
+        "UnitId": 14628,
+        "Title": "spawn-fill: 10.x event spawner 135295 (member 14628)",
+        "NpcSpawnerIds": [ 135295 ],
+        "Position": {
+            "X": 3670.249,
+            "Y": 441.259,
+            "Z": 187.993,
+            "Yaw": -89
+        }
+    },
+    {
+        "UnitId": 14636,
+        "Title": "spawn-fill: 10.x event spawner 135296 (member 14636)",
+        "NpcSpawnerIds": [ 135296 ],
+        "Position": {
+            "X": 3677.704,
+            "Y": 460.057,
+            "Z": 188.023,
+            "Yaw": -137
+        }
+    },
+    {
+        "UnitId": 14637,
+        "Title": "spawn-fill: 10.x event spawner 135296 (member 14637)",
+        "NpcSpawnerIds": [ 135296 ],
+        "Position": {
+            "X": 3677.704,
+            "Y": 460.057,
+            "Z": 188.023,
+            "Yaw": -137
+        }
+    },
+    {
+        "UnitId": 14644,
+        "Title": "spawn-fill: 10.x event spawner 135297 (member 14644)",
+        "NpcSpawnerIds": [ 135297 ],
+        "Position": {
+            "X": 3718.32,
+            "Y": 420.383,
+            "Z": 188.002,
+            "Yaw": 51
+        }
+    },
+    {
+        "UnitId": 14621,
+        "Title": "spawn-fill: 10.x event spawner 135299 (member 14621)",
+        "NpcSpawnerIds": [ 135299 ],
+        "Position": {
+            "X": 3717.286,
+            "Y": 421.604,
+            "Z": 188.002,
+            "Yaw": 51
+        }
+    },
+    {
+        "UnitId": 14620,
+        "Title": "spawn-fill: 10.x event spawner 135300 (member 14620)",
+        "NpcSpawnerIds": [ 135300 ],
+        "Position": {
+            "X": 3708.877,
+            "Y": 447.224,
+            "Z": 187.993,
+            "Yaw": 119
+        }
+    },
+    {
+        "UnitId": 14642,
+        "Title": "spawn-fill: 10.x event spawner 135301 (member 14642)",
+        "NpcSpawnerIds": [ 135301 ],
+        "Position": {
+            "X": 3686.948,
+            "Y": 447.437,
+            "Z": 187.993,
+            "Yaw": -120
+        }
+    },
+    {
+        "UnitId": 14638,
+        "Title": "spawn-fill: 10.x event spawner 135302 (member 14638)",
+        "NpcSpawnerIds": [ 135302 ],
+        "Position": {
+            "X": 3686.901,
+            "Y": 433.851,
+            "Z": 187.993,
+            "Yaw": -52
+        }
+    },
+    {
+        "UnitId": 14614,
+        "Title": "spawn-fill: 10.x event spawner 135303 (member 14614)",
+        "NpcSpawnerIds": [ 135303 ],
+        "Position": {
+            "X": 3708.784,
+            "Y": 434.071,
+            "Z": 187.993,
+            "Yaw": 60
+        }
+    },
+    {
+        "UnitId": 14330,
+        "Title": "spawn-fill: 10.x event spawner 135388 (member 14330)",
+        "NpcSpawnerIds": [ 135388 ],
+        "Position": {
+            "X": 2628.12,
+            "Y": 2585.197,
+            "Z": 127.031,
+            "Yaw": 175
+        }
+    },
+    {
+        "UnitId": 14334,
+        "Title": "spawn-fill: 10.x event spawner 135437 (member 14334)",
+        "NpcSpawnerIds": [ 135437 ],
+        "Position": {
+            "X": 2625.468,
+            "Y": 2561.708,
+            "Z": 126.411,
+            "Yaw": 160
+        }
+    },
+    {
+        "UnitId": 14682,
+        "Title": "spawn-fill: 10.x event spawner 135503 (member 14682)",
+        "NpcSpawnerIds": [ 135503 ],
+        "Position": {
+            "X": 2624.931,
+            "Y": 2560.276,
+            "Z": 126.279,
+            "Yaw": 160
+        }
+    },
+    {
+        "UnitId": 14686,
+        "Title": "spawn-fill: 10.x event spawner 135543 (member 14686)",
+        "NpcSpawnerIds": [ 135543 ],
+        "Position": {
+            "X": 2627.149,
+            "Y": 2575.631,
+            "Z": 130.347,
+            "Yaw": -10
+        }
+    },
+    {
+        "UnitId": 14611,
+        "Title": "spawn-fill: 10.x event spawner 136454 (member 14611)",
+        "NpcSpawnerIds": [ 136454 ],
+        "Position": {
+            "X": 3678.917,
+            "Y": 459.807,
+            "Z": 188.023,
+            "Yaw": -137
+        }
+    },
+    {
+        "UnitId": 14611,
+        "Title": "spawn-fill: 10.x event spawner 136455 (member 14611)",
+        "NpcSpawnerIds": [ 136455 ],
+        "Position": {
+            "X": 3679.092,
+            "Y": 459.976,
+            "Z": 188.023,
+            "Yaw": -137
+        }
+    },
+    {
+        "UnitId": 14612,
+        "Title": "spawn-fill: 10.x event spawner 136456 (member 14612)",
+        "NpcSpawnerIds": [ 136456 ],
+        "Position": {
+            "X": 3698.198,
+            "Y": 467.17,
+            "Z": 187.993,
+            "Yaw": -179
+        }
+    },
+    {
+        "UnitId": 14612,
+        "Title": "spawn-fill: 10.x event spawner 136457 (member 14612)",
+        "NpcSpawnerIds": [ 136457 ],
+        "Position": {
+            "X": 3697.823,
+            "Y": 414.504,
+            "Z": 187.993,
+            "Yaw": 0
+        }
+    },
+    {
+        "UnitId": 14611,
+        "Title": "spawn-fill: 10.x event spawner 136461 (member 14611)",
+        "NpcSpawnerIds": [ 136461 ],
+        "Position": {
+            "X": 3716.252,
+            "Y": 421.449,
+            "Z": 188.002,
+            "Yaw": 51
+        }
+    },
+    {
+        "UnitId": 14611,
+        "Title": "spawn-fill: 10.x event spawner 136462 (member 14611)",
+        "NpcSpawnerIds": [ 136462 ],
+        "Position": {
+            "X": 3715.918,
+            "Y": 421.137,
+            "Z": 188.002,
+            "Yaw": 51
+        }
+    },
+    {
+        "UnitId": 14611,
+        "Title": "spawn-fill: 10.x event spawner 136464 (member 14611)",
+        "NpcSpawnerIds": [ 136464 ],
+        "Position": {
+            "X": 3676.554,
+            "Y": 420.865,
+            "Z": 188.012,
+            "Yaw": -50
+        }
+    },
+    {
+        "UnitId": 14611,
+        "Title": "spawn-fill: 10.x event spawner 136465 (member 14611)",
+        "NpcSpawnerIds": [ 136465 ],
+        "Position": {
+            "X": 3676.365,
+            "Y": 421.071,
+            "Z": 188.012,
+            "Yaw": -50
+        }
+    },
+    {
+        "UnitId": 14611,
+        "Title": "spawn-fill: 10.x event spawner 136466 (member 14611)",
+        "NpcSpawnerIds": [ 136466 ],
+        "Position": {
+            "X": 3717.504,
+            "Y": 460.109,
+            "Z": 188.011,
+            "Yaw": 136
+        }
+    },
+    {
+        "UnitId": 14611,
+        "Title": "spawn-fill: 10.x event spawner 136467 (member 14611)",
+        "NpcSpawnerIds": [ 136467 ],
+        "Position": {
+            "X": 3717.636,
+            "Y": 459.936,
+            "Z": 188.011,
+            "Yaw": 136
+        }
+    },
+    {
+        "UnitId": 14612,
+        "Title": "spawn-fill: 10.x event spawner 136468 (member 14612)",
+        "NpcSpawnerIds": [ 136468 ],
+        "Position": {
+            "X": 3724.183,
+            "Y": 439.601,
+            "Z": 187.993,
+            "Yaw": 89
+        }
+    },
+    {
+        "UnitId": 14612,
+        "Title": "spawn-fill: 10.x event spawner 136469 (member 14612)",
+        "NpcSpawnerIds": [ 136469 ],
+        "Position": {
+            "X": 3724.186,
+            "Y": 440.103,
+            "Z": 187.993,
+            "Yaw": 89
+        }
+    },
+    {
+        "UnitId": 14612,
+        "Title": "spawn-fill: 10.x event spawner 136470 (member 14612)",
+        "NpcSpawnerIds": [ 136470 ],
+        "Position": {
+            "X": 3670.472,
+            "Y": 441.528,
+            "Z": 187.993,
+            "Yaw": -89
+        }
+    },
+    {
+        "UnitId": 14612,
+        "Title": "spawn-fill: 10.x event spawner 136471 (member 14612)",
+        "NpcSpawnerIds": [ 136471 ],
+        "Position": {
+            "X": 3670.478,
+            "Y": 441.394,
+            "Z": 187.993,
+            "Yaw": -89
+        }
+    },
+    {
+        "UnitId": 14621,
+        "Title": "spawn-fill: 10.x event spawner 136484 (member 14621)",
+        "NpcSpawnerIds": [ 136484 ],
+        "Position": {
+            "X": 3717.78,
+            "Y": 460.081,
+            "Z": 188.011,
+            "Yaw": 136
+        }
+    },
+    {
+        "UnitId": 14631,
+        "Title": "spawn-fill: 10.x event spawner 136485 (member 14631)",
+        "NpcSpawnerIds": [ 136485 ],
+        "Position": {
+            "X": 3725.108,
+            "Y": 440.117,
+            "Z": 187.993,
+            "Yaw": 89
+        }
+    },
+    {
+        "UnitId": 14622,
+        "Title": "spawn-fill: 10.x event spawner 136486 (member 14622)",
+        "NpcSpawnerIds": [ 136486 ],
+        "Position": {
+            "X": 3724.462,
+            "Y": 439.605,
+            "Z": 187.993,
+            "Yaw": 89
+        }
+    },
+    {
+        "UnitId": 14643,
+        "Title": "spawn-fill: 10.x event spawner 136487 (member 14643)",
+        "NpcSpawnerIds": [ 136487 ],
+        "Position": {
+            "X": 3725.33,
+            "Y": 439.601,
+            "Z": 187.993,
+            "Yaw": 89
+        }
+    },
+    {
+        "UnitId": 14621,
+        "Title": "spawn-fill: 10.x event spawner 136488 (member 14621)",
+        "NpcSpawnerIds": [ 136488 ],
+        "Position": {
+            "X": 3716.253,
+            "Y": 420.773,
+            "Z": 188.002,
+            "Yaw": 51
+        }
+    },
+    {
+        "UnitId": 14621,
+        "Title": "spawn-fill: 10.x event spawner 136489 (member 14621)",
+        "NpcSpawnerIds": [ 136489 ],
+        "Position": {
+            "X": 3678.831,
+            "Y": 460.204,
+            "Z": 188.023,
+            "Yaw": -137
+        }
+    },
+    {
+        "UnitId": 14622,
+        "Title": "spawn-fill: 10.x event spawner 136490 (member 14622)",
+        "NpcSpawnerIds": [ 136490 ],
+        "Position": {
+            "X": 3698.2,
+            "Y": 467.335,
+            "Z": 187.993,
+            "Yaw": -179
+        }
+    },
+    {
+        "UnitId": 14643,
+        "Title": "spawn-fill: 10.x event spawner 136491 (member 14643)",
+        "NpcSpawnerIds": [ 136491 ],
+        "Position": {
+            "X": 3669.994,
+            "Y": 441.389,
+            "Z": 187.993,
+            "Yaw": -89
+        }
+    },
+    {
+        "UnitId": 14628,
+        "Title": "spawn-fill: 10.x event spawner 136492 (member 14628)",
+        "NpcSpawnerIds": [ 136492 ],
+        "Position": {
+            "X": 3670.249,
+            "Y": 441.383,
+            "Z": 187.993,
+            "Yaw": -89
+        }
+    },
+    {
+        "UnitId": 14631,
+        "Title": "spawn-fill: 10.x event spawner 136493 (member 14631)",
+        "NpcSpawnerIds": [ 136493 ],
+        "Position": {
+            "X": 3697.849,
+            "Y": 413.771,
+            "Z": 187.993,
+            "Yaw": 0
+        }
+    },
+    {
+        "UnitId": 14621,
+        "Title": "spawn-fill: 10.x event spawner 136494 (member 14621)",
+        "NpcSpawnerIds": [ 136494 ],
+        "Position": {
+            "X": 3678.662,
+            "Y": 460.027,
+            "Z": 188.023,
+            "Yaw": -137
+        }
+    },
+    {
+        "UnitId": 14624,
+        "Title": "spawn-fill: 10.x event spawner 136495 (member 14624)",
+        "NpcSpawnerIds": [ 136495 ],
+        "Position": {
+            "X": 3717.75,
+            "Y": 460.405,
+            "Z": 188.011,
+            "Yaw": 136
+        }
+    },
+    {
+        "UnitId": 14628,
+        "Title": "spawn-fill: 10.x event spawner 136496 (member 14628)",
+        "NpcSpawnerIds": [ 136496 ],
+        "Position": {
+            "X": 3670.242,
+            "Y": 441.512,
+            "Z": 187.993,
+            "Yaw": -89
+        }
+    },
+    {
+        "UnitId": 14621,
+        "Title": "spawn-fill: 10.x event spawner 136497 (member 14621)",
+        "NpcSpawnerIds": [ 136497 ],
+        "Position": {
+            "X": 3676.377,
+            "Y": 420.698,
+            "Z": 188.012,
+            "Yaw": -50
+        }
+    },
+    {
+        "UnitId": 14643,
+        "Title": "spawn-fill: 10.x event spawner 136498 (member 14643)",
+        "NpcSpawnerIds": [ 136498 ],
+        "Position": {
+            "X": 3698.208,
+            "Y": 467.796,
+            "Z": 187.993,
+            "Yaw": -179
+        }
+    },
+    {
+        "UnitId": 14644,
+        "Title": "spawn-fill: 10.x event spawner 136499 (member 14644)",
+        "NpcSpawnerIds": [ 136499 ],
+        "Position": {
+            "X": 3675.613,
+            "Y": 420.39,
+            "Z": 188.012,
+            "Yaw": -50
+        }
+    },
+    {
+        "UnitId": 14644,
+        "Title": "spawn-fill: 10.x event spawner 136500 (member 14644)",
+        "NpcSpawnerIds": [ 136500 ],
+        "Position": {
+            "X": 3718.215,
+            "Y": 460.56,
+            "Z": 188.011,
+            "Yaw": 136
+        }
+    },
+    {
+        "UnitId": 14644,
+        "Title": "spawn-fill: 10.x event spawner 136501 (member 14644)",
+        "NpcSpawnerIds": [ 136501 ],
+        "Position": {
+            "X": 3677.841,
+            "Y": 460.706,
+            "Z": 188.023,
+            "Yaw": -137
+        }
+    },
+    {
+        "UnitId": 14631,
+        "Title": "spawn-fill: 10.x event spawner 136502 (member 14631)",
+        "NpcSpawnerIds": [ 136502 ],
+        "Position": {
+            "X": 3670.121,
+            "Y": 441.509,
+            "Z": 187.993,
+            "Yaw": -89
+        }
+    },
+    {
+        "UnitId": 14622,
+        "Title": "spawn-fill: 10.x event spawner 136503 (member 14622)",
+        "NpcSpawnerIds": [ 136503 ],
+        "Position": {
+            "X": 3697.833,
+            "Y": 414.261,
+            "Z": 187.993,
+            "Yaw": 0
+        }
+    },
+    {
+        "UnitId": 14624,
+        "Title": "spawn-fill: 10.x event spawner 136504 (member 14624)",
+        "NpcSpawnerIds": [ 136504 ],
+        "Position": {
+            "X": 3716.606,
+            "Y": 420.364,
+            "Z": 188.002,
+            "Yaw": 51
+        }
+    },
+    {
+        "UnitId": 14644,
+        "Title": "spawn-fill: 10.x event spawner 136505 (member 14644)",
+        "NpcSpawnerIds": [ 136505 ],
+        "Position": {
+            "X": 3717.638,
+            "Y": 419.833,
+            "Z": 188.002,
+            "Yaw": 51
+        }
+    },
+    {
+        "UnitId": 14631,
+        "Title": "spawn-fill: 10.x event spawner 136506 (member 14631)",
+        "NpcSpawnerIds": [ 136506 ],
+        "Position": {
+            "X": 3698.207,
+            "Y": 467.655,
+            "Z": 187.993,
+            "Yaw": -179
+        }
+    },
+    {
+        "UnitId": 14636,
+        "Title": "spawn-fill: 10.x event spawner 136507 (member 14636)",
+        "NpcSpawnerIds": [ 136507 ],
+        "Position": {
+            "X": 3676.007,
+            "Y": 420.363,
+            "Z": 188.012,
+            "Yaw": -50
+        }
+    },
+    {
+        "UnitId": 14637,
+        "Title": "spawn-fill: 10.x event spawner 136507 (member 14637)",
+        "NpcSpawnerIds": [ 136507 ],
+        "Position": {
+            "X": 3676.007,
+            "Y": 420.363,
+            "Z": 188.012,
+            "Yaw": -50
+        }
+    },
+    {
+        "UnitId": 14628,
+        "Title": "spawn-fill: 10.x event spawner 136508 (member 14628)",
+        "NpcSpawnerIds": [ 136508 ],
+        "Position": {
+            "X": 3724.745,
+            "Y": 439.61,
+            "Z": 187.993,
+            "Yaw": 89
+        }
+    },
+    {
+        "UnitId": 14636,
+        "Title": "spawn-fill: 10.x event spawner 136509 (member 14636)",
+        "NpcSpawnerIds": [ 136509 ],
+        "Position": {
+            "X": 3675.809,
+            "Y": 420.571,
+            "Z": 188.012,
+            "Yaw": -50
+        }
+    },
+    {
+        "UnitId": 14637,
+        "Title": "spawn-fill: 10.x event spawner 136509 (member 14637)",
+        "NpcSpawnerIds": [ 136509 ],
+        "Position": {
+            "X": 3675.809,
+            "Y": 420.571,
+            "Z": 188.012,
+            "Yaw": -50
+        }
+    },
+    {
+        "UnitId": 14624,
+        "Title": "spawn-fill: 10.x event spawner 136510 (member 14624)",
+        "NpcSpawnerIds": [ 136510 ],
+        "Position": {
+            "X": 3716.928,
+            "Y": 420.666,
+            "Z": 188.002,
+            "Yaw": 51
+        }
+    },
+    {
+        "UnitId": 14636,
+        "Title": "spawn-fill: 10.x event spawner 136511 (member 14636)",
+        "NpcSpawnerIds": [ 136511 ],
+        "Position": {
+            "X": 3716.911,
+            "Y": 419.957,
+            "Z": 188.002,
+            "Yaw": 51
+        }
+    },
+    {
+        "UnitId": 14637,
+        "Title": "spawn-fill: 10.x event spawner 136511 (member 14637)",
+        "NpcSpawnerIds": [ 136511 ],
+        "Position": {
+            "X": 3716.911,
+            "Y": 419.957,
+            "Z": 188.002,
+            "Yaw": 51
+        }
+    },
+    {
+        "UnitId": 14628,
+        "Title": "spawn-fill: 10.x event spawner 136512 (member 14628)",
+        "NpcSpawnerIds": [ 136512 ],
+        "Position": {
+            "X": 3697.844,
+            "Y": 414.024,
+            "Z": 187.993,
+            "Yaw": 0
+        }
+    },
+    {
+        "UnitId": 14636,
+        "Title": "spawn-fill: 10.x event spawner 136513 (member 14636)",
+        "NpcSpawnerIds": [ 136513 ],
+        "Position": {
+            "X": 3717.908,
+            "Y": 460.56,
+            "Z": 188.011,
+            "Yaw": 136
+        }
+    },
+    {
+        "UnitId": 14637,
+        "Title": "spawn-fill: 10.x event spawner 136513 (member 14637)",
+        "NpcSpawnerIds": [ 136513 ],
+        "Position": {
+            "X": 3717.908,
+            "Y": 460.56,
+            "Z": 188.011,
+            "Yaw": 136
+        }
+    },
+    {
+        "UnitId": 14636,
+        "Title": "spawn-fill: 10.x event spawner 136514 (member 14636)",
+        "NpcSpawnerIds": [ 136514 ],
+        "Position": {
+            "X": 3717.267,
+            "Y": 420.271,
+            "Z": 188.002,
+            "Yaw": 51
+        }
+    },
+    {
+        "UnitId": 14637,
+        "Title": "spawn-fill: 10.x event spawner 136514 (member 14637)",
+        "NpcSpawnerIds": [ 136514 ],
+        "Position": {
+            "X": 3717.267,
+            "Y": 420.271,
+            "Z": 188.002,
+            "Yaw": 51
+        }
+    },
+    {
+        "UnitId": 14644,
+        "Title": "spawn-fill: 10.x event spawner 136515 (member 14644)",
+        "NpcSpawnerIds": [ 136515 ],
+        "Position": {
+            "X": 3718.037,
+            "Y": 460.708,
+            "Z": 188.011,
+            "Yaw": 136
+        }
+    },
+    {
+        "UnitId": 14621,
+        "Title": "spawn-fill: 10.x event spawner 136516 (member 14621)",
+        "NpcSpawnerIds": [ 136516 ],
+        "Position": {
+            "X": 3716.61,
+            "Y": 421.052,
+            "Z": 188.002,
+            "Yaw": 51
+        }
+    },
+    {
+        "UnitId": 14624,
+        "Title": "spawn-fill: 10.x event spawner 136517 (member 14624)",
+        "NpcSpawnerIds": [ 136517 ],
+        "Position": {
+            "X": 3678.543,
+            "Y": 460.441,
+            "Z": 188.023,
+            "Yaw": -137
+        }
+    },
+    {
+        "UnitId": 14636,
+        "Title": "spawn-fill: 10.x event spawner 136518 (member 14636)",
+        "NpcSpawnerIds": [ 136518 ],
+        "Position": {
+            "X": 3678.274,
+            "Y": 460.666,
+            "Z": 188.023,
+            "Yaw": -137
+        }
+    },
+    {
+        "UnitId": 14637,
+        "Title": "spawn-fill: 10.x event spawner 136518 (member 14637)",
+        "NpcSpawnerIds": [ 136518 ],
+        "Position": {
+            "X": 3678.274,
+            "Y": 460.666,
+            "Z": 188.023,
+            "Yaw": -137
+        }
+    },
+    {
+        "UnitId": 14644,
+        "Title": "spawn-fill: 10.x event spawner 136519 (member 14644)",
+        "NpcSpawnerIds": [ 136519 ],
+        "Position": {
+            "X": 3675.844,
+            "Y": 420.168,
+            "Z": 188.012,
+            "Yaw": -50
+        }
+    },
+    {
+        "UnitId": 14643,
+        "Title": "spawn-fill: 10.x event spawner 136520 (member 14643)",
+        "NpcSpawnerIds": [ 136520 ],
+        "Position": {
+            "X": 3669.995,
+            "Y": 441.518,
+            "Z": 187.993,
+            "Yaw": -89
+        }
+    },
+    {
+        "UnitId": 14636,
+        "Title": "spawn-fill: 10.x event spawner 136521 (member 14636)",
+        "NpcSpawnerIds": [ 136521 ],
+        "Position": {
+            "X": 3678.093,
+            "Y": 460.494,
+            "Z": 188.023,
+            "Yaw": -137
+        }
+    },
+    {
+        "UnitId": 14637,
+        "Title": "spawn-fill: 10.x event spawner 136521 (member 14637)",
+        "NpcSpawnerIds": [ 136521 ],
+        "Position": {
+            "X": 3678.093,
+            "Y": 460.494,
+            "Z": 188.023,
+            "Yaw": -137
+        }
+    },
+    {
+        "UnitId": 14621,
+        "Title": "spawn-fill: 10.x event spawner 136522 (member 14621)",
+        "NpcSpawnerIds": [ 136522 ],
+        "Position": {
+            "X": 3717.636,
+            "Y": 460.257,
+            "Z": 188.011,
+            "Yaw": 136
+        }
+    },
+    {
+        "UnitId": 14631,
+        "Title": "spawn-fill: 10.x event spawner 136523 (member 14631)",
+        "NpcSpawnerIds": [ 136523 ],
+        "Position": {
+            "X": 3670.124,
+            "Y": 441.383,
+            "Z": 187.993,
+            "Yaw": -89
+        }
+    },
+    {
+        "UnitId": 14622,
+        "Title": "spawn-fill: 10.x event spawner 136524 (member 14622)",
+        "NpcSpawnerIds": [ 136524 ],
+        "Position": {
+            "X": 3724.47,
+            "Y": 440.112,
+            "Z": 187.993,
+            "Yaw": 89
+        }
+    },
+    {
+        "UnitId": 14628,
+        "Title": "spawn-fill: 10.x event spawner 136525 (member 14628)",
+        "NpcSpawnerIds": [ 136525 ],
+        "Position": {
+            "X": 3698.207,
+            "Y": 467.509,
+            "Z": 187.993,
+            "Yaw": -179
+        }
+    },
+    {
+        "UnitId": 14621,
+        "Title": "spawn-fill: 10.x event spawner 136526 (member 14621)",
+        "NpcSpawnerIds": [ 136526 ],
+        "Position": {
+            "X": 3676.177,
+            "Y": 420.902,
+            "Z": 188.012,
+            "Yaw": -50
+        }
+    },
+    {
+        "UnitId": 14643,
+        "Title": "spawn-fill: 10.x event spawner 136527 (member 14643)",
+        "NpcSpawnerIds": [ 136527 ],
+        "Position": {
+            "X": 3725.387,
+            "Y": 440.115,
+            "Z": 187.993,
+            "Yaw": 89
+        }
+    },
+    {
+        "UnitId": 14631,
+        "Title": "spawn-fill: 10.x event spawner 136528 (member 14631)",
+        "NpcSpawnerIds": [ 136528 ],
+        "Position": {
+            "X": 3725.071,
+            "Y": 439.607,
+            "Z": 187.993,
+            "Yaw": 89
+        }
+    },
+    {
+        "UnitId": 14624,
+        "Title": "spawn-fill: 10.x event spawner 136529 (member 14624)",
+        "NpcSpawnerIds": [ 136529 ],
+        "Position": {
+            "X": 3717.927,
+            "Y": 460.237,
+            "Z": 188.011,
+            "Yaw": 136
+        }
+    },
+    {
+        "UnitId": 14622,
+        "Title": "spawn-fill: 10.x event spawner 136530 (member 14622)",
+        "NpcSpawnerIds": [ 136530 ],
+        "Position": {
+            "X": 3670.364,
+            "Y": 441.388,
+            "Z": 187.993,
+            "Yaw": -89
+        }
+    },
+    {
+        "UnitId": 14622,
+        "Title": "spawn-fill: 10.x event spawner 136531 (member 14622)",
+        "NpcSpawnerIds": [ 136531 ],
+        "Position": {
+            "X": 3670.357,
+            "Y": 441.519,
+            "Z": 187.993,
+            "Yaw": -89
+        }
+    },
+    {
+        "UnitId": 14624,
+        "Title": "spawn-fill: 10.x event spawner 136532 (member 14624)",
+        "NpcSpawnerIds": [ 136532 ],
+        "Position": {
+            "X": 3676.206,
+            "Y": 420.534,
+            "Z": 188.012,
+            "Yaw": -50
+        }
+    },
+    {
+        "UnitId": 14636,
+        "Title": "spawn-fill: 10.x event spawner 136533 (member 14636)",
+        "NpcSpawnerIds": [ 136533 ],
+        "Position": {
+            "X": 3718.081,
+            "Y": 460.41,
+            "Z": 188.011,
+            "Yaw": 136
+        }
+    },
+    {
+        "UnitId": 14637,
+        "Title": "spawn-fill: 10.x event spawner 136533 (member 14637)",
+        "NpcSpawnerIds": [ 136533 ],
+        "Position": {
+            "X": 3718.081,
+            "Y": 460.41,
+            "Z": 188.011,
+            "Yaw": 136
+        }
+    },
+    {
+        "UnitId": 14644,
+        "Title": "spawn-fill: 10.x event spawner 136534 (member 14644)",
+        "NpcSpawnerIds": [ 136534 ],
+        "Position": {
+            "X": 3678.013,
+            "Y": 460.899,
+            "Z": 188.023,
+            "Yaw": -137
+        }
+    },
+    {
+        "UnitId": 14628,
+        "Title": "spawn-fill: 10.x event spawner 136535 (member 14628)",
+        "NpcSpawnerIds": [ 136535 ],
+        "Position": {
+            "X": 3724.797,
+            "Y": 440.113,
+            "Z": 187.993,
+            "Yaw": 89
+        }
+    },
+    {
+        "UnitId": 14624,
+        "Title": "spawn-fill: 10.x event spawner 136536 (member 14624)",
+        "NpcSpawnerIds": [ 136536 ],
+        "Position": {
+            "X": 3678.363,
+            "Y": 460.262,
+            "Z": 188.023,
+            "Yaw": -137
+        }
+    },
+    {
+        "UnitId": 14643,
+        "Title": "spawn-fill: 10.x event spawner 136537 (member 14643)",
+        "NpcSpawnerIds": [ 136537 ],
+        "Position": {
+            "X": 3697.84,
+            "Y": 413.538,
+            "Z": 187.993,
+            "Yaw": 0
+        }
+    },
+    {
+        "UnitId": 14624,
+        "Title": "spawn-fill: 10.x event spawner 136538 (member 14624)",
+        "NpcSpawnerIds": [ 136538 ],
+        "Position": {
+            "X": 3676.014,
+            "Y": 420.741,
+            "Z": 188.012,
+            "Yaw": -50
+        }
+    },
+    {
+        "UnitId": 14644,
+        "Title": "spawn-fill: 10.x event spawner 136539 (member 14644)",
+        "NpcSpawnerIds": [ 136539 ],
+        "Position": {
+            "X": 3717.292,
+            "Y": 419.526,
+            "Z": 188.002,
+            "Yaw": 51
+        }
+    },
+    {
+        "UnitId": 14364,
+        "Title": "spawn-fill: 10.x event spawner 136699 (member 14364)",
+        "NpcSpawnerIds": [ 136699 ],
+        "Position": {
+            "X": 2240.017,
+            "Y": 192.032,
+            "Z": 149.952,
+            "Yaw": 0
+        }
+    },
+    {
+        "UnitId": 14615,
+        "Title": "spawn-fill: 10.x event spawner 136931 (member 14615)",
+        "NpcSpawnerIds": [ 136931 ],
+        "Position": {
+            "X": 3701.001,
+            "Y": 446.318,
+            "Z": 188.112,
+            "Yaw": 88
+        }
+    },
+    {
+        "UnitId": 14616,
+        "Title": "spawn-fill: 10.x event spawner 136932 (member 14616)",
+        "NpcSpawnerIds": [ 136932 ],
+        "Position": {
+            "X": 3704.21,
+            "Y": 437.872,
+            "Z": 188.122,
+            "Yaw": 87
+        }
+    },
+    {
+        "UnitId": 14617,
+        "Title": "spawn-fill: 10.x event spawner 136933 (member 14617)",
+        "NpcSpawnerIds": [ 136933 ],
+        "Position": {
+            "X": 3691.433,
+            "Y": 438.123,
+            "Z": 188.149,
+            "Yaw": -90
+        }
+    },
+    {
+        "UnitId": 14618,
+        "Title": "spawn-fill: 10.x event spawner 136934 (member 14618)",
+        "NpcSpawnerIds": [ 136934 ],
+        "Position": {
+            "X": 3692.269,
+            "Y": 444.743,
+            "Z": 188.113,
+            "Yaw": -91
+        }
+    },
+    {
+        "UnitId": 14619,
+        "Title": "spawn-fill: 10.x event spawner 136935 (member 14619)",
+        "NpcSpawnerIds": [ 136935 ],
+        "Position": {
+            "X": 3698.052,
+            "Y": 458.301,
+            "Z": 188.059,
+            "Yaw": -180
+        }
+    },
+    {
+        "UnitId": 14641,
+        "Title": "spawn-fill: 10.x event spawner 137011 (member 14641)",
+        "NpcSpawnerIds": [ 137011 ],
+        "Position": {
+            "X": 3697.811,
+            "Y": 440.752,
+            "Z": 188.092,
+            "Yaw": 0
+        }
+    },
+    {
+        "UnitId": 14380,
+        "Title": "spawn-fill: 10.x event spawner 137577 (member 14380)",
+        "NpcSpawnerIds": [ 137577 ],
+        "Position": {
+            "X": 2231.068,
+            "Y": 199.475,
+            "Z": 149.949,
+            "Yaw": -117
+        }
+    },
+    {
+        "UnitId": 14938,
+        "Title": "spawn-fill: 10.x event spawner 139065 (member 14938)",
+        "NpcSpawnerIds": [ 139065 ],
+        "Position": {
+            "X": 405.981,
+            "Y": 4457.877,
+            "Z": 512.561,
+            "Yaw": 50
+        }
+    },
+    {
+        "UnitId": 14938,
+        "Title": "spawn-fill: 10.x event spawner 139066 (member 14938)",
+        "NpcSpawnerIds": [ 139066 ],
+        "Position": {
+            "X": 361.141,
+            "Y": 4457.328,
+            "Z": 512.581,
+            "Yaw": -45
+        }
+    },
+    {
+        "UnitId": 14938,
+        "Title": "spawn-fill: 10.x event spawner 139067 (member 14938)",
+        "NpcSpawnerIds": [ 139067 ],
+        "Position": {
+            "X": 361.789,
+            "Y": 4502.216,
+            "Z": 512.581,
+            "Yaw": -135
+        }
+    },
+    {
+        "UnitId": 14938,
+        "Title": "spawn-fill: 10.x event spawner 139068 (member 14938)",
+        "NpcSpawnerIds": [ 139068 ],
+        "Position": {
+            "X": 406.222,
+            "Y": 4502.316,
+            "Z": 512.581,
+            "Yaw": 135
+        }
+    },
+    {
+        "UnitId": 14938,
+        "Title": "spawn-fill: 10.x event spawner 139069 (member 14938)",
+        "NpcSpawnerIds": [ 139069 ],
+        "Position": {
+            "X": 410.812,
+            "Y": 4480.023,
+            "Z": 512.561,
+            "Yaw": 85
+        }
+    },
+    {
+        "UnitId": 14938,
+        "Title": "spawn-fill: 10.x event spawner 139070 (member 14938)",
+        "NpcSpawnerIds": [ 139070 ],
+        "Position": {
+            "X": 383.71,
+            "Y": 4453.295,
+            "Z": 512.561,
+            "Yaw": 0
+        }
+    },
+    {
+        "UnitId": 14938,
+        "Title": "spawn-fill: 10.x event spawner 139071 (member 14938)",
+        "NpcSpawnerIds": [ 139071 ],
+        "Position": {
+            "X": 357.116,
+            "Y": 4480.074,
+            "Z": 512.561,
+            "Yaw": -90
+        }
+    },
+    {
+        "UnitId": 14938,
+        "Title": "spawn-fill: 10.x event spawner 139072 (member 14938)",
+        "NpcSpawnerIds": [ 139072 ],
+        "Position": {
+            "X": 384.453,
+            "Y": 4505.864,
+            "Z": 512.561,
+            "Yaw": 175
+        }
+    },
+    {
+        "UnitId": 14374,
+        "Title": "spawn-fill: 10.x ambient spawner 15704",
+        "SpawnerId": 15704,
+        "Position": {
+            "X": 864.04,
+            "Y": 4888.35,
+            "Z": 258.02,
+            "Yaw": 0
+        }
+    },
+    {
+        "UnitId": 14374,
+        "Title": "spawn-fill: 10.x ambient spawner 15704",
+        "SpawnerId": 15704,
+        "Position": {
+            "X": 913.75,
+            "Y": 4839.77,
+            "Z": 257.27,
+            "Yaw": 0
+        }
     }
 ]
