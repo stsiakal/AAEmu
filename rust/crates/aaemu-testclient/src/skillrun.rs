@@ -2106,6 +2106,20 @@ async fn setup_world(
     // The item id -> template map the template-less `ItemMove` tasks need: the selection
     // snapshot's equipment and the bag rows the inventory packets carried.
     session.seed_known_items(&game);
+    for row in session.equipment.values() {
+        game.state
+            .item_templates
+            .insert(row.item_id, row.template_id);
+    }
+    let bag_rows: Vec<(u64, u32)> = game
+        .state
+        .bag
+        .values()
+        .map(|item| (item.item_id, item.template_id))
+        .collect();
+    for (item_id, template_id) in bag_rows {
+        game.state.item_templates.insert(item_id, template_id);
+    }
     if let Some(info) = game.state.self_info.clone() {
         character = RunCharacter {
             name: info.name,
@@ -2493,6 +2507,15 @@ impl<'a> Sweep<'a> {
             return Ok(());
         }
         if self.game.state.bag_count(&[template]) == 0 {
+            tracing::debug!(
+                "ensure_slot {template} slot {slot}: bag has no {template}; bag rows: {:?}",
+                self.game
+                    .state
+                    .bag
+                    .iter()
+                    .map(|(slot, item)| (*slot, item.item_id % 0x1_000_000, item.template_id))
+                    .collect::<Vec<_>>()
+            );
             let _ = self
                 .cmd(
                     &format!("item add self {template} 1"),
@@ -2511,12 +2534,26 @@ impl<'a> Sweep<'a> {
         else {
             bail!("the GM give did not create item {template} (equipment slot {slot} stays empty)");
         };
+        // Pass the target slot's current item id: the server only swaps the old item back when
+        // it is told what it is (a two-handed staff into an occupied mainhand would otherwise
+        // leave the old weapon behind).
+        let target_item = self
+            .session
+            .equipment
+            .get(&slot)
+            .map(|item| item.item_id)
+            .unwrap_or(0);
         tracing::debug!(
             "equip: template {template} item {item_id} bag slot {bag_slot} -> equipment slot {slot} \
-             (mainhand {:?})",
-            self.session.equipment.get(&SLOT_MAINHAND).map(|i| i.template_id)
+             (target item {target_item}, mainhand {:?})",
+            self.session
+                .equipment
+                .get(&SLOT_MAINHAND)
+                .map(|i| i.template_id)
         );
-        self.game.equip_item(item_id, bag_slot, slot).await?;
+        self.game
+            .move_item(item_id, 2, bag_slot, target_item, SLOT_TYPE_EQUIPMENT, slot)
+            .await?;
         let deadline = Instant::now() + GM_EFFECT_WAIT;
         while Instant::now() < deadline {
             let Some(p) = self.game.recv_within(PUMP).await? else {

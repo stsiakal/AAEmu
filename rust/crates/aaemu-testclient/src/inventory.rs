@@ -215,6 +215,13 @@ fn apply_task(
             let from_id = s.read_u64()?;
             let to_id = s.read_u64()?;
             let _flags = s.read_i32()?;
+            tracing::debug!(
+                "swap_slot {from_type}:{from_slot} id {} -> {to_type}:{to_slot} id {} (templates {} / {})",
+                from_id % 0x1_000_000,
+                to_id % 0x1_000_000,
+                item_templates.get(&from_id).copied().unwrap_or(0),
+                item_templates.get(&to_id).copied().unwrap_or(0)
+            );
             // The task carries no templates: a bag -> bag swap of known rows is tracked, a move
             // out of the bag removes its row; the item that came the other way (an equipment
             // slot's previous item) is resolved through `item_templates`.
