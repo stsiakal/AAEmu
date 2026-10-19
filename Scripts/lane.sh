@@ -18,7 +18,7 @@ set -euo pipefail
 
 # Machine-local overrides of the variables below (e.g. AAEMU_LANE_BASE, AAEMU_MYSQL_BIN), never committed.
 # shellcheck disable=SC1090
-[ -f "${AAEMU_LANES:-D:/aaemu-lanes}/machine.env" ] && source "${AAEMU_LANES:-D:/aaemu-lanes}/machine.env"
+[ -f "${AAEMU_LANES:-D:/aaemu-lanes}/machine.conf" ] && source "${AAEMU_LANES:-D:/aaemu-lanes}/machine.conf"
 
 WT_ROOT=${AAEMU_WT_ROOT:-D:/aaemu-wt}               # lane worktrees
 TARGET_ROOT=${AAEMU_TARGET_ROOT:-D:/aaemu-target}   # cargo target dirs
