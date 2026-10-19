@@ -383,10 +383,11 @@ pub struct SkillPlan {
     /// `skills.plot_only`: the skill returns from `Skill.Use` after `run_plot`, so its
     /// `skill_effects` never run and the plot tree (mana, buffs, damage) is the whole effect.
     pub plot_only: bool,
-    /// The plot's `SpecialEffect` 39 `ManaCost` total (plot skills only): every reachable event's
-    /// `value1 + value2 / 6.35`, each truncated as the server truncates on the wire. Only rows
-    /// whose source is the caster count (`ManaCost` needs a player caster).
-    pub plot_mana_cost: Option<i32>,
+    /// The plot's `SpecialEffect` 39 `ManaCost` rows as `(value1, value2)` (plot skills only),
+    /// one per reachable caster-side effect (`ManaCost` needs a player caster). Each costs
+    /// `value1 + value2 / 100 * scale(ab_level)` (see [`plot_effect_mana`]), truncated per effect
+    /// as the server truncates.
+    pub plot_mana_cost: Option<Vec<(i32, i32)>>,
     /// Reachable plot events carrying a caster-side `ManaCost`: the cost only applies when one
     /// of them ran (`plot_mana_cost` is the sum of all of them).
     #[serde(default)]
@@ -537,7 +538,8 @@ pub struct SkillDb {
 /// What a plot tree contributes to a `plot_only` skill: the total `ManaCost` of its reachable
 /// events and the buff each reachable event's `BuffEffect` row applies.
 struct PlotPlan {
-    mana_cost: i32,
+    /// `(value1, value2)` of every reachable caster-side `ManaCost` effect.
+    mana_values: Vec<(i32, i32)>,
     /// Reachable events carrying a caster-side `ManaCost` row (the cost only applies when one
     /// of them ran).
     mana_events: Vec<u32>,
@@ -572,7 +574,7 @@ fn load_plots(
             next.entry(from).or_default().push(to);
         }
     }
-    let mut mana_by_event: HashMap<u32, i32> = HashMap::new();
+    let mut mana_by_event: HashMap<u32, Vec<(i32, i32)>> = HashMap::new();
     let mut buff_by_event: HashMap<u32, Vec<(u32, i32)>> = HashMap::new();
     {
         let mut stmt = conn.prepare(
@@ -611,8 +613,10 @@ fn load_plots(
                         },
                     );
                     if let Ok((39, value1, value2)) = se {
-                        *mana_by_event.entry(event).or_insert(0) +=
-                            (f64::from(value1) + f64::from(value2) / 6.35) as i32;
+                        mana_by_event
+                            .entry(event)
+                            .or_default()
+                            .push((value1, value2));
                     }
                 }
                 "BuffEffect" => {
@@ -648,10 +652,12 @@ fn load_plots(
             .filter(|event| mana_by_event.contains_key(event))
             .copied()
             .collect();
-        let mana_cost = mana_events
+        let mana_values: Vec<(i32, i32)> = mana_events
             .iter()
             .filter_map(|event| mana_by_event.get(event))
-            .sum();
+            .flatten()
+            .copied()
+            .collect();
         let mut buff_events: HashMap<u32, Vec<(u32, i32)>> = HashMap::new();
         for event in &reachable {
             if let Some(buffs) = buff_by_event.get(event) {
@@ -666,7 +672,7 @@ fn load_plots(
         out.insert(
             plot,
             PlotPlan {
-                mana_cost,
+                mana_values,
                 mana_events,
                 buff_events,
             },
@@ -1011,7 +1017,7 @@ impl SkillDb {
                         continue;
                     };
                     if plan.plot_only {
-                        plan.plot_mana_cost = Some(plot.mana_cost);
+                        plan.plot_mana_cost = Some(plot.mana_values.clone());
                         plan.plot_mana_events = plot.mana_events.clone();
                     }
                     for row in &mut plan.effects.buff_rows {
@@ -1546,6 +1552,15 @@ pub fn mana_cost_expected(plan: &SkillPlan, ab_level: i32) -> i32 {
     (base * plan.mana_level_md + f64::from(plan.mana_cost)) as i32
 }
 
+/// One plot `ManaCost` effect: `value1 + value2 / 100 * scale`, truncated per effect like the
+/// server (`special/combat.rs::plot_mana_cost`). Oracle: the 1.2 skill tooltip (`mana_cost +
+/// mana_level_md * scale`, unit formulas 12/13) and the server's cast pre-check; the 1.2 data has
+/// `value2 = mana_level_md * 100`.
+pub fn plot_effect_mana(value1: i32, value2: i32, ab_level: i32) -> i32 {
+    let scale = (f64::from(ab_level - 1) * 1.6 + 8.0) * 3.0 / 3.65;
+    (f64::from(value1) + f64::from(value2) / 100.0 * scale) as i32
+}
+
 /// The mana the cast is expected to take. A `plot_only` skill *with a plot* returns from
 /// `Skill.Use` before `Skill.Cast`'s `ConsumeMana`, so its cost is the plot's `SpecialEffect` 39
 /// `ManaCost` (`special/combat.rs::mana_cost`); a `plot_only` row without a `plot_id` runs the
@@ -1554,7 +1569,12 @@ pub fn mana_cost_expected(plan: &SkillPlan, ab_level: i32) -> i32 {
 /// carries none.
 pub fn expected_mana_cost(plan: &SkillPlan, ab_level: i32) -> i32 {
     if plan.plot_only && plan.plot_id != 0 {
-        plan.plot_mana_cost.unwrap_or(0)
+        plan.plot_mana_cost
+            .as_deref()
+            .unwrap_or(&[])
+            .iter()
+            .map(|&(v1, v2)| plot_effect_mana(v1, v2, ab_level))
+            .sum()
     } else {
         mana_cost_expected(plan, ab_level)
     }
@@ -4659,17 +4679,16 @@ mod tests {
         let Some(db) = test_compact_db() else {
             return;
         };
-        // 10644 (Ground Smash): plot_only, plot 649's ManaCost is 530 / 6.35 = 83.46 -> 83 (the
-        // server truncates per `ManaCost` apply). The `skills` formula would be 411.
+        // 10644 (Ground Smash): plot_only, plot 649's ManaCost is 0 + 530 / 100 * 77.59 = 411
+        // (the server truncates per `ManaCost` apply) - the same as the `skills` formula.
         let smash = db.skill(10644).unwrap();
         assert!(smash.plot_only);
-        assert_eq!(smash.plot_mana_cost, Some(83));
-        assert_eq!(expected_mana_cost(smash, 55), 83);
-        assert_ne!(mana_cost_expected(smash, 55), 83);
+        assert_eq!(smash.plot_mana_cost, Some(vec![(0, 530)]));
+        assert_eq!(expected_mana_cost(smash, 55), 411);
         // 14810: plot 1078, ManaCost = 24 + 0.
         assert_eq!(expected_mana_cost(db.skill(14810).unwrap(), 55), 24);
-        // 12759 (plot 623): ManaCost = 300 / 6.35 -> 47 from the caster (source 1).
-        assert_eq!(expected_mana_cost(db.skill(12759).unwrap(), 55), 47);
+        // 12759 (plot 623): ManaCost 0 + 300 / 100 * 77.59 -> 232 from the caster (source 1).
+        assert_eq!(expected_mana_cost(db.skill(12759).unwrap(), 55), 232);
         // 12345 is flagged `plot_only` but has no `plot_id`: the server runs the normal cast,
         // so the `Skill.ManaCost` formula applies.
         let no_plot = db.skill(12345).unwrap();

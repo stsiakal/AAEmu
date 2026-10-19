@@ -349,6 +349,62 @@ Cross-subsystem: mates are despawned on dungeon entry and `PlayerCanEnter` check
 | `ShipTuningDebug`, `HarpoonMechanicsDebug` logging, `ShipHarpoonRopeController` | – | not ported / slaves | Debug code is hard-wired off in the C#; the rope controller belongs to the slaves subsystem. |
 | (Rust only) the 10.x zone server's collision world: terrain heightfield, `brush.dat` / `vegetation.dat` statics from CGF `MeshPhysicsData`, doodad colliders, ocean / water-volume buoyancy areas, living-entity proxies of units, ray / sweep query service, `GetBlinkPosition`, ZWUnitFell, ZWReportMoveHack, ZWUnitCollision, CryPhysics hulls | `systems/ai/collision/`, `systems/ai/physics/cry.rs` | done | On the CryPhysics port (`aaemu-physics`), `Configurations/Physics.json`. See "systems::ai collision" below. |
 
+#### systems::ai retail alignment (2026-10-19, 1.2 AI Lua as the oracle)
+
+The C# AI differs from the 1.2 client's own AI Lua (`game/scripts/ai/**`, extracted to
+`D:\aa-re\zone\ai\lua12`; study in `AI-ORACLE.md`) in the places below. Each was measured live with
+`aaemu-testclient ai` first (`ai-sweep.md`) and is changed where the 1.2 Lua or 1.2 data defines the
+behaviour.
+
+* **Alert (S3, S11)**: `alertDuration` (`npc_ai_params`; default 3.0 as in `default.lua`) sets the alert
+  length instead of the fixed 5 s. After it, `alert.lua` `OnAITimeEvent`: an aggressive species
+  (`npcs.aggression`) attacks the attention target (`NpcAddAggro`), anything else remembers it as
+  alert-safe (`alertSafeTargetRememberTime`, default 5 s, per target) and leaves. `alertDuration < 0.1`
+  (`default.lua:1753` `OnAlertTargetChanged`) means no alert state at all: aggressive NPCs attack from
+  sight range at once, calm ones ignore the target. The C# `_nextAlertCheckTime` global 7 s cooldown is
+  gone. `alertDuration` / `alertSafeTargetRememberTime` of the 1.2 rows of AI types without typed
+  parameters (roaming, hold position, default, ...; the C# ignores those rows) are read into
+  `AiData::alert_only`. `alertToAttack` is not read by any 1.2 Lua file (dead data in retail); the
+  Almighty spawning use of it is unchanged.
+* **Leash (S1)**: `npcs.return_distance` is applied per target (a target farther than it from the NPC is
+  removed from the aggro table; `0` disables the check, the C# substituted 50), and
+  `absolute_return_distance` is measured from where the fight started (first combat tick) instead of from
+  the idle position (`0` disables, the C# substituted 200). The 1.2 Lua has no leash code; the column
+  names and meaning come from the 10.x `NpcAggroTable::ProcessAggroCancel` / `ProcessReturn`, and the
+  1.2 data carries the same columns. **Open suspects** (10.x only, not corroborated by 1.2 data/Lua, not
+  implemented): the 3 s no-hit grace before a far target is dropped, the `2 * absolute_return_distance`
+  hard leash from spawn for boss grades 3/4/5/8 (S13), the target-under-terrain cancel, and `Npc::Update`
+  staggering.
+* **Idle position (S5)**: hold-position NPCs run `hold_position.lua` `UpdateHoldPosition` every 2 s:
+  7 m or more from the idle position teleports home, 3 m or more goes through `ReturnToIdlePos`
+  (return state). Roaming (`UpdateIdleEnd`) and alert (`UpdateAlert`) teleport home beyond 15 m
+  (`X2AI:IsOutOfIdleArea`; the group-member 50 m case is not ported, formations are missing). The
+  `returnSpawnPos` param (2 rows) is not read. The talk 7 m / 3 m rule is unchanged.
+* **Archer make-a-gap (S6)**: after the make-a-gap skill the NPC backs away from the target
+  (`archerAttack_MakeAGap`: `backoff` by `preferedCombatDist`, 3 s) instead of walking to its idle
+  position.
+* **Wild boar spurt (S7)**: `wild_boar_attack.lua` `OnAITimeEvent`: a spurt skill is queued once when the
+  HP% crosses its `healthCondition` downward (`curr < cond <= prev`), only while nothing is queued, and
+  cast through the skill list; the C# cast on every pick while below the threshold. The
+  `onCombatStartSkill` list is still cast as its first entry only.
+* **Spawn window (S9)**: the `Spawning` behavior waits `spawning.lua`'s minimum `spawningEffectTime`
+  (0.1 s of AI tick time; the real value is set by the zone C++ and is not in the 1.2 data) before the
+  command set. **Open**: the `NPC_SPAWN_INVINCIBLE_BUFF_TYPE` buff and the Busy state object are
+  C++/engine constants with no 1.2 buff id, so NPCs are not invulnerable while spawning.
+* **minAPS (S10)**: left open. `tower_defense_attacker.lua` only calls `NpcSetMinAps(minAPS)`; what the
+  C++ does with it exists only in the 10.x zone (`NpcAggroTable` APS filter), the 1.2 rows carry
+  `minAPS` 20 (and 1e8 for NPC 8828) without a 1.2 definition. Not implemented.
+* **Other open suspects** from the oracle, unchanged: S2 radii (the live server behaves as
+  `attackStartRange 15 / sightrange 10` times the scale although `behaviors.rs` reads `10 / 15`; the
+  measured radii agree with retail, the source-level reason is not explained), S4 ranged stop distance
+  (0.85 factor, 10.x only), 0.3/0.5 backoff, roaming cadence, formations, `skills.onAlert`
+  per-second alert skills, and the combat-start burst (S8, nothing to cast in the 1.2 data).
+* **`/spawn npc <template>`** (and `/spawngrid`, `npc spawn`): the C# registered memberwise clones of the
+  natural spawners for an NPC that has some and left the command's own spawner without a template, so the
+  command logged `[Spawn] Can't spawn NPC 0:<id> - template is null` and the NPC only appeared when its
+  natural spawner (schedule, population) was active. The command now always uses a generated spawner
+  (`SpawnManager::add_generated_npc_spawner`, template 1 for exactly this NPC).
+
 #### systems::ai collision (the zone's physics, Rust only)
 
 **Vehicle test fixes (2026-10-11):** the physics thread measures elapsed time after sleeping and
@@ -2101,6 +2157,27 @@ generated entries carry a `Title` naming the 10.x source (the loader ignores it)
 | Live check (lane stack, headless bot, GM `/buff` + a real melee hit) | - | done | Stun 2219 on one target: 5000, 4000, 3000 ms, then the stun-immunity final buff 2371; sleep 523 ends on the bot's melee hit; song 663 ends when stun/sleep arrives and ends at once when applied under an active sleep. Not driven live: `aoe_diminishing` events, ExplodeBuff (monster skill) and the Anchor landing skills (flow tests only). GM `/buff view` hides buffs that expired between commands (each GM command takes ~2 s). |
 | `buff_unit_modifiers` (17 rows), `buff_mount_skills` (64 rows) | - | not applied | `buff_unit_modifiers` are the `unit_modifiers` rows with `owner_type = 'BuffUnitModifier'` keyed by skill-tag + buff pairs (Sorcery 232-244 skill tags); how they combine with the skill damage is not documented in the C#, the client or the zone strings. `buff_mount_skills` lists the mount skills a siege-stance / mount buff grants to the client bar and has no server-side effect. Neither claims retail behaviour here. |
 
+### 1.2 `npc_map` placements missing from `main_world/npc_spawns.json` (small batch)
+
+The 1.2 client's `game/worlds/main_world/map_data/npc_map/*.dat` (retail 1.2 data) lists 326 placements (176 ids) that the shipped JSON lacked. Git history (`git log --all -- '*main_world/npc_spawns.json'`): all of them were once in the file; they were dropped by upstream rewrites (2022-06-19 `277753513`, the raw-export rewrite, 54; 2024-04-24 `58cdf34c6`, "Z height and added NPCs", 63; 2023-06-13 `5a0b59496`, 8) and by our own ambient revert `1ff1eaa9c` (15), none with a per-entry reason. Added: 58 entries, with `Title` `1.2 client npc_map (<zone>)`.
+
+Left out, with the reason:
+
+* 181 records whose NPC id has no `npcs` row (and no spawner) in the 1.2 `compact.sqlite3`: nothing can spawn them.
+* 52 within 5 m of an existing placement of the same id (curated position tweak) and 21 within 2 m of a placement of another id (curated id swap, e.g. 4228 over another NPC): already covered.
+* 8 `Arcum Iris`/Rainbow Field event caravan NPCs (12007/12008/12009/12124): `5a0b59496` removed them deliberately ("npc that weren't there in 1.2"); kept out.
+* 13878/14033 (Korean Liberation Day event NPCs, no schedule in the 1.2 data, would stand permanently) and 14745 (zone-name marker NPC "Shining Shore", empty comment): not ambient world NPCs.
+
+Every added id has a 1.2 `npc_spawner_npcs` row. Positions are the client map's own metres (no yaw in the format).
+
+### Plot `ManaCost` special effect (type 39)
+
+The C# charged `value1 + value2 / 6.35` (with a TODO: "value2 is based on skill level somehow"). The 1.2 data shows `value1` = the skill's `mana_cost` and `value2` = `mana_level_md * 100` for 59 of the 68 plot-only skills that carry the effect (e.g. 11854: md 1.55, effect 0/155; 18132: mana_cost 30, effect 30/0). The 1.2 client shows the cost in the skill tooltip as `mana_cost + mana_level_md * f(ability level)` (Ghidra `aa12u`, x2game `FUN_3941e750` -> `manaCost` of `FUN_394ace10`, via the unit formulas 12 and 13: `(ab_level * 1.6 + 8) * 3 / 3.65`), and the cast pre-check (`validation.rs`) already requires exactly that amount. The effect therefore now charges `value1 + value2 / 100 * scale` with the same scale as `skill::mana_cost`; at ability level 55 skill 11854 costs 120 instead of 24. Deviation from the C#: the charge side is inferred from the tooltip/data (no retail charge capture); the 9 plot-only skills whose effect differs from the skill row follow the same rule.
+
+### Premium for every account (`Account.PremiumForAll`)
+
+The C# `AccountPayment` is never loaded from anywhere (TODO "Load payment and account tier information"), so every account is premium (`Premium`, location 1, until 2030-01-01): it feeds `SCAccountInfo`, labor limits/regen, the offline-labor tick, the schedule-item patron check and the `max_labor` unit requirement. This stays the default, now an explicit option `Account.PremiumForAll` (`Configurations/CharacterSettings.json`, default `true`); `false` makes every connection `PaymentMethodType::None` with no validity window (non-premium). The value is read once at startup (`net::connection::set_premium_for_all`); there is still no per-account payment source.
+
 ## Achievement producers (live wiring)
 
 The achievement subsystem has no 1.2 C# manager; the behaviour follows `rust/docs/achievement-hook-audit.txt`
@@ -2123,3 +2200,43 @@ The achievement subsystem has no 1.2 C# manager; the behaviour follows `rust/doc
 * **GET_ITEM_TYPE (k29), KILL_SLAVE (k26), MY_DISHONORABLE_POINT (k49), siege results (k57-60)** stay
   unwired (see the audit for why). `SCAchievementResetedPacket` (0x1ff) has no 1.2 trigger and is
   deliberately never sent.
+
+## Later-version gear backport (opt-in tooling, `rust/tools/version_gaps/backport.py`)
+
+Not part of the shipped data: the tool reads the 1.2 `compact.sqlite3` and the 3.0.4.2 reference
+read-only and writes a SQL patch plus a patched copy; nothing changes unless the operator drops the
+patched copy in as the server's `compact.sqlite3`. Evidence for Crazed Wizard/Hermit/Slaver
+(items 38877-38897, equip sets 396-398): 3.0.4.2 rows (10.x-era, so a suspect for retail numbers),
+the 1.2 client reading the rows back (set name, bonus text and the proc text came out of the
+client's own tooltip code), and the live server applying the set bonus buffs.
+
+Per family the tool follows `item_armors.eiset_id` -> `equip_item_sets` -> `equip_item_set_bonuses`
+-> bonus buffs (+ `unit_modifiers`, `skill_modifiers`, `tagged_buffs`) and bonus `item_procs` (+
+proc skills/effects/buffs), plus items, looks (new ids above the custom range, as for obsidian),
+icons, upgrade crafts, materials and English texts. Deviations:
+
+- **Set bonus 4 of each Crazed set is omitted** (buff 18408, 3.0 PvE damage reduction, unit
+  attribute 199): 1.2 unit attributes end at 186, nothing implements it. Reported as
+  `set_bonuses_omitted`; unit modifiers above the 1.2 range are never copied.
+- **Item procs do not fire.** The set procs (124-126, chance kind 18/3/13) are data only: the C#
+  `ItemProc` never ran (see `apply_equip_item_set_bonuses`), so the Rust server has no proc
+  engine. The client shows the proc text. Chance kind 18 is also unused by any 1.2 proc row.
+- **No source for the base pieces.** The 3.0 data holds only the Heroic/Unique/Relic upgrade crafts
+  (they consume the same piece at grade 4/5/6); the base crafts (8595, 8599, ...) have products and
+  materials but no `crafts` row, and no loot/vendor row gives the pieces. The backport copies the
+  63 upgrade crafts and reports the base crafts as `orphan_crafts_in_3_0`; where the base piece
+  comes from (authored recipe, boss drop, vendor) is a design decision still open.
+- Armor looks of 3.0 mean other looks in 1.2, so 15 new armor looks (60 new item_assets, 185 files
+  not in the 1.2 pak incl. dwarf/warborn variants) come from the 10.x pak; `patch-client` writes
+  them into a pak copy (2 specular textures of the unused dwarf/warborn cloth look are absent from
+  the 10.x pak).
+- Client side: `patch-client` into a client copy; a client reading the server `compact.sqlite3`
+  (Bevy client) needs only the patched server db plus a pak containing the 185 new files.
+
+Next families, in order (all need the same tool; blockers in brackets): Hardy/Heartless 3-piece
+class sets 387-392 (proc only, no engine; 18 items, base-piece source open), Distorted Whispers 386
+(not craftable, bonuses 3/5 + proc), Hexbane/Talisman/Tempting/Enchanting Melody 414-417 (lvl 53,
+no crafts), Soulforged/Maliceforged weapons and Bane's Bolt/Bloodmist/Abyssal Destroyer 2-piece
+weapon sets 393-395 (buffs only; weapon models), Auroria class sets (no set rows), then lunagems
+(socket tables reshaped, loader check). The Dawnsdrop/Hellforged sets use emulator-custom ids
+(>= 9,000,000) and are refused by the tool. A proc engine is the prerequisite for the 57 item procs.

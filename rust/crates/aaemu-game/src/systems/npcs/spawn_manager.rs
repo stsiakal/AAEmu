@@ -720,6 +720,27 @@ impl SpawnManager {
         server: &GameServer,
         def: NpcSpawnerDef,
     ) -> Result<usize, String> {
+        self.add_npc_spawner_impl(server, def, false)
+    }
+
+    /// [`Self::add_npc_spawner`] for the GM commands: the spawner is always generated from
+    /// template 1 for exactly this NPC, even when the game data has natural spawners for it
+    /// (the memberwise clones of those carry the natural schedules and populations, so a
+    /// command-placed NPC would only appear when its natural spawner happens to be active).
+    pub fn add_generated_npc_spawner(
+        &self,
+        server: &GameServer,
+        def: NpcSpawnerDef,
+    ) -> Result<usize, String> {
+        self.add_npc_spawner_impl(server, def, true)
+    }
+
+    fn add_npc_spawner_impl(
+        &self,
+        server: &GameServer,
+        def: NpcSpawnerDef,
+        force_generated: bool,
+    ) -> Result<usize, String> {
         let data = &server.game_data.systems.npcs.npc_spawners;
         let spawns = &server.systems.npcs.spawns;
         let mut inner = self.inner();
@@ -794,7 +815,7 @@ impl SpawnManager {
             let game_data_ids = data.get_spawner_ids(b.unit_id).unwrap_or_default();
             let mut spawners = Vec::new();
             let mut added = 0;
-            if game_data_ids.is_empty() {
+            if game_data_ids.is_empty() || force_generated {
                 // No pre-defined spawner: generate one from template 1 ("Test Warrior").
                 tracing::trace!("SpawnerIds for Npc={} doesn't exist", b.unit_id);
                 let id = spawns.fake_spawner_id.load(Ordering::SeqCst);

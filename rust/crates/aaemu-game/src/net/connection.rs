@@ -5,7 +5,7 @@
 //! login-server link) reach a connection through its [`ConnectionHandle`].
 
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicI64, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -53,14 +53,40 @@ impl AccountPayment {
     }
 }
 
+impl AccountPayment {
+    /// The payment of an account when `Account.PremiumForAll` is `premium_for_all`: the C#
+    /// default premium one until 2030, or the non-premium one.
+    pub fn for_premium_setting(premium_for_all: bool) -> Self {
+        if premium_for_all {
+            Self {
+                method: PaymentMethodType::Premium,
+                location: 1,
+                start_time: 0,
+                end_time: 1_893_456_000,
+            }
+        } else {
+            Self {
+                method: PaymentMethodType::None,
+                location: 0,
+                start_time: 0,
+                end_time: 0,
+            }
+        }
+    }
+}
+
+/// `Account.PremiumForAll`, set once at startup ([`set_premium_for_all`]); `AccountPayment`
+/// has no per-account source yet, so every connection shares it.
+static PREMIUM_FOR_ALL: AtomicBool = AtomicBool::new(true);
+
+/// Applies `Account.PremiumForAll` (called once from `main`).
+pub fn set_premium_for_all(value: bool) {
+    PREMIUM_FOR_ALL.store(value, Ordering::Relaxed);
+}
+
 impl Default for AccountPayment {
     fn default() -> Self {
-        Self {
-            method: PaymentMethodType::Premium,
-            location: 1,
-            start_time: 0,
-            end_time: 1_893_456_000,
-        }
+        Self::for_premium_setting(PREMIUM_FOR_ALL.load(Ordering::Relaxed))
     }
 }
 
@@ -376,5 +402,22 @@ impl GameConnection {
 
     pub fn is_closing(&self) -> bool {
         self.closing
+    }
+}
+
+#[cfg(test)]
+mod payment_tests {
+    use super::*;
+
+    #[test]
+    fn premium_for_all_decides_the_payment() {
+        let premium = AccountPayment::for_premium_setting(true);
+        assert!(premium.premium_state(1_800_000_000));
+        assert_eq!(premium.method, PaymentMethodType::Premium);
+        let none = AccountPayment::for_premium_setting(false);
+        assert!(!none.premium_state(1_800_000_000));
+        assert_eq!(none.method, PaymentMethodType::None);
+        // the shipped default keeps the old behaviour
+        assert!(crate::config::AccountConfig::default().premium_for_all);
     }
 }
