@@ -1098,7 +1098,7 @@ struct Fighter<'a> {
 
 /// Login, lobby burst, character create / select, spawn and notify (the same flow the other
 /// runners use), plus the active abilities of the selected character.
-async fn setup_world(
+pub(crate) async fn setup_world(
     cfg: &BotConfig,
     opts: &RunOptions,
     rec: &Recorder,

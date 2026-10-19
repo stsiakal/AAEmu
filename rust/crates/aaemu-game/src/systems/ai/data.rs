@@ -95,6 +95,9 @@ pub struct ShipModel {
 pub struct AiData {
     /// `_aiParams` (by `npc_ai_param_id`).
     pub params: HashMap<u32, Arc<AiParams>>,
+    /// `(alertDuration, alertSafeTargetRememberTime)` of the `npc_ai_params` rows of AI types
+    /// without typed parameters (not in the C#, which ignored those rows).
+    pub alert_only: HashMap<u32, (f32, f32)>,
     /// Ids whose parameter string failed to parse (the C# warning), for diagnostics.
     pub params_failed: Vec<u32>,
     /// `_aiCommands` (by `cmd_set_id`, in table order, duplicate ids skipped).
@@ -157,7 +160,11 @@ impl AiData {
                 Ok(Some(p)) => {
                     self.params.entry(id).or_insert_with(|| Arc::new(p));
                 }
-                Ok(None) => {}
+                Ok(None) => {
+                    if let Ok(a) = AiParams::parse_alert_only(&data) {
+                        self.alert_only.entry(id).or_insert(a);
+                    }
+                }
                 Err(e) => {
                     tracing::warn!(
                         "Impossible to parse npc_ai_params {id}\n{e}\n(rows 443, 835 and 1975 of the \
@@ -360,6 +367,11 @@ impl AiData {
             Ok(())
         })?;
         Ok(())
+    }
+
+    /// The alert parameters of a row of an untyped AI (see [`AiData::alert_only`]).
+    pub fn alert_only_for_id(&self, id: u32) -> Option<(f32, f32)> {
+        self.alert_only.get(&id).copied()
     }
 
     /// `AiGameData.GetAiParamsForId(id)`.

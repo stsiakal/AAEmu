@@ -349,6 +349,62 @@ Cross-subsystem: mates are despawned on dungeon entry and `PlayerCanEnter` check
 | `ShipTuningDebug`, `HarpoonMechanicsDebug` logging, `ShipHarpoonRopeController` | – | not ported / slaves | Debug code is hard-wired off in the C#; the rope controller belongs to the slaves subsystem. |
 | (Rust only) the 10.x zone server's collision world: terrain heightfield, `brush.dat` / `vegetation.dat` statics from CGF `MeshPhysicsData`, doodad colliders, ocean / water-volume buoyancy areas, living-entity proxies of units, ray / sweep query service, `GetBlinkPosition`, ZWUnitFell, ZWReportMoveHack, ZWUnitCollision, CryPhysics hulls | `systems/ai/collision/`, `systems/ai/physics/cry.rs` | done | On the CryPhysics port (`aaemu-physics`), `Configurations/Physics.json`. See "systems::ai collision" below. |
 
+#### systems::ai retail alignment (2026-10-19, 1.2 AI Lua as the oracle)
+
+The C# AI differs from the 1.2 client's own AI Lua (`game/scripts/ai/**`, extracted to
+`D:\aa-re\zone\ai\lua12`; study in `AI-ORACLE.md`) in the places below. Each was measured live with
+`aaemu-testclient ai` first (`ai-sweep.md`) and is changed where the 1.2 Lua or 1.2 data defines the
+behaviour.
+
+* **Alert (S3, S11)**: `alertDuration` (`npc_ai_params`; default 3.0 as in `default.lua`) sets the alert
+  length instead of the fixed 5 s. After it, `alert.lua` `OnAITimeEvent`: an aggressive species
+  (`npcs.aggression`) attacks the attention target (`NpcAddAggro`), anything else remembers it as
+  alert-safe (`alertSafeTargetRememberTime`, default 5 s, per target) and leaves. `alertDuration < 0.1`
+  (`default.lua:1753` `OnAlertTargetChanged`) means no alert state at all: aggressive NPCs attack from
+  sight range at once, calm ones ignore the target. The C# `_nextAlertCheckTime` global 7 s cooldown is
+  gone. `alertDuration` / `alertSafeTargetRememberTime` of the 1.2 rows of AI types without typed
+  parameters (roaming, hold position, default, ...; the C# ignores those rows) are read into
+  `AiData::alert_only`. `alertToAttack` is not read by any 1.2 Lua file (dead data in retail); the
+  Almighty spawning use of it is unchanged.
+* **Leash (S1)**: `npcs.return_distance` is applied per target (a target farther than it from the NPC is
+  removed from the aggro table; `0` disables the check, the C# substituted 50), and
+  `absolute_return_distance` is measured from where the fight started (first combat tick) instead of from
+  the idle position (`0` disables, the C# substituted 200). The 1.2 Lua has no leash code; the column
+  names and meaning come from the 10.x `NpcAggroTable::ProcessAggroCancel` / `ProcessReturn`, and the
+  1.2 data carries the same columns. **Open suspects** (10.x only, not corroborated by 1.2 data/Lua, not
+  implemented): the 3 s no-hit grace before a far target is dropped, the `2 * absolute_return_distance`
+  hard leash from spawn for boss grades 3/4/5/8 (S13), the target-under-terrain cancel, and `Npc::Update`
+  staggering.
+* **Idle position (S5)**: hold-position NPCs run `hold_position.lua` `UpdateHoldPosition` every 2 s:
+  7 m or more from the idle position teleports home, 3 m or more goes through `ReturnToIdlePos`
+  (return state). Roaming (`UpdateIdleEnd`) and alert (`UpdateAlert`) teleport home beyond 15 m
+  (`X2AI:IsOutOfIdleArea`; the group-member 50 m case is not ported, formations are missing). The
+  `returnSpawnPos` param (2 rows) is not read. The talk 7 m / 3 m rule is unchanged.
+* **Archer make-a-gap (S6)**: after the make-a-gap skill the NPC backs away from the target
+  (`archerAttack_MakeAGap`: `backoff` by `preferedCombatDist`, 3 s) instead of walking to its idle
+  position.
+* **Wild boar spurt (S7)**: `wild_boar_attack.lua` `OnAITimeEvent`: a spurt skill is queued once when the
+  HP% crosses its `healthCondition` downward (`curr < cond <= prev`), only while nothing is queued, and
+  cast through the skill list; the C# cast on every pick while below the threshold. The
+  `onCombatStartSkill` list is still cast as its first entry only.
+* **Spawn window (S9)**: the `Spawning` behavior waits `spawning.lua`'s minimum `spawningEffectTime`
+  (0.1 s of AI tick time; the real value is set by the zone C++ and is not in the 1.2 data) before the
+  command set. **Open**: the `NPC_SPAWN_INVINCIBLE_BUFF_TYPE` buff and the Busy state object are
+  C++/engine constants with no 1.2 buff id, so NPCs are not invulnerable while spawning.
+* **minAPS (S10)**: left open. `tower_defense_attacker.lua` only calls `NpcSetMinAps(minAPS)`; what the
+  C++ does with it exists only in the 10.x zone (`NpcAggroTable` APS filter), the 1.2 rows carry
+  `minAPS` 20 (and 1e8 for NPC 8828) without a 1.2 definition. Not implemented.
+* **Other open suspects** from the oracle, unchanged: S2 radii (the live server behaves as
+  `attackStartRange 15 / sightrange 10` times the scale although `behaviors.rs` reads `10 / 15`; the
+  measured radii agree with retail, the source-level reason is not explained), S4 ranged stop distance
+  (0.85 factor, 10.x only), 0.3/0.5 backoff, roaming cadence, formations, `skills.onAlert`
+  per-second alert skills, and the combat-start burst (S8, nothing to cast in the 1.2 data).
+* **`/spawn npc <template>`** (and `/spawngrid`, `npc spawn`): the C# registered memberwise clones of the
+  natural spawners for an NPC that has some and left the command's own spawner without a template, so the
+  command logged `[Spawn] Can't spawn NPC 0:<id> - template is null` and the NPC only appeared when its
+  natural spawner (schedule, population) was active. The command now always uses a generated spawner
+  (`SpawnManager::add_generated_npc_spawner`, template 1 for exactly this NPC).
+
 #### systems::ai collision (the zone's physics, Rust only)
 
 **Vehicle test fixes (2026-10-11):** the physics thread measures elapsed time after sleeping and
