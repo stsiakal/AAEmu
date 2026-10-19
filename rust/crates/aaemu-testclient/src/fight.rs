@@ -107,6 +107,11 @@ pub struct RunOptions {
     pub resurrect_in_place: bool,
     /// Abort the run after this many deaths (`--max-deaths`).
     pub max_deaths: u32,
+    /// Abort the run after this many consecutive engagement timeouts without a kill
+    /// (`--max-timeouts`); an unkillable target must not spin forever.
+    pub max_timeouts: u32,
+    /// Overall budget of the run (`--run-timeout-secs`).
+    pub run_timeout: Duration,
     /// Create a fresh character instead of selecting the account's (`--new-character`).
     pub new_character: bool,
     pub race: u8,
@@ -132,6 +137,8 @@ impl Default for RunOptions {
             potion: None,
             resurrect_in_place: true,
             max_deaths: 3,
+            max_timeouts: 5,
+            run_timeout: Duration::from_secs(1800),
             new_character: false,
             race: 1,
             gender: 1,
@@ -284,6 +291,9 @@ pub struct FightSkillRow {
     pub ability_id: u8,
     pub ability_level: i32,
     pub skill_points: i32,
+    pub auto_learn: bool,
+    pub need_learn: bool,
+    pub show: bool,
     pub target_type: u8,
     pub target_relation: u8,
     pub min_range: f32,
@@ -296,6 +306,8 @@ pub struct FightSkillRow {
     pub ignore_global_cooldown: bool,
     pub target_dead: bool,
     pub plot_only: bool,
+    /// `skills.plot_id` (0 = none): plot skills answer with `SCPlotEvent` / `SCPlotEnded`.
+    pub plot_id: u32,
     pub toggle_buff_id: u32,
     /// Sum of `fixed_max + level_md * 10` over the skill's non-friendly damage rows (0 = no
     /// damage the runner can count on).
@@ -310,13 +322,20 @@ impl FightSkillRow {
     }
 
     /// The fight uses the row when its damage hits units: hostile-capable, not a dead-only or
-    /// toggle-buff skill and with a non-friendly damage row (or the default auto-attack).
+    /// toggle-buff skill and with a non-friendly damage row (or the default auto-attack). A
+    /// `plot_only` skill carries its damage in the plot tree (no `skill_effects` rows), so its
+    /// plot id is enough.
     pub fn attacks_units(&self) -> bool {
         !self.target_dead
-            && !self.plot_only
             && self.toggle_buff_id == 0
             && (self.target_type == 4 || self.target_relation == 4)
-            && (self.damage_score > 0.0 || self.id == 2)
+            && (self.damage_score > 0.0 || self.id == 2 || self.plot_id != 0)
+    }
+
+    /// `SkillData::finish`: `auto_learn && need_learn && ability_level <= 1 && show` skills of an
+    /// ability are granted at character creation.
+    pub fn start_ability_skill(&self) -> bool {
+        self.auto_learn && self.need_learn && self.ability_level <= 1 && self.show
     }
 
     /// The scheduler view of the row.
@@ -344,13 +363,16 @@ impl FightSkillRow {
             } else {
                 4.0
             },
-            // Auto attacks are the fallback; a damage skill always wins while it is usable.
+            // Auto attacks are the fallback; a damage or plot skill always wins while usable.
             priority: if auto_attack {
                 0
-            } else {
+            } else if self.damage_score > 0.0 {
                 100 + self.damage_score as i64
+            } else {
+                90
             },
             auto_attack,
+            plot: self.plot_id != 0,
         })
     }
 }
@@ -413,6 +435,9 @@ impl FightDb {
         let mut stmt = self.conn.prepare(
             "SELECT s.id, COALESCE(s.name,''), COALESCE(s.ability_id,0), \
              COALESCE(s.ability_level,0), COALESCE(s.skill_points,0), \
+             CASE WHEN s.auto_learn='t' THEN 1 ELSE 0 END, \
+             CASE WHEN s.need_learn='t' THEN 1 ELSE 0 END, \
+             CASE WHEN s.show='t' THEN 1 ELSE 0 END, \
              COALESCE(s.target_type_id,0), COALESCE(s.target_relation_id,0), \
              COALESCE(s.min_range,0), COALESCE(s.max_range,0), \
              COALESCE(s.cooldown_time,0), COALESCE(s.mana_cost,0), COALESCE(s.mana_level_md,0.0), \
@@ -420,6 +445,7 @@ impl FightDb {
              CASE WHEN s.ignore_global_cooldown='t' THEN 1 ELSE 0 END, \
              CASE WHEN s.target_dead='t' THEN 1 ELSE 0 END, \
              CASE WHEN s.plot_only='t' THEN 1 ELSE 0 END, \
+             COALESCE(s.plot_id,0), \
              COALESCE(s.toggle_buff_id,0), \
              COALESCE((SELECT SUM(de.fixed_max + de.level_md * 10) FROM skill_effects se \
                 JOIN effects ef ON ef.id = se.effect_id \
@@ -435,20 +461,24 @@ impl FightDb {
                 ability_id: r.get(2)?,
                 ability_level: r.get(3)?,
                 skill_points: r.get(4)?,
-                target_type: r.get(5)?,
-                target_relation: r.get(6)?,
-                min_range: f64::from(r.get::<_, i32>(7)?) as f32,
-                max_range: r.get::<_, i32>(8)? as f32,
-                cooldown_time: r.get(9)?,
-                mana_cost: r.get(10)?,
-                mana_level_md: r.get(11)?,
-                default_gcd: r.get::<_, i64>(12)? != 0,
-                custom_gcd: r.get(13)?,
-                ignore_global_cooldown: r.get::<_, i64>(14)? != 0,
-                target_dead: r.get::<_, i64>(15)? != 0,
-                plot_only: r.get::<_, i64>(16)? != 0,
-                toggle_buff_id: r.get(17)?,
-                damage_score: r.get(18)?,
+                auto_learn: r.get::<_, i64>(5)? != 0,
+                need_learn: r.get::<_, i64>(6)? != 0,
+                show: r.get::<_, i64>(7)? != 0,
+                target_type: r.get(8)?,
+                target_relation: r.get(9)?,
+                min_range: f64::from(r.get::<_, i32>(10)?) as f32,
+                max_range: r.get::<_, i32>(11)? as f32,
+                cooldown_time: r.get(12)?,
+                mana_cost: r.get(13)?,
+                mana_level_md: r.get(14)?,
+                default_gcd: r.get::<_, i64>(15)? != 0,
+                custom_gcd: r.get(16)?,
+                ignore_global_cooldown: r.get::<_, i64>(17)? != 0,
+                target_dead: r.get::<_, i64>(18)? != 0,
+                plot_only: r.get::<_, i64>(19)? != 0,
+                plot_id: r.get(20)?,
+                toggle_buff_id: r.get(21)?,
+                damage_score: r.get(22)?,
             })
         })?;
         let mut out = Vec::new();
@@ -482,6 +512,19 @@ impl FightDb {
             )
             .optional()?)
     }
+
+    /// `levels.skill_points` of a level (`ExperienceManager.SkillPointsForLevel`).
+    pub fn skill_points_for_level(&self, level: u8) -> anyhow::Result<i32> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT COALESCE(skill_points,0) FROM levels WHERE id = ?1",
+                [level],
+                |r| r.get::<_, i32>(0),
+            )
+            .optional()?
+            .unwrap_or(0))
+    }
 }
 
 // -------------------------------------------------------------------------------------------
@@ -501,6 +544,9 @@ pub struct FightSkill {
     /// Higher runs first (damage skills over the auto-attack fallback).
     pub priority: i64,
     pub auto_attack: bool,
+    /// A plot skill (`skills.plot_id`): it answers with `SCPlotEvent` / `SCPlotEnded`, never
+    /// with `SCSkillStarted` / `SCSkillFired`.
+    pub plot: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -600,6 +646,16 @@ impl SkillScheduler {
             }
             self.in_flight = Some(InFlight { tl, skill_id });
         }
+    }
+
+    /// `SCPlotEventPacket` of our own cast (a plot skill's first answer).
+    pub fn on_plot_event(&mut self, skill_id: u32, tl: u16) {
+        self.on_fired(skill_id, tl);
+    }
+
+    /// `SCPlotEndedPacket`: the plot finished (cooldown and GCD start now).
+    pub fn on_plot_ended(&mut self, tl: u16, now_ms: u64) -> Option<u32> {
+        self.on_ended(tl, now_ms)
     }
 
     /// `SCSkillEndedPacket`: the cast resolved (cooldown and GCD start now). Returns the skill
@@ -880,6 +936,33 @@ fn parse_skill_fired(p: &Packet) -> Option<(u32, u16, u32)> {
     Some((skill_id, tl, caster.obj_id()))
 }
 
+/// `SCPlotEventPacket` -> `(skill_id, tl)` (the plot skill's answer; the plots of NPC casts
+/// carry their own skill ids, so the caller matches the skill it cast).
+fn parse_plot_event(p: &Packet) -> Option<(u32, u16)> {
+    if !p.is_sc(sc::SCPlotEventPacket) {
+        return None;
+    }
+    let mut s = p.stream();
+    let tl = s.read_u16().ok()?;
+    s.read_u32().ok()?; // event id
+    let skill_id = s.read_u32().ok()?;
+    Some((skill_id, tl))
+}
+
+fn parse_plot_ended(p: &Packet) -> Option<u16> {
+    if !p.is_sc(sc::SCPlotEndedPacket) {
+        return None;
+    }
+    p.stream().read_u16().ok()
+}
+
+fn parse_plot_stopped(p: &Packet) -> Option<u16> {
+    if !p.is_sc(sc::SCPlotCastingStoppedPacket) && !p.is_sc(sc::SCPlotChannelingStoppedPacket) {
+        return None;
+    }
+    p.stream().read_u16().ok()
+}
+
 fn parse_skill_ended(p: &Packet) -> Option<u16> {
     if !p.is_sc(sc::SCSkillEndedPacket) {
         return None;
@@ -958,6 +1041,8 @@ struct Facts {
     loot_money: i64,
     events: Vec<String>,
     timeouts: u32,
+    /// Engagements that timed out since the last kill (the run aborts when this explodes).
+    consecutive_timeouts: u32,
     skills_used: BTreeMap<u32, u32>,
 }
 
@@ -1217,6 +1302,19 @@ impl<'a> Fighter<'a> {
                     *self.facts.skills_used.entry(skill_id).or_insert(0) += 1;
                 }
             }
+        } else if let Some((skill_id, tl)) = parse_plot_event(p) {
+            // Plot skills (the level-1 fighter's only attack is one) answer with events only.
+            if skill_id != 0 {
+                self.scheduler.on_plot_event(skill_id, tl);
+            }
+        } else if let Some(tl) = parse_plot_ended(p) {
+            if let Some(skill_id) = self.scheduler.on_plot_ended(tl, self.now_ms()) {
+                if skill_id != 0 {
+                    *self.facts.skills_used.entry(skill_id).or_insert(0) += 1;
+                }
+            }
+        } else if let Some(tl) = parse_plot_stopped(p) {
+            self.scheduler.on_cancelled(None, Some(tl), self.now_ms());
         } else if let Some(tl) = parse_casting_stopped(p) {
             self.scheduler.on_cancelled(None, Some(tl), self.now_ms());
         } else if let Some(skill_id) = parse_skill_stopped(p) {
@@ -1320,30 +1418,59 @@ impl<'a> Fighter<'a> {
         rows
     }
 
-    /// Sends `CSLearnSkillPacket` for every candidate the server has not confirmed yet and
-    /// records what it answers.
+    /// The learned set the server would have: the ability's start skills are granted at
+    /// creation (`SkillData::finish`), further candidates were learned while skill points were
+    /// left (`systems/skills/progress.rs::learn_skill`). The fight runner drives the character
+    /// the same way, so the model matches what the server knows (a skill the server already has
+    /// answers nothing to another `CSLearnSkillPacket`).
+    fn simulate_learned(&self) -> BTreeSet<u32> {
+        let mut learned: BTreeSet<u32> = BTreeSet::new();
+        let mut points = self.db.skill_points_for_level(self.level).unwrap_or(0);
+        for r in self.rows.values() {
+            if self.abilities.contains(&r.ability_id) && r.start_ability_skill() {
+                learned.insert(r.id);
+                points -= r.skill_points;
+            }
+        }
+        for r in self.learn_candidates() {
+            if learned.contains(&r.id) {
+                continue;
+            }
+            if r.skill_points <= points {
+                learned.insert(r.id);
+                points -= r.skill_points;
+            }
+        }
+        learned
+    }
+
+    /// Sends `CSLearnSkillPacket` for the simulated learned set and records what the server
+    /// answers: skills the server does not know yet are taught (points permitting), known ones
+    /// stay silent.
     async fn learn_sweep(&mut self) -> anyhow::Result<()> {
         if !self.learn_pending {
             return Ok(());
         }
         self.learn_pending = false;
-        let candidates: Vec<u32> = self
-            .learn_candidates()
-            .into_iter()
-            .map(|r| r.id)
+        let simulated = self.simulate_learned();
+        let new: Vec<u32> = simulated
+            .iter()
+            .copied()
             .filter(|id| !self.learned.contains(id))
             .collect();
-        if candidates.is_empty() {
+        self.learned.extend(simulated);
+        if new.is_empty() {
             self.rebuild_scheduler();
             return Ok(());
         }
         self.facts
             .events
-            .push(format!("learning {} skill(s)", candidates.len()));
-        for id in &candidates {
+            .push(format!("learning {} skill(s)", new.len()));
+        for id in &new {
             self.game.learn_skill(*id).await?;
         }
         let deadline = Instant::now() + Duration::from_secs(4);
+        let sent_at = Instant::now();
         let mut learned_seen = self.learned.len();
         let mut last_learned: Option<Instant> = None;
         loop {
@@ -1353,6 +1480,10 @@ impl<'a> Fighter<'a> {
                 last_learned = Some(Instant::now());
             }
             if last_learned.is_some_and(|t| t.elapsed() >= Duration::from_millis(600)) {
+                break;
+            }
+            // A known skill stays silent: do not burn the whole budget on it.
+            if last_learned.is_none() && sent_at.elapsed() >= Duration::from_millis(800) {
                 break;
             }
             if Instant::now() >= deadline {
@@ -1809,12 +1940,29 @@ pub async fn run(
 
     rec.step("fight");
     let mut aborted = false;
+    let run_deadline = Instant::now() + opts.run_timeout;
     while fighter.facts.kills < opts.kills {
         if fighter.facts.deaths > opts.max_deaths {
             fighter
                 .facts
                 .events
                 .push(format!("aborting after {} deaths", fighter.facts.deaths));
+            aborted = true;
+            break;
+        }
+        if fighter.facts.consecutive_timeouts >= opts.max_timeouts {
+            fighter.facts.events.push(format!(
+                "aborting after {} engagement timeouts without a kill",
+                fighter.facts.consecutive_timeouts
+            ));
+            aborted = true;
+            break;
+        }
+        if Instant::now() >= run_deadline {
+            fighter
+                .facts
+                .events
+                .push(format!("aborting after {:?}", opts.run_timeout));
             aborted = true;
             break;
         }
@@ -1831,12 +1979,16 @@ pub async fn run(
         let obj = target.obj_id;
         match fighter.engage(approach, target).await? {
             Engage::Killed => {
+                fighter.facts.consecutive_timeouts = 0;
                 fighter.loot_corpse(obj).await?;
             }
             Engage::PlayerDead => {
                 fighter.revive().await?;
+                fighter.facts.consecutive_timeouts = 0;
             }
-            Engage::Timeout => {}
+            Engage::Timeout => {
+                fighter.facts.consecutive_timeouts += 1;
+            }
         }
     }
     rec.step("leave");
@@ -1911,6 +2063,7 @@ mod scheduler_tests {
             max_range: 4.0,
             priority,
             auto_attack: id == 2,
+            plot: false,
         }
     }
 
@@ -2005,6 +2158,28 @@ mod scheduler_tests {
         assert!(!s.busy());
         assert!(s.next_skill(100, None).is_none());
         assert!(s.next_skill(100 + SILENT_RETRY_MS, None).is_some());
+    }
+
+    #[test]
+    fn a_plot_skill_resolves_on_the_plot_packets() {
+        let mut s = SkillScheduler::new(vec![FightSkill {
+            plot: true,
+            ..skill(18132, 90, 30, 0, 500)
+        }]);
+        s.cast_sent(18132, 0);
+        // A known plot skill answers silently; the timeout frees it again.
+        s.tick(CAST_RESPONSE_TIMEOUT_MS);
+        assert!(!s.busy());
+        assert!(s.next_skill(CAST_RESPONSE_TIMEOUT_MS, None).is_none());
+
+        s.cast_sent(18132, 2000);
+        s.on_plot_event(18132, 11);
+        assert_eq!(s.in_flight_skill(), Some(18132));
+        assert!(s.next_skill(2500, None).is_none());
+        assert_eq!(s.on_plot_ended(11, 2500), Some(18132));
+        assert_eq!(s.casts, 1);
+        assert_eq!(s.gcd_until(), 3000);
+        assert!(s.next_skill(3000, None).is_some());
     }
 }
 

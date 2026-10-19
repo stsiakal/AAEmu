@@ -27,10 +27,11 @@
 //!                         [--summary]
 //! aaemu-testclient fight  [--config F] [--login H:P] --tpl TEMPLATE... [--kills N]
 //!                         [--at X,Y,Z...] [--max-level-delta N] [--potion ITEM]
-//!                         [--temple-resurrect] [--max-deaths N] [--new-character]
-//!                         [--race name|id] [--gender m|f] [--compact-db path]
-//!                         [--out report.json] [--capture capture.jsonl]
+//!                         [--temple-resurrect] [--max-deaths N] [--max-timeouts N]
+//!                         [--new-character] [--race name|id] [--gender m|f]
+//!                         [--compact-db path] [--out report.json] [--capture capture.jsonl]
 //!                         [--acquire-timeout-secs N] [--step-timeout-secs N]
+//!                         [--run-timeout-secs N]
 //! ```
 //!
 //! Settings come from `--config` (JSON, see `testclient.example.json`), then the flags. Keep
@@ -478,6 +479,10 @@ async fn main() -> anyhow::Result<()> {
                     .transpose()?,
                 resurrect_in_place: !args.has("temple-resurrect"),
                 max_deaths: args.get("max-deaths").unwrap_or("3").parse()?,
+                max_timeouts: args.get("max-timeouts").unwrap_or("5").parse()?,
+                run_timeout: Duration::from_secs(
+                    args.get("run-timeout-secs").unwrap_or("1800").parse()?,
+                ),
                 new_character: args.has("new-character"),
                 race,
                 gender,
