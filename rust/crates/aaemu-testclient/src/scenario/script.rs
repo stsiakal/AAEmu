@@ -41,6 +41,9 @@
 //! aucpost <bag slot> <buyout> <duration>
 //!                                    CSAuctionPost of the bag item (remembers the lot id)
 //! auccancel                          CSCancelAuction of the remembered lot
+//! aucbid <lot id> <money>            CSBidAuction (a bid at or above the buyout price buys it)
+//! interact <npc template>            CSInteractNPC + CSStartInteraction (prints the skill list)
+//! repairall                          CSRepairAllEquipments (free of the NPC check in the client)
 //! maillist                           CSListMail (received mail), remembers the mail ids
 //! mailtakeall [<n>]                  CSTakeAllAttachmentItem for the n-th listed mail
 //! partyinvite <name>                 CSInviteToTeam (party) by character name
@@ -96,6 +99,7 @@ fn show(packets: &[Packet]) {
             || name.contains("Teleport")
             || name.contains("Mail")
             || name.contains("Trade")
+            || name.contains("Interaction")
             || name.contains("Gold")
         {
             let hex: String = p.body.iter().take(48).map(|b| format!("{b:02x}")).collect();
@@ -174,6 +178,10 @@ pub(super) async fn run(
         match cmd {
             "gm" => {
                 let reply = gm_command(game, rest).await?;
+                for p in reply.iter().filter(|p| p.is_sc(sc::SCJoinedTeamPacket)) {
+                    team_id = p.stream().read_u32()?;
+                    println!("    joined team {team_id}");
+                }
                 show(&reply);
             }
             "tp" => {
@@ -721,8 +729,8 @@ pub(super) async fn run(
                 let mut b = aaemu_commons::PacketStream::new();
                 b.write_bc(0x200).write_bc(0x200);
                 b.write_u64(lot_id).write_u8(0);
-                // empty item: template 0 reads only the id
-                b.write_u32(0).write_u64(0);
+                // empty item: template 0 reads only the template id
+                b.write_u32(0);
                 b.write_u8(1)
                     .write_u32(1)
                     .write_str("x")
@@ -738,6 +746,78 @@ pub(super) async fn run(
                     .await?;
                 let got = game
                     .drain(Duration::from_millis(1500), Duration::from_secs(6))
+                    .await?;
+                show(&got);
+            }
+            "aucbid" => {
+                // CSBidAuction: the lot (only its id is used) then the bid (lot id, money).
+                let id: u64 = num(&parts, 0)?;
+                let money: i32 = num(&parts, 1)?;
+                let mut b = aaemu_commons::PacketStream::new();
+                b.write_bc(0x200).write_bc(0x200);
+                b.write_u64(id).write_u8(0);
+                b.write_u32(0);
+                b.write_u8(1)
+                    .write_u32(1)
+                    .write_str("x")
+                    .write_i32(0)
+                    .write_i32(0);
+                b.write_i64(0)
+                    .write_u8(255)
+                    .write_u32(0)
+                    .write_str("")
+                    .write_i32(0)
+                    .write_i32(0);
+                b.write_u64(id)
+                    .write_u8(1)
+                    .write_u32(0)
+                    .write_str("")
+                    .write_i32(money);
+                game.send_cs(aaemu_game::opcodes::cs::CSBidAuctionPacket, b.as_bytes())
+                    .await?;
+                let got = game
+                    .drain(Duration::from_millis(1500), Duration::from_secs(6))
+                    .await?;
+                show(&got);
+            }
+            "interact" => {
+                // CSInteractNPC (sets the current interaction object) then CSStartInteraction
+                // (asks for the NPC's interaction skill list).
+                let tpl: u32 = num(&parts, 0)?;
+                let npc = nearest(game, tpl).with_context(|| format!("NPC {tpl} not in sight"))?;
+                let mut b = aaemu_commons::PacketStream::new();
+                b.write_bc(npc.obj_id).write_bool(false);
+                game.send_cs(aaemu_game::opcodes::cs::CSInteractNPCPacket, b.as_bytes())
+                    .await?;
+                game.drain(Duration::from_millis(500), Duration::from_secs(3))
+                    .await?;
+                let mut b = aaemu_commons::PacketStream::new();
+                b.write_bc(npc.obj_id)
+                    .write_bc(0)
+                    .write_i32(0)
+                    .write_i32(0)
+                    .write_u8(1)
+                    .write_i32(0);
+                game.send_cs(
+                    aaemu_game::opcodes::cs::CSStartInteractionPacket,
+                    b.as_bytes(),
+                )
+                .await?;
+                let got = game
+                    .drain(Duration::from_millis(1200), Duration::from_secs(6))
+                    .await?;
+                show(&got);
+            }
+            "repairall" => {
+                let mut b = aaemu_commons::PacketStream::new();
+                b.write_bool(false);
+                game.send_cs(
+                    aaemu_game::opcodes::cs::CSRepairAllEquipmentsPacket,
+                    b.as_bytes(),
+                )
+                .await?;
+                let got = game
+                    .drain(Duration::from_millis(1200), Duration::from_secs(6))
                     .await?;
                 show(&got);
             }

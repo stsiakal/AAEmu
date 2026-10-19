@@ -2197,3 +2197,24 @@ from the unpacked 1.2 client here.
   `SCFactionRenamed` (`by_gm = false`) and saves. The retail gating by `allow_change_name`
   (the client clears it on a player rename) is not known and not implemented; the guild chat
   channel keeps its creation-time name.
+- **Not changed (checked against the Bevy findings).**
+  - *Auction refund wedge*: not reproduced on the current tree. The Bevy lane (a snapshot 278
+    commits older) hung on `TakeAllAndDelete` of an outbid-refund mail and then refused
+    `enter world`. On this tree the whole sequence works live (post / cancel + claim, bid +
+    buyout by a third player + claim of the refund, seller proceeds claim with its labor cost, a
+    two-bot concurrent post/cancel/claim loop, relog) and as `auction_tests`
+    (`cancel_refund_mail_can_be_taken_all_and_deleted`, `sale_and_win_mails_...`,
+    `outbid_refund_mail_can_be_taken_all_and_deleted`, all under `finishes_in_time`). Open audit
+    note: `mail::store_quest_rewards_locked` takes the mail state while the caller holds the
+    character lock (quest "locked hooks"), whereas `delete_mail`, `check_all_mail_timings`,
+    `get_current_mail_list` and `notify_new_mail_by_name_if_online` take a character lock while
+    holding the mail state; a quest mail reward racing a mail delivery for the same character
+    could deadlock. No reproduction, so no change.
+  - *Party leave / kick / dismiss*: already work through `CSAskRiskyTeamAction` (0x088,
+    `teams.ask_risky_team`; the original client's path, layout `team_id u32, target u32, action
+    u8`, dismiss sends target 0 like the Bevy client). The C# opcodes 0x07d-0x07f
+    (`CSLeaveTeam`, `CSKickTeamMember`, `CSDismissTeam`) stay log-only as in the C#.
+  - *`SCNoticeMessage` (0x0d0)*: the 1.2 client's `OnNoticeMessage` handler
+    (`x2game.dll` `FUN_391d8d60` -> `FUN_393c2780(type, alpha, visTime, text)`) reads a `u8`
+    type, a short string, an `i32` and a text string, which is our layout; the Bevy client
+    simply does not decode this opcode yet.
