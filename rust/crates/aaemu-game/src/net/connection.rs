@@ -88,6 +88,9 @@ pub struct ConnectionHandle {
     account_id: Arc<AtomicU32>,
     /// `LastPing` as unix milliseconds (`i64::MIN` = `DateTime.MinValue`, never pinged).
     last_ping_ms: Arc<AtomicI64>,
+    /// When the connection was accepted (unix milliseconds): the keep-alive sweep measures a
+    /// connection that has not pinged yet from here.
+    connected_ms: i64,
     tx: mpsc::UnboundedSender<ConnCommand>,
     writer: Outbox,
 }
@@ -103,9 +106,16 @@ impl ConnectionHandle {
             ip,
             account_id: Arc::new(AtomicU32::new(account_id)),
             last_ping_ms: Arc::new(AtomicI64::new(i64::MIN)),
+            connected_ms: chrono::Utc::now().timestamp_millis(),
             tx,
             writer,
         }
+    }
+
+    /// When the connection was accepted.
+    pub fn connected_at(&self) -> chrono::NaiveDateTime {
+        chrono::DateTime::from_timestamp_millis(self.connected_ms)
+            .map_or(chrono::NaiveDateTime::MIN, |d| d.naive_utc())
     }
 
     pub fn account_id(&self) -> u32 {
@@ -251,6 +261,7 @@ pub struct GameConnection {
     pub ip: SocketAddr,
     account_id: Arc<AtomicU32>,
     last_ping_ms: Arc<AtomicI64>,
+    connected_ms: i64,
     pub state: GameState,
     pub payment: AccountPayment,
     /// `Characters.Values` in insertion (load) order.
@@ -288,11 +299,13 @@ impl GameConnection {
     ) -> (Self, ConnectionHandle) {
         let account_id = Arc::new(AtomicU32::new(0));
         let last_ping_ms = Arc::new(AtomicI64::new(i64::MIN));
+        let connected_ms = chrono::Utc::now().timestamp_millis();
         let handle = ConnectionHandle {
             id,
             ip,
             account_id: account_id.clone(),
             last_ping_ms: last_ping_ms.clone(),
+            connected_ms,
             tx: commands.clone(),
             writer: writer.clone(),
         };
@@ -301,6 +314,7 @@ impl GameConnection {
             ip,
             account_id,
             last_ping_ms,
+            connected_ms,
             state: GameState::Lobby,
             payment: AccountPayment::default(),
             characters: Vec::new(),
@@ -358,6 +372,7 @@ impl GameConnection {
             ip: self.ip,
             account_id: self.account_id.clone(),
             last_ping_ms: self.last_ping_ms.clone(),
+            connected_ms: self.connected_ms,
             tx: self.commands.clone(),
             writer: self.writer.clone(),
         }
