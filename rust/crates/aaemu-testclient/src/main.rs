@@ -25,6 +25,12 @@
 //!                         [--limit N] [--new-character] [--race name|id] [--gender m|f]
 //!                         [--compact-db path] [--out results.jsonl] [--step-timeout-secs N]
 //!                         [--summary]
+//! aaemu-testclient fight  [--config F] [--login H:P] --tpl TEMPLATE... [--kills N]
+//!                         [--at X,Y,Z...] [--max-level-delta N] [--potion ITEM]
+//!                         [--temple-resurrect] [--max-deaths N] [--new-character]
+//!                         [--race name|id] [--gender m|f] [--compact-db path]
+//!                         [--out report.json] [--capture capture.jsonl]
+//!                         [--acquire-timeout-secs N] [--step-timeout-secs N]
 //! ```
 //!
 //! Settings come from `--config` (JSON, see `testclient.example.json`), then the flags. Keep
@@ -36,6 +42,7 @@ use std::time::Duration;
 
 use aaemu_testclient::craftrun;
 use aaemu_testclient::diff::{self, DiffConfig};
+use aaemu_testclient::fight;
 use aaemu_testclient::load;
 use aaemu_testclient::questrun::{self, QuestOutcome};
 use aaemu_testclient::record::{self, Recorder};
@@ -436,9 +443,64 @@ async fn main() -> anyhow::Result<()> {
                 bail!("connection lost during the craft run");
             }
         }
+        "fight" => {
+            let cfg = bot_config(&args)?;
+            let race = match args.get("race") {
+                Some(value) => questrun::parse_race(value)?,
+                None => 1,
+            };
+            let gender = match args.get("gender") {
+                Some(value) => questrun::parse_gender(value)?,
+                None => 1,
+            };
+            let opts = fight::RunOptions {
+                template_ids: args
+                    .get_all("tpl")
+                    .iter()
+                    .map(|v| {
+                        v.parse::<u32>()
+                            .context("--tpl needs a numeric npc template id")
+                    })
+                    .collect::<anyhow::Result<_>>()?,
+                kills: args.get("kills").unwrap_or("10").parse()?,
+                hunt_points: args
+                    .get_all("at")
+                    .iter()
+                    .map(|v| fight::parse_point(v))
+                    .collect::<anyhow::Result<_>>()?,
+                max_level_delta: args.get("max-level-delta").unwrap_or("3").parse()?,
+                potion: args
+                    .get("potion")
+                    .map(|v| {
+                        v.parse::<u32>()
+                            .context("--potion needs a numeric item template")
+                    })
+                    .transpose()?,
+                resurrect_in_place: !args.has("temple-resurrect"),
+                max_deaths: args.get("max-deaths").unwrap_or("3").parse()?,
+                new_character: args.has("new-character"),
+                race,
+                gender,
+                acquire_timeout: Duration::from_secs(
+                    args.get("acquire-timeout-secs").unwrap_or("60").parse()?,
+                ),
+                combat_timeout: Duration::from_secs(
+                    args.get("step-timeout-secs").unwrap_or("90").parse()?,
+                ),
+                compact_db: args.get("compact-db").map(PathBuf::from),
+                out: args.get("out").map(PathBuf::from),
+                capture: args.get("capture").map(PathBuf::from),
+            };
+            let mut approach = fight::DirectApproach;
+            let report = fight::run(&cfg, &opts, &mut approach).await?;
+            println!("{}", report.render());
+            if report.aborted {
+                bail!("fight run aborted");
+            }
+        }
         _ => {
             println!(
-                "usage: aaemu-testclient run|parity|diff|load|quest|craft|skill [--flags]; see the crate docs"
+                "usage: aaemu-testclient run|parity|diff|load|quest|craft|skill|fight [--flags]; see the crate docs"
             );
         }
     }
