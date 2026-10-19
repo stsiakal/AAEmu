@@ -16,6 +16,9 @@ from backport import (  # noqa: E402
     build_assets_section,
     build_backport,
     build_closure,
+    pak_names_to_write,
+    patch_client_db,
+    refuse_protected_client,
     render_patch,
     resolve_item_set,
     run_backport,
@@ -451,6 +454,119 @@ class BackportTests(unittest.TestCase):
                 text_two = handle.read()
             self.assertEqual(text_one, text_two)
             self.assertIn("game/objects/characters/test/x.chr", text_one)
+
+
+class ClientPatchTest(unittest.TestCase):
+    SCHEMA = """
+    CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT, icon_id INTEGER,
+        male_icon_id INTEGER, LEVEL INTEGER);
+    CREATE TABLE icons (id INTEGER PRIMARY KEY, filename TEXT, name TEXT);
+    CREATE TABLE localized_texts (id INTEGER PRIMARY KEY, tbl_name TEXT, idx INTEGER,
+        en_us TEXT);
+    """
+
+    def make(self, path, items, icons, texts=()):
+        conn = sqlite3.connect(path)
+        conn.executescript(self.SCHEMA)
+        conn.executemany("INSERT INTO items VALUES (?,?,?,?,?)", items)
+        conn.executemany("INSERT INTO icons VALUES (?,?,?)", icons)
+        conn.executemany("INSERT INTO localized_texts VALUES (?,?,?,?)", texts)
+        conn.commit()
+        conn.close()
+
+    def test_row_selection_idempotence_and_icon_names(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = os.path.join(tmp, "base.sqlite3")
+            client = os.path.join(tmp, "client.sqlite3")
+            patched = os.path.join(tmp, "patched.sqlite3")
+            old_items = [(1, "old", 1, None, 5)]
+            old_icons = [(1, "a/old.dds", "old")]
+            self.make(base, old_items, old_icons)
+            self.make(client, old_items, old_icons)
+            self.make(
+                patched,
+                old_items + [(35592, "new", 12085, 12086, 46)],
+                old_icons
+                + [(12085, "costume_ar/nu_f_x.dds", ""), (12086, "costume_ar/nu_m_x.dds", "")],
+                [(7, "items", 35592, "Obsidian")],
+            )
+            first = patch_client_db(client, base, patched)
+            self.assertEqual(first["inserted"]["items"], 1)
+            self.assertEqual(first["inserted"]["icons"], 2)
+            self.assertEqual(first["inserted"]["localized_texts"], 1)
+            self.assertEqual(first["missing_icons"], [])
+            conn = sqlite3.connect(client)
+            self.assertEqual(
+                conn.execute("SELECT name FROM icons WHERE id = 12086").fetchone()[0],
+                "nu_m_x",
+            )
+            snapshot = [
+                conn.execute(f"SELECT * FROM {t} ORDER BY id").fetchall()
+                for t in ("items", "icons", "localized_texts")
+            ]
+            conn.close()
+            second = patch_client_db(client, base, patched)
+            self.assertEqual(sum(second["inserted"].values()), 0)
+            self.assertEqual(second["already_present"]["items"], 1)
+            conn = sqlite3.connect(client)
+            again = [
+                conn.execute(f"SELECT * FROM {t} ORDER BY id").fetchall()
+                for t in ("items", "icons", "localized_texts")
+            ]
+            conn.close()
+            self.assertEqual(snapshot, again)
+
+    def test_missing_icon_and_conflict_reported(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = os.path.join(tmp, "base.sqlite3")
+            client = os.path.join(tmp, "client.sqlite3")
+            patched = os.path.join(tmp, "patched.sqlite3")
+            self.make(base, [], [])
+            self.make(client, [(9, "other", 0, None, 1)], [])
+            self.make(patched, [(9, "mine", 0, None, 1), (10, "x", 99, None, 1)], [])
+            report = patch_client_db(client, base, patched)
+            self.assertEqual(report["conflicts"]["items"], [9])
+            self.assertEqual(report["inserted"]["items"], 1)
+            self.assertEqual(report["missing_icons"], [[10, "icon_id", 99]])
+
+    def test_pak_names_and_protected_roots(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            listing = os.path.join(tmp, "assets.txt")
+            with open(listing, "w", encoding="utf-8") as handle:
+                handle.write("game/a.dds\nGame/b.cdf\n\ngame/a.dds\n")
+            self.assertEqual(
+                pak_names_to_write(listing, {"game/a.dds"}), ["game/b.cdf"]
+            )
+            with self.assertRaises(SystemExit):
+                refuse_protected_client("D:/AA1.2")
+            with self.assertRaises(SystemExit):
+                refuse_protected_client(tmp)  # no game_pak
+
+
+class ClientNullNormalizationTest(unittest.TestCase):
+    def test_zero_becomes_null_where_client_rows_are_null(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = {n: os.path.join(tmp, n + ".sqlite3") for n in ("base", "client", "patched")}
+            for name, path in paths.items():
+                conn = sqlite3.connect(path)
+                conn.execute("CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT, exp_date INTEGER, price INTEGER)")
+                conn.executemany(
+                    "INSERT INTO items VALUES (?,?,NULL,?)",
+                    [(i, f"old{i}", 0) for i in range(1, 201)],
+                )
+                if name == "patched":
+                    conn.execute("INSERT INTO items VALUES (9000, 'new', 0, 0)")
+                conn.commit()
+                conn.close()
+            report = patch_client_db(paths["client"], paths["base"], paths["patched"])
+            self.assertEqual(report["zero_to_null"], {"items.exp_date": 1})
+            conn = sqlite3.connect(paths["client"])
+            row = conn.execute("SELECT exp_date, price FROM items WHERE id = 9000").fetchone()
+            conn.close()
+            self.assertEqual(row, (None, 0))
+            again = patch_client_db(paths["client"], paths["base"], paths["patched"])
+            self.assertEqual(sum(again["inserted"].values()), 0)
+            self.assertEqual(again["conflicts"], {})
 
 
 if __name__ == "__main__":
