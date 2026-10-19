@@ -121,7 +121,7 @@ cargo run --release -p aaemu-launcher -- --client "C:/ArcheAge/bin32/archeage.ex
 
 It asks for the password; `--password PW`, `--password-file FILE` or the
 `AAEMU_PASSWORD` environment variable avoid the prompt (handy for scripts).
-With `AutoAccount` (default) the account is created on the first login. See
+With `AutoAccount` (on under `cargo xtask dev`, off in the shipped config) the account is created on the first login. See
 [Client](Client#launcher-aaemu-launcher) for all options.
 
 ## Driving the client from tools (Lua driver)

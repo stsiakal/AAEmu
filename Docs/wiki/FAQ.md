@@ -107,8 +107,10 @@ Common defaults:
 - `1237`: login public
 - `1239`: game public
 - `1250`: game stream
-- `1280`: optional game Web API. It has no authentication (it can send mail with items), so it
-  listens on `127.0.0.1` by default; never expose it publicly
+- `1280`: optional game Web API (`WebApiNetwork`). It can send mail with items and run commands, so
+  it listens on `127.0.0.1` and every route except `/status` needs `WebApiNetwork.Token` (see
+  [Hosting safely](Installation-&-Setup#hosting-safely)); never expose it publicly
+- `1234`: login internal port (game server registration); loopback only, never expose it
 
 ### What should `GameServers` host be for local use
 
