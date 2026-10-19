@@ -31,16 +31,30 @@ use crate::server::GameServer;
 use crate::world::object::Entity;
 use crate::world::{session, visibility, NpcRef, PlayerRef, WorldObject};
 use packets::{
-    SCLoadInstancePacket, SCPortalInfoSavedPacket, SCTeleportUnitPacket, SCUnitDeathPacket,
-    KILL_REASON_PORTAL_TIMEOUT,
+    SCLoadInstancePacket, SCPortalDeletedPacket, SCPortalInfoSavedPacket, SCTeleportUnitPacket,
+    SCUnitDeathPacket, SCUnitPortalUsedPacket, KILL_REASON_PORTAL_TIMEOUT,
 };
 
 /// Template id of the green portal entrance NPC.
 pub const PORTAL_ENTRANCE_TEMPLATE_ID: u32 = 3891;
 /// Template id of the yellow portal exit NPC.
 pub const PORTAL_EXIT_TEMPLATE_ID: u32 = 6949;
-/// `KillPortalTask` delay.
+/// `KillPortalTask` delay (skill 11216 tooltip: "remain open for 30 seconds").
 pub const PORTAL_LIFETIME: Duration = Duration::from_secs(30);
+/// The delay with an Occultism skillset of level 20 or more ("or 60 seconds for characters Lv20+
+/// in Occultism", the 1.2 tooltip of skill 11216).
+pub const PORTAL_LIFETIME_OCCULTISM: Duration = Duration::from_secs(60);
+/// `AbilityType.Death`, shown as "Occultism" in 1.2.
+pub const OCCULTISM_ABILITY_ID: u8 = 5;
+/// The Occultism level from which [`PORTAL_LIFETIME_OCCULTISM`] applies.
+pub const OCCULTISM_LONG_PORTAL_LEVEL: u8 = 20;
+/// "Opens a worldgate with 1000 HP, 5 meters away" (`ui_texts` 1291, the tooltip of the open
+/// portal effect): the client puts the gate this far in front of the caster. The data column
+/// `open_portal_effects.distance` is 3.0, below what the client sends, so the larger one counts.
+pub const OPEN_PORTAL_TOOLTIP_DISTANCE: f32 = 5.0;
+/// Slack on top of the allowed distance for the position drift between the client and server
+/// while the 10 s cast runs.
+pub const OPEN_PORTAL_RANGE_SLACK: f32 = 1.0;
 /// `BuffConstants.TagOverburdened`.
 pub const TAG_OVERBURDENED: u32 = 831;
 /// `ItemTaskType.Teleport`.
@@ -232,6 +246,44 @@ fn distance_2d(ax: f32, ay: f32, bx: f32, by: f32) -> f32 {
     let dx = f64::from(ax) - f64::from(bx);
     let dy = f64::from(ay) - f64::from(by);
     (dx * dx + dy * dy).sqrt() as f32
+}
+
+/// Whether the spot the client sent for `OpenPortalEffect` lies close enough to the caster (2D,
+/// like every other distance of the portal code): within the larger of the effect's `distance`
+/// column and the 5 m of the tooltip, plus [`OPEN_PORTAL_RANGE_SLACK`]. The data has no
+/// in-front rule (the skill's `front_angle` is 0), so the direction is not checked.
+pub fn portal_spot_in_range(caster: (f32, f32), spot: (f32, f32), distance: f32) -> bool {
+    let allowed = distance.max(OPEN_PORTAL_TOOLTIP_DISTANCE) + OPEN_PORTAL_RANGE_SLACK;
+    distance_2d(caster.0, caster.1, spot.0, spot.1) <= allowed
+}
+
+/// The lifetime of a portal pair for an Occultism level.
+pub fn portal_lifetime_for_level(occultism_level: u8) -> Duration {
+    if occultism_level >= OCCULTISM_LONG_PORTAL_LEVEL {
+        PORTAL_LIFETIME_OCCULTISM
+    } else {
+        PORTAL_LIFETIME
+    }
+}
+
+/// The lifetime of the portals `owner` opens (the owner's Occultism level, read through the
+/// shared experience table like the quest unit requirements do).
+pub fn portal_lifetime(server: &GameServer, owner: &PlayerRef) -> Duration {
+    let exp = owner
+        .data()
+        .abilities
+        .abilities
+        .iter()
+        .find(|a| a.id == OCCULTISM_ABILITY_ID)
+        .map(|a| a.exp);
+    let level = exp.map_or(0, |e| {
+        server
+            .game_data
+            .experience
+            .level_from_exp_any(e, false)
+            .map_or(0, |(l, _)| l)
+    });
+    portal_lifetime_for_level(level)
 }
 
 /// `ZoneManager.GetTargetIdByZoneId(zoneKey)`.
@@ -489,8 +541,10 @@ pub fn change_private_portal_name(
 }
 
 /// `PortalManager.DeletePortal(owner, type, id)` (`CSDeletePortalPacket`): removes the book
-/// entry (`RemoveFromBookPortal`). As in C#, no packet is sent and the district portal list is
-/// not rebuilt (it still holds the removed district until the next load).
+/// entry (`RemoveFromBookPortal`) and answers `SCPortalDeleted(type, id)` (the C# sent nothing;
+/// the 1.2 client's `OnPortalDeleted` removes the row of type 1 = district or 2 = private from
+/// its lists and refreshes the book, see PORTING.md). The district portal list is not rebuilt
+/// (it still holds the removed district until the next load, as in C#).
 pub fn delete_portal(server: &GameServer, owner: &PlayerRef, portal_type: u8, id: u32) {
     let is_private = portal_type != 1;
     let (character_id, removed) = {
@@ -518,6 +572,10 @@ pub fn delete_portal(server: &GameServer, owner: &PlayerRef, portal_type: u8, id
             } else {
                 p.visited_districts.push(key);
             }
+        });
+        owner.send(SCPortalDeletedPacket {
+            portal_type,
+            portal_id: id as i32,
         });
     }
 }
@@ -687,7 +745,7 @@ fn make_portal(
     }
     let changes = world.spawn(&npc, &server.view_ctx());
     session::handle_zone_changes(server, changes);
-    schedule_kill(server, &npc);
+    schedule_kill(server, &npc, portal_lifetime(server, owner));
     Some(npc)
 }
 
@@ -709,15 +767,15 @@ fn owner_world_rotation(server: &GameServer, owner: &PlayerRef) -> (f32, f32, f3
     }
 }
 
-/// `TaskManager.Schedule(new KillPortalTask(portal), 30 s)`.
-fn schedule_kill(server: &GameServer, npc: &NpcRef) {
+/// `TaskManager.Schedule(new KillPortalTask(portal), 30 s)` (60 s with Occultism Lv20+).
+fn schedule_kill(server: &GameServer, npc: &NpcRef, lifetime: Duration) {
     let Some(server) = server.self_arc() else {
         return; // no runtime server (tests): nothing schedules tasks
     };
     let weak = Arc::downgrade(&server);
     let npc = npc.clone();
     tokio::spawn(async move {
-        tokio::time::sleep(PORTAL_LIFETIME).await;
+        tokio::time::sleep(lifetime).await;
         if let Some(server) = weak.upgrade() {
             delete_portal_npc(&server, &npc);
         }
@@ -836,6 +894,7 @@ pub fn use_portal_with_preference(
         if !crate::systems::vehicles::on_instance_change(server, player) {
             return;
         }
+        notify_portal_used(server, player, current_instance);
         player.data().set_disabled_set_position(true);
         player.send(SCLoadInstancePacket {
             instance_id: teleport.world_id,
@@ -855,6 +914,7 @@ pub fn use_portal_with_preference(
             ..teleport
         };
     } else {
+        notify_portal_used(server, player, current_instance);
         player.data().set_disabled_set_position(true);
     }
     player.send(SCTeleportUnitPacket {
@@ -865,6 +925,22 @@ pub fn use_portal_with_preference(
         z: teleport.z,
         z2: deg_to_rad(teleport.rot_z),
     });
+}
+
+/// `SCUnitPortalUsed(user)` to the bystanders around the user, before the user moves: the 1.2
+/// client's `OnUnitPortalUsed` plays an effect on the unit of that id when it is in sight (the C#
+/// never sent it, see PORTING.md).
+fn notify_portal_used(server: &GameServer, player: &PlayerRef, instance_id: u32) {
+    if let Some(world) = server.world.world(instance_id) {
+        crate::world::broadcast(
+            &world,
+            player,
+            &SCUnitPortalUsedPacket {
+                unit_id: player.obj_id,
+            },
+            false,
+        );
+    }
 }
 
 /// `WorldManager.ResendVisibleObjectsToCharacter(character)`: every object of the neighbouring

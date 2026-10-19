@@ -40,6 +40,14 @@
 //! tmoney <amount>                    CSPutupTradeMoney
 //! tlock <0|1>  /  tok  /  tcancel    CSTradeLock / CSTradeOk / CSCancelTrade
 //! rawcs <opcode hex> [<body hex>]    send any client packet and print the replies
+//! portalsave <name>                  record the position in the Teleport Book (skill 11215 with a
+//!                                    `SavePortalInfo` object; needs a Memory Ink)
+//! now                                print the wall clock (seconds, to time portal lifetimes)
+//! useportal <npc template> [only_mine]  CSUsePortal on the nearest NPC of that template (3891 = the
+//!                                    portal entrance)
+//! delportal <type> <id>              CSDeletePortal (type 1 = district, 2 = recorded)
+//! portalopen <kind> <id> <dx> <dy>   open a worldgate (skill 11216 with a `PortalInfo` object) at
+//!                                    our position + (dx, dy); needs Hereafter Stones
 //! aucpost <bag slot> <buyout> <duration>
 //!                                    CSAuctionPost of the bag item (remembers the lot id)
 //! auccancel                          CSCancelAuction of the remembered lot
@@ -144,6 +152,8 @@ fn show(packets: &[Packet]) {
             || name.contains("Trade")
             || name.contains("Interaction")
             || name.contains("Gold")
+            || name.contains("Portal")
+            || name.contains("UnitsRemoved")
         {
             let hex: String = p.body.iter().take(48).map(|b| format!("{b:02x}")).collect();
             println!("    {name} len {} {hex}", p.body.len());
@@ -1175,6 +1185,65 @@ pub(super) async fn run(
             "drop" => {
                 r.end(s, "connection dropped without logout");
                 return Ok(());
+            }
+            "now" => {
+                let t = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0.0, |d| d.as_secs_f64());
+                println!("    now {t:.1}");
+            }
+            "useportal" => {
+                let tpl: u32 = num(&parts, 0)?;
+                let only_mine = parts.get(1).is_some_and(|v| *v == "1");
+                let npc = nearest(game, tpl).with_context(|| format!("NPC {tpl} not in sight"))?;
+                let mut b = aaemu_commons::PacketStream::new();
+                b.write_bc(npc.obj_id).write_bool(only_mine);
+                game.send_cs(aaemu_game::opcodes::cs::CSUsePortalPacket, b.as_bytes())
+                    .await?;
+                let got = game
+                    .drain(Duration::from_millis(1500), Duration::from_secs(8))
+                    .await?;
+                show(&got);
+            }
+            "delportal" => {
+                let kind: u8 = num(&parts, 0)?;
+                let id: u32 = num(&parts, 1)?;
+                let mut b = aaemu_commons::PacketStream::new();
+                b.write_u8(kind).write_u32(id);
+                game.send_cs(aaemu_game::opcodes::cs::CSDeletePortalPacket, b.as_bytes())
+                    .await?;
+                let got = game
+                    .drain(Duration::from_millis(1500), Duration::from_secs(6))
+                    .await?;
+                show(&got);
+            }
+            "portalsave" => {
+                let name = parts.join(" ");
+                let mut o = aaemu_commons::PacketStream::new();
+                o.write_u8(2).write_i32(0).write_str(&name);
+                game.start_skill_with_object(11215, o.as_bytes()).await?;
+                let got = game
+                    .drain(Duration::from_millis(2000), Duration::from_secs(12))
+                    .await?;
+                show(&got);
+            }
+            "portalopen" => {
+                let kind: u8 = num(&parts, 0)?;
+                let id: i32 = num(&parts, 1)?;
+                let (dx, dy): (f32, f32) = (num(&parts, 2)?, num(&parts, 3)?);
+                let at = game.state.self_pos;
+                let mut o = aaemu_commons::PacketStream::new();
+                o.write_u8(1)
+                    .write_u8(kind)
+                    .write_i32(id)
+                    .write_i64(aaemu_commons::helpers::convert_coord_to_long(at.0 + dx))
+                    .write_i64(aaemu_commons::helpers::convert_coord_to_long(at.1 + dy))
+                    .write_f32(at.2);
+                game.start_skill_with_object(11216, o.as_bytes()).await?;
+                let got = game
+                    .drain(Duration::from_millis(2000), Duration::from_secs(14))
+                    .await?;
+                show(&got);
             }
             "rawcs" => {
                 let opcode = u16::from_str_radix(parts.first().context("opcode")?, 16)?;
