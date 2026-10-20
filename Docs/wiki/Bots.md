@@ -127,6 +127,7 @@ The `script` language takes one command per line and allows `#` comments. Its co
 - Bag and items: `item`, `equip`, `split`, `sell`
 - Trade: `tstart` to `tok`
 - Portals, auction and mail, party, labor and repair
+- `loaded`: answers `SCLoadInstancePacket` with `CSInstanceLoadedPacket` (needed before a doodad spawned in a new instance is visible)
 - Raw packets: `rawcs`
 - Waiting for social events: `await`
 
@@ -261,7 +262,7 @@ Server fixes found by the bots so far:
 
 | Finding | Seen in | Size | Likely cause |
 | --- | --- | --- | --- |
-| No `SCLoadInstancePacket` after the exit doodad | Quest sweep | 1,468 Firran, 1,820 Harani | Instance exit, open |
+| No `SCLoadInstancePacket` after the exit doodad | Quest sweep | 1,468 Firran, 1,820 Harani | Fixed by the obstacle-ray commits `ae5c73933` / `00ba92067` (the sweep predates them); the cascade followed one failed enter. Re-run the sweep to confirm |
 | A doodad did not appear after `/spawn doodad` | Quest sweep, Harani | 468 | Open |
 | No sign sphere for the quest component | Quest sweep; quest 1525 | 378 | Data gap |
 | `/item add` created nothing | Quest sweep | 301 | The bot's bag was full |

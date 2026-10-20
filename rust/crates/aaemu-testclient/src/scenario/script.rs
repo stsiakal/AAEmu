@@ -1186,6 +1186,14 @@ pub(super) async fn run(
                 r.end(s, "connection dropped without logout");
                 return Ok(());
             }
+            "loaded" => {
+                // The real client's answer to SCLoadInstancePacket, then the world settles.
+                game.confirm_instance_loaded().await?;
+                let got = game
+                    .drain(Duration::from_millis(1500), Duration::from_secs(6))
+                    .await?;
+                show(&got);
+            }
             "now" => {
                 let t = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
