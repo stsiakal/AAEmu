@@ -947,13 +947,12 @@ fn open_portal_effect(server: &GameServer, distance: f32, args: &EffectArgs<'_>)
         Some(w) => w.world_pos_rot(&me),
         None => owner.data().unit.transform.local(),
     };
-    // C# only compared `x > pos.X + Distance || y > pos.Y + Distance` (points behind or beside
-    // the caster passed, forward points beyond 3 m were refused); see PORTING.md.
-    if !super::portal::portal_spot_in_range((pos.x, pos.y), (x, y), distance) {
-        tracing::warn!(
-            "OpenPortalEffect: spot ({x}, {y}) is out of range of the caster ({}, {})",
+    if !super::portal::open_portal_point_in_range((pos.x, pos.y, pos.z), (x, y, z), distance) {
+        tracing::debug!(
+            "OpenPortalEffect: gate point ({x}, {y}, {z}) too far from ({}, {}, {})",
             pos.x,
-            pos.y
+            pos.y,
+            pos.z
         );
         return;
     }
