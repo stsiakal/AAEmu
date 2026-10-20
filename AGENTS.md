@@ -50,6 +50,9 @@ Scripts/lane.sh land                        # merge into the base branch, then d
   runs once per lane in `lane.sh check`; `land` refuses a HEAD that was not checked or does not
   contain the current base branch, so the merged tree is exactly the tested tree and the base
   needs no re-run.
+- **Live verification before `lane.sh check`**: run `Scripts/verify.sh` (or the suites the change
+  touches, `--only <name>`) from inside the lane and add a `rust/verify/*.vtest` suite for each
+  new fix; see [`Docs/wiki/Verification.md`](Docs/wiki/Verification.md).
 - **Cleanup is part of done — the bloat is real** (target dirs reach 10–90 GB each). Work is not
   finished until `lane.sh land` or `lane.sh done` has run and `Scripts/lane.sh list` no longer
   shows the lane:

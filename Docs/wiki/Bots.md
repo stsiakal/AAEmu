@@ -155,6 +155,22 @@ Two-bot duels, trades and parties run as one process per bot, each with its own 
   `prereq_missing`, `requirement_unmet`, `blocked_plan` or `runner_unsupported`. Each blocker has
   a class: `runner_gap`, `suspect`, `data_gap` or `requirement`.
 
+## Live verification suites
+
+`Scripts/verify.sh` turns a fix into one command that can be rerun: it starts the lane stack,
+provisions the suite's bot accounts (including GM access) and runs every `rust/verify/*.vtest`
+suite. A suite declares several named bots whose script sections run concurrently and
+synchronise with `waitpeer`/`sync`; assertions cover server packets (`expectpkt`,
+`expectnopkt`), game-server log lines (`expectlog`) and game-database values (`expectdb`).
+
+```sh
+Scripts/verify.sh                    # all suites, PASS/FAIL + report
+Scripts/verify.sh --only guild       # one fix's suite while working
+```
+
+The format, the expectation commands, the report location and how to add a suite are in
+[Live Verification Suites](Verification). Run it before `lane.sh check`.
+
 ## The AABevy headless script runner
 
 The AABevy client (`aa-client.exe`, a separate repository) has a headless mode that runs a command file
