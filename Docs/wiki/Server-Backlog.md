@@ -90,8 +90,9 @@ From the [Bots](Bots) sweeps. Sizes are counts in the sweep that saw them.
 
 | Finding | Seen in | Size | Likely cause |
 | --- | --- | --- | --- |
-| No `SCLoadInstancePacket` after the exit doodad | Quest sweep | 1,468 Firran, 1,820 Harani | Instance exit; in progress (lane `instance-exit`) |
-| A doodad did not appear after `/spawn doodad` | Quest sweep, Harani | 468 | Open |
+| No `SCLoadInstancePacket` after the exit doodad 4535 (skill 16560) | Quest sweep (2026-10-19) | 1,477 Firran, 1,820 Harani, 344 Nuian, 1,264 Elf | Not reproduced on `rust-rewrite-bots`: the sweep predates the obstacle-ray fixes `ae5c73933` / `00ba92067` (`PORTING.md` names entrance 3674 and exit 4535); most failures cascade from one late enter. Re-run the sweep to close |
+| A doodad did not appear after `/spawn doodad` | Quest sweep, Harani | 468 | Likely bot-side: a doodad spawned in a fresh instance is only visible after the bot sends `CSInstanceLoadedPacket` (script command `loaded`) and teleports once |
+| `/move <name> <place>` on another player answers "Moved" but the player stays put | PvP check | 1 | SUSPECT, not reproduced in isolation |
 | No sign sphere for the quest component | Quest sweep; quest 1525 | 378 | Data gap |
 | `mother_faction` requirement not met | Quest sweep | 232 | Quest prerequisite |
 | Using an item did not update quest 261 | Player mode | 1 quest | Open |

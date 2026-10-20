@@ -127,6 +127,7 @@ The `script` language takes one command per line and allows `#` comments. Its co
 - Bag and items: `item`, `equip`, `split`, `sell`
 - Trade: `tstart` to `tok`
 - Portals, auction and mail, party, labor and repair
+- `loaded`: answers `SCLoadInstancePacket` with `CSInstanceLoadedPacket` (needed before a doodad spawned in a new instance is visible)
 - Raw packets: `rawcs`
 - Waiting for social events: `await`
 
@@ -265,6 +266,7 @@ The gaps below are in the bots and their tooling.
 | Finding | Seen in | Size | Likely cause |
 | --- | --- | --- | --- |
 | `/item add` created nothing | Quest sweep | 301 | The bot's bag was full |
+| `run --new-character --race firran` fails ("created character … is not in the list"), and `run` ignores `--race` | Instance-exit and PvP checks | Tool | Only the sweeps honour `--race` |
 | The `full` scenario passes even when a step fails, and its parity target is the removed C# server | Retail parity audit | Tool | Bot weakness |
 | Passwords leak through the tooling (argv, an echoing prompt, hashes in captures) | Retail parity audit | Tool | Security |
 
