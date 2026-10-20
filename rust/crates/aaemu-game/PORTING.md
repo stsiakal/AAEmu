@@ -2488,3 +2488,15 @@ Deviations from the 1.2 C# `ExpeditionManager` / `TeamManager`, which trusted ev
 - `ChangeLootingRule` accepted any character id as loot master. It must now be 0 or a member of the
   team; otherwise only that field is ignored (logged). Over-head markers are unchanged: their
   target is any unit or object, not a team member.
+
+## Trade item integrity and craft materials (2026-10-20)
+
+- `trade::add_item` (C# `TradeManager.AddItem` only checked `item.Count >= amount`) now also
+  cancels the trade for a soul-bound item or an item outside the bag (the flag check matches mail
+  and auction), and `preflight_items` refuses an offered item that left the bag or became bound
+  after the put-up. Repeated put-ups of one stack stay allowed up to its count, as upstream decided.
+- Craft materials: the C# counted `Inventory.GetItemsCount` (bag + equipment + bank) but consumed
+  from `Bag` only and ignored the result, so a craft with materials in the bank produced the
+  product for free. The port counts the bag only (start and again in `hand_out_products`, before
+  any product is handed out) and refuses with `NOT_ENOUGH_REQUIRED_ITEM` otherwise. Labor is
+  still charged by `Skill.EndSkill` as before.
