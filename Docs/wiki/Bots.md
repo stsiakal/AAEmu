@@ -259,24 +259,21 @@ Server fixes found by the bots so far:
 
 ## Known gaps
 
+Server findings from the bots are tracked in [Server Backlog](Server-Backlog#found-by-the-bots).
+The gaps below are in the bots and their tooling.
+
 | Finding | Seen in | Size | Likely cause |
 | --- | --- | --- | --- |
-| No `SCLoadInstancePacket` after the exit doodad | Quest sweep | 1,468 Firran, 1,820 Harani | Instance exit, open |
-| A doodad did not appear after `/spawn doodad` | Quest sweep, Harani | 468 | Open |
-| No sign sphere for the quest component | Quest sweep; quest 1525 | 378 | Data gap |
 | `/item add` created nothing | Quest sweep | 301 | The bot's bag was full |
-| `mother_faction` requirement not met | Quest sweep | 232 | Quest prerequisite |
-| Using an item did not update quest 261 | Player mode | 1 quest | Open |
-| NPC 7491 never spawned, so its leash cannot be measured | AI sweep | 1 NPC | Spawn data |
 | The `full` scenario passes even when a step fails, and its parity target is the removed C# server | Retail parity audit | Tool | Bot weakness |
-| Passwords leak through the tooling (argv, an echoing prompt, hashes in captures) | Retail parity audit (J-10) | Tool | Security |
+| Passwords leak through the tooling (argv, an echoing prompt, hashes in captures) | Retail parity audit | Tool | Security |
 
 The player-mode run reached level 7 with 28 deaths in 84 minutes, so the fight logic still needs
 work.
 
 Next steps:
 
-1. Fix the instance-exit blocker. Then rerun the four-race quest sweep and write a summary file
+1. Wait for the instance-exit fix (see [Server Backlog](Server-Backlog#found-by-the-bots)). Then rerun the four-race quest sweep and write a summary file
    for each run.
 1. Run a sample of the 622 needs-review quests live; the static audit does not certify that
    they can be played.
@@ -286,6 +283,7 @@ Next steps:
 
 ## Related
 
+- [Server Backlog](Server-Backlog)
 - [Quest Technical Audit](Quest-Audit)
 - [Local Development Guide](Local-Development-Guide)
 - [Developer Notes](Developer-Notes)
