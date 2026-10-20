@@ -1,7 +1,7 @@
 # Fork Deviations
 
 - Audience: Contributors
-- Last verified against: `rust-rewrite-bots` HEAD (`5fc2fd20d`) on October 20, 2026
+- Last verified against: `rust-rewrite-bots` HEAD (`e00299d88`) on October 21, 2026
 - Target: ArcheAge 1.2 (`r208022`)
 
 ## Goal
@@ -31,21 +31,20 @@ guesses that retail evidence should replace.
 | Deviation | Why | Files / data | Config switch | Status | Upstream? |
 | --- | --- | --- | --- | --- | --- |
 | Level 55: 3.0 retail 51-55 XP and quest XP, ten visible capstone skills | 1.2 hides the ten `ability_level = 55` capstones and ships a placeholder 51-55 curve (179.3M total at 55) that makes the last five levels unplayable retail-style; 3.0.4.2 is the closest retail data | `SQL/patches/compact/2026-10-20-level-55-retail-3.0.sql`; regression `rust/crates/aaemu-game/src/data/level55_patch_tests.rs`; [Backports](Backports) § Level 55; `PORTING.md` § Level 51-55 capstones and experience | Opt-in compact patch, applied by `cargo xtask compact-patches`, `Scripts/live-stack.sh sync` and `cargo xtask publish` (`--no-compact-db` skips it); no `Config.json` switch | Landed 2026-10-20. 1.2 `skill_points` (24-28) and `quest_supplies.copper` kept; `total_mate_exp` kept at the 1.2 values. The Bevy XP table is still open | No: intentional data deviation, not a parity fix |
-| All later-version costumes | [Backports](Backports) decision 4: cosmetic content, delivered in audited batches | None yet; [Backports](Backports) § Costumes (3.0/10.x item closure) | None yet | Planned | No |
-| In-server player bots (about 200) | [Player Bots](Player-Bots) decision 2026-10-20: a populated world whose bots are indistinguishable from players | [Player Bots](Player-Bots) build plan; `rust/crates/aaemu-game/src/systems/bots/` planned, absent at HEAD | Planned; feature-gated subsystem vs separate crate still open (`Player-Bots.md` § Open questions) | Planned / phase 0 design; no bot code at HEAD | No: fork product layer |
+| All later-version costumes | [Backports](Backports) decision 4: cosmetic content, delivered in audited batches | None yet; [Backports](Backports) § Costumes (3.0/10.x item closure) | None yet | Planned. Art ships as a separate overlay pak read by the Bevy client (decided 2026-10-21); a test showed the Bevy loaders read the 10.x `.cdf`/`.chr`/`.mtl`/`.dds` files as-is | No |
+| In-server player bots (about 200) | [Player Bots](Player-Bots) decision 2026-10-20: a populated world whose bots are indistinguishable from players | [Player Bots](Player-Bots) build plan; `rust/crates/aaemu-game/src/systems/bots/` (`/bot add\|remove\|list\|walk\|cast`); suite `rust/verify/bots-phase0.vtest` | GM command only; feature-gated subsystem vs separate crate still open (`Player-Bots.md` § Open questions) | Phase 0 landed 2026-10-21 (`948f804d6`): connectionless bots spawn, move, cast, die and resurrect through the player paths; behaviour (phase 1+) planned | No: fork product layer |
 | Compact patch tooling | `compact.sqlite3` is read-only at runtime; the fork needs intentional data fixes applied repeatably and recorded | `SQL/patches/compact/` (README, level-55 patch); `cargo xtask compact-patches` (`rust/crates/xtask/src/main.rs`); `Scripts/live-stack.sh:105`; `cargo xtask publish` | Patch directory / `--patches <dir>`; `cargo xtask publish --no-compact-db` | Implemented 2026-10-20; each file's SHA-256 is recorded in `aaemu_compact_patches` | Could go upstream: generic tooling with no fork-only behavior |
-| Live verification suite | Reproduce fixes end to end on a lane stack; regression coverage beyond unit and flow tests | `Scripts/verify.sh`; `rust/verify/*.vtest`; `aaemu-testclient verify`; [Verification](Verification) | `--only`, `--report`; lane-only (refuses outside a lane) | Implemented 2026-10-20 (seed suites `emote-spoof`, `guild-guards`) | Could go upstream: generic harness |
-| Client-side items (reference only) | The 1.2 client reads its own encrypted DB, so the Bevy client is the reference for server data changes such as level 55 | Bevy fork `stsiakal/AABevy1.2`: addon API (branch `feat/addons`, new `crates/aa-client/src/addons/`), planting snap-grid option (planned), title-inline and unit stats | Client-side only | Addon API phase 1 in progress on `feat/addons` (not merged yet); snap grid planned with the farming UI; title-inline and unit stats are open `NickMesser/AABevy1.2` PRs #9 and #6 | Not server deviations; client work, with the two fixes offered upstream as client PRs |
+| Live verification suite | Reproduce fixes end to end on a lane stack; regression coverage beyond unit and flow tests | `Scripts/verify.sh`; `rust/verify/*.vtest`; `aaemu-testclient verify`; [Verification](Verification) | `--only`, `--report`; lane-only (refuses outside a lane) | Implemented 2026-10-20; suites `emote-spoof`, `guild-guards`, `authority-guards`, `bots-phase0` | Yes: generic harness sent as [#27](https://github.com/NickMesser/AAEmu/pull/27) (open; the `bots-phase0` suite stays fork-only) |
+| Client-side items (reference only) | The 1.2 client reads its own encrypted DB, so the Bevy client is the reference for server data changes such as level 55 | Bevy fork `stsiakal/AABevy1.2`: addon API (`crates/aa-client/src/addons/`), planting snap-grid option (planned); farm plumbing, farm phase visuals, XP table from the game database and the 3 m loot range | Client-side only | Addon API merged into the fork's `main` 2026-10-21 (fork-only); snap grid planned with the farming UI; upstream PRs: unit stats #6 and title-inline #9 merged, farm plumbing #12, farm visuals #13, XP table #14 and loot range #15 open | Not server deviations; client work, with parity fixes offered upstream as client PRs |
 
 The client-side items are listed here only so a sync worker does not mistake them for server changes.
-The addon API and the planting snap-grid option live in the Bevy client fork; the title-inline and
-unit-stats fixes were sent to `NickMesser/AABevy1.2` as pull requests and are not deviations of this
-server.
+The addon API and the planting snap-grid option live in the Bevy client fork; the other client fixes
+were sent to `NickMesser/AABevy1.2` as pull requests and are not deviations of this server.
 
 ## Parity fixes upstreamed
 
 The fork's copies of these fixes are merged upstream and are no longer deviations: a sync takes
-NickMesser's version. Numbers, titles and states were read on 2026-10-20 with
+NickMesser's version. Numbers, titles and states were read on 2026-10-21 with
 `gh pr list --repo NickMesser/AAEmu --author stsiakal --state all`.
 
 | Fix | Fork commit | Upstream PR | State |
@@ -71,6 +70,8 @@ NickMesser's version. Numbers, titles and states were read on 2026-10-20 with
 | Client skill cast authority checks | `a6ca5fc4f` | [#22](https://github.com/NickMesser/AAEmu/pull/22) | Merged 2026-10-20 |
 | Bank, shop and auction request guards | `334987a9a` | [#23](https://github.com/NickMesser/AAEmu/pull/23) | Merged 2026-10-20 |
 | Slave repair timer started on death | `e9aedb49d` | [#24](https://github.com/NickMesser/AAEmu/pull/24) | Merged 2026-10-20 |
+| Loot take range, in-place resurrection needs an offer (cleared on death), tutorial ids, UI data size | `1a27e69f6`, `c2d7593e2`, `b57e5275e` | [#25](https://github.com/NickMesser/AAEmu/pull/25) | Open |
+| Account attribute saves serialised per account (duplicate-key race) | `388522ee1` | [#26](https://github.com/NickMesser/AAEmu/pull/26) | Open |
 | Retire loot before reusing NPC object ids | `1fc588a2a` | [#3](https://github.com/NickMesser/AAEmu/pull/3) | Open |
 
 ## Guessed values to confirm against retail
@@ -82,7 +83,7 @@ being treated as deviations. Replace each with retail evidence and update this t
 | Value | Where | Current choice | Evidence needed |
 | --- | --- | --- | --- |
 | Bank / auction NPC service range | `systems/economy/store.rs:205-208` (`SERVICE_RANGE`); used by `systems/economy/item_handlers.rs:307` and `auction_packets.rs:44`; `PORTING.md:855-864` | 5 m, matching the repair and pet-revive interactions | A retail capture or client check of the banker / auctioneer interaction range. The shop range (`SHOP_RANGE`, 3 m) is separate and came from the C# |
-| Corpse loot take range | `systems/economy/looting.rs:49-52` (`LOOT_TAKE_RANGE`), merged from lane `authority1` in `1a27e69f6`; `PORTING.md` § loot range 2026-10-20 | 5 m (the C# checked only the 200 m eligibility range) | A retail capture of the furthest successful take from a corpse / loot bag |
+| Corpse loot take range | `systems/economy/looting.rs` (`LOOT_TAKE_RANGE`); `PORTING.md` § Loot take range | 5 m measured like `GetDistanceTo` (minus the model radii): retail 3 m plus 2 m slack | **Confirmed** 2026-10-21: the retail 3.5 client enables looting at 3.0 m or less on the target frame's distance and walks the player to the corpse; the 10.x decompile has a matching 3 m check. The Bevy client uses 3 m (PR #15) |
 | Doodad skill-target allowance | `systems/skills/validation.rs:10-13` (`DOODAD_RANGE_ALLOWANCE`); `PORTING.md` § Client skill cast authority | Skill `max_range` plus 15 m, standing in for the missing doodad bounding boxes | Doodad model or bounding-box data, or a retail cast at a large doodad's edge |
 | Slave skill-target allowance | `systems/skills/validation.rs:10-13` (`SLAVE_RANGE_ALLOWANCE`); `PORTING.md` § Client skill cast authority | Skill `max_range` plus 40 m, standing in for the zero `obb_*` columns in the 1.2 data | Ship `obb_*` values or a retail cast at a large ship's edge |
 | Guild invitation expiry | `systems/social/expedition.rs:198-199` (`INVITATION_TIMEOUT_MS`); `PORTING.md` § Guild invitation and rank guards | 60 s, matching the party / raid invitations | A retail invitation expiry capture, or the client UI timer |
