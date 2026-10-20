@@ -32,6 +32,7 @@ pub async fn load_and_spawn(server: &GameServer, character_id: u32) -> Result<Pl
     // Force the character into main_world, like a character select does.
     c.unit.transform.instance_id = DEFAULT_INSTANCE_ID;
     load_character_details(server, &mut c).await?;
+    crate::systems::economy::account_attributes::load(server, c.account_id).await;
     // Character.Load(): Mates.Load (vehicles subsystem)
     crate::systems::vehicles::load_character(server, c.id).await;
     let saved_buffs = fetch_active_buffs(server, c.id).await;
