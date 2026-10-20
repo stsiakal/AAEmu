@@ -166,6 +166,9 @@ fn load_levels(conn: &Connection) -> Result<Vec<LevelTemplate>, rusqlite::Error>
 }
 
 #[cfg(test)]
+mod level55_patch_tests;
+
+#[cfg(test)]
 mod real_db_tests {
     //! Loads the real 1.2 `compact.sqlite3` when `AAEMU_COMPACT_DB` points at it
     //! (`cargo test -p aaemu-game real_compact_db -- --ignored`).
