@@ -1,7 +1,7 @@
 # Server Backlog
 
 - Audience: Contributors
-- Last verified against: `rust-rewrite-bots` at `38ec93b09` (code review and the 2026-10-20 bot checks), October 20, 2026
+- Last verified against: `rust-rewrite-bots` at `770333e02` (code review, the 2026-10-20 bot checks and the 2026-10-21 live suites), October 21, 2026
 - Target: ArcheAge 1.2 (`r208022`)
 
 ## Overview
@@ -46,17 +46,26 @@ Confirmed in code unless marked SUSPECT.
   undefined-use fallback only accepts skills named by a player-facing source in the static data.
   This closes the former "Skill cast as another unit", "Skill range waived" and "Undefined-use
   skill fallback" rows.
+- **Corpse loot range** (reproduced, fixed in `1a27e69f6`, evidence `b57e5275e`, upstream PR
+  NickMesser/AAEmu#25): a take is refused with `TooFarAway` beyond 5 m from the loot owner,
+  measured like `GetDistanceTo` (minus the model radii), and the loot stays in the corpse. Retail
+  evidence: the 3.5 client enables looting at 3.0 m or less and walks the player to the corpse;
+  the 2 m above that are slack. Suite `rust/verify/authority-guards.vtest`.
+- **In-place resurrection** (reproduced, fixed in `1a27e69f6` and `c2d7593e2`, upstream PR
+  NickMesser/AAEmu#25): needs a pending offer from the `Resurrection` effect or the free
+  resurrection below `MinimumExpLossLevel`; any resurrection consumes it and each death clears a
+  leftover one (a GM revive did not).
+- **`CSSaveTutorial`** (reproduced, fixed in `1a27e69f6`, upstream PR NickMesser/AAEmu#25): only
+  real tutorial entries (`quest_contexts.category_id = 45`), at most 256.
+- **`CSSaveUIData`** (reproduced, fixed in `1a27e69f6`, upstream PR NickMesser/AAEmu#25): keys
+  0..=16 and values up to 16 KiB (the 1.2 client's largest observed payload is 4,708 bytes).
 
 ### Open
 
 | Item | Severity | What is wrong | Where | Fix direction |
 | --- | --- | --- | --- | --- |
-| Corpse loot | HIGH | Quest-item eligibility and the team loot-rule/dice checks exist, but taking an item does not check the distance to the corpse | `systems/economy/looting.rs:776-960` (take), `:810-822` (quest item) | Add the take-distance check (in progress in lane `authority1`) |
 | Movement fully trusted | MED | `MoveVerifier` is off by default; `sus.rs` only logs above 25 m/s | `world/session.rs:753-905`, `app/Configurations/Physics.json`, `systems/services/sus.rs` | Enable and tune the verifier; needs retail speeds |
 | Portal and navi teleport | MED | `CSUsePortal` and `CSNaviTeleport` still skip the distance check; `14cfd990f` added only the OpenPortalEffect gate-point and `CSNaviOpenPortal` ranges | `systems/npcs/portal/mod.rs:843-953`, `:1069-1088`, `:1095-1116` | Check distance to the gate |
-| `CSSaveTutorial` | MED | Writes any quest id as completed; rows grow without bound | `systems/quests/packets.rs` ~491-523 | Validate ids; cap rows |
-| In-place resurrect | MED | Works without an offer | `systems/skills/resurrect.rs:128-150` | Require a pending offer |
-| `CSSaveUIData` | LOW | Unbounded keys and strings | `systems/services/character_packets.rs` ~683 | Cap sizes |
 | Mount seat | LOW | A passenger boards a stranger's mount seat from any distance | `systems/vehicles/mates.rs:312` | Check distance |
 | `CSChangeDoodadData` | LOW | No range check | `systems/npcs/doodad/manager.rs:670` | Check distance |
 | `CSUseTeleport` | LOW | Fare is sent by the client; unreachable on stock data | `systems/npcs/portal/mod.rs:1123-1186` | Compute the fare server side |
@@ -79,6 +88,10 @@ Confirmed in code unless marked SUSPECT.
   start time, and a loaded 0-HP vehicle is only reset to full HP once the repair time has passed.
 - **Summon despawn** (fixed in `1fe501e80`, upstream PR NickMesser/AAEmu#18): summons flagged
   `despawn_on_creator_death` are registered under the caster and removed when the caster dies.
+- **Account attribute saves** (reproduced, fixed in `388522ee1`, upstream PR NickMesser/AAEmu#26):
+  overlapping background saves of one account failed with `Duplicate entry` and could store an
+  older snapshot; saves now run one at a time under the account lock and each writes the newest
+  cache.
 
 Static revalidation of the remaining rows.
 
