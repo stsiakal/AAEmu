@@ -20,4 +20,5 @@ pub mod skillrun;
 pub mod social;
 pub mod stream;
 pub mod valuecheck;
+pub mod verify;
 pub mod walk;
