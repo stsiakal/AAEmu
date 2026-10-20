@@ -18,7 +18,7 @@
 //! target <npc template>              select the nearest NPC of that template
 //! kill <npc template>                walk next to the nearest NPC, target it, `/kill`
 //! cast <skill> <npc template>        CSStartSkill on the nearest NPC
-//! dcast <skill> <doodad template>    doodad-target CSStartSkill
+//! dcast <skill> <doodad template> [far]  doodad-target CSStartSkill (walks to it first, unless `far`)
 //! item <template> <count>            `/item add self` and remember the stack id
 //! icast <skill> <item template> <npc template|self>
 //!                                    cast from the remembered item stack
@@ -39,7 +39,8 @@
 //! tput <slot type> <slot> <amount>   CSPutupTradeItem
 //! tmoney <amount>                    CSPutupTradeMoney
 //! tlock <0|1>  /  tok  /  tcancel    CSTradeLock / CSTradeOk / CSCancelTrade
-//! rawcs <opcode hex> [<body hex>]    send any client packet and print the replies
+//! rawcs <opcode hex> [<body hex>]    send any client packet and print the replies (`SELF` / `SLAVE`
+//!                                     in the hex stand for our / the last spawned slave's object id)
 //! portalsave <name>                  record the position in the Teleport Book (skill 11215 with a
 //!                                    `SavePortalInfo` object; needs a Memory Ink)
 //! now                                print the wall clock (seconds, to time portal lifetimes)
@@ -154,6 +155,7 @@ fn show(packets: &[Packet]) {
             || name.contains("Gold")
             || name.contains("Portal")
             || name.contains("UnitsRemoved")
+            || name.contains("SlaveCreated")
         {
             let hex: String = p.body.iter().take(48).map(|b| format!("{b:02x}")).collect();
             println!("    {name} len {} {hex}", p.body.len());
@@ -300,6 +302,7 @@ pub(super) async fn run(
     // The login burst (the zone states of every conflict zone) is not part of the script.
     let mut printed = game.state.social.len();
     let mut last_npc = 0u32;
+    let mut last_slave = 0u32;
     for (n, raw) in text.lines().enumerate() {
         for e in &game.state.social[printed.min(game.state.social.len())..] {
             println!("    social: {e:?}");
@@ -315,6 +318,14 @@ pub(super) async fn run(
         match cmd {
             "gm" => {
                 let reply = gm_command(game, rest).await?;
+                // SCSlaveCreatedPacket: owner bc, tl_id u16, slave bc (`SLAVE` in `rawcs`).
+                for p in reply.iter().filter(|p| p.is_sc(sc::SCSlaveCreatedPacket)) {
+                    let mut st = p.stream();
+                    if st.read_bc().is_ok() && st.read_u16().is_ok() {
+                        last_slave = st.read_bc().unwrap_or(0);
+                        println!("    slave created, obj {last_slave}");
+                    }
+                }
                 for p in reply.iter().filter(|p| p.is_sc(sc::SCJoinedTeamPacket)) {
                     team_id = p.stream().read_u32()?;
                     println!("    joined team {team_id}");
@@ -559,9 +570,11 @@ pub(super) async fn run(
                     .min_by(|a, b| dist(a.pos, me).total_cmp(&dist(b.pos, me)))
                     .cloned()
                     .with_context(|| format!("doodad {tpl} not in sight"))?;
-                clock += 1500;
-                game.move_to((d.pos.0 + 1.0, d.pos.1, d.pos.2), clock)
-                    .await?;
+                if parts.get(2).copied() != Some("far") {
+                    clock += 1500;
+                    game.move_to((d.pos.0 + 1.0, d.pos.1, d.pos.2), clock)
+                        .await?;
+                }
                 game.start_doodad_skill(skill, d.obj_id).await?;
                 let got = game
                     .drain(Duration::from_millis(1500), Duration::from_secs(8))
@@ -1255,7 +1268,22 @@ pub(super) async fn run(
             }
             "rawcs" => {
                 let opcode = u16::from_str_radix(parts.first().context("opcode")?, 16)?;
-                let hex = parts.get(1).copied().unwrap_or("");
+                // `SELF` / `SLAVE` stand for our own / the last created slave's object id in the
+                // packet's `bc` encoding.
+                let bc = |id: u32| {
+                    format!(
+                        "{:02x}{:02x}{:02x}",
+                        id & 0xff,
+                        (id >> 8) & 0xff,
+                        (id >> 16) & 0xff
+                    )
+                };
+                let hex = parts
+                    .get(1)
+                    .copied()
+                    .unwrap_or("")
+                    .replace("SELF", &bc(game.state.self_obj))
+                    .replace("SLAVE", &bc(last_slave));
                 let body: Vec<u8> = (0..hex.len() / 2)
                     .map(|i| u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16))
                     .collect::<Result<_, _>>()?;
