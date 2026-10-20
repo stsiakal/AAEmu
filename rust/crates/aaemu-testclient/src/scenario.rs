@@ -17,6 +17,7 @@ use crate::quest::quest_rows;
 use crate::record::Recorder;
 use crate::stream::StreamClient;
 
+mod cometsboon;
 mod doodad;
 mod fixes;
 mod plant;
@@ -62,6 +63,10 @@ pub enum Kind {
     /// (see `scenario/plant.rs`). GM account.
     #[serde(rename = "plant")]
     Plant,
+    /// Auramancy "Comet's Boon" (skill 18222, plot 363): summon doodad 5017 and apply buff 3771
+    /// to the caster (see `scenario/cometsboon.rs`). GM account.
+    #[serde(rename = "cometsboon")]
+    CometsBoon,
     /// Stone throwing (skill 11268) from a stackable item: the `ItemUnlock` is sent while the
     /// stack survives and skipped for the last stone (see `scenario/fixes.rs`). GM account.
     #[serde(rename = "stonethrow")]
@@ -94,12 +99,13 @@ impl std::str::FromStr for Kind {
             "questitem" => Self::QuestItem,
             "doodad" => Self::Doodad,
             "plant" => Self::Plant,
+            "cometsboon" => Self::CometsBoon,
             "stonethrow" => Self::StoneThrow,
             "ghost" => Self::Ghost,
             "portal" => Self::Portal,
             "script" => Self::Script,
             _ => bail!(
-                "unknown scenario '{s}' (login, lobby, full, combat, npc-return, mate-revive, questitem, doodad, \n                 load)"
+                "unknown scenario '{s}' (login, lobby, full, combat, npc-return, mate-revive, questitem, doodad, \n                 plant, cometsboon, stonethrow, ghost, portal, script, load)"
             ),
         })
     }
@@ -586,6 +592,11 @@ async fn run_inner(
     }
     if kind == Kind::Plant {
         plant::run(&mut game, r).await?;
+        drop(stream);
+        return Ok(());
+    }
+    if kind == Kind::CometsBoon {
+        cometsboon::run(&mut game, r).await?;
         drop(stream);
         return Ok(());
     }
@@ -1964,5 +1975,6 @@ mod mate_revive_tests {
         assert_eq!("none".parse::<ReviveMethod>().unwrap(), ReviveMethod::None);
         assert!("x".parse::<ReviveMethod>().is_err());
         assert_eq!("mate-revive".parse::<Kind>().unwrap(), Kind::MateRevive);
+        assert_eq!("cometsboon".parse::<Kind>().unwrap(), Kind::CometsBoon);
     }
 }
