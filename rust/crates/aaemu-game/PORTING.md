@@ -2392,3 +2392,12 @@ Oracles: the 1.2-era C# (`git show a2ab80abd^:AAEmu.Game/Core/Managers/DuelManag
 - **Challenge validation** (10.x `DuelRequest`, `DuelManager.cs:96-136`): self -> `BadDuelSelf` (513), unknown / offline target -> `BadDuelTarget` (504), challenger already registered -> `AlreadyInDuel` (505), target registered (a duel or a pending challenge) -> `OtherAlreadyInDuel` (506), all sent to the challenger. Not in any oracle: a dead target (hp <= 0) also gives `BadDuelTarget`. Neither C# has a distance or location rule, so `DuelBadLocation` (516), `DuelOtherBusy` (515) and `TargetTooFar` (517) are never sent (no rule invented). The check-and-register is one critical section. The ids are the 1.2 client's: its error table lists `bad_duel_target`, `already_in_duel`, `other_already_in_duel`, `target_rejected_duel` ... `bad_duel_self`, `duel_other_busy`, `duel_bad_location` in that order (`x2game.dll`, reversed in memory), matching 504-516.
 - Because a pending challenge now blocks both players, an unanswered challenge expires after 30 s (10.x `RequestTimeout`/`DuelRequestExpired`; the challenger gets `TargetRejectedDuel`). `DuelAccepted` also follows 10.x in answering `BadDuelTarget` for an unknown challenge and refusing an accept from anybody but the challenged character.
 - `SCAreaChatBubble` type 543 (research only): both C# versions send `(true, challengerObjId, 543)` from `DuelStart` (1.2 C# `DuelManager.cs:133`, 10.x `:303`; the 10.x packet is unchanged). In `compact.sqlite3` `bubble_effects` id 543 (kind 2) is a Nuia lore line, part of an unrelated 540-546 series, and no `bubble_effects` row mentions a duel, so the value is probably a guess carried over from a packet capture; no oracle for another value exists, so it is unchanged.
+
+## Dash heading at the end point (2026-10-20)
+
+`SkillController::step` turned the unit toward `heading(new, end)`. On the last step `new` equals
+`end` up to float rounding, so `atan2` of a near-zero vector picked an arbitrary direction (pi or
+0, depending on the tick's `dt`): the unit could flip to face backwards on the final tick and the
+last movement packet carried that yaw (seen as a Linux-only failure of
+`dash_moves_npc_and_broadcasts_movement`). Within 1e-3 of the end point the heading of the step
+itself (`heading(cur, end)`) is used. The C# original has the same degenerate `atan2`.
