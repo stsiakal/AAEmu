@@ -12,6 +12,10 @@ Guidance for coding agents working in this repository.
   disable its push URL (`git remote set-url --push <name> no_push`).
 - **Do not modify `rust-rewrite`**: it mirrors the synced upstream work. Bring it into
   `rust-rewrite-bots` with a merge.
+- **When merging `rust-rewrite` into `rust-rewrite-bots`**, take upstream's version for a fix both
+  sides carry, keep fork-only code, and **never override anything listed in
+  [`Docs/wiki/Fork-Deviations.md`](Docs/wiki/Fork-Deviations.md)** — flag such a conflict instead of
+  resolving it. Parity fixes go upstream as pull requests.
 
 ## Sessions work in lanes (mandatory, every session)
 
