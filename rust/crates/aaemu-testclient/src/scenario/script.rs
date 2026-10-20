@@ -101,6 +101,8 @@
 //! ginvite [name]                     CSInviteToExpedition to the peer (or the named character)
 //! gaccept                            wait for the guild invitation and join
 //! grole <role> <character id>        CSChangeExpeditionMemberRole (255 owner, 2 officer)
+//! useitem <template> <stack id>     use an existing bag stack with `icast`
+//! slavekill                         `/kill` the slave summoned by the last `icast` (GM)
 //! drop                               end the script without logging out (a disconnect)
 //! ```
 
@@ -621,10 +623,39 @@ pub(super) async fn run(
                     if p.is_sc(sc::SCSkillEndedPacket) {
                         println!("    SCSkillEnded");
                     }
+                    if p.is_sc(sc::SCSlaveCreatedPacket) {
+                        let mut st = p.stream();
+                        st.read_bc()?; // owner
+                        st.read_u16()?; // tl id
+                        last_slave = st.read_bc()?;
+                        println!("    SCSlaveCreated slave obj {last_slave}");
+                    }
+                    if p.is_sc(sc::SCErrorMsgPacket) {
+                        println!("    SCErrorMsg {:?}", p.stream().read_i16());
+                    }
                     if let Ok(res) = skill_response_result(p) {
                         println!("    {} result {res}", p.name());
                     }
                 }
+                show(&got);
+            }
+            "useitem" => {
+                // Remember an existing bag stack (e.g. one kept from an earlier session).
+                let tpl: u32 = num(&parts, 0)?;
+                let id: u64 = num(&parts, 1)?;
+                items.insert(tpl, id);
+                println!("    using item {tpl} stack id {id}");
+            }
+            "slavekill" => {
+                // GM `/kill` on the slave summoned by the last `icast`.
+                if last_slave == 0 {
+                    bail!("no slave summoned yet: run `icast` of a summon item first");
+                }
+                game.change_target(last_slave).await?;
+                game.drain(Duration::from_millis(300), Duration::from_secs(1))
+                    .await?;
+                let got = gm_command(game, "kill").await?;
+                println!("    killed slave obj {last_slave}");
                 show(&got);
             }
             "walk" => {
