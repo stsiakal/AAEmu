@@ -2403,3 +2403,6 @@ itself (`heading(cur, end)`) is used. The C# original has the same degenerate `a
   product for free. The port counts the bag only (start and again in `hand_out_products`, before
   any product is handed out) and refuses with `NOT_ENOUGH_REQUIRED_ITEM` otherwise. Labor is
   still charged by `Skill.EndSkill` as before.
+- `finish_trade` moves the money only after every item moved (and not at all when one item move
+  failed, e.g. a stack split without a free slot), so a failed item move can no longer leave the
+  money transferred.
