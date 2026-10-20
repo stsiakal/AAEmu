@@ -1,7 +1,7 @@
 # Player Bots
 
 - Audience: Contributors
-- Last verified against: `feat/player-bots` on October 20, 2026 (design; no in-server bot code yet)
+- Last verified against: `feat/bots-phase0` on October 20, 2026 (phase 0 code and flow tests; live check pending)
 - Target: ArcheAge 1.2 (`r208022`)
 
 ## Goal
@@ -11,7 +11,7 @@ A bot is an ordinary character: normal name tags, party frames, rankings, chat, 
 and no bot marker reaches a client.
 
 This page is the build plan. The external headless bots in [Bots](Bots) stay the test harness;
-the in-server bots described here do not exist yet.
+the phase 0 in-server code exists in `systems/bots/` (see [Phase 0 status](#phase-0--connectionless-spike-s)).
 
 ## Decisions
 
@@ -63,10 +63,13 @@ Only client handshakes that have server-side effects need emulation:
   (`systems/instances/packets.rs:151-170`). The bot path calls `worlds::instance_loaded`
   directly.
 - `select_loaded` mixes the world join with the client state burst
-  (`world/session.rs:343-372`). The world half, including `try_add_character`, should become a
-  reusable `enter_world` function.
-- `move_unit` is the client move-apply path (`world/session.rs:753-930`). It should become an
-  `apply_move` function shared by the client handler and the bot mover.
+  (`world/session.rs:343-372`). The world half, including `try_add_character`, is now the
+  reusable `enter_world` function (`session::enter_world`), used by both paths.
+- `move_unit` is the client move-apply path (`world/session.rs:753-930`). Its unit branch is now
+  the shared `apply_unit_move` used by the client handler and the bot mover.
+- `notify_in_game` / `notify_in_game_completed` and `LeaveWorldTask` expose connectionless
+  player halves (`notify_in_game_player`, `notify_in_game_completed_player`,
+  `leave_world_player`); bots use the same world join, chat-channel, achievement and save code.
 - Pure UI handshakes (lobby, character select, keep-alive pings) are skipped. The keep-alive
   sweep only sees real connections, so detached characters are not disconnected.
 
@@ -157,7 +160,20 @@ The governor and the phase gates are calibrated in phase 0.
 
 ### Phase 0 — connectionless spike (S)
 
-- **Deliverables.** `systems/bots` skeleton; `/bot add <charId>` and `/bot remove`; load and spawn a detached `Player`; walk a 100 m `.bai` path, cast one skill, die/revive, save on remove.
+**Status (2026-10-20, `feat/bots-phase0`).** Implemented in `systems/bots/`; flow tests pass; live verification on a lane stack is still pending (another worker).
+
+- **Works.**
+  - `/bot add <character name>` loads an existing, offline character from MySQL (`db_character::load_character` + `load_character_details`), creates a `Player` with a detached `ConnectionHandle`, and joins it through `session::enter_world` → `finish_character_entry` → `notify_in_game_player` → `spawn` / `notify_in_game_completed_player`: the same path a login takes. The bot is a normal entry in `WorldManager` / `WorldInstance`, so clients receive the usual `SCUnitStatePacket` + `SCUnitPointsPacket`, name tag and visibility updates, and the periodic / departure saves include it.
+  - `/bot remove <name>` runs the normal logout half (`session::leave_world_player`, shared with `LeaveWorldTask`): despawn, chat / party / family / vehicle cleanups, departure save.
+  - `/bot list` reports the roster (name, character id, obj id, level, alive/dead, position).
+  - `/bot walk <name> <x> <y>` walks a straight line at the player run speed (5.4 m/s, one `SCOneUnitMovementPacket` every 100 ms) through the shared `apply_unit_move`, so region changes, zone changes, buff-on-move and the collision fall check behave like a client move. The height follows the collision service's ground probe when it has data.
+  - `/bot cast <name> <skill id> [target obj id]` calls the native `skills::skill::use_skill` path (`new_skill_for` + `SkillCaster::Unit`); cooldowns, mana, cast time, `SCSkillStarted` / `SCSkillFired` and effects are the normal ones. The target defaults to the bot itself.
+  - Death / revive use normal mechanics only: a GM can `/kill` a bot, and once `rez_wait_duration` has elapsed the bot's life watcher calls `skills::resurrect::resurrect_character(server, bot, true)` — the request a client sends — with the normal `SCCharacterResurrectedPacket` broadcast. There is no `/bot kill` or `/bot revive`.
+  - The roster is server-side only; no model field, packet or chat line marks a bot.
+- **Tests.** `systems/bots/tests.rs`: spawn sends the same packets as a real select nearby, walk broadcasts a normal movement, a cast broadcasts the skill packets, remove despawns and saves, and the `/bot` command surface (list / walk / cast / remove) works on the command harness.
+- **Next (phase 1).** `/bot create <name> <race> <archetype>`; build / skill plan and rotation JSON; `.bai` pathing instead of the straight line; obstacle and stuck recovery; loot, rest and revive policy; JSONL telemetry and the activity governor measurement (tick p95, memory, dropped-send cost with 1 / 10 / 50 bots).
+
+**Original deliverables.** `systems/bots` skeleton; `/bot add <charId>` and `/bot remove`; load and spawn a detached `Player`; walk a 100 m `.bai` path, cast one skill, die/revive, save on remove.
 - **Test.** A real client watches spawn, movement, skill, death and revive; packets and name tags look normal; relog restores the position. Record tick p95, memory and dropped-send cost with 1, 10 and 50 idle bots.
 - **Risks.** `move_unit` and `select_loaded` are shared with real clients; a connectionless character may hit save/leave assumptions. Flow tests and the character-creation pattern mitigate both.
 

@@ -9,8 +9,9 @@
 Most of the bots are copies of one headless 1.2 client, `aaemu-testclient`. Each copy logs in to the
 servers the same way a real player does. The bots play scripted scenarios and run long sweeps
 over quests, crafts, skills and NPC AI. They then compare what the server did with
-`compact.sqlite3` and report mismatches. The game server has no bots of its own yet; the in-server
-player bots are planned in [Player Bots](Player-Bots). A second headless driver, the AABevy client's
+`compact.sqlite3` and report mismatches. The game server also has the phase 0 connectionless
+`/bot` operator commands (no client socket); their status is in [Player Bots](Player-Bots). A
+second headless driver, the AABevy client's
 script runner, verifies client features through the real UI (see
 [The AABevy headless script runner](#the-aabevy-headless-script-runner)).
 
@@ -235,8 +236,9 @@ The full reference is `rust/LIVE-TESTING.md` §3–§5.
 
 ## Server side
 
-The game server has no fake players, AI-controlled characters or PvP bots. The bot-related server
-code is:
+The game server has no AI-driven fake players, PvP bots or quest-running bots. It does have the
+phase 0 connectionless `/bot` operator commands (`systems/bots/`: add / remove / list / walk /
+cast); their status and limits are in [Player Bots](Player-Bots). The bot-related server code is:
 
 - **ReportBot**, the retail feature that lets players report suspected bots:
   `systems/social/crime.rs` (a "prime suspect" buff past a threshold) and the `ReportBot` skill

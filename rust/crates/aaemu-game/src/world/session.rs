@@ -339,13 +339,15 @@ pub async fn select_character(
     select_loaded(server, conn, c, db)
 }
 
-/// The rest of `CSSelectCharacterPacket.Read` once `Character.Load()` is done (no MySQL access).
-pub fn select_loaded(
+/// The world half of `CSSelectCharacterPacket.Read` (the `Character.Load()` calls, the obj id,
+/// `TryAddCharacter` and the per-character subsystem registration). Shared by the client
+/// session and the in-server bots; the client's state burst and [`finish_character_entry`]
+/// follow it.
+pub fn enter_world(
     server: &GameServer,
-    conn: &mut GameConnection,
     mut c: Character,
-    db: SelectDbData,
-) -> Result<()> {
+    conn: crate::net::connection::ConnectionHandle,
+) -> Result<PlayerRef> {
     // Character.Load(): "Update sync housing factions on login"
     crate::systems::housing::on_character_loaded(server, c.id, c.unit.faction_id);
     // Mates of all instances: despawned below (vehicles::on_character_selected).
@@ -364,12 +366,23 @@ pub fn select_loaded(
     c.obj_id = obj_id;
     // Character.Load: Mails.GetCurrentMailList (runs before the character is in the world).
     crate::systems::economy::mail::get_current_mail_list_for(server, c.id);
-    let player = Player::new(c, conn.handle());
-    conn.active_char = Some(player.clone());
+    let player = Player::new(c, conn);
     server.world.try_add_character(&player);
     crate::systems::quests::on_character_selected(server, &player);
     // Mates of every instance despawned, pending vehicle despawn task aborted.
     crate::systems::vehicles::on_character_selected(server, &player);
+    Ok(player)
+}
+
+/// The rest of `CSSelectCharacterPacket.Read` once `Character.Load()` is done (no MySQL access).
+pub fn select_loaded(
+    server: &GameServer,
+    conn: &mut GameConnection,
+    c: Character,
+    db: SelectDbData,
+) -> Result<()> {
+    let player = enter_world(server, c, conn.handle())?;
+    conn.active_char = Some(player.clone());
 
     let data = &server.game_data;
     let snapshot = player.data().clone();
@@ -573,6 +586,19 @@ pub fn select_loaded(
         });
     }
 
+    finish_character_entry(server, &player, &db.saved_buffs);
+    Ok(())
+}
+
+/// The `Character.Load()` tail of [`select_loaded`], once the client's state burst is written:
+/// the logged-on / template / saved buffs, cached stats and the initial zone change. The bot
+/// spawn path runs it without a client state burst.
+pub fn finish_character_entry(
+    server: &GameServer,
+    player: &PlayerRef,
+    saved_buffs: &[SavedBuffRow],
+) {
+    let data = &server.game_data;
     {
         let now = now_ms();
         let mut c = player.data();
@@ -596,16 +622,15 @@ pub fn select_loaded(
     }
     {
         let mut live = player.data();
-        apply_active_buffs(server, &mut live, &db.saved_buffs, now_ms());
+        apply_active_buffs(server, &mut live, saved_buffs, now_ms());
         live.check_wanted_threshold(server, now_ms());
         // UpdateGearBonuses(null, null): gear bonuses are a later phase.
         live.restore_saved_hp_mp();
         live.breath = 60_000; // LungCapacity
     }
-    crate::systems::skills::on_character_loaded(server, &player); // buffs, gear bonuses, exact MaxHp/MaxMp
+    crate::systems::skills::on_character_loaded(server, player); // buffs, gear bonuses, exact MaxHp/MaxMp
     let zone = player.data().unit.transform.zone_id;
-    on_zone_change(server, &player, 0, zone);
-    Ok(())
+    on_zone_change(server, player, 0, zone);
 }
 
 /// `CSSpawnCharacterPacket.Read`.
@@ -680,8 +705,14 @@ pub fn notify_in_game(server: &GameServer, conn: &mut GameConnection) {
         tracing::error!("CSNotifyInGamePacket without an active character");
         return;
     };
-    set_online(server, &p, true);
-    spawn(server, &p);
+    notify_in_game_player(server, &p);
+}
+
+/// [`notify_in_game`] without the connection: the world join of a player (the bot path uses it
+/// with a detached handle).
+pub fn notify_in_game_player(server: &GameServer, p: &PlayerRef) {
+    set_online(server, p, true);
+    spawn(server, p);
     let (zone, race, faction, expedition, name, id) = {
         let c = p.data();
         (
@@ -693,29 +724,26 @@ pub fn notify_in_game(server: &GameServer, conn: &mut GameConnection) {
             c.id,
         )
     };
-    zone_chat(server, zone).join(&p); // shout, trade, lfg
-    server.chat.nation_chat(race).join(&p);
-    server
-        .chat
-        .faction_chat(mother_id(server, faction))
-        .join(&p);
+    zone_chat(server, zone).join(p); // shout, trade, lfg
+    server.chat.nation_chat(race).join(p);
+    server.chat.faction_chat(mother_id(server, faction)).join(p);
     // TODO: Maybe move to spawn character? (C#)
-    crate::systems::social::session::on_notify_in_game_team(server, &p);
+    crate::systems::social::session::on_notify_in_game_team(server, p);
     if expedition != 0 {
-        expedition_refresh(server, &p);
+        expedition_refresh(server, p);
         if let Some(e) = server.expeditions.get(expedition) {
             server
                 .chat
                 .guild_chat(e.faction.id, &e.faction.name, &server.ids.chat)
-                .join(&p);
+                .join(p);
         }
     }
     // Connection.ActiveChar.UpdateGearBonuses(null, null)
-    crate::systems::skills::stats::update_gear_bonuses(server, &p, None, None);
-    crate::systems::dispatch_buff_events(server, &WorldObject::from(&p));
-    crate::systems::social::session::on_notify_in_game_trial(server, &p);
-    crate::systems::social::session::on_notify_in_game_achievements(server, &p);
-    crate::systems::npcs::schedule_item_session::on_enter(server, &p);
+    crate::systems::skills::stats::update_gear_bonuses(server, p, None, None);
+    crate::systems::dispatch_buff_events(server, &WorldObject::from(p));
+    crate::systems::social::session::on_notify_in_game_trial(server, p);
+    crate::systems::social::session::on_notify_in_game_achievements(server, p);
+    crate::systems::npcs::schedule_item_session::on_enter(server, p);
     tracing::info!("NotifyInGame: {name} ({id})");
 }
 
@@ -725,6 +753,11 @@ pub fn notify_in_game_completed(server: &GameServer, conn: &mut GameConnection) 
         tracing::error!("CSNotifyInGameCompletedPacket without an active character");
         return;
     };
+    notify_in_game_completed_player(server, &p);
+}
+
+/// [`notify_in_game_completed`] without the connection (the bot path).
+pub fn notify_in_game_completed_player(server: &GameServer, p: &PlayerRef) {
     p.send(SCOnOffSnowPacket {
         on: server
             .world
@@ -732,7 +765,7 @@ pub fn notify_in_game_completed(server: &GameServer, conn: &mut GameConnection) 
             .load(std::sync::atomic::Ordering::Relaxed),
     });
     // Family stuff
-    crate::systems::social::session::on_player_join(server, &p);
+    crate::systems::social::session::on_player_join(server, p);
     // Quest evaluations parked since the select (the client can handle them now).
     crate::systems::quests::on_in_game_completed(server, p.character_id);
     let c = p.data();
@@ -788,7 +821,7 @@ pub async fn move_unit(server: &GameServer, conn: &mut GameConnection, obj_id: u
         MoveKind::Vehicle(v) => {
             crate::systems::vehicles::movement::vehicle_move(server, &world, &me, &target, &mt, v);
         }
-        MoveKind::Unit(u) => {
+        MoveKind::Unit(_) => {
             // Only the authenticated character or its owned mate can submit unit motion.
             // Resolve authority before buff removal, attachment changes or replication.
             let controlled = match &target {
@@ -799,124 +832,7 @@ pub async fn move_unit(server: &GameServer, conn: &mut GameConnection, obj_id: u
             if !controlled {
                 return;
             }
-            // Its moving Pets, handle Pet XP for moving
-            if let Some(mate) = target.as_mate() {
-                crate::systems::vehicles::movement::on_mate_unit_move(server, &me, mate, u);
-            }
-            if let Some(player) = target.as_player() {
-                // RemoveEffects (BuffRemoveOn.Move on a moving velocity): skills subsystem.
-                crate::systems::skills::on_move_request(server, player, u.vel_x, u.vel_y, u.vel_z);
-                if crate::systems::vehicles::movement::player_riding(server, &me, player)
-                    || crate::systems::vehicles::movement::player_bound_to_slave(&world, player)
-                {
-                    // The C# finalized the rider's child transform with the mount / slave, which
-                    // kept its speed baseline fresh; reseed it on the next own movement instead.
-                    let id = player.data().id;
-                    server
-                        .systems
-                        .services
-                        .sus
-                        .reset_analyze_player_delta_movement(id);
-                    return;
-                }
-                // SetPlayerMoved: MOTD on the first movement after loading.
-                let first_move = {
-                    let mut c = player.data();
-                    let first = !c.finished_loading;
-                    c.finished_loading = true;
-                    first
-                };
-                if first_move && Arc::ptr_eq(player, &me) {
-                    send_message(&me, chat_type::SYSTEM, &server.config.world.motd);
-                }
-            }
-            // Standing on objects (ship decks).
-            crate::systems::vehicles::movement::standing_on(&world, &target, &mt, u);
-            // If ActorFlag 0x40 is no longer set, it means we're no longer climbing/holding
-            // onto something.
-            let is_sticky = u
-                .actor_flags
-                .contains(MoveTypeActorFlags::HANGING_FROM_OBJECT);
-            if target.core().sticky_parent() != 0
-                && !is_sticky
-                && !crate::systems::vehicles::movement::is_boarded_on_transfer(&world, &target)
-            {
-                world.set_sticky_parent(&target, None);
-            }
-            let old_pos = {
-                let t = target.transform();
-                (t.x, t.y, t.z)
-            };
-            // An actor standing on an object sends its primary position in the
-            // supporting object's frame and the auxiliary position in world
-            // coordinates, whatever the object kind (gcFlags 1 unit, 2 gimmick,
-            // 4 doodad). If that object is unknown or has disappeared, use the
-            // world backup rather than placing the character's small offset at
-            // the world origin (under the sea).
-            let missing_parent = target.transform().parent_obj_id == 0
-                && u.actor_flags
-                    .contains(MoveTypeActorFlags::STANDING_ON_OBJECT);
-            let (x, y, z, rx, ry, rz) = if missing_parent {
-                (
-                    u.x2,
-                    u.y2,
-                    u.z2,
-                    u.rotation_x2,
-                    u.rotation_y2,
-                    u.rotation_z2,
-                )
-            } else {
-                (u.x, u.y, u.z, u.rotation_x, u.rotation_y, u.rotation_z)
-            };
-            target.with_transform(|t| {
-                t.set_position(
-                    x,
-                    y,
-                    z,
-                    direction_to_radian(rx),
-                    direction_to_radian(ry),
-                    direction_to_radian(rz),
-                )
-            });
-            let packet = SCOneUnitMovementPacket {
-                obj_id,
-                move_type: mt.clone(),
-            };
-            broadcast(&world, &target, &packet, true);
-            // FinalizeTransform -> AddVisibleObject (region change) -> SetPosition. A player
-            // moved to another instance (SCLoadInstancePacket) leaves the old region grid first.
-            server
-                .world
-                .leave_other_instance(&crate::world::WorldObject::from(&target), world.id);
-            let changes = world.add_visible_object(&target, &server.view_ctx());
-            handle_zone_changes(server, changes);
-            // FinalizeTransform: every 5 s the movement speed analysis (SusManager)
-            let new_pos = {
-                let t = target.transform();
-                (t.x, t.y, t.z)
-            };
-            if new_pos != old_pos {
-                server
-                    .systems
-                    .services
-                    .sus
-                    .finalize_transform(server, &target);
-            }
-            // the zone's view of the move (systems::ai::collision): ZWUnitFell gate / cap and
-            // the movement verifier; the client fallVel without the collision service
-            let fall_vel = crate::systems::ai::collision::movement::on_unit_moved(
-                server, &world, &target, mt.time, u,
-            );
-            crate::systems::skills::on_actor_move(server, &target, u.actor_flags, fall_vel);
-            match target.as_player() {
-                // Character.SetPosition (BuffRemoveOn.Move when moved) + DoFallDamage(FallVel).
-                Some(player) => crate::systems::skills::on_moved(server, player, old_pos, fall_vel),
-                None => {
-                    if fall_vel > 0 && target.is_unit() {
-                        crate::systems::vehicles::do_fall_damage(server, &target, fall_vel);
-                    }
-                }
-            }
+            apply_unit_move(server, &me, &target, &mt);
         }
         _ => {
             tracing::warn!(
@@ -925,6 +841,135 @@ pub async fn move_unit(server: &GameServer, conn: &mut GameConnection, obj_id: u
                 me.data().unit.name,
                 target.with_base_unit(|b| b.name().to_string())
             );
+        }
+    }
+}
+
+/// The world part of a `MoveKind::Unit` move (`CSMoveUnitPacket.Execute` after the authority
+/// check): transform, broadcast, region visibility, the collision service and the skill /
+/// vehicle hooks. Shared by the client handler and the in-server bot mover, so a bot move is
+/// indistinguishable from a player move.
+pub fn apply_unit_move(server: &GameServer, me: &PlayerRef, target: &WorldObject, mt: &MoveType) {
+    let MoveKind::Unit(u) = &mt.kind else {
+        return;
+    };
+    let Some(world) = parent_world(server, me) else {
+        return;
+    };
+    let obj_id = target.obj_id();
+    // Its moving Pets, handle Pet XP for moving
+    if let Some(mate) = target.as_mate() {
+        crate::systems::vehicles::movement::on_mate_unit_move(server, me, mate, u);
+    }
+    if let Some(player) = target.as_player() {
+        // RemoveEffects (BuffRemoveOn.Move on a moving velocity): skills subsystem.
+        crate::systems::skills::on_move_request(server, player, u.vel_x, u.vel_y, u.vel_z);
+        if crate::systems::vehicles::movement::player_riding(server, me, player)
+            || crate::systems::vehicles::movement::player_bound_to_slave(&world, player)
+        {
+            // The C# finalized the rider's child transform with the mount / slave, which
+            // kept its speed baseline fresh; reseed it on the next own movement instead.
+            let id = player.data().id;
+            server
+                .systems
+                .services
+                .sus
+                .reset_analyze_player_delta_movement(id);
+            return;
+        }
+        // SetPlayerMoved: MOTD on the first movement after loading.
+        let first_move = {
+            let mut c = player.data();
+            let first = !c.finished_loading;
+            c.finished_loading = true;
+            first
+        };
+        if first_move && Arc::ptr_eq(player, me) {
+            send_message(me, chat_type::SYSTEM, &server.config.world.motd);
+        }
+    }
+    // Standing on objects (ship decks).
+    crate::systems::vehicles::movement::standing_on(&world, target, mt, u);
+    // If ActorFlag 0x40 is no longer set, it means we're no longer climbing/holding
+    // onto something.
+    let is_sticky = u
+        .actor_flags
+        .contains(MoveTypeActorFlags::HANGING_FROM_OBJECT);
+    if target.core().sticky_parent() != 0
+        && !is_sticky
+        && !crate::systems::vehicles::movement::is_boarded_on_transfer(&world, target)
+    {
+        world.set_sticky_parent(target, None);
+    }
+    let old_pos = {
+        let t = target.transform();
+        (t.x, t.y, t.z)
+    };
+    // An actor standing on an object sends its primary position in the
+    // supporting object's frame and the auxiliary position in world
+    // coordinates, whatever the object kind (gcFlags 1 unit, 2 gimmick,
+    // 4 doodad). If that object is unknown or has disappeared, use the
+    // world backup rather than placing the character's small offset at
+    // the world origin (under the sea).
+    let missing_parent = target.transform().parent_obj_id == 0
+        && u.actor_flags
+            .contains(MoveTypeActorFlags::STANDING_ON_OBJECT);
+    let (x, y, z, rx, ry, rz) = if missing_parent {
+        (
+            u.x2,
+            u.y2,
+            u.z2,
+            u.rotation_x2,
+            u.rotation_y2,
+            u.rotation_z2,
+        )
+    } else {
+        (u.x, u.y, u.z, u.rotation_x, u.rotation_y, u.rotation_z)
+    };
+    target.with_transform(|t| {
+        t.set_position(
+            x,
+            y,
+            z,
+            direction_to_radian(rx),
+            direction_to_radian(ry),
+            direction_to_radian(rz),
+        )
+    });
+    let packet = SCOneUnitMovementPacket {
+        obj_id,
+        move_type: mt.clone(),
+    };
+    broadcast(&world, target, &packet, true);
+    // FinalizeTransform -> AddVisibleObject (region change) -> SetPosition. A player
+    // moved to another instance (SCLoadInstancePacket) leaves the old region grid first.
+    server.world.leave_other_instance(target, world.id);
+    let changes = world.add_visible_object(target, &server.view_ctx());
+    handle_zone_changes(server, changes);
+    // FinalizeTransform: every 5 s the movement speed analysis (SusManager)
+    let new_pos = {
+        let t = target.transform();
+        (t.x, t.y, t.z)
+    };
+    if new_pos != old_pos {
+        server
+            .systems
+            .services
+            .sus
+            .finalize_transform(server, target);
+    }
+    // the zone's view of the move (systems::ai::collision): ZWUnitFell gate / cap and
+    // the movement verifier; the client fallVel without the collision service
+    let fall_vel =
+        crate::systems::ai::collision::movement::on_unit_moved(server, &world, target, mt.time, u);
+    crate::systems::skills::on_actor_move(server, target, u.actor_flags, fall_vel);
+    match target.as_player() {
+        // Character.SetPosition (BuffRemoveOn.Move when moved) + DoFallDamage(FallVel).
+        Some(player) => crate::systems::skills::on_moved(server, player, old_pos, fall_vel),
+        None => {
+            if fall_vel > 0 && target.is_unit() {
+                crate::systems::vehicles::do_fall_damage(server, target, fall_vel);
+            }
         }
     }
 }
@@ -1136,58 +1181,8 @@ pub async fn leave_world_task(
     active: Option<PlayerRef>,
 ) {
     if let Some(p) = &active {
-        {
-            let mut c = p.data();
-            c.set_disabled_set_position(true);
-        }
-        set_online(server, p, false);
-        p.data().leave_time = Utc::now().timestamp();
-        crate::systems::quests::on_leave_world(server, p.character_id);
-        // Despawn and unmount everybody from owned Mates / Slaves
-        crate::systems::vehicles::on_leave_world(server, p);
-        crate::systems::npcs::doodad::coffer::close_coffers_opened_by(server, p);
-        // Check if still mounted on somebody else's mount and dismount that if needed
-        crate::systems::vehicles::force_dismount(
-            server,
-            p,
-            crate::systems::vehicles::slaves::attach_reason::PREFAB_CHANGED,
-        );
-        server.chat.leave_all_channels(p);
-        // Handle Family
-        crate::systems::social::session::on_leave_world_family(server, p);
-        let (exp, id) = {
-            let c = p.data();
-            (c.unit.expedition_id, c.id)
-        };
-        if exp != 0 {
-            if let Some((member, members)) =
-                server
-                    .expeditions
-                    .logout_member(exp, id, Utc::now().timestamp())
-            {
-                send_to_expedition(
-                    server,
-                    &members,
-                    &SCExpeditionMemberStatusChangedPacket { member, flag: 0 },
-                );
-            }
-            if let Some(e) = server.expeditions.get(exp) {
-                server
-                    .chat
-                    .guild_chat(e.faction.id, &e.faction.name, &server.ids.chat)
-                    .leave(p);
-            }
-        }
-        delete(server, p);
-        // BuyBackItems.Wipe (+ the economy's per-character state)
-        crate::systems::economy::on_leave_world(server, p);
-        for sub in p.subscribers().drain(..) {
-            server.time.unsubscribe(sub);
-        }
-        server.save.remember_departing(p);
-        server.world.try_remove_character(p.obj_id);
+        leave_world_player(server, p).await;
     }
-    save_and_remove_from_world(server, active.as_ref()).await;
     if let Some(conn) = conn {
         conn.state = GameState::Lobby;
         conn.leave_task = None;
@@ -1209,6 +1204,63 @@ pub async fn leave_world_task(
             conn.shutdown();
         }
     }
+}
+
+/// The world part of a logout (`LeaveWorldTask` before the connection's `SCLeaveWorldGranted`):
+/// online flag, per-character subsystem cleanups, despawn and the departure save. Shared by the
+/// client leave and `/bot remove`.
+pub async fn leave_world_player(server: &GameServer, p: &PlayerRef) {
+    {
+        let mut c = p.data();
+        c.set_disabled_set_position(true);
+    }
+    set_online(server, p, false);
+    p.data().leave_time = Utc::now().timestamp();
+    crate::systems::quests::on_leave_world(server, p.character_id);
+    // Despawn and unmount everybody from owned Mates / Slaves
+    crate::systems::vehicles::on_leave_world(server, p);
+    crate::systems::npcs::doodad::coffer::close_coffers_opened_by(server, p);
+    // Check if still mounted on somebody else's mount and dismount that if needed
+    crate::systems::vehicles::force_dismount(
+        server,
+        p,
+        crate::systems::vehicles::slaves::attach_reason::PREFAB_CHANGED,
+    );
+    server.chat.leave_all_channels(p);
+    // Handle Family
+    crate::systems::social::session::on_leave_world_family(server, p);
+    let (exp, id) = {
+        let c = p.data();
+        (c.unit.expedition_id, c.id)
+    };
+    if exp != 0 {
+        if let Some((member, members)) =
+            server
+                .expeditions
+                .logout_member(exp, id, Utc::now().timestamp())
+        {
+            send_to_expedition(
+                server,
+                &members,
+                &SCExpeditionMemberStatusChangedPacket { member, flag: 0 },
+            );
+        }
+        if let Some(e) = server.expeditions.get(exp) {
+            server
+                .chat
+                .guild_chat(e.faction.id, &e.faction.name, &server.ids.chat)
+                .leave(p);
+        }
+    }
+    delete(server, p);
+    // BuyBackItems.Wipe (+ the economy's per-character state)
+    crate::systems::economy::on_leave_world(server, p);
+    for sub in p.subscribers().drain(..) {
+        server.time.unsubscribe(sub);
+    }
+    server.save.remember_departing(p);
+    server.world.try_remove_character(p.obj_id);
+    save_and_remove_from_world(server, Some(p)).await;
 }
 
 /// Graceful server shutdown, on the connection's own task. The shutdown sends this command to
