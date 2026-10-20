@@ -797,3 +797,37 @@ async fn finish_cancels_without_moving_money_when_a_putup_item_became_invalid() 
     assert_eq!(item_at(&w.pa, 2, 0).unwrap().count, 2);
     assert!(item_at(&w.pb, 2, 0).is_none());
 }
+
+#[tokio::test]
+async fn failed_item_move_leaves_the_money_untransferred() {
+    let mut w = world();
+    w.pa.data().money = 100;
+    w.pb.data().money = 100;
+    let id = give(&w, &w.pa, slot_type::INVENTORY, STACK, 5, 0);
+    // Fill Bob's bag so the split stack finds no free slot (the OK-time check is bypassed by
+    // calling the finish directly).
+    let free = Inv::of(&w.pb).free_slot_count(slot_type::INVENTORY);
+    for slot in 0..free {
+        give(
+            &w,
+            &w.pb,
+            slot_type::INVENTORY,
+            crate::systems::economy::tests::SINGLE,
+            1,
+            slot,
+        );
+    }
+    let trade = TradeTemplate {
+        id: 1,
+        owner_obj_id: 0x100,
+        target_obj_id: 0x101,
+        owner_items: vec![(id, 2)],
+        owner_money_putup: 30,
+        target_money_putup: 10,
+        ..TradeTemplate::default()
+    };
+    finish_trade(&w.server, &w.pa.clone(), &w.pb.clone(), trade);
+    assert_eq!(w.pa.data().money, 100);
+    assert_eq!(w.pb.data().money, 100);
+    assert_eq!(item_at(&w.pa, 2, 0).unwrap().count, 5);
+}

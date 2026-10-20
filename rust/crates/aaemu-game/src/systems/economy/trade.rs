@@ -693,19 +693,6 @@ pub fn finish_trade(
     let mut tasks_target = Vec::new();
     let mut txn = ItemTxn::begin(server);
 
-    owner.data().money = owner_after;
-    target.data().money = target_after;
-    // Handle Money from Owner
-    if trade.owner_money_putup > 0 {
-        tasks_owner.push(ItemTask::MoneyChange(-trade.owner_money_putup));
-        tasks_target.push(ItemTask::MoneyChange(trade.owner_money_putup));
-    }
-    // Handle Money from Target
-    if trade.target_money_putup > 0 {
-        tasks_owner.push(ItemTask::MoneyChange(trade.target_money_putup));
-        tasks_target.push(ItemTask::MoneyChange(-trade.target_money_putup));
-    }
-
     // Handle Items from Owner
     for &(item_id, amount) in &trade.owner_items {
         match move_amount_to_bag(&mut txn, owner, target, item_id, amount) {
@@ -725,6 +712,27 @@ pub fn finish_trade(
             }
             None => has_errors += 1,
         }
+    }
+
+    // Money moves only after every item moved, so a failed item move (e.g. a stack split)
+    // never leaves the money transferred.
+    let (mut money_owner, mut money_target) = (Vec::new(), Vec::new());
+    if has_errors == 0 {
+        owner.data().money = owner_after;
+        target.data().money = target_after;
+        // Handle Money from Owner
+        if trade.owner_money_putup > 0 {
+            money_owner.push(ItemTask::MoneyChange(-trade.owner_money_putup));
+            money_target.push(ItemTask::MoneyChange(trade.owner_money_putup));
+        }
+        // Handle Money from Target
+        if trade.target_money_putup > 0 {
+            money_owner.push(ItemTask::MoneyChange(trade.target_money_putup));
+            money_target.push(ItemTask::MoneyChange(-trade.target_money_putup));
+        }
+
+        tasks_owner.splice(0..0, money_owner);
+        tasks_target.splice(0..0, money_target);
     }
 
     // Trade complete, send item task packets
