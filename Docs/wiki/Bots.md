@@ -6,10 +6,12 @@
 
 ## Overview
 
-All of the bots are copies of one headless 1.2 client, `aaemu-testclient`. Each copy logs in to the
+Most of the bots are copies of one headless 1.2 client, `aaemu-testclient`. Each copy logs in to the
 servers the same way a real player does. The bots play scripted scenarios and run long sweeps
 over quests, crafts, skills and NPC AI. They then compare what the server did with
-`compact.sqlite3` and report mismatches. The game server has no bots of its own yet.
+`compact.sqlite3` and report mismatches. The game server has no bots of its own yet. A second headless
+driver, the AABevy client's script runner, verifies client features through the real UI (see
+[The AABevy headless script runner](#the-aabevy-headless-script-runner)).
 
 ```mermaid
 flowchart LR
@@ -151,6 +153,24 @@ Two-bot duels, trades and parties run as one process per bot, each with its own 
   `prereq_missing`, `requirement_unmet`, `blocked_plan` or `runner_unsupported`. Each blocker has
   a class: `runner_gap`, `suspect`, `data_gap` or `requirement`.
 
+## The AABevy headless script runner
+
+The AABevy client (`aa-client.exe`, a separate repository) has a headless mode that runs a command file
+against a live stack and exits 0 for PASS:
+
+```sh
+aa-client.exe --headless --account NAME --login HOST:PORT --password-file P --script run.txt               [--character C] [--offscreen-shot out.png]
+```
+
+- It drives the real UI Lua, not a protocol stub, so it checks a client feature end to end: the
+  server packets, the client's state and what the original windows show. It was used to verify
+  titles.
+- Commands include `gm`, `lua`, `expect`, `await`, `waitfor` and `shot`. The command reference is
+  `docs/aa-client-script.md` in the client repository (branch `pr/headless-script`, pull request
+  NickMesser/AABevy1.2#2).
+- Gotcha: `await` matches events that are already queued. After an action whose event may have fired
+  already, use `waitfor N lua <condition>` instead.
+
 ## Accounts
 
 - `AutoAccount` on the login server creates an account the first time it logs in. That first
@@ -172,6 +192,13 @@ Two-bot duels, trades and parties run as one process per bot, each with its own 
 
 - An account can hold 6 characters. After several `--new-character` runs, switch to a fresh
   account.
+- The AABevy client remembers the last account. With `--account` it logs in automatically; without it
+  the login form is prefilled from the saved config (default `bevytest`). With `AutoAccount` a
+  mistyped or stale name silently creates a new, empty account, and the client lands on the character
+  creation screen.
+- The AABevy client takes its password from `--password-file`, else `$AA_PASSWORD_FILE`, else
+  `D:aemu-live\cfg\client-test-password.txt`, else the account name
+  (`crates/aa-client/src/ingame/enter.rs` in the client repository).
 - Keep passwords in git-ignored files (`--password-file`) and out of command lines.
 
 ## Running the bots
