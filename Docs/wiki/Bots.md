@@ -9,8 +9,9 @@
 Most of the bots are copies of one headless 1.2 client, `aaemu-testclient`. Each copy logs in to the
 servers the same way a real player does. The bots play scripted scenarios and run long sweeps
 over quests, crafts, skills and NPC AI. They then compare what the server did with
-`compact.sqlite3` and report mismatches. The game server has no bots of its own yet. A second headless
-driver, the AABevy client's script runner, verifies client features through the real UI (see
+`compact.sqlite3` and report mismatches. The game server has no bots of its own yet; the in-server
+player bots are planned in [Player Bots](Player-Bots). A second headless driver, the AABevy client's
+script runner, verifies client features through the real UI (see
 [The AABevy headless script runner](#the-aabevy-headless-script-runner)).
 
 ```mermaid
