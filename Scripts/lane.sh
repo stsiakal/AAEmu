@@ -26,6 +26,7 @@ LIVE_PREFIX=${AAEMU_LIVE_PREFIX:-D:/aaemu-live-}    # lane runtime dirs: <prefix
 LANES=${AAEMU_LANES:-D:/aaemu-lanes}                # lane registry (<name>.env), machine-local
 LIVE_TEMPLATE=${AAEMU_LIVE_TEMPLATE:-D:/aaemu-live} # shared cfg/ (DB password, client password)
 BASE_DEFAULT=${AAEMU_LANE_BASE:-rust-rewrite}
+BASE_REMOTE=${AAEMU_LANE_REMOTE:-}                  # e.g. origin: pull the base before new/sync/land, push it after land
 JOBS=${AAEMU_LANE_JOBS:-4}                          # cargo jobs per lane (RAM, not CPU, is the limit)
 MYSQL_BIN=${AAEMU_MYSQL_BIN:-/c/Program Files/MySQL/MySQL Server 8.0/bin}
 MYSQL_PORT=${AAEMU_MYSQL_PORT:-3317}                # private instance; NEVER the user's 3306
@@ -74,6 +75,30 @@ clients_on() {
   powershell -NoProfile -Command "Get-CimInstance Win32_Process -Filter \"Name='archeage.exe'\" | Where-Object { \$_.CommandLine -match '-auth_port $1( |$)' } | ForEach-Object { '{0} archeage' -f \$_.ProcessId }" 2>/dev/null | tr -d '\r'
 }
 port_free() { ! netstat -ano 2>/dev/null | grep LISTENING | grep -q ":$1 "; }
+base_checkout() { # base_checkout <base>: the worktree that has the base branch checked out
+  git -C "$REPO" worktree list --porcelain | awk -v b="refs/heads/$1" '/^worktree /{w=substr($0,10)} $0=="branch " b {print w}'
+}
+pull_base() { # pull_base <base>: fast-forward the base to $BASE_REMOTE's copy (merged there by pull requests)
+  [ -n "$BASE_REMOTE" ] || return 0
+  git -C "$REPO" fetch -q "$BASE_REMOTE" "$1" 2>/dev/null || return 0  # no remote copy (yet)
+  local remote="$BASE_REMOTE/$1" main
+  git -C "$REPO" merge-base --is-ancestor "$remote" "$1" && return 0     # nothing new remotely
+  git -C "$REPO" merge-base --is-ancestor "$1" "$remote" \
+    || die "$1 and $remote diverged: merge $remote into $1 in the integration checkout and push"
+  main=$(base_checkout "$1")
+  if [ -n "$main" ]; then
+    [ -z "$(git -C "$main" status --porcelain --untracked-files=no)" ] || die "$main has uncommitted changes"
+    git -C "$main" merge -q --ff-only "$remote"
+  else
+    git -C "$REPO" branch -f "$1" "$remote"
+  fi
+  echo "lane: $1 fast-forwarded to $remote ($(git -C "$REPO" rev-parse --short "$1"))"
+}
+push_base() { # push_base <base>: publish a landed base to $BASE_REMOTE
+  [ -n "$BASE_REMOTE" ] || return 0
+  git -C "$REPO" push -q "$BASE_REMOTE" "$1" \
+    || echo "lane: WARNING: landed locally, but pushing $1 to $BASE_REMOTE failed; push it by hand" >&2
+}
 
 cmd_new() {
   local name="" type=fix base=$BASE_DEFAULT
@@ -100,6 +125,7 @@ cmd_new() {
   done
   [ -n "$prefix" ] || die "no free port block (24xxx-39xxx); finish old lanes first"
 
+  pull_base "$base"
   git -C "$REPO" worktree add -q "$wt" -b "$branch" "$base"
   mkdir -p "$wt/rust/.cargo"
   cat > "$wt/rust/.cargo/config.toml" <<EOF
@@ -169,6 +195,7 @@ cmd_list() {
 
 cmd_sync() {
   local n; n=$(current "${1:-}"); load "$n"
+  pull_base "$BASE"
   git -C "$WT" merge --no-edit "$BASE" || die "merge conflict in $WT: resolve, commit, then check again"
   echo "lane $n is up to date with $BASE ($(git -C "$WT" rev-parse --short HEAD))"
 }
@@ -186,11 +213,12 @@ cmd_land() {
   local n; n=$(current "${1:-}"); load "$n"
   [ -z "$(git -C "$WT" status --porcelain | grep -v 'rust/.cargo/')" ] || die "uncommitted changes in $WT"
   local head; head=$(git -C "$WT" rev-parse HEAD)
+  pull_base "$BASE"
   git -C "$REPO" merge-base --is-ancestor "$BASE" "$head" \
     || die "$BASE moved on: Scripts/lane.sh sync $n && Scripts/lane.sh check $n, then land"
   [ "${CHECKED:-}" = "$head" ] || die "HEAD ${head:0:9} was not checked: Scripts/lane.sh check $n"
   local main
-  main=$(git -C "$REPO" worktree list --porcelain | awk -v b="refs/heads/$BASE" '/^worktree /{w=substr($0,10)} $0=="branch " b {print w}')
+  main=$(base_checkout "$BASE")
   [ -n "$main" ] || die "no worktree has $BASE checked out"
   [ -z "$(git -C "$main" status --porcelain --untracked-files=no)" ] \
     || die "$main has uncommitted changes; nobody may work in the integration checkout"
@@ -198,6 +226,7 @@ cmd_land() {
   trap 'rmdir "$LANES/.land.lock" 2>/dev/null || true' EXIT
   git -C "$main" merge --no-ff --no-edit "$BRANCH" -m "Merge branch '$BRANCH' into $BASE"
   rmdir "$LANES/.land.lock"; trap - EXIT
+  push_base "$BASE"
   echo "landed $BRANCH into $BASE ($(git -C "$main" rev-parse --short HEAD)); the tree equals the checked lane, no re-test needed"
   cmd_done "$n"
 }

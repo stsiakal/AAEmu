@@ -1,0 +1,95 @@
+name: Sync rust-rewrite into rust-rewrite-bots
+
+# Fork-only automation (stsiakal/AAEmu): keeps the fork's `rust-rewrite` equal to the parent's
+# (NickMesser/AAEmu) and offers it to `rust-rewrite-bots` as a pull request, on which the normal
+# CI (rust.yml) runs. A person reviews and merges it. A merge conflict is reported on the pull
+# request; the branch is never force-pushed once a person may have worked on it.
+#
+# Needs the repository secret SYNC_TOKEN: a fine-grained token for this repository with
+# Contents, Pull requests and Workflows read/write. The default GITHUB_TOKEN cannot sync a
+# fork whose upstream changed workflow files, and its pushes and pull requests start no CI.
+
+on:
+  schedule:
+    - cron: "17 */3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sync-rust-rewrite
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    if: github.repository == 'stsiakal/AAEmu'
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.SYNC_TOKEN }}
+      BASE: rust-rewrite-bots
+      MIRROR: rust-rewrite
+      SYNC: sync/rust-rewrite
+    steps:
+      - name: Check the token
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::error::the repository secret SYNC_TOKEN is not set"; exit 1
+          fi
+
+      - name: Sync the fork's rust-rewrite from its parent
+        run: gh repo sync "$GITHUB_REPOSITORY" --branch "$MIRROR"
+
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ env.BASE }}
+          fetch-depth: 0
+          token: ${{ secrets.SYNC_TOKEN }}
+
+      - name: Merge rust-rewrite into the sync branch
+        id: merge
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin "$MIRROR"
+          pr=$(gh pr list --head "$SYNC" --base "$BASE" --state open --json number -q '.[0].number')
+          echo "pr=$pr" >> "$GITHUB_OUTPUT"
+          if [ -n "$pr" ]; then
+            # An open sync pull request: continue on its branch (it may hold a person's
+            # conflict resolution), never reset it.
+            git fetch origin "$SYNC"
+            git switch -C "$SYNC" "origin/$SYNC"
+          else
+            git switch -C "$SYNC"
+          fi
+          if git merge-base --is-ancestor "origin/$MIRROR" HEAD; then
+            echo "nothing new from $MIRROR"; echo "new=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          echo "new=true" >> "$GITHUB_OUTPUT"
+          if git merge --no-edit "origin/$MIRROR" -m "Merge branch '$MIRROR' into $BASE"; then
+            echo "conflict=false" >> "$GITHUB_OUTPUT"
+            git push origin "$SYNC"
+          else
+            git merge --abort
+            echo "conflict=true" >> "$GITHUB_OUTPUT"
+            if [ -z "$pr" ]; then
+              # Nothing to keep yet: offer the mirror itself, the pull request shows the conflict.
+              git push --force origin "origin/$MIRROR:refs/heads/$SYNC"
+            fi
+          fi
+
+      - name: Open or update the pull request
+        if: steps.merge.outputs.new == 'true'
+        env:
+          PR: ${{ steps.merge.outputs.pr }}
+          CONFLICT: ${{ steps.merge.outputs.conflict }}
+        run: |
+          if [ -z "$PR" ]; then
+            gh pr create --head "$SYNC" --base "$BASE" \
+              --title "Sync rust-rewrite into rust-rewrite-bots" \
+              --body "Automatic merge of the upstream \`$MIRROR\` (synced from the parent repository) into \`$BASE\`. Review and merge once CI passes; a conflict needs a manual resolution on \`$SYNC\`."
+            PR=$(gh pr view "$SYNC" --json number -q .number)
+          fi
+          if [ "$CONFLICT" = "true" ]; then
+            gh pr comment "$PR" --body "New \`$MIRROR\` commits conflict with \`$BASE\`: merge \`origin/$MIRROR\` into \`$SYNC\` locally, resolve and push."
+          fi
