@@ -773,6 +773,218 @@ async fn spawn_effect_resolves_an_ordinary_spawner_and_spawns_its_npc() {
 }
 
 #[tokio::test]
+async fn npc_spawner_spawn_effect_despawn_on_creator_death_removes_the_summon() {
+    use crate::systems::npcs::bridges::NpcSkills;
+    use crate::systems::skills::data::effects::NpcSpawnerSpawnEffect;
+    use crate::systems::skills::data::{EffectKind, EffectTemplate};
+    use crate::systems::skills::effects::{EffectArgs, EffectSource};
+    use crate::systems::skills::ext::NpcSkillHooks;
+    use crate::systems::skills::geometry::Target;
+    use crate::systems::skills::types::{
+        CastAction, KillReason, SkillCastTarget, SkillCaster, SkillObject,
+    };
+
+    let server = server();
+    let m = manager(&server);
+    assert_eq!(m.add_npc_spawner(&server, npc_def(600, 20.0, 20.0)), Ok(2));
+    let client = TestClient::new(&server, 1, 1);
+    let player = spawn_player(
+        &server,
+        &client,
+        test_character(1, "Caster", 20.0, 20.0),
+        5000,
+    );
+    let caster = WorldObject::from(player.clone());
+    crate::systems::npcs::install_hooks(&server);
+    let effect = NpcSpawnerSpawnEffect {
+        id: 1,
+        spawner_id: 20,
+        life_time: 0.0,
+        despawn_on_creator_death: true,
+        use_summoner_aggro_target: false,
+        activation_state: false,
+    };
+    let template = EffectTemplate::NpcSpawnerSpawn(effect);
+    let args = EffectArgs {
+        caster: Some(caster.clone()),
+        caster_caster: SkillCaster::Unit(player.obj_id),
+        target: Target::Obj(caster.clone()),
+        target_caster: SkillCastTarget::Unit(player.obj_id),
+        cast: CastAction::Skill {
+            skill_id: 1,
+            tl_id: 0,
+        },
+        source: EffectSource::default(),
+        skill_object: &SkillObject::None,
+    };
+    assert!(NpcSkills.apply_effect(&server, EffectKind::NpcSpawnerSpawnEffect, &template, &args,));
+    let spawner = m.get_npc_spawner(20).remove(0);
+    let summon = spawner.spawned_npcs().values().next().unwrap()[0].clone();
+    let world = server.world.world(0).unwrap();
+    assert!(world.object(summon.obj_id).is_some());
+
+    crate::systems::skills::combat::do_die(
+        &server,
+        &caster,
+        Some(&WorldObject::from(&summon)),
+        KillReason::Damage,
+    );
+
+    assert!(
+        world.object(summon.obj_id).is_none(),
+        "the summon must despawn with its creator"
+    );
+    assert_eq!(spawner.current_spawn_count(), 0);
+}
+
+#[tokio::test]
+async fn npc_spawner_spawn_effect_without_despawn_on_creator_death_keeps_the_summon() {
+    use crate::systems::npcs::bridges::NpcSkills;
+    use crate::systems::skills::data::effects::NpcSpawnerSpawnEffect;
+    use crate::systems::skills::data::{EffectKind, EffectTemplate};
+    use crate::systems::skills::effects::{EffectArgs, EffectSource};
+    use crate::systems::skills::ext::NpcSkillHooks;
+    use crate::systems::skills::geometry::Target;
+    use crate::systems::skills::types::{
+        CastAction, KillReason, SkillCastTarget, SkillCaster, SkillObject,
+    };
+
+    let server = server();
+    let m = manager(&server);
+    assert_eq!(m.add_npc_spawner(&server, npc_def(600, 20.0, 20.0)), Ok(2));
+    let client = TestClient::new(&server, 1, 1);
+    let player = spawn_player(
+        &server,
+        &client,
+        test_character(1, "Caster", 20.0, 20.0),
+        5000,
+    );
+    let caster = WorldObject::from(player.clone());
+    crate::systems::npcs::install_hooks(&server);
+    let effect = NpcSpawnerSpawnEffect {
+        id: 1,
+        spawner_id: 20,
+        life_time: 0.0,
+        despawn_on_creator_death: false,
+        use_summoner_aggro_target: false,
+        activation_state: false,
+    };
+    let template = EffectTemplate::NpcSpawnerSpawn(effect);
+    let args = EffectArgs {
+        caster: Some(caster.clone()),
+        caster_caster: SkillCaster::Unit(player.obj_id),
+        target: Target::Obj(caster.clone()),
+        target_caster: SkillCastTarget::Unit(player.obj_id),
+        cast: CastAction::Skill {
+            skill_id: 1,
+            tl_id: 0,
+        },
+        source: EffectSource::default(),
+        skill_object: &SkillObject::None,
+    };
+    assert!(NpcSkills.apply_effect(&server, EffectKind::NpcSpawnerSpawnEffect, &template, &args,));
+    let spawner = m.get_npc_spawner(20).remove(0);
+    let summon = spawner.spawned_npcs().values().next().unwrap()[0].clone();
+    let world = server.world.world(0).unwrap();
+
+    crate::systems::skills::combat::do_die(
+        &server,
+        &caster,
+        Some(&WorldObject::from(&summon)),
+        KillReason::Damage,
+    );
+
+    assert!(
+        world.object(summon.obj_id).is_some(),
+        "without the flag the summon has to stay after its creator dies"
+    );
+    assert_eq!(spawner.current_spawn_count(), 1);
+}
+
+#[tokio::test]
+async fn spawn_effect_despawn_on_creator_death_removes_the_summon_of_an_npc_creator() {
+    use crate::systems::npcs::bridges::NpcSkills;
+    use crate::systems::skills::data::effects::SpawnEffect;
+    use crate::systems::skills::data::{EffectKind, EffectTemplate};
+    use crate::systems::skills::effects::{EffectArgs, EffectSource};
+    use crate::systems::skills::ext::NpcSkillHooks;
+    use crate::systems::skills::geometry::Target;
+    use crate::systems::skills::types::{
+        CastAction, KillReason, SkillCastTarget, SkillCaster, SkillObject,
+    };
+
+    let server = server();
+    let m = manager(&server);
+    assert_eq!(m.add_npc_spawner(&server, npc_def(600, 20.0, 20.0)), Ok(2));
+    let world = server.world.world(0).unwrap();
+    let caster = Entity::new(server.ids.object.get_next_id().unwrap(), Npc::new(600));
+    {
+        let mut d = caster.data();
+        d.unit.transform.set_xyz(30.0, 40.0, 5.0);
+    }
+    world.spawn(&caster, &server.view_ctx());
+    let caster_obj = WorldObject::from(&caster);
+    crate::systems::npcs::install_hooks(&server);
+    let effect = SpawnEffect {
+        id: 1,
+        owner_type_id: 1, // BaseUnitType.Npc
+        sub_type: 600,
+        pos_dir_id: 1,
+        pos_angle: 0.0,
+        pos_distance: 1.0,
+        ori_dir_id: 1,
+        ori_angle: 0.0,
+        use_summoner_faction: false,
+        life_time: 0.0,
+        despawn_on_creator_death: true,
+        use_summoner_aggro_target: false,
+        mate_state_id: 0,
+    };
+    let template = EffectTemplate::Spawn(effect);
+    let args = EffectArgs {
+        caster: Some(caster_obj.clone()),
+        caster_caster: SkillCaster::Unit(caster.obj_id),
+        target: Target::Obj(caster_obj.clone()),
+        target_caster: SkillCastTarget::Unit(caster.obj_id),
+        cast: CastAction::Skill {
+            skill_id: 1,
+            tl_id: 0,
+        },
+        source: EffectSource::default(),
+        skill_object: &SkillObject::None,
+    };
+    assert!(NpcSkills.apply_effect(&server, EffectKind::SpawnEffect, &template, &args,));
+    // `SpawnEffect` builds a fresh spawner from the template (`spawner_id` 0), so the summon is
+    // resolved through the world rather than `get_npc_spawner`.
+    let summon = world
+        .all_npcs()
+        .into_iter()
+        .find(|n| n.obj_id != caster.obj_id)
+        .expect("the effect must spawn a summon");
+    let spawner = server
+        .systems
+        .npcs
+        .spawns
+        .npc_spawner_of(summon.obj_id)
+        .expect("summon spawner");
+    assert!(world.object(summon.obj_id).is_some());
+    assert_ne!(summon.obj_id, caster.obj_id);
+
+    crate::systems::skills::combat::do_die(
+        &server,
+        &caster_obj,
+        Some(&WorldObject::from(&summon)),
+        KillReason::Damage,
+    );
+
+    assert!(
+        world.object(summon.obj_id).is_none(),
+        "an NPC creator's flagged summon must despawn with it"
+    );
+    assert_eq!(spawner.current_spawn_count(), 0);
+}
+
+#[tokio::test]
 async fn fake_spawner_first_and_repeated_placements_spawn_and_respawn() {
     let server = server();
     let m = manager(&server);
@@ -1169,6 +1381,7 @@ async fn spawn_effect_spawner_at_unit() {
     let effect = crate::systems::npcs::npc::spawner::SpawnEffectParams {
         use_summoner_faction: true,
         use_summoner_aggro_target: false,
+        despawn_on_creator_death: false,
         life_time: 0.0,
     };
     s.do_spawn_effect(&server, s.id, &effect, Some(&caster_obj), None);
@@ -2980,11 +3193,15 @@ async fn real_data_mistfiend_cave_activation_and_respawn() {
     drop(_p);
 }
 
-/// The shipped 1.2 Ronbann Mine NPCs (east and west sub-zones of Lilyut Hills) must sit on the
-/// mine floor with the rest of the mine content: the 1.2 doodads (ore veins, bomb crates,
-/// ladders, lanterns) and both `Respawn: ... Ronbann Mine` portals are at Z ~280-310, and the
-/// 10.x editor places the same spawner ids there. A height regression left most of them 100-190 m
-/// above the floor (and the recent quest-NPC imports on it), which made the mines look empty.
+/// The shipped 1.2 Ronbann Mine NPCs (east and west sub-zones of Lilyut Hills) and the middle
+/// cave section between them must sit on their floor with the rest of the content: the 1.2
+/// doodads (ore veins, bomb crates, ladders, lanterns), both `Respawn: ... Ronbann Mine` portals
+/// and the middle cave's quest sign / Duke's secret safe place the floor at Z ~280-310 (east and
+/// west) and Z ~336-372 (middle), and the 10.x editor places the same spawner ids there. A height
+/// regression left most of them 100-190 m above the floor (and the recent quest-NPC imports on it),
+/// which made the mines look empty; the middle section (cave spiders, their Spider Lord, the
+/// blood-drinking warrior and Lord Colin's henchman Louie at the secret safe) was missed by the
+/// first fix because its X is outside the east/west sub-zone boxes.
 #[test]
 fn real_data_ronbann_mine_npcs_are_on_the_mine_floor() {
     use crate::systems::npcs::json;
@@ -2995,12 +3212,18 @@ fn real_data_ronbann_mine_npcs_are_on_the_mine_floor() {
     };
     let doc = json::parse(&text).expect("npc_spawns.json");
     let mut checked = 0;
+    let mut middle = 0;
     for entry in json::array(&doc).expect("spawn array") {
         let Some(o) = entry.as_object() else { continue };
-        // Hypnotized Miner, Mining Supervisor (east) and Dahuta Cult Priestess (west); the
-        // quest NPCs of the same caves (Wizard Eridel, Lord Colin's Henchman) are checked too.
+        // Hypnotized Miner, Mining Supervisor (east) and Dahuta Cult Priestess (west); the cave
+        // spiders and their guards of the middle cave section (Spider Lord, blood-drinking
+        // warrior, Lord Colin's Henchman Louie at the secret safe); and the quest NPCs of the
+        // same caves (Wizard Eridel, Lord Colin's Henchman).
         let uid = json::u32_or(o, "UnitId", 0).unwrap_or(0);
-        if !matches!(uid, 1880 | 1881 | 1903 | 6991 | 6973) {
+        if !matches!(
+            uid,
+            1880 | 1881 | 1903 | 1900 | 5922 | 5927 | 6991 | 6973 | 7005
+        ) {
             continue;
         }
         let Some(p) = json::prop(o, "Position").and_then(|p| p.as_object()) else {
@@ -3011,14 +3234,26 @@ fn real_data_ronbann_mine_npcs_are_on_the_mine_floor() {
         let z = json::f32_or(p, "Z", 0.0).unwrap_or(0.0);
         let east = (13000.0..=13450.0).contains(&x) && (16250.0..=16460.0).contains(&y);
         let west = (11700.0..=12100.0).contains(&x) && (16280.0..=16480.0).contains(&y);
-        if !east && !west {
+        let central = (12650.0..=12950.0).contains(&x) && (16280.0..=16420.0).contains(&y);
+        if east || west {
+            assert!(
+                (280.0..=310.0).contains(&z),
+                "Ronbann Mine NPC {uid} at ({x}, {y}) has Z {z}; the mine floor is Z ~280-310"
+            );
+        } else if central {
+            assert!(
+                (330.0..=375.0).contains(&z),
+                "Ronbann Mine NPC {uid} at ({x}, {y}) has Z {z}; the middle cave floor is Z ~336-372"
+            );
+            middle += 1;
+        } else {
             continue;
         }
-        assert!(
-            (280.0..=310.0).contains(&z),
-            "Ronbann Mine NPC {uid} at ({x}, {y}) has Z {z}; the mine floor is Z ~280-310"
-        );
         checked += 1;
     }
     assert!(checked >= 30, "Ronbann Mine placements found: {checked}");
+    assert!(
+        middle >= 12,
+        "Ronbann middle-cave placements found: {middle}"
+    );
 }

@@ -3,7 +3,7 @@
 //! derived `_startAbilitySkills` / `_commonSkills` lists. Effects, plots, modifiers, tags and
 //! combat buffs are later phases.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use rusqlite::Connection;
 
@@ -12,13 +12,25 @@ use super::sqlite::for_each_row;
 /// `AbilityType.None`.
 pub const ABILITY_NONE: u8 = 11;
 
-/// `Skill(template, owner)` level: `(abLevel - AbilityLevel) / LevelStep + 1`.
-///
-/// The result saturates to `1..=127` instead of wrapping. `skills.level` is a signed `TINYINT`
-/// and the ability-level 99 skills of the 1.2 data (the retired / login-stage rows, e.g. 10385)
-/// are above the level cap 55: the raw formula goes negative and `as u8` turned it into 243,
-/// which made every character save fail with MySQL `1264 Out of range value for column 'level'`.
+/// `Skill(template, owner)` level: `(abLevel - AbilityLevel) / LevelStep + 1`, truncated to a
+/// byte like the C# cast (`(byte)`). This is the level of a runtime `SkillRun`, NPCs included:
+/// their skill levels are deliberately unchanged (an NPC below a skill's `ability_level` still
+/// wraps, exactly as in the C#).
 pub fn skill_level(ability_level: i32, level_step: i32, ab_level: i32) -> u8 {
+    if level_step > 0 {
+        ((ab_level - ability_level) / level_step + 1) as u8
+    } else {
+        1
+    }
+}
+
+/// [`skill_level`] saturated to `1..=127`, for the level a *character* stores and saves.
+///
+/// `skills.level` is a signed `TINYINT` and the ability-level 99 skills of the 1.2 data (the
+/// retired / login-stage rows, e.g. 10385) are above the level cap 55: the raw formula goes
+/// negative and `as u8` turned it into 243, which made every character save fail with MySQL
+/// `1264 Out of range value for column 'level'`.
+pub fn stored_skill_level(ability_level: i32, level_step: i32, ab_level: i32) -> u8 {
     if level_step > 0 {
         ((ab_level - ability_level) / level_step + 1).clamp(1, i32::from(i8::MAX)) as u8
     } else {
@@ -40,9 +52,9 @@ pub struct SkillTemplate {
 }
 
 impl SkillTemplate {
-    /// The `Skill.Level` a new `Skill(template, owner)` gets (see [`skill_level`]).
+    /// The level of a skill a character learns and saves (see [`stored_skill_level`]).
     pub fn level_for(&self, ab_level: i32) -> u8 {
-        skill_level(self.ability_level, self.level_step, ab_level)
+        stored_skill_level(self.ability_level, self.level_step, ab_level)
     }
 }
 
@@ -152,9 +164,51 @@ pub struct SkillData {
     pub start_ability_skills: HashMap<u8, Vec<u32>>,
     /// `_commonSkills`.
     pub common_skills: Vec<u32>,
+    /// Skills with a legitimate client-driven source (see [`CLIENT_SKILL_SOURCES`]).
+    client_sourced: HashSet<u32>,
 }
 
+/// `(table, column)` pairs of the static data that name skills a client may cast without owning
+/// them through an ability: doodad interactions, crafts, NPC interactions, slash commands,
+/// buff-granted skills, quest-driven skills, item use skills and the housing / shipyard build
+/// steps. Mount skills and mount-attached (rider) skills are left out on purpose: they only run
+/// through the `Mount` caster path. NPC AI skills (`np_skills`) are not listed either.
+pub const CLIENT_SKILL_SOURCES: &[(&str, &str)] = &[
+    ("doodad_funcs", "func_skill_id"),
+    ("doodad_func_uses", "skill_id"),
+    ("doodad_func_fake_uses", "skill_id"),
+    ("doodad_func_fake_uses", "fake_skill_id"),
+    ("doodad_func_conditional_uses", "skill_id"),
+    ("doodad_func_conditional_uses", "fake_skill_id"),
+    ("doodad_func_renew_items", "skill_id"),
+    ("doodad_func_evidence_item_loots", "skill_id"),
+    ("doodad_func_skill_hits", "skill_id"),
+    ("sphere_doodad_interacts", "skill_id"),
+    ("crafts", "skill_id"),
+    ("npc_interactions", "skill_id"),
+    ("slash_commands", "skill_id"),
+    ("buff_skills", "skill_id"),
+    ("quest_act_con_accept_skills", "skill_id"),
+    ("quest_act_supply_skills", "skill_id"),
+    ("quest_components", "skill_id"),
+    ("quest_act_check_timers", "skill_id"),
+    ("items", "use_skill_id"),
+    ("item_grade_skills", "skill_id"),
+    ("housing_build_steps", "skill_id"),
+    ("shipyard_steps", "skill_id"),
+];
+
 impl SkillData {
+    /// Whether `id` is named by a client-driven source ([`CLIENT_SKILL_SOURCES`]).
+    pub fn is_client_sourced_skill(&self, id: u32) -> bool {
+        self.client_sourced.contains(&id)
+    }
+
+    /// Marks `id` as client-sourced (tests and fixtures).
+    pub fn add_client_sourced_skill(&mut self, id: u32) {
+        self.client_sourced.insert(id);
+    }
+
     pub fn skill(&self, id: u32) -> Option<&SkillTemplate> {
         self.skill_index.get(&id).map(|&i| &self.skills[i])
     }
@@ -293,7 +347,42 @@ impl SkillData {
             d.buffs.insert(t.id, t);
             Ok(())
         })?;
+        for (table, column) in CLIENT_SKILL_SOURCES {
+            // A source table missing from an older compact database only narrows the set.
+            let sql = format!("SELECT {column} FROM {table} WHERE {column} > 0");
+            let loaded = conn.prepare(&sql).and_then(|mut stmt| {
+                let ids = stmt.query_map([], |r| r.get::<_, i64>(0))?;
+                for id in ids {
+                    if let Ok(id) = u32::try_from(id?) {
+                        d.client_sourced.insert(id);
+                    }
+                }
+                Ok(())
+            });
+            if let Err(e) = loaded {
+                tracing::warn!("client skill source {table}.{column} not loaded: {e}");
+            }
+        }
         d.finish();
         Ok(d)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn runtime_skill_level_keeps_the_csharp_byte_and_stored_level_saturates() {
+        // NPC / runtime skills: the C# `(byte)` result, unchanged (255 for -1).
+        assert_eq!(skill_level(10, 3, 10 - 6), 255);
+        assert_eq!(skill_level(1, 3, 55), 19);
+        assert_eq!(skill_level(5, 0, 1), 1);
+        // Stored character skills (the retired ability_level 99 rows) saturate to a savable level.
+        assert_eq!(stored_skill_level(99, 3, 55), 1);
+        assert_eq!(stored_skill_level(10, 3, 10 - 6), 1);
+        assert_eq!(stored_skill_level(1, 3, 55), 19);
+        assert_eq!(stored_skill_level(1, 1, 1000), 127);
+        assert_eq!(stored_skill_level(5, 0, 1), 1);
     }
 }
