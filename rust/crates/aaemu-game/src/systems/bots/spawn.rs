@@ -6,6 +6,7 @@ use crate::db_character::{
     fetch_active_buffs, load_character, load_character_details, SavedBuffRow,
 };
 use crate::error::{GameError, Result};
+use crate::models::char_data::VisualOptions;
 use crate::models::character::{Character, DEFAULT_INSTANCE_ID};
 use crate::net::connection::ConnectionHandle;
 use crate::server::GameServer;
@@ -60,21 +61,38 @@ pub fn spawn_loaded(
         SocketAddr::from(([0, 0, 0, 0], 0)),
         c.account_id,
     );
+    let mut c = c;
+    // `CSSpawnCharacterPacket` carries the visual options a client sends (all flags set);
+    // without them `SCUnitStatePacket` cannot be written for the bot's observers.
+    c.visual_options = Some(VisualOptions {
+        flag: 0x1F,
+        stp: Some([0; 6]),
+        helmet: true,
+        back_holdable: true,
+        cosplay: true,
+        cosplay_backpack: true,
+    });
     let player = session::enter_world(server, c, conn)?;
     session::finish_character_entry(server, &player, saved_buffs);
     session::notify_in_game_player(server, &player);
     session::notify_in_game_completed_player(server, &player);
     super::attach(server, player.clone());
-    tracing::info!(
-        "Bots: spawned '{}' (character {}, obj {}) at ({:.1}, {:.1}, {:.1}) zone {}",
-        player.data().unit.name,
-        player.character_id,
-        player.obj_id,
-        player.data().unit.transform.x,
-        player.data().unit.transform.y,
-        player.data().unit.transform.z,
-        player.data().unit.transform.zone_id,
-    );
+    // One guard for the whole statement: `data()` is a plain mutex, and every `player.data()`
+    // temporary of a logging statement lives until its end.
+    {
+        let c = player.data();
+        let t = c.unit.transform;
+        tracing::info!(
+            "Bots: spawned '{}' (character {}, obj {}) at ({:.1}, {:.1}, {:.1}) zone {}",
+            c.unit.name,
+            player.character_id,
+            player.obj_id,
+            t.x,
+            t.y,
+            t.z,
+            t.zone_id,
+        );
+    }
     Ok(player)
 }
 
@@ -83,9 +101,9 @@ pub async fn despawn(server: &GameServer, bot: &super::Bot) {
     bot.cancel_tasks();
     server.systems.bots.remove(bot.player.character_id);
     session::leave_world_player(server, &bot.player).await;
+    let name = bot.player.data().unit.name.clone();
     tracing::info!(
-        "Bots: removed '{}' (character {})",
-        bot.player.data().unit.name,
+        "Bots: removed '{name}' (character {})",
         bot.player.character_id,
     );
 }

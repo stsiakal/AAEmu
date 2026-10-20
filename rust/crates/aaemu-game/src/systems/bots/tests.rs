@@ -34,8 +34,11 @@ fn game_data() -> GameData {
 }
 
 /// A living character for the bot path (the normal char-load fills `saved_hp` from the row).
+/// Like a freshly loaded character it has no visual options yet: `spawn_loaded` must supply them,
+/// or `SCUnitStatePacket` cannot be written for the observers.
 fn bot_character(id: u32, name: &str, x: f32, y: f32) -> Character {
     let mut c = test_character(id, name, x, y);
+    c.visual_options = None;
     c.unit.max_hp = 5_000;
     c.unit.hp = 5_000;
     c.saved_hp = 5_000;
@@ -79,10 +82,12 @@ async fn bot_spawn_sends_the_same_packets_as_a_player_spawn() {
 
     // A real player selected through the normal client path produces the same sequence.
     let mut other = TestClient::new(&server, 2, 1_002);
+    let mut other_character = bot_character(3, "Other", 106.0, 100.0);
+    other_character.visual_options = bot.data().visual_options.clone();
     crate::world::session::select_loaded(
         &server,
         &mut other.conn,
-        bot_character(3, "Other", 106.0, 100.0),
+        other_character,
         crate::world::session::SelectDbData {
             offline_friends: Vec::new(),
             offline_blocked: Vec::new(),
