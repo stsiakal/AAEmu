@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS `accounts` (
   `last_loyalty_tick` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `divine_clock_time` INT UNSIGNED NOT NULL DEFAULT 0 COMMENT 'Time that has been passed already',
   `divine_clock_taken` INT UNSIGNED NOT NULL DEFAULT 0 COMMENT 'Number of clicks taken today',
+  `extra_character_slots` TINYINT UNSIGNED NOT NULL DEFAULT 0 COMMENT 'Purchased character slots beyond the base account slots',
   PRIMARY KEY (`account_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8 COMMENT='Account specific values not related to login';
 
@@ -38,6 +39,16 @@ CREATE TABLE IF NOT EXISTS `accounts` (
 CREATE TRIGGER IF NOT EXISTS update_timestamps BEFORE UPDATE ON accounts
 FOR EACH ROW
    SET NEW.last_updated = UTC_TIMESTAMP();
+
+
+CREATE TABLE IF NOT EXISTS `account_attributes` (
+  `account_id` INT UNSIGNED NOT NULL,
+  `kind_id` INT NOT NULL,
+  `world_id` INT NOT NULL DEFAULT 0,
+  `count` INT NOT NULL DEFAULT 0,
+  `end_time` DATETIME NULL DEFAULT NULL COMMENT 'UTC; NULL = permanent',
+  PRIMARY KEY (`account_id`, `kind_id`, `world_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Account-wide attributes (auction post authority, ...)';
 
 
 CREATE TABLE IF NOT EXISTS `actabilities` (
@@ -703,6 +714,8 @@ CREATE TABLE IF NOT EXISTS `dominions` (
   `siege_starts_at` bigint NOT NULL DEFAULT 0,
   `siege_ends_at` bigint NOT NULL DEFAULT 0,
   `siege_ended_at` bigint NOT NULL DEFAULT 0,
+  `non_pvp_start_at` bigint NOT NULL DEFAULT 0,
+  `non_pvp_duration_min` smallint unsigned NOT NULL DEFAULT 0,
   PRIMARY KEY (`zone_group_id`),
   UNIQUE KEY `dominions_tower` (`tower_house_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
@@ -777,3 +790,30 @@ CREATE TABLE IF NOT EXISTS `doodad_spawn_states` (
   `updated`            bigint NOT NULL DEFAULT 0 COMMENT 'Unix seconds UTC of the snapshot',
   PRIMARY KEY (`world_id`, `spawn_key`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Growth state of world-spawned doodads, restored at server start';
+
+-- Shipyards (drydocks): written by the regular save, deleted when removed, restored at server
+-- start (SQL/updates/2026-10-20_aaemu_game_shipyards.sql).
+CREATE TABLE IF NOT EXISTS `shipyards` (
+  `id`           int unsigned NOT NULL COMMENT 'ShipyardIdManager id',
+  `template_id`  int unsigned NOT NULL COMMENT 'Shipyard template',
+  `owner_id`     int unsigned NOT NULL COMMENT 'characters.id of the owner',
+  `owner_name`   varchar(128) NOT NULL,
+  `faction`      int unsigned NOT NULL DEFAULT 0,
+  `instance_id`  int unsigned NOT NULL COMMENT 'World instance',
+  `zone_id`      int unsigned NOT NULL DEFAULT 0,
+  `x`            float NOT NULL,
+  `y`            float NOT NULL,
+  `z`            float NOT NULL,
+  `rot_x`        float NOT NULL DEFAULT 0,
+  `rot_y`        float NOT NULL DEFAULT 0,
+  `z_rot`        float NOT NULL DEFAULT 0,
+  `money_amount` int NOT NULL DEFAULT 0,
+  `actions`      int NOT NULL DEFAULT 0 COMMENT 'ShipyardData.Actions',
+  `step`         int NOT NULL DEFAULT 0 COMMENT 'ShipyardData.Step',
+  `current_step` int NOT NULL DEFAULT 0 COMMENT 'Shipyard.CurrentStep (-1 = all steps built)',
+  `num_action`   int NOT NULL DEFAULT 0 COMMENT 'Build actions done in the current step',
+  `hp`           int NOT NULL DEFAULT 0 COMMENT 'Unit hp',
+  `data_hp`      int NOT NULL DEFAULT 0 COMMENT 'ShipyardData.Hp',
+  `spawned`      bigint NOT NULL COMMENT 'Unix seconds UTC',
+  PRIMARY KEY (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Shipyards (drydocks), restored at server start';
