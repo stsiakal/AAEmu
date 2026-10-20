@@ -45,6 +45,7 @@ Open source server software for ArcheAge written in Rust (originally written in 
 - [Developer Notes](Developer-Notes)
 - [Dungeons and Mentoring](Dungeons)
 - [Bots](Bots)
+- [Live Verification Suites](Verification)
 - [Player Bots](Player-Bots)
 - [Backports](Backports)
 - [Server Backlog](Server-Backlog)

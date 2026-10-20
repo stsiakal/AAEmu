@@ -45,6 +45,8 @@
 //!                         [--arena x,y,z] [--compact-db path] [--out results.jsonl]
 //!                         [--new-character] [--race name|id] [--gender m|f]
 //!                         [--keep-npcs] [--summary]
+//! aaemu-testclient verify --suite file.vtest [--login H:P] [--password P] [--list-bots]
+//!                         Run one live verification suite (see Docs/wiki/Verification.md).
 //! ```
 //!
 //! Settings come from `--config` (JSON, see `testclient.example.json`), then the flags. Keep
@@ -63,6 +65,7 @@ use aaemu_testclient::questrun::{self, QuestOutcome};
 use aaemu_testclient::record::{self, Recorder};
 use aaemu_testclient::scenario::{self, BotConfig, Kind, Outcome};
 use aaemu_testclient::skillrun;
+use aaemu_testclient::verify;
 use aaemu_testclient::walk;
 use anyhow::{bail, Context};
 use tracing_subscriber::EnvFilter;
@@ -700,9 +703,26 @@ async fn main() -> anyhow::Result<()> {
             let report = aisweep::run(&cfg, &opts).await?;
             println!("[ai] {} result line(s)", report.lines.len());
         }
+        "verify" => {
+            let suite = PathBuf::from(args.get("suite").context("--suite <file.vtest>")?);
+            if args.has("list-bots") {
+                verify::print_bots(&suite)?;
+                return Ok(());
+            }
+            let login = args.get("login").unwrap_or("127.0.0.1:1237");
+            let password = args
+                .get("password")
+                .map(str::to_string)
+                .or_else(|| std::env::var("AAEMU_VERIFY_PASSWORD").ok())
+                .unwrap_or_else(|| "testpass".into());
+            let report = verify::run(&suite, login, &password).await?;
+            if !report.passed {
+                std::process::exit(1);
+            }
+        }
         _ => {
             println!(
-                "usage: aaemu-testclient run|parity|diff|load|quest|craft|skill|fight|ai [--flags]; see the crate docs"
+                "usage: aaemu-testclient run|parity|diff|load|quest|craft|skill|fight|ai|verify [--flags]; see the crate docs"
             );
         }
     }
