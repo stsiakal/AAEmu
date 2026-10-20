@@ -163,10 +163,21 @@ Each subsystem records its status here, in its own section only (see `CONTRIBUTI
 | `Models/Game/Units/Buffs` behaviour, `Skills/Buff`, `Skills/Effects/{Buff,Damage,Heal,Dispel,RestoreMana,ManaBurn,Aggro,FlyingStateChange,SkillController,...}`, `CombatBuffs`, `BuffTriggers` | `systems/skills/{buffs,effects/*}.rs` | done | Start / dispel / tick tasks, tolerance, stack rules, charges, `TriggerRemoveOn`, tag removal, absorption, triggers, area ticks. Explicit dispel emits Dispelled without Timeout; natural expiry retains Timeout. This corrects the mirrored C# removal path, which invoked the FISH escape trigger when catch plot 792 dispelled FISH before lethal damage. Queued CREATED handling and existing removal packet order are retained. Refreshing permanent non-ticking buffs invalidates old timers without treating GetTimeLeft=-1 as expiry; finite expiration and permanent tick cadence remain scheduled. This corrects the mirrored C# refresh timer path. Special effects routed through `ExtHooks::route_special` where they belong to another subsystem. |
 | `Units/Unit` combat (`ReduceCurrentHp`, `DoDie`, aggro / tagging, `SetInBattle`, criminal / force attack, invisibility, `DoFallDamage`), `BaseUnit.CanAttack` / relations, regen, `UpdateGearBonuses`, all `Character` stat getters | `systems/skills/{combat,relation,stats,regen}.rs` | done | MaxHp / MaxMp etc. with buffs, passives and gear (`GearStats` hook). NPC death side effects through `NpcSkillHooks`. |
 | Learning / progression (`LearnSkill`, `LearnBuff`, `ResetSkills`, `SwapAbility`, `AddExp`, labor, game points) | `systems/skills/progress.rs` | done | Labor accrual uses zero-based actability steps into ordered `expert_limits`, matching inventory / regrade; step 4 caps at 50,000 (row id 5), avoiding the former row-id lookup that reduced it to 40,000. Capped gains and packet deltas have regression coverage. |
-| `Skills/Effects/SpecialEffects/*` (141 named `SpecialType` actions), `BubbleEffect`, `ImpulseEffect`, `PhysicalExplosionEffect` | `systems/skills/effects/{special/*,unit_fx}.rs`, `packets_special.rs` | partial | Ported actions and subsystem hooks are present, but historical logging placeholders do not establish gameplay completeness. Buff stealing, component-selective aggro copy/reset, target loss, NPC despawn, ongoing-buff cancellation and pet recovery now execute. RedeemBuff and ExplodeBuff still need verified formulas. Client visuals use the existing skill/plot notifications. 13 extra S->C packets, byte-exact tests. |
+| `Skills/Effects/SpecialEffects/*` (141 named `SpecialType` actions), `BubbleEffect`, `ImpulseEffect`, `PhysicalExplosionEffect` | `systems/skills/effects/{special/*,unit_fx}.rs`, `packets_special.rs` | partial | Ported actions and subsystem hooks are present, but historical logging placeholders do not establish gameplay completeness. Buff stealing, component-selective aggro copy/reset, target loss, NPC despawn, ongoing-buff cancellation and pet recovery now execute. ExplodeBuff, MoveToGround and RedeemBuff now execute (see below). Client visuals use the existing skill/plot notifications. 13 extra S->C packets, byte-exact tests. |
 | `Skills/SkillControllers/{Floating,Wandering,Leap,Dash,Rotate}` | `systems/skills/controllers.rs` | partial | Rotate uses native constructor/tick timing (`0x3924E1D0` / `0x392315C0`) with 1.2 controller7678 regression coverage. Generic Anchor and Flowgraph remain unverified; native 10.x Anchor parameter kinds1001..1039 differ from the 1.2 data kinds1..3. Harpoon ropes have a separate vehicles implementation. |
 | Movement hooks (`CSMoveUnit.RemoveEffects`, `Character.SetPosition` Move removal, fall damage) | `systems/skills/mod.rs` (`on_move_request`, `on_moved`) | done | Called from `world::session::move_unit`. |
 | `Skill.EndChanneling` target buff (`ChannelingTargetBuffId`) | `systems/skills/{skill,buffs}.rs` (`end_channeling`, `finish_effect_by_skill`) | deviation | **Deviation:** the C# `Buffs.RemoveEffect(templateId, skillId)` raised the buff's `OnTimeout` triggers on every removal; the Rust removal skips them for explicit removals (dispels, a stopped channel; see the FISH escape in `buff_removal_tests.rs`). Quest item grants hang on that trigger (GainItem on buff 3896 of skill 18449 'Extract Earth Crystal', 4 s channel under a 6 s buff, and the other channeling-target-buff quest skills of the item triage), so a channel that **runs to its end** now fires the target buff's Timeout triggers before removing it. A stopped / cancelled channel fires nothing (the C# granted the item then too). The caster-side `ChannelingBuffId` and buffs applied by skill effects (buff 1963 of 'Capture Crayfish') are unchanged: the latter expire on their own timer and fire Timeout already. |
+
+#### Special effects added from data (2026-10-20)
+
+These `SpecialType` bodies were TODO stubs that only logged in the C# (`git show a2ab80abd^:AAEmu.Game/Models/Game/Skills/Effects/SpecialEffects/...`); the behaviour below is derived from the 1.2 data because value1..4 are 0.
+
+| Area (C#) | Rust | Status | Notes |
+|---|---|---|---|
+| `SpecialEffects/GenderTransfer` (special 107) | `systems/skills/effects/special/misc.rs` (`gender_transfer`) | added | Data: skill 23469 `성별 전환하기` (beauty-salon NPC interaction, `target_type` any unit, selection target). Flips the affected player (`target` if a player, else the caster) with `new = 3 - old` (1 male <-> 2 female), refuses when an equipped item template has `char_gender` set to a third value with `GENDER_TRANSFER_AS_GENDER_EQUIPMENT` (744), rebuilds `unit.model_id` from the race/gender `characters` template and broadcasts `SCCharacterGenderAndModelModifiedPacket` (existing beauty-salon packet) to the player and observers. `Character.Save` persists the new `gender` with the next save. |
+| `SpecialEffects/MateMakeGetUp` (special 51) | `systems/vehicles/mates.rs` (`revive_mate`), `systems/skills/effects/special/misc.rs` | added | Data: skill 13719 `일으켜세우기` (revive an injured summoned mate, self-target, friendly); the former C# body only logged. Resolves the target/caster mate or, for a player caster, the active mate; only acts while `hp <= 0`. Reuses the stablehand revive values: `mates.hp/mp = MATE_FULL_POOL`, clears the summon item's `mate_dead` flag with a `RepairPets` item task and broadcasts `SCUnitPointsPacket`; the live mate is restored to `max_hp` / `max_mp`. |
+| `AccountAttributeEffect` + `SpecialEffects/AuctionPostAuthority` (special 117) | `systems/economy/account_attributes.rs`, `bridges.rs`, `world/session.rs` | added | Data: `account_attribute_effects` has 3 rows, all `kind_id = 1` (auction posting authority): item 8000027 `경매장 등록권` adds it account-wide (`is_add`, `count` 0, `time` 0, `bind_world` false) and two `is_add = false` rows remove it (VIP buff trigger, removal ticket item 8000058). Special 117 on buffs 7149 / 11034 / 8000012 grants kind 1 permanently. New `account_attributes` table (PK account/kind/world, nullable `end_time`, `world_id` 0 = not world bound), loaded on character select into `server.systems.economy.account_attributes` and persisted on every change. `is_add` upserts, otherwise every grant of the kind is deleted; `time == 0` is permanent, else `now + time` **seconds (unit inferred: all 1.2 values are 0)**. `has_account_attribute(account_id, kind)` is ready for gating; **the auction is deliberately not gated yet** (every character currently gets buff 8000012 from `UNIT_STATE_FORCED_BUFFS`, so a gate would need that decision first). |
+| `SpecialEffects/AddCharacterSlot` (special 91) | `systems/economy/character_slots.rs`, `db.rs`, `packets/c2g.rs` | added | Data: item 8000002 `캐릭터 슬롯확장 주문서` -> skill 8000002. Adds one `accounts.extra_character_slots` (`TINYINT UNSIGNED`, saturating at 255) for the caster's account, persists it and sends `SCGetSlotCountPacket` with the new value; `CSListCharacterPacket` sends that count instead of the old hard-coded 0. Found limits: the game server's `CharacterManager.Create` has **no** per-account character-count check, while `aaemu-login` hard-codes `MAX_CHARACTERS_PER_ACCOUNT = 6` (and `AcAuthResponse.slot_count = 6`); the advertised cap is therefore unchanged by this effect (a login-side read of the game DB would be needed). |
 
 ### systems::npcs
 
@@ -218,6 +229,7 @@ connected by `systems::economy::wiring`).
 | `TradeManager`, trade packets | `systems/economy/trade.rs` | done | |
 | `CashShopManager`, `Models/Game/CashShop/**`, ICS / premium packets | `systems/economy/cash_shop.rs` | done | Gifts by `CommercialMail` (`wiring`); account credits SQL behind `CashShopDb`. |
 | Item skill-effect bodies (grade enchant, socketing, conversion, cap scale, UCC imprint, ...), mate / slave equipment packets | `systems/economy/item_effects*.rs` | done | Called by the skills subsystem's effects. UCC imprint / cleanup require owned source and target items; client UCC casts require the actual source item's configured use skill, preserving the unrelated legacy bound-item portal exception. Dyeing checks the loaded `dyeable_items` allowlist. Invalid UCC / dye effects cancel deferred reagent consumption. |
+| Item skill-effect stubs given data-derived bodies (`GainItemWithPosImprint` 32, `RechargeItemBuff` 95, `ExpToItem` 96) | `systems/economy/item_effects.rs` | done (data-derived) | The C# `Execute` bodies were `// TODO` stubs, so the behaviour comes from `special_effects` 405 / 546 / 547 / 548 (32: create `value1` x1 with `SkillEffectGainItemWithPos`), 12446 / 17017 (95) and 12462 (96: `value1` XP -> `value2` x1 with `SkillEffectExpToItem`) plus the tool skills that cast them. `GainItemWithPosImprint` stores no position imprint: the 1.2 item details have no such field. `ExpToItem` subtracts the experience directly instead of through `AddExp` (which recomputes the level and could level the character down), sends `SCExpChangedPacket(-value1)`, checks bag room before spending the XP, and cancels so the reagent is kept. `RechargeItemBuff` takes the cast's item target, resets `charge_start_time` (and `charge_count` when the template has one) and re-applies the equipped item's gear buff through `apply_gear_buffs` with the item both removed and added, so the recharge buff is not stacked; the 1 s item timers read the new charge window on their next tick, so nothing is re-scheduled. |
 
 ### systems::social
 
@@ -535,7 +547,10 @@ the x2game / cry3dengine decompiles (addresses below). Config `Physics` (`Config
   C# buoyancy force and the shore / ship–ship / doodad / barrier / steep-terrain depenetration.
   Hull damage comes from the ZWUnitCollision aggregation: closing speeds ≤ 2 m/s are ignored (the C#
   dealt 1 % on any overlap); the pair maximum per 500 ms (clamped to 10 m/s) gives the C#'s
-  speed-scaled percentage (nose-cone rule kept). The 1.2 data has neither the expression constants
+  speed-scaled percentage (nose-cone rule kept). Deviation: each pair also has the C# 1.5 s damage
+  cooldown (`HULL_COLLISION_DAMAGE_COOLDOWN_SEC`) and a terrain / static pair only damages on a
+  new impact (no impact in the previous 500 ms window), so grinding or bouncing contacts no longer
+  chip up to 20 % of max HP per second. The 1.2 data has neither the expression constants
   (12 / 13 / 21) nor the `physics_collision_*_damage_mul` columns. The keel width (0.2 m) and the
   default tube offset (half beam, the zone's `bbox.x / 2`) are inferred / taken literally. Prefab
   buoy brushes take precedence over that fallback, as in the engine.
@@ -721,6 +736,37 @@ is no longer mirrored (see "Known deviations", dead NPC returned and healed).
 
 ## Known deviations from the C#
 
+* systems::skills / systems::npcs (`Interaction` special effect 10): the former C# class was a
+  TODO stub. The 1.2 `special_effects` rows put a `WorldInteractionType` in `value1` (row 11030:
+  19 `Use`, 36: 10 `DigTerrain`, 215: 29 `SummonBeanstalk`) and an optional doodad id in
+  `value2`. The effect now runs the same authored interaction classes as `InteractionEffect`
+  through `npcs::bridges::interaction_effect`; values without a 1.2 class (10, 14, 29) log
+  "unknown world interaction" exactly like the template path.
+* systems::skills (`GetSiegeTicket` special effect 64): row 5583 (values 0) is the only row,
+  on skill 16975. It grants one `defense_ticket_id` from the `siege_zones` row of the caster's
+  zone group (zone id -> `zones.group_id`). Holding that zone's `offense_ticket_id` sends
+  `SIEGE_ONLY_DEFENSE_OR_OFFENSE_TICKET_AT_ONCE` (463) and grants nothing; a caster zone
+  without a siege row logs and grants nothing.
+* systems::housing / systems::social (`StartDominionNonPvpDuration` special effect 110): row
+  14465 carries `value1` 120 (minutes) on skill 23992 "Dominion peace". The start and the
+  authored duration are persisted on `dominions` (`non_pvp_start_at`, `non_pvp_duration_min`;
+  update `2026-10-20_aaemu_game_dominion_non_pvp.sql`) and sent in `SCDominionData`. The
+  handler requires the live owned territory at the caster and its current expedition leader;
+  a second cast while the window is active sends `ALREADY_IN_NON_PVP_DURATION` (759). The
+  skill's 4-hour reuse cooldown and five reagent crystals remain the skill system's job.
+* systems::vehicles (`DestroyAndSpawnSlave` special effect 72): row 8224 (values 0) is the only
+  row, on skill 19165, carried by slave template 125's mount skill. A spawner-backed slave is
+  removed through its `SlaveSpawner` (`Despawn` broadcasts the removal and releases the slot)
+  and the spawner creates the replacement at its authored transform; a slave without a
+  spawner is destroyed and logged, with nothing respawned.
+* systems::skills (`SextantPos` special effect 69): row 7181 (values 0) is the only row, on
+  skill 18416 "measure my current position" (item 24795 Sextant). The caster receives a system
+  chat message with the world position. No authored system-message coordinate format exists in
+  the 1.2 `ui_texts` / `localized_texts` data (only the treasure-map item descriptions), so the
+  current text is the placeholder `X: {x}, Y: {y}` and needs in-game verification.
+* systems::skills (`NotifyQuest` 70 / `DeclareIndependence` 71): left log-only. `NotifyQuest`
+  already fires from `plots::finish_item_plot` (a second event would double-count the quest
+  objective); `DeclareIndependence` has no faction ownership runtime in 1.2.
 * systems::npcs (`DespawnOnCreatorDeath`): the 1.2 C# loaded `despawn_on_creator_death` for
   `SpawnEffect` and `NpcSpawnerSpawnEffect` but never read it, so summoned NPCs outlived their
   creator. Rust registers every effect-spawned NPC under the caster's obj id and despawns those
@@ -1044,9 +1090,9 @@ is no longer mirrored (see "Known deviations", dead NPC returned and healed).
 * systems::skills (2026-10-12 audit): the extracted 1.2 client database and server database have
   the same 15126 skill IDs and 9816 buff IDs. Both lack 33 unique buff templates referenced by 35
   BuffEffect definitions. The loader warns with both IDs; replacement templates are not
-  fabricated. Historical RedeemBuff/ExplodeBuff formulas, recipe/account/cinema placeholders,
-  several other special actions and generic Anchor/Flowgraph still need authoritative behavior
-  or protocol evidence. Passing covered tests does not certify every data-defined skill.
+  fabricated. RedeemBuff's second and third value slots (the damage / cap slots of other special
+  actions), recipe/account/cinema placeholders, several other special actions and generic
+  Anchor/Flowgraph still need authoritative behavior or protocol evidence. Passing covered tests does not certify every data-defined skill.
 * systems::skills (2026-10-19, `check_obstacle`): the C# tree had no obstacle check at all
   (`git show a2ab80abd^:AAEmu.Game/Models/Game/Skills/Skill.cs`), but the 1.2 skills data has
   the retail column. The **1.2 client is the primary oracle** (unpacked `x2game.dll`, Ghidra
@@ -1172,9 +1218,14 @@ is no longer mirrored (see "Known deviations", dead NPC returned and healed).
   the C# used `OwnerObjId`, leaving deleted mates listed and potentially removing another
   character's list when the ids collided. Repeated stale-mate deletion still avoids releasing
   its obj / tl ids a second time.
-* systems::vehicles: `ShipyardIdManager` uses no MySQL table. Shipyards are runtime-only and
-  have no persistence writer; the inherited `shipyards` query only failed and used an empty
-  id set. Persisting shipyards remains separate work.
+* systems::vehicles: deviation from C#, which kept shipyards runtime-only (a restart lost every
+  drydock and its build progress). They persist in the `shipyards` table
+  (`systems/vehicles/shipyards_db.rs`): `System::save` (periodic and shutdown save) rewrites every
+  live shipyard, `remove_shipyard` deletes the row at once and queues the delete for the next save
+  as well, and `System::start` restores the rows with a fresh obj id (build step, actions, hp,
+  position, owner, `spawned`; nothing is consumed) and runs the protection / decay update once.
+  `ShipyardIdManager` now reserves the ids of the `shipyards` table. Decay keeps running from the
+  stored `spawned` time, i.e. server downtime counts towards the 3 day tax protection.
 * systems::vehicles: DB failures of the saved-slave lookups behave like "no saved slave"; the
   slave / mate saves outside `DoSave` are fire-and-forget tasks.
 * systems::vehicles: a missing unit formula evaluates to 0 (C# NullReferenceException); index
@@ -1656,6 +1707,19 @@ is no longer mirrored (see "Known deviations", dead NPC returned and healed).
   `PostDate`) and a buyout sends `SCAuctionBidPacket` with `isBuyout = true`, the lot's
   `direct_money` and the buyer's identity (the C# buyout branch sent nothing although the 1.2
   packet carries the flag). Seller / item mail delivery is unchanged.
+* systems::economy (auction settlement, 2026-10-20): the C# ignored `MailForAuction.Send()`
+  (`RemoveAuctionLotSold` / `RemoveAuctionLotFail` / `CancelAuctionLot` removed the lot anyway),
+  so a mail that was not stored lost the seller's money or the buyer's item. Here a settlement
+  removes the lot only after every one of its mails was delivered; otherwise the lot (or, for an
+  outbid refund in the bidding path, just the refund) stays queued in `AuctionManager::pending`
+  and `update_auction_house` retries the still-missing mails on its next tick, remembering which
+  ones are already out so nothing is delivered twice. The queue is in memory: a restart inside
+  the retry window loses a pending outbid refund, and a pending sale that has not reached its
+  `end_time` reverts to the lot's saved bidder fields. A restart while a lot is partially settled
+  re-settles the whole lot, so a mail that was already sent (e.g. the seller's payment) can be
+  sent again. A settlement whose mail is refused `MAX_SETTLEMENT_RETRIES` (720, one hour of 5 s
+  ticks) times, e.g. for a deleted receiver, is logged at error level and dropped, and its lot
+  is then removed.
 
 ### Ranking boards (Rust only)
 
@@ -2260,7 +2324,6 @@ generated entries carry a `Title` naming the 10.x source (the loader ignores it)
 | `buff_breakers` (661 rows, 92 buffs) | `skills/data/mod.rs` (`buff_breakers`), `buffs::apply_buff_breakers` called by `add_buff` | new: a buff carrying a breaker tag ends the active buffs it breaks, and an arriving breakable buff ends at once when a breaker tag is already active | The C# ignored the table. The 10.x zone loads it (`LoadBuffBreakersRelation`, `SELECT buff_id, buff_tag_id FROM buff_breakers`) but no consumer was traced. **Direction is derived from the rows (medium confidence):** the `buff_id` side is gliders (tags stun 6, fear 12, spear 13, sleep 97, silence 99, knock-down 107, psychokinesis 150, bubble 346, root 27), bard songs 656-667/778 and the ice-wall step buff 431 (broken by glider flight tag 294); a stun ending a flight or a song is the natural reading, the reverse (a glider ending a stun) is not. |
 | Damage ends sleep | `buffs::trigger_remove_on` (`remove_on_damaged_*` columns) | already ported; covered by `damage_removes_a_breakable_sleep` | the buff columns (sleep buffs 414/523/2276/... carry all four `remove_on_damaged_*` flags) |
 | `aoe_diminishings` (10 rows: 100, 90, 80, 70, 55, 40, 25, 10, 10, 10) + plot event flag `aoe_diminishing` (13 of 9,074 events) | `PlotEventTemplate.aoe_diminishing`, `plots::apply_plot_effect`, `EffectSource.aoe_diminishing`, `effects::combat::damage` | new: the n-th target of an event with the flag takes damage times `rate(n) / 100` (ranks past the last row use it) | The 10.x damage log prints `damage %d <= aoe diminishing %f` between the actability and the minimum-damage steps and loads the table into a float array indexed by id (`LoadAoeDiminishingDescs`). **Rank = index in the event's target list is assumed (low-medium confidence)**; the zone's caller was not traced. The C# stored the flag and never used it. `ResetAoeDiminishingEffect` (1 row) stays a no-op: the per-cast counter it would reset does not exist in this rank-per-event model. |
-| `ExplodeBuff` (special type 46; skills 16410 / 20650 "Internal Shock") | `effects/special/unit_actions.rs::explode_buff` | new, **unverified numbers**: burns every non-passive, non-system Good buff of the target and, if at least one was burned, deals `value1` fixed damage; a target without a beneficial buff takes nothing | Only the 1.2 skill tooltip: "burns away the enemy's beneficial effects and deals #{min_damage}~#{max_damage}; an enemy without beneficial effects takes no damage". The meaning of `value1` (1000 / 2000) and `value2` / `value3` (20 / 20, 50 / 50) is a guess; the stun (buff 2871+) and knock-back come from the skill's other effects. No retail oracle. |
 | `Anchor` skill controller (kind 6, controllers 7736 / 7739, `end_skill_id` 23437 "Land on the ground", used by monster skills 22268 / 23103) | `skills/controllers.rs` (`Behavior::Anchor`, `anchor_tick`), `SkillControllerTemplate.end_skill_id` | new, **partial**: the owner descends to the ground under it at the first stage speed (`value2` mm/s, timeout `value3` ms), then fires `end_skill_id` on itself | 10.x zone `X2::AnchorSkillController` (stages of speed + ground-entity id, finish on time over / ragdoll / arrival, then the end skill). The stage targets are ground-collider doodads this server does not model, so the stage kinds in `value1/4/7` are not interpreted and only the first stage is used. Movement timing for 1.2 is unverified. |
 | Live check (lane stack, headless bot, GM `/buff` + a real melee hit) | - | done | Stun 2219 on one target: 5000, 4000, 3000 ms, then the stun-immunity final buff 2371; sleep 523 ends on the bot's melee hit; song 663 ends when stun/sleep arrives and ends at once when applied under an active sleep. Not driven live: `aoe_diminishing` events, ExplodeBuff (monster skill) and the Anchor landing skills (flow tests only). GM `/buff view` hides buffs that expired between commands (each GM command takes ~2 s). |
 | `buff_unit_modifiers` (17 rows), `buff_mount_skills` (64 rows) | - | not applied | `buff_unit_modifiers` are the `unit_modifiers` rows with `owner_type = 'BuffUnitModifier'` keyed by skill-tag + buff pairs (Sorcery 232-244 skill tags); how they combine with the skill damage is not documented in the C#, the client or the zone strings. `buff_mount_skills` lists the mount skills a siege-stance / mount buff grants to the client bar and has no server-side effect. Neither claims retail behaviour here. |
@@ -2277,6 +2340,56 @@ Left out, with the reason:
 * 13878/14033 (Korean Liberation Day event NPCs, no schedule in the 1.2 data, would stand permanently) and 14745 (zone-name marker NPC "Shining Shore", empty comment): not ambient world NPCs.
 
 Every added id has a 1.2 `npc_spawner_npcs` row. Positions are the client map's own metres (no yaw in the format).
+### `RedeemBuff` special effect (type 44)
+
+Removes one of the caster's own beneficial effects (the same filter as ExplodeBuff: `buffs.kind`
+1, non-passive, non-system, not-ended, lowest buff slot first) and only then restores `value1`
+mana through the fixed-value `RestoreManaEffect` path (`effects::combat::restore_mana`), so the
+heal and points notifications match a real mana restore and the gain is capped at `MaxMp`. No
+beneficial effect means nothing is removed and no mana is restored.
+
+`value2` / `value3` read 10 / 15 on the only shipped row (763 `[4000, 10, 15, 0]` of 효과 흡수,
+player skill 11988) and their meaning is not understood, so they are ignored. The 의기 charge the
+skill's description mentions is a separate effect of the same skill and is not part of this
+action.
+
+### `MoveToGround` special effect (type 73)
+
+Lands a unit on the terrain floor. The destination XY is the target position when the effect was
+given a position unit (the 10.x movement skills that carry the type are `skills.target_type_id` 6
+"pos") and the caster's own XY otherwise. The ground sample comes from the collision service
+(`ai::collision::ground_height_or`, falling back to `terrain_height_or`, 0 when neither answers);
+a sample of 0 means no floor and the effect moves nothing. The snap policy is ported from the C#
+`GroundSnapRules` / `TerrainFloor` of commit `c78b3a659` into
+`systems/skills/ground_snap_rules.rs`: 0.4 m clearance, the water surface wins over the seabed
+when it clears it by more than 1 m, the 3 m near band sits on the floor, a lift up to 8 m lands on
+it, a drop up to 12 m lands on it, and anything beyond keeps the raw Z. A player is moved with
+`SCBlinkUnitPacket` exactly like `Blink` (the client moves itself and reports the position back);
+an NPC goes through `move_npc`. `value1` is not applied (0 on the reachable rows).
+
+Deviation: the C# used the caster's XY even for the position-target rows and returned
+`OnFloor(rawZ)` (raw + clearance) on an over-lift; the selected position is used here, and the raw
+Z is kept on an over-lift, which is what the C# log line says that branch does. Data: 1.2 row
+9639 `[0, 0, 0, 0]` is reached only through `plot_effects` 8677 (plot event 5431 "self move" of
+skill 18103).
+
+### `ExplodeBuff` special effect (type 46)
+
+Burns the target's beneficial effects away and deals `value1` damage for each one burned, up to
+`max(value2, value3)` of them. Ported from commit `c78b3a659` (`ExplodeBuffRules` / `ExplodeBuff`;
+the 1.2 C# only logged the type). The pure policy is `systems/skills/explode_buff_rules.rs`.
+
+Only beneficial (`buffs.kind` 1), non-passive, non-system and not-ended effects are burned, lowest
+buff slot first, through `buffs::exit`; passives and system buffs are part of what the unit is, not
+something an enemy's skill can strip. The damage goes through
+`skills::combat::reduce_current_hp` with the caster as attacker, and an `SCUnitDamagedPacket`
+carries the hit to the client (the C# only reduced the HP). No eligible effect means no damage.
+The row may hang off a buff Timeout trigger (buff 449), where `args.source.skill()` is `None`;
+nothing in the effect reads the skill.
+
+Data (1.2, joined through `effects.actual_type = 'SpecialEffect'`): 5009 / 9531
+`[1000, 20, 20, 0]` on 내부 충격 16410 / 20650 (effects 15588 / 27256), 6411 `[2000, 50, 50, 0]` on
+the Timeout trigger 2194 of buff 449 (effect 20330).
 
 ### Plot `ManaCost` special effect (type 39)
 
@@ -2506,6 +2619,18 @@ exactly on the end point, and when the new position is within float noise of it 
 fixed 1e-3 m was not enough on large maps) the heading of the step itself (`heading(cur, end)`)
 is used. The C# original has the same degenerate `atan2`.
 
+## Trade item integrity and craft materials (2026-10-20)
+
+- `trade::add_item` (C# `TradeManager.AddItem` only checked `item.Count >= amount`) now also
+  cancels the trade for a soul-bound item or an item outside the bag (the flag check matches mail
+  and auction), and `preflight_items` refuses an offered item that left the bag or became bound
+  after the put-up. Repeated put-ups of one stack stay allowed up to its count, as upstream decided.
+- Craft materials: the C# counted `Inventory.GetItemsCount` (bag + equipment + bank) but consumed
+  from `Bag` only and ignored the result, so a craft with materials in the bank produced the
+  product for free. The port counts the bag only (start and again in `hand_out_products`, before
+  any product is handed out) and refuses with `NOT_ENOUGH_REQUIRED_ITEM` otherwise. Labor is
+  still charged by `Skill.EndSkill` as before.
+
 ## Guild invitation and rank guards, loot master membership (2026-10-20)
 
 Deviations from the 1.2 C# `ExpeditionManager` / `TeamManager`, which trusted every client id
@@ -2520,18 +2645,6 @@ Deviations from the 1.2 C# `ExpeditionManager` / `TeamManager`, which trusted ev
 - `ChangeLootingRule` accepted any character id as loot master. It must now be 0 or a member of the
   team; otherwise only that field is ignored (logged). Over-head markers are unchanged: their
   target is any unit or object, not a team member.
-
-## Trade item integrity and craft materials (2026-10-20)
-
-- `trade::add_item` (C# `TradeManager.AddItem` only checked `item.Count >= amount`) now also
-  cancels the trade for a soul-bound item or an item outside the bag (the flag check matches mail
-  and auction), and `preflight_items` refuses an offered item that left the bag or became bound
-  after the put-up. Repeated put-ups of one stack stay allowed up to its count, as upstream decided.
-- Craft materials: the C# counted `Inventory.GetItemsCount` (bag + equipment + bank) but consumed
-  from `Bag` only and ignored the result, so a craft with materials in the bank produced the
-  product for free. The port counts the bag only (start and again in `hand_out_products`, before
-  any product is handed out) and refuses with `NOT_ENOUGH_REQUIRED_ITEM` otherwise. Labor is
-  still charged by `Skill.EndSkill` as before.
 
 ## Client skill cast authority (2026-10-20)
 
