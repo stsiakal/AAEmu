@@ -35,6 +35,7 @@ fn fixture(active: bool, learned: bool) -> (Arc<crate::GameServer>, TestClient, 
         max_range: 4,
         ..SkillTemplate::default()
     });
+    data.skills.add_client_sourced_skill(PLAIN_SKILL);
     let server = Arc::new(test_server_with(data));
     server.set_self();
     crate::systems::skills::bind(&server);
