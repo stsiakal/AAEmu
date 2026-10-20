@@ -7,4 +7,4 @@
 -- This patch sets respawn = 't' so the spawner re-spawns the gourd after the row's 60s
 -- delay, keeping the Squash Head (6036) gather source cycling all season.
 
-UPDATE `doodad_func_finals` SET `respawn` = 't' WHERE `id` = 3554;
+UPDATE `doodad_func_finals` SET `respawn` = 't' WHERE `id` = 3554 AND `respawn` = 'f';

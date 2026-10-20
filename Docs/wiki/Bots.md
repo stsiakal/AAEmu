@@ -156,6 +156,22 @@ Two-bot duels, trades and parties run as one process per bot, each with its own 
   `prereq_missing`, `requirement_unmet`, `blocked_plan` or `runner_unsupported`. Each blocker has
   a class: `runner_gap`, `suspect`, `data_gap` or `requirement`.
 
+## Live verification suites
+
+`Scripts/verify.sh` turns a fix into one command that can be rerun: it starts the lane stack,
+provisions the suite's bot accounts (including GM access) and runs every `rust/verify/*.vtest`
+suite. A suite declares several named bots whose script sections run concurrently and
+synchronise with `waitpeer`/`sync`; assertions cover server packets (`expectpkt`,
+`expectnopkt`), game-server log lines (`expectlog`) and game-database values (`expectdb`).
+
+```sh
+Scripts/verify.sh                    # all suites, PASS/FAIL + report
+Scripts/verify.sh --only guild       # one fix's suite while working
+```
+
+The format, the expectation commands, the report location and how to add a suite are in
+[Live Verification Suites](Verification). Run it before `lane.sh check`.
+
 ## The AABevy headless script runner
 
 The AABevy client (`aa-client.exe`, a separate repository) has a headless mode that runs a command file
@@ -169,8 +185,8 @@ aa-client.exe --headless --account NAME --login HOST:PORT --password-file P --sc
   server packets, the client's state and what the original windows show. It was used to verify
   titles.
 - Commands include `gm`, `lua`, `expect`, `await`, `waitfor` and `shot`. The command reference is
-  `docs/aa-client-script.md` in the client repository (branch `pr/headless-script`, pull request
-  NickMesser/AABevy1.2#2).
+  `docs/aa-client-script.md` in the client repository, on `main` since pull request
+  NickMesser/AABevy1.2#2 merged (2026-10-20).
 - Gotcha: `await` matches events that are already queued. After an action whose event may have fired
   already, use `waitfor N lua <condition>` instead.
 
@@ -278,8 +294,9 @@ work.
 
 Next steps:
 
-1. Wait for the instance-exit fix (see [Server Backlog](Server-Backlog#found-by-the-bots)). Then rerun the four-race quest sweep and write a summary file
-   for each run.
+1. Rerun the four-race quest sweep and write a summary file for each run: the instance-exit fixes
+   (`ae5c73933`, `00ba92067`) and the testclient `loaded` command (`9d9886c60`, upstream PR
+   NickMesser/AAEmu#20) are merged (see [Server Backlog](Server-Backlog#found-by-the-bots)).
 1. Run a sample of the 622 needs-review quests live; the static audit does not certify that
    they can be played.
 1. Build a tooltip-oracle bot that reads the 1.2 client's tooltip numbers through

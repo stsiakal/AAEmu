@@ -1,6 +1,7 @@
 //! Scripted bot scenarios with assertions on the server responses.
 
 use std::collections::BTreeMap;
+use std::path::Path;
 use std::time::{Duration, Instant};
 
 use aaemu_commons::PacketStream;
@@ -16,6 +17,7 @@ use crate::quest::quest_rows;
 use crate::record::Recorder;
 use crate::stream::StreamClient;
 
+mod cometsboon;
 mod doodad;
 mod fixes;
 mod plant;
@@ -61,6 +63,10 @@ pub enum Kind {
     /// (see `scenario/plant.rs`). GM account.
     #[serde(rename = "plant")]
     Plant,
+    /// Auramancy "Comet's Boon" (skill 18222, plot 363): summon doodad 5017 and apply buff 3771
+    /// to the caster (see `scenario/cometsboon.rs`). GM account.
+    #[serde(rename = "cometsboon")]
+    CometsBoon,
     /// Stone throwing (skill 11268) from a stackable item: the `ItemUnlock` is sent while the
     /// stack survives and skipped for the last stone (see `scenario/fixes.rs`). GM account.
     #[serde(rename = "stonethrow")]
@@ -93,12 +99,13 @@ impl std::str::FromStr for Kind {
             "questitem" => Self::QuestItem,
             "doodad" => Self::Doodad,
             "plant" => Self::Plant,
+            "cometsboon" => Self::CometsBoon,
             "stonethrow" => Self::StoneThrow,
             "ghost" => Self::Ghost,
             "portal" => Self::Portal,
             "script" => Self::Script,
             _ => bail!(
-                "unknown scenario '{s}' (login, lobby, full, combat, npc-return, mate-revive, questitem, doodad, \n                 load)"
+                "unknown scenario '{s}' (login, lobby, full, combat, npc-return, mate-revive, questitem, doodad, \n                 plant, cometsboon, stonethrow, ghost, portal, script, load)"
             ),
         })
     }
@@ -349,13 +356,42 @@ impl Runner<'_> {
     }
 }
 
+/// One bot's script, supplied by the `verify` suite runner instead of `$AAEMU_SCRIPT`.
+#[derive(Debug, Clone, Copy)]
+pub struct ScriptInput<'a> {
+    /// The script text (one command per line).
+    pub text: &'a str,
+    /// Where the text came from, for log / error messages.
+    pub label: &'a str,
+    /// This bot's suite id (used by `sync`).
+    pub bot: &'a str,
+    /// Number of bots in the suite (default `sync` participant count).
+    pub bots: usize,
+    /// Directory shared by the suite's bots for `sync`.
+    pub sync_dir: Option<&'a Path>,
+}
+
 /// Runs `kind` for one bot. Failures end the run; the error is in [`Outcome::error`].
 pub async fn run(kind: Kind, cfg: &BotConfig, rec: &Recorder) -> Outcome {
+    finish(kind, cfg, rec, None).await
+}
+
+/// Runs one bot of a `verify` suite: the usual login / select / spawn, then `script`.
+pub async fn run_script(cfg: &BotConfig, rec: &Recorder, script: &ScriptInput<'_>) -> Outcome {
+    finish(Kind::Script, cfg, rec, Some(script)).await
+}
+
+async fn finish(
+    kind: Kind,
+    cfg: &BotConfig,
+    rec: &Recorder,
+    script: Option<&ScriptInput<'_>>,
+) -> Outcome {
     let mut r = Runner {
         rec,
         out: Outcome::default(),
     };
-    if let Err(e) = run_inner(kind, cfg, &mut r).await {
+    if let Err(e) = run_inner(kind, cfg, &mut r, script).await {
         let step = rec.current_step();
         r.out.steps.push(StepResult {
             name: step.clone(),
@@ -370,7 +406,12 @@ pub async fn run(kind: Kind, cfg: &BotConfig, rec: &Recorder) -> Outcome {
 
 const QUIET: Duration = Duration::from_millis(1500);
 
-async fn run_inner(kind: Kind, cfg: &BotConfig, r: &mut Runner<'_>) -> anyhow::Result<()> {
+async fn run_inner(
+    kind: Kind,
+    cfg: &BotConfig,
+    r: &mut Runner<'_>,
+    script_input: Option<&ScriptInput<'_>>,
+) -> anyhow::Result<()> {
     // ---- login server ----
     let s = r.begin("login.auth");
     let mut login = LoginClient::connect(&cfg.login, r.rec.clone()).await?;
@@ -554,6 +595,11 @@ async fn run_inner(kind: Kind, cfg: &BotConfig, r: &mut Runner<'_>) -> anyhow::R
         drop(stream);
         return Ok(());
     }
+    if kind == Kind::CometsBoon {
+        cometsboon::run(&mut game, r).await?;
+        drop(stream);
+        return Ok(());
+    }
     if kind == Kind::StoneThrow {
         fixes::stonethrow(&mut game, r).await?;
         drop(stream);
@@ -570,7 +616,23 @@ async fn run_inner(kind: Kind, cfg: &BotConfig, r: &mut Runner<'_>) -> anyhow::R
         return Ok(());
     }
     if kind == Kind::Script {
-        script::run(&mut game, cfg, r).await?;
+        match script_input {
+            Some(input) => script::run(&mut game, cfg, r, input).await?,
+            None => {
+                let path =
+                    std::env::var("AAEMU_SCRIPT").context("set AAEMU_SCRIPT to the script file")?;
+                let text =
+                    std::fs::read_to_string(&path).with_context(|| format!("reading {path}"))?;
+                let input = ScriptInput {
+                    text: &text,
+                    label: &path,
+                    bot: &cfg.user,
+                    bots: 1,
+                    sync_dir: None,
+                };
+                script::run(&mut game, cfg, r, &input).await?;
+            }
+        }
         drop(stream);
         return Ok(());
     }
@@ -1913,5 +1975,6 @@ mod mate_revive_tests {
         assert_eq!("none".parse::<ReviveMethod>().unwrap(), ReviveMethod::None);
         assert!("x".parse::<ReviveMethod>().is_err());
         assert_eq!("mate-revive".parse::<Kind>().unwrap(), Kind::MateRevive);
+        assert_eq!("cometsboon".parse::<Kind>().unwrap(), Kind::CometsBoon);
     }
 }

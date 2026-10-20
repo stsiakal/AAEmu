@@ -12,6 +12,10 @@ Guidance for coding agents working in this repository.
   disable its push URL (`git remote set-url --push <name> no_push`).
 - **Do not modify `rust-rewrite`**: it mirrors the synced upstream work. Bring it into
   `rust-rewrite-bots` with a merge.
+- **When merging `rust-rewrite` into `rust-rewrite-bots`**, take upstream's version for a fix both
+  sides carry, keep fork-only code, and **never override anything listed in
+  [`Docs/wiki/Fork-Deviations.md`](Docs/wiki/Fork-Deviations.md)** — flag such a conflict instead of
+  resolving it. Parity fixes go upstream as pull requests.
 
 ## Sessions work in lanes (mandatory, every session)
 
@@ -50,6 +54,9 @@ Scripts/lane.sh land                        # merge into the base branch, then d
   runs once per lane in `lane.sh check`; `land` refuses a HEAD that was not checked or does not
   contain the current base branch, so the merged tree is exactly the tested tree and the base
   needs no re-run.
+- **Live verification before `lane.sh check`**: run `Scripts/verify.sh` (or the suites the change
+  touches, `--only <name>`) from inside the lane and add a `rust/verify/*.vtest` suite for each
+  new fix; see [`Docs/wiki/Verification.md`](Docs/wiki/Verification.md).
 - **Cleanup is part of done — the bloat is real** (target dirs reach 10–90 GB each). Work is not
   finished until `lane.sh land` or `lane.sh done` has run and `Scripts/lane.sh list` no longer
   shows the lane:
@@ -307,8 +314,9 @@ When code needs a schema change:
 1. Add `SQL/updates/YYYY-MM-DD_aaemu_{login|game}_*.sql` (date orders application).
 2. **Also** patch the base file `SQL/aaemu_login.sql` or `SQL/aaemu_game.sql`.
 3. Servers apply relevant updates once at startup when `Connections:AutoApplyUpdates` is true (`aaemu_commons::mysql`); applied scripts are recorded in an updates table.
+4. Fixes to the read-only **compact.sqlite3** go in `SQL/patches/compact/YYYY-MM-DD-*.sql` — idempotent/guarded SQL, applied in file-name order and recorded in the database's `aaemu_compact_patches` table by `cargo xtask compact-patches <db>` (run automatically by `Scripts/live-stack.sh sync` and `cargo xtask publish`); never commit `compact.sqlite3` itself.
 
-See `SQL/updates/readme.txt`. Prefer `SQL/patches/compact/` only for intentional compact.sqlite3 fixups (not normal gameplay state).
+See `SQL/updates/readme.txt` and `SQL/patches/compact/README.md`. Prefer `SQL/patches/compact/` only for intentional compact.sqlite3 fixups (not normal gameplay state).
 
 ---
 
