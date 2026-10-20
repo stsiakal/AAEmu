@@ -905,7 +905,11 @@ is no longer mirrored (see "Known deviations", dead NPC returned and healed).
   scans the Reward component for act type 0x18 / 0x19 and falls back to `quest_supplies`
   only when the act is absent, and the Oct–Dec 2014 archeagedatabase.net export shows
   exactly the act value on 103 quests and the level supply on 897 others (quest 2785
-  level 35: 8,400, not 8,400 + 3,224; quest 1213: 110, not 110 + 420). Open suspect: the
+  level 35: 8,400, not 8,400 + 3,224; quest 1213: 110, not 110 + 420). In `compact.sqlite3`
+  917 of the 1,569 quests with such an act give exp 0 and copper 0 through it, 376 of them in
+  `quest_categories` 79 ("탐험", exploration; all 402 quests of the category are level 50, and
+  377 carry the acts): the act is what makes them pay nothing, and the C# sum would hand each of
+  them the full level-50 `quest_supplies` exp / copper on top. Open suspect: the
   client decompile also scales the level supply by `quest_contexts.degree` (x0.5..x1.5),
   but the 2014 site shows unscaled values for all 221 non-degree-3 quests; degree scaling
   is not implemented until that conflict is resolved.
@@ -960,7 +964,11 @@ is no longer mirrored (see "Known deviations", dead NPC returned and healed).
 * systems::skills: `SpecialEffect` repeats are scheduled tasks instead of `Thread.Sleep` loops.
 * systems::skills (cuboid AoE): `AreaShape.ComputeCuboid` tested the triangles (v0,v1,v2) and
   (v1,v2,v3) of a rectangle whose vertices run around it, so the two overlapped and the wedge at
-  the v3-v0 edge was never hit. `geometry::point_in_cuboid` splits along the v0-v2 diagonal.
+  the v3-v0 edge was never hit, and the strict `< 0` sign test dropped points exactly on a diagonal.
+  Skill AoEs (`geometry::around_shape`) and doodad area triggers (`area_trigger::AreaShape::
+  compute_cuboid`) now share `utils::math::point_in_cuboid`, which rotates the point into the
+  shape's frame and checks `|along length| <= value1 && |along width| <= value2` (edges included),
+  so both agree on the same `aoe_shapes` row (the doodad side used to mirror the bug).
 * systems::skills (2026-10-12 audit): OR requirements now require one success and use the resolved
   packet target, including doodads. Equipped-item and NPC-group requirements check their actual
   membership; crime-point limits and overnight time windows are enforced. Source/target life,
@@ -1088,6 +1096,11 @@ is no longer mirrored (see "Known deviations", dead NPC returned and healed).
   do not become recurring: the shipped October 16-30 2013 Halloween window stays expired.
   Regression tests: `npc/spawner_schedule_tests.rs`.
 * `systems::npcs`: doodad func timers are tokio tasks (cancel = generation bump); `DoodadManager.Create`'s `Task.Run(InitDoodad)` is a spawned task; `TimeManager.OnTimeOfDayChange` runs from a 10 s poller. `GetNpcSpawner` template rewrites do not propagate to already loaded spawners; the "first" concurrent-dictionary entry is the lowest key; spawn files are processed in sorted name order (C# `Directory.GetFiles` order is unspecified). Portal book deletions are written at the next periodic save. Debug messages check only the character's access level. Coffer slot counting stops at 255 (C# loops forever). Where the C# would throw on a null / failed cast the Rust code returns quietly. Sticky parents are not modelled.
+* systems::npcs / systems::services (GM `/despawn npc`, from PR #3): an NPC that still has a
+  queued respawn or corpse timer keeps its object id until the spawn manager's timers are done
+  with it (the C# released the id at once). The respawn still happens and the spawner's
+  `_scheduledCount` credit stays backed by it; releasing early let a new object reuse the id
+  while the timers were keyed by it. NPCs without timers are released immediately as before.
 * systems::housing: dates are stored with second precision (unix seconds); `DateTime.MinValue`
   rows load as 0, so a manually inserted house with both dates at MinValue gets 1970-01-15 as
   protection end (C#: 0001-01-15; both are "expired"). `Connection.Houses` is not snapshotted:
@@ -1138,7 +1151,7 @@ is no longer mirrored (see "Known deviations", dead NPC returned and healed).
   The tick resolves the character under the save transaction lock (serialized with
   `select_character`'s load and world registration). Before an offline write, it flushes a
   departing sibling's pending labor (`SaveManager::flush_account_labor_locked`).
-* systems::economy (RPA-16): socketing (success, failed roll and DawnStone), lunastone, temper
+* systems::economy (item persistence, 2026-10): socketing (success, failed roll and DawnStone), lunastone, temper
   and temper reset write plain `ItemDetails` fields; the C# setter-less fields did not mark
   `IsDirty`, so `ItemManager.Save` skipped them. Rust marks `Item.dirty` in those paths and the
   regressions assert the next prepared save snapshot contains the item.
@@ -1463,8 +1476,9 @@ is no longer mirrored (see "Known deviations", dead NPC returned and healed).
   unchanged, and deletion IDs are acknowledged only after commit.
 
 * systems::skills (2026-10-19): `CharacterSkills.AddSkill` refuses a skill whose `ability_level`
-  the character's ability has not reached, and `Skill.Level` saturates to `1..=127` instead of
-  wrapping (C#: `(byte)((abLevel - AbilityLevel) / LevelStep + 1)`). The 1.2 data has 24 retired /
+  the character's ability has not reached, and the *stored* character skill level saturates to
+  `1..=127` instead of wrapping (`stored_skill_level`; runtime `SkillRun` levels, NPC skills
+  included, keep the C# byte result unchanged. C#: `(byte)((abLevel - AbilityLevel) / LevelStep + 1)`). The 1.2 data has 24 retired /
   login-stage rows with `ability_level` 99 (e.g. 10385, 11854; `show = f`) above the level cap 55;
   the C# expression goes negative and the byte cast wraps it (243), which MySQL rejects when
   saving `skills.level` (signed TINYINT, `1264 Out of range value for column 'level'`), so every
@@ -1491,6 +1505,10 @@ is no longer mirrored (see "Known deviations", dead NPC returned and healed).
   interrupted, completed and channelled casts, plus failed validation, item-reagent rejection,
   refused / treeless plots, a replaced reuse and an exhausted pool; every case asserts the pool
   returns to baseline).
+  A timed cast flagged `cancelled` by something other than `stop` (a cancel effect) is ended by
+  `cast()` from its CastTask (which also clears the task slot), exactly once: `end_skill` takes
+  the id, so the `stop` path (token cancelled, task returns early) cannot double-release. Stored
+  skills dropped at load because their ability level is not reached are logged (`warn`).
 
 * systems::skills log noise (2026-10-16): `CSStopCasting` with `tl == 0` and a plot tl for a plot
   that already ended (the client repeats it ~30 times per plot) is logged at debug instead of
@@ -1544,6 +1562,41 @@ is no longer mirrored (see "Known deviations", dead NPC returned and healed).
 * systems::economy (shop currency checks, 2026-10-19): `CSBuyItems` refuses when *any* required
   currency (money, honor or vocation) is short (already so since 80b6411c9; the mirrored
   entry was stale); the C# checked `money > have && honor > have &&
+  vocation > have`. Checked totals and per-currency `checked_sub` already reject overflow.
+  Covered by `craft_store_tests::shop_checkout_rejects_money_only_and_mixed_currency_shortages`.
+* systems::economy (cash shop, 2026-10-19): loyalty is charged the displayed
+  `DiscountPrice > 0 ? DiscountPrice : Price` (already so since the port, test
+  `checkout_charges_displayed_discount_for_coins_and_loyalty`; the C# debited `Price`); above `level_max` the buyer gets `LEVEL_HIGH_TO_USE` (1.2 `ui_texts`
+  4157, "level too high to use") instead of `INGAME_SHOP_BUY_LOW_LEVEL` (4708, generic "(level)");
+  page 0 still shows page 1 on purpose: the 1.2 `x2ui/baselib/page.alb` page control starts at
+  `currentPage = 1` and clamps previous/next to `1..maxPage`, so the client never sends page 0,
+  and the C# `Skip(itemsPerPage * (page - 1))` clamps the invalid value to the first page.
+* systems::economy (auction, 2026-10-19): the "ExpireDate" sort uses `end_time` (the C# sorted by
+  `PostDate`) and a buyout sends `SCAuctionBidPacket` with `isBuyout = true`, the lot's
+  `direct_money` and the buyer's identity (the C# buyout branch sent nothing although the 1.2
+  packet carries the flag). Seller / item mail delivery is unchanged.
+
+* systems::economy (trade safety, 2026-10-19): a trade is made only when both sides locked and
+  both confirmed (`OkTrade` previously accepted a confirmation with one side locked). Only the
+  put-up amount changes hands: a larger stack is split at finish, the receiver's
+  `SCOtherTradeItemPutupPacket` shows the offered amount, and the giver's `SCTradeMade` task names
+  the slot the item had in the giver's container (the C# moved the whole item and built the
+  removal from the moved object, i.e. the receiver's slot). Negative money put-ups are rejected
+  (the C# stored them unsent and skipped them at finish), money transfers use checked `i64`
+  arithmetic, and trade ids are released on cancel / departure / finish. `FinishTrade` first
+  checks every offered item (still held by the giver with at least the offered amount, several
+  put-ups of one stack added up; receiver bag has a free slot the item is accepted in) under the
+  item operation lock and cancels the whole trade for both sides when any check fails; money then
+  moves as deltas under one guard per character (the C# applied money first and counted failed
+  item moves in `hasErrors`, leaving a one-sided trade). Taking an item down removes only that
+  item's put-up (the C# cleared the whole list when it held at most one entry), the peer's
+  `SCOtherTradeItemTookdown` shows the offered amount like the put-up (the C# sent the whole
+  item, as it also put up the whole item), and `CSTradeLock(false)` resets both OK flags like
+  `UnlockTrade` (the C# kept them). Live oracle: two
+  `aaemu-testclient` bots (lock one side only -> no trade; negative money -> rejected; 5-unit
+  stack, 2 put up -> only 2 move, 3 stay).
+* systems::economy (shop currency checks, 2026-10-19): `CSBuyItems` refuses when *any* required
+  currency (money, honor or vocation) is short; the C# checked `money > have && honor > have &&
   vocation > have`. Checked totals and per-currency `checked_sub` already reject overflow.
   Covered by `craft_store_tests::shop_checkout_rejects_money_only_and_mixed_currency_shortages`.
 * systems::economy (cash shop, 2026-10-19): loyalty is charged the displayed
@@ -1632,7 +1685,6 @@ servers (see `rust/LIVE-TESTING.md`). Fixed porting bugs are in the git history 
   out-of-battle `RegenTick` (`regen.rs:141`) adds the composed value truncated; the in-battle /
   post-cast branches are unchanged. Added the missing `IncomingSiegeDamageMul` getter
   (attribute used by 9 buff `unit_modifiers` rows).
-
 * Quest evaluations requested while a character is selected but not yet in game are parked
   until its `CSNotifyInGameCompletedPacket` (`systems::quests::on_in_game_completed`). The C#
   `QuestManager.EnqueueEvaluation` ran `QuestManagerRunQueueTask` 1 ms after `Quests.Load`, so
@@ -1721,23 +1773,26 @@ and in NPC wandering / buff remaining times.
 * `systems::npcs`: the "spawn all" schedule check is inverted; `DoRandomSpawn` leaks an obj id and spawns twice; a doodad despawn may release its obj id twice; gimmick spawn rotations are not converted from degrees; scheduled doodad spawns stack cron tasks; the player-in-radius check scans every player; NPCs are not despawned when players leave.
 * `systems::npcs`: dated game schedules compare `StartTime` / `EndTime` (usually 0) instead of the start / end hours (a one-day event counts as ended at 00:00); the cron builder tests the captured day of week instead of its parameter, and undated schedules produce day / month 0 (rejected by the cron parser); `VendorExist` reads the `id` column; deleting a portal sent no packet (now `SCPortalDeleted`, see the portal gaps entry at the end); `NotifySubZone` re-sends the portal book once per recall portal of the sub zone; the exit portal's yaw is the book rotation in degrees.
 * `systems::npcs`: corrected coin double credit and failed trade-pack acquisition; `BuyFish` uses the checked economy sale. Phase operations reserve live object identity, honor interaction counts, enter functions on time-of-day changes, and cancel superseded timers. Saves/deletes use a FIFO writer drained by the save lifecycle; partial interaction counts use the doodad-interactions SQL update. Scheduled spawns recreate deleted doodads, deduplicate cron callbacks, and retain original world identity. Logic links/families route matching true/false pulses with per-object state and cycle guards; client-created wires require ownership and reach. Immediate gates are supported; delay descriptors 2/3 need reference behavior. `SpawnGimmick` creates the authored object with offsets/faction/kinematic motion; `SpawnMgmt` requires explicit authored `SpawnGroupId` membership. Prefab flow graphs are client-owned. `CheckGrowth` still runs funcs with `nextPhase = 0`; child metadata templates (e.g. `DoodadFuncBuyFishItem`) remain in the phase dictionary.
+* systems::economy: `CSWithdrawMoneyPacket` reports `ItemTaskType.WithdrawMoney` (84; the C#
+  handler called `ChangeMoney` without a task type, so it defaulted to `DepositMoney`) and
+  `ExpandSlot` sends its `MoneyChange(-price)` task with the expansion (the C# collected the task
+  into a list it never sent, in both the economy and the services copies).
 * systems::economy: the two "is not welcome in this container" rejections of `SplitOrMoveItemEx`
   (an item the target / source container refuses, e.g. armor sent to a wrong equipment slot) are
   logged at `warn` (C#: `Error`) and include the whole request (from / to type, slot, item ids,
   owner). The client is the source of the request and `CanAccept` already warns with the cause.
 * systems::economy: `BindType.HasFlag(...)` on the plain `ItemBindType` enum is a bit test
   (`BindOnUnpack` matches 4..7, `BindOnEquip` matches 3 and 7); mirrored.
-* systems::economy: loot dice are won by the highest roll (the C# sorted the rolled values
-  ascending and took the first positive one, so the lowest bidder won). The 1.2 client presents
+* systems::economy: loot dice are won by the highest roll. The C# `FinishRolling` took the lowest
+  positive roll as the threshold and then picked a random winner among all rollers `>=` that
+  threshold, i.e. uniformly among every positive roller whatever the values. Only players the
+  dice was offered to (the loot's eligible players) may roll, and only once; a repeated or
+  outsider roll is ignored (the C# overwrote the roll). The 1.2 client presents
   the roll as an item bid and only reports values: `ui_texts` 4305 `loot_dice_roll` = "Roll"
   (입찰), 4318 `loot_dice_title` = "Item Bid" (아이템 입찰), 2412 `msg_dice_value` = "$1 rolled a
   $2 on the dice. (1-$3)"; its `loot_dice.alb` bytecode only calls `X2Loot.DoDiceAction` /
   `RequestNextDiceItem`, so the winner is the server's decision and a bid over 1-100 is won by
   the highest value.
-* systems::economy: `CSWithdrawMoneyPacket` reports `ItemTaskType.WithdrawMoney` (84; the C#
-  handler called `ChangeMoney` without a task type, so it defaulted to `DepositMoney`) and
-  `ExpandSlot` sends its `MoneyChange(-price)` task with the expansion (the C# collected the task
-  into a list it never sent, in both the economy and the services copies).
 * systems::economy: taking loot releases the item id it allocates for the grant checks once
   `AcquireDefaultItem` created its own item (the C# leaked one id per non-coin, non-trade-pack
   loot grant).
@@ -1746,9 +1801,14 @@ and in NPC wandering / buff remaining times.
   loose item, so its row stayed and a mail attachment merged into a bag stack was saved as an
   orphan `slot_type Mail` row; the same fix as the fork's C# `47a3a9e77`). The mail acquired /
   consumed event uses the slot type captured before the move (the C# read the overwritten
-  `item.SlotType`, so moving an item into a mail container raised no quest event).
+  `item.SlotType`, so moving an item into a mail container raised no quest event). A new item created straight into
+  a mail container (no source container) raises no consumed event.
+* systems::economy: `ExpandExpert` adds the vocation cost; craft / backpack / weapon booleans read as numbers are
+  false for `'t'` texts; `Specialty.VendorExist` reads the `id` column.
 * systems::economy: `ItemProc` `ignoreRoll` never procs; `HDps` uses the magic DPS grade value;
   fish conversion only uses the first pack.
+* systems::economy: auction — original cancellation-copy and missing balance checks
+  are corrected in the quest/mail audit below.
 * systems::economy: `ItemManager.LoadUserItems` deletes the row of a loaded stack that was merged
   into an existing stack (the C# kept it, so the same units were loaded and merged again on every
   start; related to upstream issue #1189, "sold items reappear after relogin"). The id is freed
@@ -1759,8 +1819,6 @@ and in NPC wandering / buff remaining times.
   *target* owner wherever the target ended up) and the target item's leave event names its
   previous target slot (`toSlot`; the C# passed `fromSlot`). The split item used to keep owner 0
   and could be lost on relogin (upstream issue #412).
-* systems::economy: `ExpandExpert` adds the vocation cost; craft / backpack / weapon booleans
-  read as numbers are false for `'t'` texts; `Specialty.VendorExist` reads the `id` column.
 * systems::economy: mail — opening a mailbox re-sends a "got mail" per unread received
   mail; FinalizeForBidFail still uses AucOffFail; receiver lookup is case-sensitive.
   The old return failure and sender unread-count bug are corrected below.
@@ -2173,7 +2231,7 @@ Every added id has a 1.2 `npc_spawner_npcs` row. Positions are the client map's 
 
 ### Plot `ManaCost` special effect (type 39)
 
-The C# charged `value1 + value2 / 6.35` (with a TODO: "value2 is based on skill level somehow"). The 1.2 data shows `value1` = the skill's `mana_cost` and `value2` = `mana_level_md * 100` for 59 of the 68 plot-only skills that carry the effect (e.g. 11854: md 1.55, effect 0/155; 18132: mana_cost 30, effect 30/0). The 1.2 client shows the cost in the skill tooltip as `mana_cost + mana_level_md * f(ability level)` (Ghidra `aa12u`, x2game `FUN_3941e750` -> `manaCost` of `FUN_394ace10`, via the unit formulas 12 and 13: `(ab_level * 1.6 + 8) * 3 / 3.65`), and the cast pre-check (`validation.rs`) already requires exactly that amount. The effect therefore now charges `value1 + value2 / 100 * scale` with the same scale as `skill::mana_cost`; at ability level 55 skill 11854 costs 120 instead of 24. Deviation from the C#: the charge side is inferred from the tooltip/data (no retail charge capture); the 9 plot-only skills whose effect differs from the skill row follow the same rule.
+The C# charged `value1 + value2 / 6.35` (with a TODO: "value2 is based on skill level somehow"). The 1.2 data shows `value1` = the skill's `mana_cost` and `value2` = `mana_level_md * 100` for 59 of the 68 plot-only skills that carry the effect (e.g. 11854: md 1.55, effect 0/155; 18132: mana_cost 30, effect 30/0). The 1.2 client shows the cost in the skill tooltip as `mana_cost + mana_level_md * f(ability level)` (Ghidra `aa12u`, x2game `FUN_3941e750` -> `manaCost` of `FUN_394ace10`, via the unit formulas 12 and 13: `(ab_level * 1.6 + 8) * 3 / 3.65`), and the cast pre-check (`validation.rs`) already requires exactly that amount. The effect therefore now charges `value1 + value2 / 100 * scale` with the same scale as `skill::mana_cost`; at ability level 55 skill 11854 costs 120 instead of 24. The scale is no longer hardcoded: `skill::mana_level_scale` evaluates the character `unit_formulas` rows of `compact.sqlite3` (kind 12 `LevelDps` = `(ab_level * 1.6 + 8) * 3`, id 12; kind 13 `LevelMana` = `level_dps / 3.65`, id 13) through the precompiled formula expressions. The C# `Skill.ManaCost` (`Skill.cs` ~line 1561) hardcodes `((abLevel - 1) * 1.6 + 8) * 3 / 3.65`; the data and the client decompile cited above have no `- 1` (and `CharStats` evaluates `LevelDps` with `ab_level = level` as well), so the data formula is used for both `ManaCost` paths: every skill's mana cost rises by `1.6 * 3 / 3.65 * mana_level_md` (about 1.3 * md mana). The divisor `value2 / 100` was re-checked against the data: of 84 distinct (skill, `ManaCost` effect values) rows reached through the skills' plots, 62 have `value1 == mana_cost` and `value2 / 100 == mana_level_md`; the other 22 have `mana_level_md` 0 or 1 with `value2` 1 or 100-600, i.e. an effect-only charge that the same formula takes at face value. Deviation from the C#: the charge side is inferred from the tooltip/data (no retail charge capture); the 9 plot-only skills whose effect differs from the skill row follow the same rule.
 
 ### Premium for every account (`Account.PremiumForAll`)
 
@@ -2309,12 +2367,28 @@ from the unpacked 1.2 client here.
     (`x2game.dll` `FUN_391d8d60` -> `FUN_393c2780(type, alpha, visTime, text)`) reads a `u8`
     type, a short string, an `i32` and a text string, which is our layout; the Bevy client
     simply does not decode this opcode yet.
-## PvP bot fixes (duel disconnect, GM faction, quit relog)
 
-* **Duel participant leaves** (`DuelManager::on_participant_leave`, called first in `session::save_and_remove_from_world`): the C# had no handling, so the opponent stayed in the Red / Blue faction with the duel registered until the end timer, and `DuelAccepted` answered "already started". A started duel now ends as a surrender of the leaver (`SCDuelEndedPacket` with `det` 2, the packet of running away from the flag) and restores both factions; a pending request is dropped. No 1.2 oracle for the retail result code; the surrender code is the closest existing one.
+## PvP duel fixes (duel disconnect, GM faction, quit relog)
+
+* **Duel participant leaves** (`DuelManager::on_participant_leave`, called first in `session::save_and_remove_from_world`): the C# had no handling, so the opponent stayed in the Red / Blue faction with the duel registered until the end timer, and `DuelAccepted` answered "already started". A started duel now ends at once as a **draw** (`SCDuelEndedPacket` `det` 3; the C# end timer instead decided by remaining HP) for both sides and restores both factions, so a disconnect is neither a win for the opponent (no `WIN_DUEL` credit to farm by dropping) nor a surrender; a pending request is dropped. No 1.2 oracle for the retail result.
 * **`/setfaction` is persistent** (`faction::set_faction_persistent`): a GM change goes through the `Character.SetFaction` effects (housing, guild, party) and ends any temporary faction, so `characters.faction_id` stores it. Only duel and battlefield factions are temporary.
 * **Quit game frees the account** (`leave_world_task`, target 0): the C# kept the connection and the `AccountManager` entry until the client closed the socket or the 30-60 s dead-connection sweep did, so a relog right after quit got "enter world denied, reason 1" (`already_connected`). The server now unregisters the account and closes the connection after `SCLeaveWorldGranted`; `AccountManager::remove_if_owned` makes a late close of the old connection leave a newer login of the same account alone. Saves are unchanged (still under the transaction lock, all-or-nothing).
+* **Disconnect after a leave does not save again** (`session::on_disconnect`): a connection keeps its `active_char` after quit / character select (as in the C#), so the closing socket re-ran the departure and re-saved a character that was already saved and removed, and that may meanwhile be online on a newer connection. The disconnect now returns early when the character is no longer the live world entry.
+* **Battlefield buffs are never saved** (`Buff::session_only`, set by `instant_game::apply_battlefield_buffs`): `battle_field_buffs` 6266 (1 200 000 ms) and 8000007 (3 600 000 ms) have save rule 1 and a duration, so autosave or a logout to the character select persisted them; they were only removed in leave / disconnect. `Buffs::should_persist` is false for session-only effects.
+* **Battlefield assists / duel scoring data**: `game_score_rules` has no assist (204) row for rule set 28 and no rows at all for rule set 24, so the data authors no assist score there and none is invented.
 * **Rotate-winner and bind-on-pickup rolls** (checked, no change): with the party rule `ROTATE_WINNER` and more than one eligible player, `TryTakeLootLocked` hands the item to the round-robin winner before the `rollMandatory` check, so `RollForBindOnPickup` and `MinimumGrade` never roll under that rule (a mirrored C# order). Rolls happen under `FREE_FOR_ALL` and `LOOT_MASTER`.
+
+## Duel fixes (2026-10-20)
+
+Oracles: the 1.2-era C# (`git show a2ab80abd^:AAEmu.Game/Core/Managers/DuelManager.cs`) and the 10.x C# `DuelManager` (its source is not in this tree or on this machine: statements below that cite 10.x are from the earlier research notes and cannot be re-checked here). Rust: `systems/social/duel.rs`, `packets/duel.rs`.
+
+- **Countdown timing** (deviates from the 1.2 C#, which sends `SCDuelStarted` and `SCDuelStartCountdown` together from `DuelStart`, `DuelManager.cs:132-135`). `SCDuelStartCountdown` is now sent to both at the acceptance and `SCDuelStarted` follows `DUEL_START_DELAY` (3 s) later, like 10.x `DuelAccepted` (the client runs a fixed 3000 ms countdown, see the 10.x `SCDuelStartCountdownPacket` remarks). The 1.2 client has the `OnDuelStartCountdown` UI event next to `OnDuelStarted` (`x2game.dll`), so it handles the packet on its own.
+- **Refuse after the start** (deviates from both C#): `DuelCancel` for a duel that already started ran `DuelCleanUp`, which only dropped the registration and left the flag, the Red / Blue factions and the client duel state behind (later `DuelStop` then found nothing). A refuse / cancel is now honoured only for a pending challenge and only from one of its two participants (the participant check is 10.x `DuelCancel`); otherwise it is logged and ignored, so the started duel ends through the normal stop path.
+- **Challenge validation** (10.x `DuelRequest`, `DuelManager.cs:96-136`): self -> `BadDuelSelf` (513), unknown / offline target -> `BadDuelTarget` (504), challenger already registered -> `AlreadyInDuel` (505), target registered (a duel or a pending challenge) -> `OtherAlreadyInDuel` (506), all sent to the challenger. Not in any oracle: a dead target (hp <= 0) also gives `BadDuelTarget`. Neither C# `DuelManager` has a distance or location rule for the request, so `DuelBadLocation` (516), `DuelOtherBusy` (515) and `TargetTooFar` (517) are never sent (no rule invented). The data does carry duel-related client rules that the server does not enforce: `skill_reqs` 78 ("cannot request a duel to a target who already started a duel", `tag_id` 566, tag "Duel") - the server's `OtherAlreadyInDuel` check covers it - and the `cannot_duel_during_force_attack` error id in the client's error table; neither gives a distance or location condition. The check-and-register is one critical section. The ids are the 1.2 client's: its error table lists `bad_duel_target`, `already_in_duel`, `other_already_in_duel`, `target_rejected_duel` ... `bad_duel_self`, `duel_other_busy`, `duel_bad_location` in that order (`x2game.dll`, reversed in memory), matching 504-516.
+- Because a pending challenge now blocks both players, an unanswered challenge expires after 30 s (`REQUEST_TIMEOUT`, an UNSOURCED constant: no compact table or 1.2 C# value; 30 s is the figure recalled from 10.x `RequestTimeout`/`DuelRequestExpired`, which cannot be re-checked here; the challenger gets `TargetRejectedDuel`). `DuelAccepted` also follows 10.x in answering `BadDuelTarget` for an unknown challenge and refusing an accept from anybody but the challenged character.
+- `SCAreaChatBubble` type 543 (research only): both C# versions send `(true, challengerObjId, 543)` from `DuelStart` (1.2 C# `DuelManager.cs:133`, 10.x `:303`; the 10.x packet is unchanged). In `compact.sqlite3` `bubble_effects` id 543 (kind 2) is a Nuia lore line, part of an unrelated 540-546 series, and no `bubble_effects` row mentions a duel, so the value is probably a guess carried over from a packet capture; no oracle for another value exists, so it is unchanged.
+- **Atomic challenge release / dead challenger.** `refuse`, the request timeout, the leave of an unanswered participant and the accept now compete for one `released`/`started` transition under the duel's state lock (`Duel::claim_release`): exactly one wins and owns the clean-up, so a stale refuse or expiry can no longer strip the flag state / Red-Blue factions of a duel that was just accepted, and an accept after a release is answered `BadDuelTarget`. An accept whose challenger died meanwhile releases the challenge with `BadDuelTarget` (the request-time dead check, repeated; no new error id).
+
 ## Bevy protocol audit (October 19, 2026)
 
 The Bevy 1.2 client (`AABevy1.2`) is the main client; its reverse-engineering notes
@@ -2335,9 +2409,9 @@ The Bevy 1.2 client (`AABevy1.2`) is the main client; its reverse-engineering no
 | M8 | `SCCraftFailed` never writes more than 20 entries (count clamped to 0..=20). Still unsent | per Bevy RE notes (`391e0840` -> `394d2370` clamp) |
 | M9 | A missing trial reporter name is written as an empty string (the C# omitted the length) | per Bevy RE notes (string always has its `u16` length) |
 | M10 | Bounty rows write `notGuilty` before `guilty` | verified: row reader `397bebf0` reads `notGuilty` (`+0xc8`) then `guilty` (`+0xcc`) |
-| M14 | `SCUnitState` of a character sets flag bit3 (`0x0008`) while force attack is on, so late observers see Bloodlust | verified: `397c9480` stores bit3 of the `u16` flags in the unit's force-attack byte |
+| M14 | `SCUnitState` of a character sets flag bit3 (`0x0008`) while force attack is on, so late observers see Bloodlust | verified: the client chain is `397c9480` -> `398a1f90` -> unit+0x3bbc (the force-attack byte) for bit3 of the `u16` flags |
 | M15 | `SCCooldowns` has a full writer (`i32` count + `[id, total, remaining]` u32 triples, skills then tags, 150 per list) and is sent after `SCCharacterState` when the character has running skill cooldowns. The server keeps only the end time of a skill cooldown and no tags, so `total` equals `remaining` | verified: `397b64d0` -> `397b2350`; entries are appended, an empty list is no reset. Cooldowns are not persisted, so a freshly loaded character normally has none |
-| CS | The client CS table entries missing from `opcodes::cs` were added: `0x11f CSRequestSetBountyMoney`, `0x120 CSSendBountyUpdate`, `0x130 CSRankSnapshot` (already handled through a local const, now the table entry), `0x133 CSChangeAutoUseAAPoint` | the Bevy `opcodes.rs` (client table); 0x130 additionally by the RE notes in `ranking_packets.rs`. `0x11f`/`0x120` are logged no-ops (the bounty ledger is not wired to the wallet, TODO); `0x133` sets `Character.auto_use_aa_point` |
+| CS | The client CS table entries missing from `opcodes::cs` were added: `0x11f CSRequestSetBountyMoney`, `0x120 CSSendBountyUpdate`, `0x130 CSRankSnapshot` (already handled through a local const, now the table entry), `0x133 CSChangeAutoUseAAPoint` | the Bevy `opcodes.rs` (client table); 0x130 additionally by the RE notes in `ranking_packets.rs`. `0x11f`/`0x120` are logged no-ops (the bounty ledger is not wired to the wallet, TODO); `0x133` sets `Character.auto_use_aa_point` and answers with `SCItemTaskSuccess` (`ItemTaskType` 110 carrying the one-byte `ChangeAutoUseAAPoint` task, action 18); the 1.2 C# had the task class but no 0x133 handler, so this reply is inferred, not observed on a live client |
 
 Doc-only items:
 
@@ -2371,24 +2445,17 @@ unit id up in the client's objects and plays an effect (`FUN_393558e0`) on it wh
   from the ability exp like the quest requirements do, is 20 or more (C# and upstream: fixed
   30 s).
 
-## Duel fixes (2026-10-20)
-
-Oracles: the 1.2-era C# (`git show a2ab80abd^:AAEmu.Game/Core/Managers/DuelManager.cs`) and the 10.x C# (`D:/aa-re/zone/aaemu-world-10x/AAEmu.Game/Core/Managers/DuelManager.cs`). Rust: `systems/social/duel.rs`, `packets/duel.rs`.
-
-- **Countdown timing** (deviates from the 1.2 C#, which sends `SCDuelStarted` and `SCDuelStartCountdown` together from `DuelStart`, `DuelManager.cs:132-135`). `SCDuelStartCountdown` is now sent to both at the acceptance and `SCDuelStarted` follows `DUEL_START_DELAY` (3 s) later, like 10.x `DuelAccepted` (the client runs a fixed 3000 ms countdown, see the 10.x `SCDuelStartCountdownPacket` remarks). The 1.2 client has the `OnDuelStartCountdown` UI event next to `OnDuelStarted` (`x2game.dll`), so it handles the packet on its own.
-- **Refuse after the start** (deviates from both C#): `DuelCancel` for a duel that already started ran `DuelCleanUp`, which only dropped the registration and left the flag, the Red / Blue factions and the client duel state behind (later `DuelStop` then found nothing). A refuse / cancel is now honoured only for a pending challenge and only from one of its two participants (the participant check is 10.x `DuelCancel`); otherwise it is logged and ignored, so the started duel ends through the normal stop path.
-- **Challenge validation** (10.x `DuelRequest`, `DuelManager.cs:96-136`): self -> `BadDuelSelf` (513), unknown / offline target -> `BadDuelTarget` (504), challenger already registered -> `AlreadyInDuel` (505), target registered (a duel or a pending challenge) -> `OtherAlreadyInDuel` (506), all sent to the challenger. Not in any oracle: a dead target (hp <= 0) also gives `BadDuelTarget`. Neither C# has a distance or location rule, so `DuelBadLocation` (516), `DuelOtherBusy` (515) and `TargetTooFar` (517) are never sent (no rule invented). The check-and-register is one critical section. The ids are the 1.2 client's: its error table lists `bad_duel_target`, `already_in_duel`, `other_already_in_duel`, `target_rejected_duel` ... `bad_duel_self`, `duel_other_busy`, `duel_bad_location` in that order (`x2game.dll`, reversed in memory), matching 504-516.
-- Because a pending challenge now blocks both players, an unanswered challenge expires after 30 s (10.x `RequestTimeout`/`DuelRequestExpired`; the challenger gets `TargetRejectedDuel`). `DuelAccepted` also follows 10.x in answering `BadDuelTarget` for an unknown challenge and refusing an accept from anybody but the challenged character.
-- `SCAreaChatBubble` type 543 (research only): both C# versions send `(true, challengerObjId, 543)` from `DuelStart` (1.2 C# `DuelManager.cs:133`, 10.x `:303`; the 10.x packet is unchanged). In `compact.sqlite3` `bubble_effects` id 543 (kind 2) is a Nuia lore line, part of an unrelated 540-546 series, and no `bubble_effects` row mentions a duel, so the value is probably a guess carried over from a packet capture; no oracle for another value exists, so it is unchanged.
-
 ## Dash heading at the end point (2026-10-20)
 
 `SkillController::step` turned the unit toward `heading(new, end)`. On the last step `new` equals
 `end` up to float rounding, so `atan2` of a near-zero vector picked an arbitrary direction (pi or
 0, depending on the tick's `dt`): the unit could flip to face backwards on the final tick and the
 last movement packet carried that yaw (seen as a Linux-only failure of
-`dash_moves_npc_and_broadcasts_movement`). Within 1e-3 of the end point the heading of the step
-itself (`heading(cur, end)`) is used. The C# original has the same degenerate `atan2`.
+`dash_moves_npc_and_broadcasts_movement`). The final step (`travel >= target_dist`) now lands
+exactly on the end point, and when the new position is within float noise of it (a tolerance of
+4 ulp of the coordinate magnitude, at least 1e-3 m: the f32 ulp is ~0.002 m beyond 16384, so a
+fixed 1e-3 m was not enough on large maps) the heading of the step itself (`heading(cur, end)`)
+is used. The C# original has the same degenerate `atan2`.
 
 ## Guild invitation and rank guards, loot master membership (2026-10-20)
 
