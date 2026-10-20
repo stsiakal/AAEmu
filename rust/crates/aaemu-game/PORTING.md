@@ -2382,3 +2382,12 @@ unit id up in the client's objects and plays an effect (`FUN_393558e0`) on it wh
   `doodad_func_navi_teleports` / `_open_portals` tables hold only ids, and the one real use, the
   White Dress Portrait (doodad 3347, skill 15193), already works through its `Return` special
   effect (worldgate 304) without the packet. `SCNaviTeleport` stays unsent.
+
+## Dash heading at the end point (2026-10-20)
+
+`SkillController::step` turned the unit toward `heading(new, end)`. On the last step `new` equals
+`end` up to float rounding, so `atan2` of a near-zero vector picked an arbitrary direction (pi or
+0, depending on the tick's `dt`): the unit could flip to face backwards on the final tick and the
+last movement packet carried that yaw (seen as a Linux-only failure of
+`dash_moves_npc_and_broadcasts_movement`). Within 1e-3 of the end point the heading of the step
+itself (`heading(cur, end)`) is used. The C# original has the same degenerate `atan2`.
