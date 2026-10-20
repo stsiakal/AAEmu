@@ -249,6 +249,14 @@ pub fn do_die(
     killer: Option<&WorldObject>,
     kill_reason: KillReason,
 ) {
+    // `DespawnOnCreatorDeath`: the dying unit's skill summons go with it (systems::npcs). This
+    // runs before the Slave / house override returns below so every death path handles them.
+    server
+        .systems
+        .skills
+        .ext
+        .npcs()
+        .on_unit_died(server, victim);
     if crate::systems::housing::dominion::runtime::handle_tower_death(server, victim) {
         return;
     }
@@ -1372,6 +1380,11 @@ pub fn set_faction_with_temp(server: &GameServer, unit: &WorldObject, faction_id
     };
     if old == faction_id {
         tracing::info!("SetFaction: faction has already been established factionId={faction_id}");
+        if !temp {
+            // A persistent change to the faction a temporary change already shows makes that
+            // faction permanent (it is then saved and no longer restored).
+            unit.with_unit(|u| u.unit_mut().faction_temporary = false);
+        }
     } else {
         unit.with_unit(|u| {
             let u = u.unit_mut();
