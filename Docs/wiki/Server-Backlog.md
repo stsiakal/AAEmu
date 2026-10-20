@@ -19,17 +19,19 @@ Paths are under `rust/crates/aaemu-game/src/`.
 
 Confirmed in code unless marked SUSPECT.
 
-### In progress
-
-| Item | Severity | What is wrong | Where | Fix direction |
-| --- | --- | --- | --- | --- |
-| Bank deposit/withdraw (lane `money-guard`) | HIGH | A negative amount mints gold; the bank works from anywhere | `systems/economy/inventory.rs:1505` (`change_money`, no sign check) | Reject negative amounts; require bank NPC range |
-| `CSSellItems` (lane `money-guard`) | HIGH | Duplicate entries are paid N times; no merchant distance | `systems/economy/store.rs:573-670`, `:656` | Reject duplicates; check distance |
-| `CSBuyItems` doodad shop (lane `money-guard`) | HIGH | `npc_obj_id` 0 skips the catalog filter | `systems/economy/store.rs` ~281-372 | Apply the filter for doodad shops |
-| Auction (lane `money-guard`) | MED | Usable from anywhere | `systems/economy/auction_packets.rs:52-70` | Require auctioneer range |
-
 ### Fixed
 
+- **Bank deposit/withdraw** (reproduced, fixed in `334987a9a`): non-positive amounts are refused
+  (a negative deposit used to mint gold and drive the bank negative) and the bank needs a banker
+  NPC within 5 m of the current interaction object.
+- **`CSSellItems`** (reproduced, fixed in `334987a9a`): each item is listed once, the merchant must
+  be within 3 m, and only items actually moved to buy-back are paid (repeated entries and failed
+  moves used to pay, with wrapping arithmetic).
+- **`CSBuyItems` doodad shop** (reproduced, fixed in `334987a9a`): goods must come from the NPC's
+  merchant pack or the doodad's `DoodadFuncStoreUi` pack; a purchase without a catalog is refused,
+  so a zero `npc_obj_id` no longer makes every template buyable.
+- **Auction distance** (reproduced, fixed in `334987a9a`): requests need an auctioneer NPC within
+  5 m, named by the packet ids or the current interaction object (the ids were ignored).
 - **Guild invitations and ranks** (reproduced, fixed in `12336d422`): a guild invite reply needs a
   pending, unexpired invitation to that guild and a replier without a guild; kick and role change
   need a strictly higher rank than the target, so the leader can be neither kicked nor demoted.
