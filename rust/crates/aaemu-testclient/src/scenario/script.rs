@@ -104,7 +104,18 @@
 //! useitem <template> <stack id>     use an existing bag stack with `icast`
 //! slavekill                         `/kill` the slave summoned by the last `icast` (GM)
 //! drop                               end the script without logging out (a disconnect)
+//! greply <faction id> <0|1>          CSReplyExpeditionInvitation without waiting for an invite
+//! sync <token> [count]              suite barrier: wait until `count` bots (default: all) are here
+//! expectpkt <PacketName> [secs]     fail unless the packet arrives within `secs` (default 5)
+//! expectnopkt <PacketName> [secs]   fail if the packet arrives within `secs` (default 5)
+//! expectlog <regex> [secs]          fail unless a new game-log line matches (AAEMU_VERIFY_GAME_LOG)
+//! expectdb "<sql>" <value> [secs]   fail unless the SQL's value equals `value`
+//!                                   (AAEMU_VERIFY_MYSQL; re-checked for `secs` when given)
 //! ```
+//!
+//! `rawcs` bodies understand `SELF`, `PEER` (the first other player) and `SLAVE` (the last
+//! created slave) in place of their `bc` object id. Every failed expectation prints a `FAIL`
+//! line and makes the run exit non-zero.
 
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
@@ -286,13 +297,175 @@ async fn attack(
     game.start_skill(skill, target.obj_id).await
 }
 
+/// Splits an argument line, keeping double-quoted spans together (`expectdb "<sql>" <value>`,
+/// `expectlog "<regex>" [secs]`). Inside quotes, `\"` and `\\` are escapes.
+fn split_quoted(s: &str) -> anyhow::Result<Vec<String>> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let mut quoted = false;
+    let mut escaped = false;
+    for c in s.chars() {
+        if escaped {
+            // Only `\"` and `\\` are escapes; `\d` in a regex stays intact.
+            if c != '"' && c != '\\' {
+                cur.push('\\');
+            }
+            cur.push(c);
+            escaped = false;
+            continue;
+        }
+        match c {
+            '\\' if quoted => escaped = true,
+            '"' => quoted = !quoted,
+            c if c.is_whitespace() && !quoted => {
+                if !cur.is_empty() {
+                    out.push(std::mem::take(&mut cur));
+                }
+            }
+            c => cur.push(c),
+        }
+    }
+    if quoted {
+        bail!("unterminated quote in {s:?}");
+    }
+    if !cur.is_empty() {
+        out.push(cur);
+    }
+    Ok(out)
+}
+
+/// Reads the complete lines appended to a log file since `offset`, then advances `offset`.
+fn read_log_since(path: &std::path::Path, offset: &mut u64) -> anyhow::Result<String> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut f = std::fs::File::open(path).with_context(|| format!("opening {path:?}"))?;
+    f.seek(SeekFrom::Start(*offset))?;
+    let mut buf = Vec::new();
+    f.read_to_end(&mut buf)?;
+    // Only complete lines count (a line still being written is read next time).
+    let complete = buf.iter().rposition(|b| *b == b'\n').map_or(0, |i| i + 1);
+    *offset += complete as u64;
+    Ok(String::from_utf8_lossy(&buf[..complete]).into_owned())
+}
+
+/// `expectpkt <PacketName> [secs]`.
+async fn expect_packet(game: &mut GameClient, want: &str, secs: u64) -> anyhow::Result<()> {
+    let deadline = Instant::now() + Duration::from_secs(secs);
+    loop {
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            bail!("expected packet {want} within {secs} s; it did not arrive");
+        }
+        if let Some(p) = game
+            .recv_within(left.min(Duration::from_millis(250)))
+            .await?
+        {
+            if p.name().eq_ignore_ascii_case(want) {
+                println!("    got {want}");
+                return Ok(());
+            }
+        }
+    }
+}
+
+/// `expectnopkt <PacketName> [secs]`.
+async fn expect_no_packet(game: &mut GameClient, want: &str, secs: u64) -> anyhow::Result<()> {
+    let deadline = Instant::now() + Duration::from_secs(secs);
+    loop {
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            println!("    no {want} in {secs} s");
+            return Ok(());
+        }
+        if let Some(p) = game
+            .recv_within(left.min(Duration::from_millis(250)))
+            .await?
+        {
+            if p.name().eq_ignore_ascii_case(want) {
+                bail!("unexpected packet {want} within {secs} s");
+            }
+        }
+    }
+}
+
+/// `expectlog <regex> [secs]`: a line written after the command started must match.
+async fn expect_log(game: &mut GameClient, pattern: &str, secs: u64) -> anyhow::Result<()> {
+    let path = std::env::var("AAEMU_VERIFY_GAME_LOG")
+        .context("set AAEMU_VERIFY_GAME_LOG to the game server log")?;
+    let path = std::path::Path::new(&path);
+    let re = regex::Regex::new(pattern).with_context(|| format!("bad regex {pattern:?}"))?;
+    let mut offset = std::fs::metadata(path)
+        .with_context(|| format!("reading game log {path:?}"))?
+        .len();
+    let deadline = Instant::now() + Duration::from_secs(secs);
+    loop {
+        let text = read_log_since(path, &mut offset)?;
+        if let Some(line) = text.lines().find(|l| re.is_match(l)) {
+            println!("    log: {line}");
+            return Ok(());
+        }
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            bail!("no new line matching /{pattern}/ within {secs} s in {path:?}");
+        }
+        // Keep the session alive (and the packet state fresh) while polling.
+        game.recv_within(left.min(Duration::from_millis(200)))
+            .await?;
+    }
+}
+
+/// `expectdb "<sql>" <expected> [secs]`: the SQL's single value must equal `expected`
+/// (re-checked every 250 ms when `secs` is given).
+fn expect_db(sql: &str, expected: &str, secs: u64) -> anyhow::Result<()> {
+    let spec = std::env::var("AAEMU_VERIFY_MYSQL")
+        .context("set AAEMU_VERIFY_MYSQL to 'mysql.exe <args...> <database>'")?;
+    let mut parts = split_quoted(&spec)?;
+    anyhow::ensure!(!parts.is_empty(), "AAEMU_VERIFY_MYSQL is empty");
+    let exe = parts.remove(0);
+    let deadline = Instant::now() + Duration::from_secs(secs);
+    loop {
+        let out = std::process::Command::new(&exe)
+            .args(&parts)
+            .args(["-N", "-B", "-e", sql])
+            .output()
+            .with_context(|| format!("running {exe}"))?;
+        if !out.status.success() {
+            bail!(
+                "mysql failed: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            );
+        }
+        let got = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        if got == expected {
+            println!("    db {sql:?} = {got}");
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            bail!("expected {expected:?} from {sql:?}; got {got:?}");
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+}
+
 pub(super) async fn run(
     game: &mut GameClient,
     cfg: &super::BotConfig,
     r: &mut Runner<'_>,
+    input: &super::ScriptInput<'_>,
 ) -> anyhow::Result<()> {
-    let path = std::env::var("AAEMU_SCRIPT").context("set AAEMU_SCRIPT to the script file")?;
-    let text = std::fs::read_to_string(&path).with_context(|| format!("reading {path}"))?;
+    let mut current = String::new();
+    run_lines(game, cfg, r, input, &mut current)
+        .await
+        .with_context(|| format!("at script line {current}"))
+}
+
+async fn run_lines(
+    game: &mut GameClient,
+    cfg: &super::BotConfig,
+    r: &mut Runner<'_>,
+    input: &super::ScriptInput<'_>,
+    current_line: &mut String,
+) -> anyhow::Result<()> {
+    let text = input.text;
     let s = r.begin("game.script");
     let mut items: HashMap<u32, u64> = HashMap::new();
     let mut clock = 40_000u32;
@@ -314,6 +487,7 @@ pub(super) async fn run(
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
+        *current_line = format!("{}: {line}", n + 1);
         println!("> [{}] {line}", n + 1);
         let (cmd, rest) = line.split_once(' ').unwrap_or((line, ""));
         let parts: Vec<&str> = rest.split_whitespace().collect();
@@ -970,6 +1144,68 @@ pub(super) async fn run(
                     game.recv_within(Duration::from_millis(500)).await?;
                 }
             }
+            "sync" => {
+                // Suite barrier: wait until `count` bots (default: every bot in the suite)
+                // reached the same token.
+                let token = parts.first().context("sync needs a token")?;
+                let token: String = token
+                    .chars()
+                    .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+                    .collect();
+                let dir = input
+                    .sync_dir
+                    .context("sync is only available in a verify suite")?;
+                let count: usize = parts
+                    .get(1)
+                    .and_then(|x| x.parse().ok())
+                    .unwrap_or(input.bots);
+                std::fs::create_dir_all(dir)?;
+                std::fs::write(dir.join(format!("{token}.{}", input.bot)), b"")?;
+                let deadline = Instant::now() + Duration::from_secs(120);
+                loop {
+                    let reached = std::fs::read_dir(dir)?
+                        .filter_map(Result::ok)
+                        .filter(|e| {
+                            e.file_name()
+                                .to_string_lossy()
+                                .starts_with(&format!("{token}."))
+                        })
+                        .count();
+                    if reached >= count {
+                        println!("    sync {token}: {reached} bot(s)");
+                        break;
+                    }
+                    if Instant::now() >= deadline {
+                        bail!("sync {token}: {reached} of {count} bots reached it within 120 s");
+                    }
+                    game.recv_within(Duration::from_millis(200)).await?;
+                }
+            }
+            "expectpkt" => {
+                let name = parts.first().context("expectpkt <PacketName> [secs]")?;
+                let secs: u64 = parts.get(1).and_then(|x| x.parse().ok()).unwrap_or(5);
+                expect_packet(game, name, secs).await?;
+            }
+            "expectnopkt" => {
+                let name = parts.first().context("expectnopkt <PacketName> [secs]")?;
+                let secs: u64 = parts.get(1).and_then(|x| x.parse().ok()).unwrap_or(5);
+                expect_no_packet(game, name, secs).await?;
+            }
+            "expectlog" => {
+                let args = split_quoted(rest)?;
+                let pattern = args.first().context("expectlog <regex> [secs]")?;
+                let secs: u64 = args.get(1).and_then(|x| x.parse().ok()).unwrap_or(5);
+                expect_log(game, pattern, secs).await?;
+            }
+            "expectdb" => {
+                let args = split_quoted(rest)?;
+                anyhow::ensure!(
+                    args.len() >= 2,
+                    "expectdb \"<sql>\" <expected> [secs] (one argument line)"
+                );
+                let secs: u64 = args.get(2).and_then(|x| x.parse().ok()).unwrap_or(0);
+                expect_db(&args[0], &args[1], secs)?;
+            }
             "await" => {
                 let kind = parts.first().context("await needs an event name")?;
                 let secs: u64 = parts.get(1).and_then(|x| x.parse().ok()).unwrap_or(60);
@@ -1219,6 +1455,17 @@ pub(super) async fn run(
                 game.drain(Duration::from_millis(800), Duration::from_secs(3))
                     .await?;
             }
+            "greply" => {
+                // Answer a guild invitation that was never received (id is the faction id).
+                let id: u32 = num(&parts, 0)?;
+                let join = num::<u8>(&parts, 1)? != 0;
+                let (op, body) = social::reply_expedition_invitation(id, join);
+                game.send_cs(op, &body).await?;
+                let got = game
+                    .drain(Duration::from_millis(800), Duration::from_secs(3))
+                    .await?;
+                show(&got);
+            }
             "grole" => {
                 let (role, id): (u8, u32) = (num(&parts, 0)?, num(&parts, 1)?);
                 let (op, body) = social::change_expedition_member_role(role, id);
@@ -1299,8 +1546,8 @@ pub(super) async fn run(
             }
             "rawcs" => {
                 let opcode = u16::from_str_radix(parts.first().context("opcode")?, 16)?;
-                // `SELF` / `SLAVE` stand for our own / the last created slave's object id in the
-                // packet's `bc` encoding.
+                // `SELF` / `PEER` / `SLAVE` stand for our own, the first other player's and the
+                // last created slave's object id in the packet's `bc` encoding.
                 let bc = |id: u32| {
                     format!(
                         "{:02x}{:02x}{:02x}",
@@ -1309,11 +1556,17 @@ pub(super) async fn run(
                         (id >> 16) & 0xff
                     )
                 };
-                let hex = parts
-                    .get(1)
-                    .copied()
-                    .unwrap_or("")
+                let raw = parts.get(1).copied().unwrap_or("");
+                let peer_bc = if raw.contains("PEER") {
+                    bc(peer(game, None)
+                        .context("PEER needs another player in sight")?
+                        .obj_id)
+                } else {
+                    String::new()
+                };
+                let hex = raw
                     .replace("SELF", &bc(game.state.self_obj))
+                    .replace("PEER", &peer_bc)
                     .replace("SLAVE", &bc(last_slave));
                 let body: Vec<u8> = (0..hex.len() / 2)
                     .map(|i| u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16))
@@ -1575,7 +1828,7 @@ pub(super) async fn run(
             other => bail!("unknown script command '{other}' at line {}", n + 1),
         }
     }
-    r.end(s, format!("{path} done"));
+    r.end(s, format!("{} done", input.label));
 
     let s = r.begin("game.leave");
     game.leave_world(0).await?;
@@ -1585,4 +1838,26 @@ pub(super) async fn run(
         .ok();
     r.end(s, "left");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::split_quoted;
+
+    #[test]
+    fn quoted_arguments_keep_spaces_and_escapes() {
+        assert_eq!(
+            split_quoted(" \"SELECT COUNT(*) FROM t WHERE name = 'a b'\" 1 ").unwrap(),
+            vec!["SELECT COUNT(*) FROM t WHERE name = 'a b'", "1"]
+        );
+        assert_eq!(
+            split_quoted(r#""a \"b\"" x"#).unwrap(),
+            vec![r#"a "b""#, "x"]
+        );
+        assert_eq!(
+            split_quoted(r#""object \d+ ignored""#).unwrap(),
+            vec![r"object \d+ ignored"]
+        );
+        assert!(split_quoted("\"unterminated").is_err());
+    }
 }
