@@ -22,7 +22,11 @@ locks, ports or processes, so sessions cannot collide.
 
 On this machine the lane base is **`rust-rewrite-bots`** and MySQL is 8.4: both are set in the
 untracked `D:/aaemu-lanes/machine.conf` (`AAEMU_LANE_BASE`, `AAEMU_MYSQL_BIN`), which `lane.sh`
-reads first.
+reads first. `AAEMU_LANE_REMOTE=origin` there makes `new` / `sync` / `land` fast-forward the base
+to the fork's copy first and `land` push it afterwards: the fork's
+[`sync-rust-rewrite`](.github/workflows/sync-rust-rewrite.yml) workflow syncs `rust-rewrite` from
+upstream every 3 hours and opens a pull request into `rust-rewrite-bots`, which a person merges
+once CI passes.
 
 ```sh
 Scripts/lane.sh gc                          # first: report leftovers of finished sessions
