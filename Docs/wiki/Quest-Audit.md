@@ -144,7 +144,7 @@ sphere steps world coordinates.
 Run from `rust/` to verify actual loader accounting and optional client geometry:
 
 ```powershell
-$env:AAEMU_COMPACT_DB = 'C:/Users/messe/Documents/GitHub/AAEmu-rust-1.2/rust/crates/aaemu-game/app/Data/compact.sqlite3'
+$env:AAEMU_COMPACT_DB = 'rust/crates/aaemu-game/app/Data/compact.sqlite3'
 $env:AAEMU_GAME_PAK = 'D:/AA1.2/game_pak'
 $env:AAEMU_QUEST_SPHERE_AUDIT = 'D:/aaemu-audits/quests-spheres.json'
 cargo test -p aaemu-game --lib real_compact_db_quest -- --ignored --nocapture

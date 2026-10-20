@@ -215,6 +215,7 @@ Authoritative component diagram: [`Docs/wiki/Components.md`](Docs/wiki/Component
 | `rust/crates/aaemu-login/` | Login server (`src/`, runtime files in `app/`) |
 | `rust/crates/aaemu-game/` | Game server (largest crate; runtime files in `app/`) |
 | `rust/crates/aaemu-physics/` | CryPhysics port (collision worlds, ships) used by `systems::ai::collision`; game config `Configurations/Physics.json`; docs in `rust/docs/physics/` |
+| `rust/crates/aaemu-pak/` | Lossless chunked virtual ArcheAge pak and content-addressed updates |
 | `rust/crates/aaemu-launcher/` | Starts the 1.2 client with the Trion login ticket (`--client`, `--login`, `--user`); see `rust/LIVE-TESTING.md` §6 |
 | `rust/crates/aaemu-clientdriver/` | Lua driver for the real client (injected `aadriver.dll` + CLI); [`rust/docs/client/LUA-DRIVER.md`](rust/docs/client/LUA-DRIVER.md) |
 | `rust/crates/aaemu-testclient/` | Headless 1.2 client bot: live smoke tests, parity diffs, load tests ([`rust/LIVE-TESTING.md`](rust/LIVE-TESTING.md)) |
