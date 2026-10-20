@@ -163,12 +163,18 @@ pub fn attach(server: &GameServer, player: PlayerRef) -> Arc<Bot> {
     bot
 }
 
-/// One life-watcher step: a dead bot asks for the normal in-place resurrection once its
-/// `rez_wait_duration` elapsed (the request a client would send).
+/// One life-watcher step: once its `rez_wait_duration` elapsed, a dead bot sends the request a
+/// client would: in place when a resurrection offer is pending, otherwise at the temple.
 pub fn life_step(server: &GameServer, player: &PlayerRef) {
-    let (hp, dead_time, wait_ms, online) = {
+    let (hp, dead_time, wait_ms, online, offer) = {
         let c = player.data();
-        (c.unit.hp, c.dead_time, c.rez_wait_duration, c.is_online)
+        (
+            c.unit.hp,
+            c.dead_time,
+            c.rez_wait_duration,
+            c.is_online,
+            c.skill_char.resurrect_offer,
+        )
     };
     if !online {
         return;
@@ -178,6 +184,6 @@ pub fn life_step(server: &GameServer, player: &PlayerRef) {
     }
     let elapsed_ms = (chrono::Utc::now().timestamp() - dead_time).saturating_mul(1000);
     if elapsed_ms >= i64::from(wait_ms) {
-        crate::systems::skills::resurrect::resurrect_character(server, player, true);
+        crate::systems::skills::resurrect::resurrect_character(server, player, offer);
     }
 }
