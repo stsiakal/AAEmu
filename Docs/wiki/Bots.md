@@ -61,7 +61,7 @@ values.
 
 | Field | Default | Meaning |
 | --- | --- | --- |
-| `login` | `127.0.0.1:1237` | Login server address |
+| `login` | `127.0.0.1:1237` | Login server the bot connects to; the game and stream addresses come from the world cookie. Set it to your server's client login port, which is not 1237 when the ports are remapped |
 | `user`, `password`, `character` | password `testpass` | The account, and the name given to a new character |
 | `game_server_id` | 1 | World to enter |
 | `skill_id` | 2 | Melee skill; also the quest runner's combat skill |
@@ -153,7 +153,11 @@ Two-bot duels, trades and parties run as one process per bot, each with its own 
 
 ## Accounts
 
-- `AutoAccount` on the login server creates an account the first time it logs in.
+- `AutoAccount` on the login server creates an account the first time it logs in. That first
+  login also sets the account's password; later logins must use the same one.
+- The bot sends the password from its config or `--password`, and `testpass` when neither sets
+  one. Some scripts use the account name as the password, but that is a script choice, not a
+  rule.
 - Default account names:
   - `clienttest`: the real 1.2 client
   - `multitest_a` and `multitest_b`: the multiplayer smoke test
