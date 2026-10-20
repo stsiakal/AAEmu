@@ -20,7 +20,7 @@
 //! cast <skill> <npc template>        CSStartSkill on the nearest NPC
 //! dcast <skill> <doodad template> [far]  doodad-target CSStartSkill (walks to it first, unless `far`)
 //! item <template> <count>            `/item add self` and remember the stack id
-//! icast <skill> <item template> <npc template|self>
+//! icast <skill> <item template> <npc template|self|peer|player:NAME>
 //!                                    cast from the remembered item stack
 //! bag                                list the bag contents (slot / id / template / count)
 //! equip <template> <equip slot>      `/item add self`, then the client's bag -> equipment move
@@ -96,6 +96,10 @@
 //! pfight <skill> <secs> [name]       recast on the peer every 1.5 s until one side dies
 //! pkill [name]                       `/kill` with the peer targeted (GM)
 //! loot [npc obj]                     CSLootOpenBag (loot all) at the last killed / cast NPC
+//! rezexpect inplace|temple ok|refused  CSResurrectCharacter, then fail unless SCCharacterResurrected
+//!                                    for our own unit did (ok) / did not (refused) arrive
+//! lootexpect took|failed [npc obj]  like `loot`, then fail unless SCLootItemTook (took) / SCLootItemFailed
+//!                                    (failed) was among the replies
 //! roll roll|pass [index] [npc obj]   CSLootDice for the item at `index` (default 0)
 //! gcreate <name>                     CSCreateExpedition (a guild; needs the party and the gold)
 //! ginvite [name]                     CSInviteToExpedition to the peer (or the named character)
@@ -120,7 +124,7 @@
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
-use aaemu_game::opcodes::sc;
+use aaemu_game::opcodes::{cs, sc};
 use anyhow::{bail, Context};
 
 use super::questitem::{chat_text, gm_command, quest_state, stack_id};
@@ -775,6 +779,14 @@ async fn run_lines(
                     .with_context(|| format!("item {item_tpl} not added with `item`"))?;
                 let target = match parts.get(2).copied() {
                     Some("self") | None => game.state.self_obj,
+                    Some(t) if t == "peer" || t.starts_with("player:") => {
+                        let other = peer(game, t.strip_prefix("player:"))?;
+                        clock += 1500;
+                        game.move_to((other.pos.0 + 1.0, other.pos.1, other.pos.2), clock)
+                            .await?;
+                        game.change_target(other.obj_id).await?;
+                        other.obj_id
+                    }
                     Some(t) => {
                         let tpl: u32 = t.parse()?;
                         let npc = nearest(game, tpl)
@@ -1412,6 +1424,64 @@ async fn run_lines(
                     .drain(Duration::from_millis(1000), Duration::from_secs(4))
                     .await?;
                 show(&got);
+            }
+            "rezexpect" => {
+                let in_place = match parts.first().copied() {
+                    Some("inplace") => true,
+                    Some("temple") => false,
+                    _ => bail!("rezexpect inplace|temple ok|refused"),
+                };
+                let want_ok = match parts.get(1).copied() {
+                    Some("ok") => true,
+                    Some("refused") => false,
+                    _ => bail!("rezexpect inplace|temple ok|refused"),
+                };
+                game.send_cs(cs::CSResurrectCharacterPacket, &[u8::from(in_place)])
+                    .await?;
+                let got = game
+                    .drain(Duration::from_millis(1500), Duration::from_secs(5))
+                    .await?;
+                show(&got);
+                let me = game.state.self_obj;
+                let revived = got.iter().any(|p| {
+                    p.is_sc(sc::SCCharacterResurrectedPacket)
+                        && p.stream().read_bc().is_ok_and(|id| id == me)
+                });
+                if revived != want_ok {
+                    bail!("FAIL rezexpect: resurrected={revived}, expected {want_ok}");
+                }
+                println!("    rezexpect ok (resurrected={revived})");
+            }
+            "lootexpect" => {
+                let want_took = match parts.first().copied() {
+                    Some("took") => true,
+                    Some("failed") => false,
+                    _ => bail!("lootexpect took|failed [npc obj]"),
+                };
+                let obj: u32 = parts
+                    .get(1)
+                    .and_then(|x| x.parse().ok())
+                    .unwrap_or(last_npc);
+                if obj == 0 {
+                    bail!("no NPC to loot: run `kill`/`cast` first or pass the object id");
+                }
+                game.loot_all(obj).await?;
+                let got = game
+                    .drain(Duration::from_millis(1000), Duration::from_secs(4))
+                    .await?;
+                show(&got);
+                let took = got.iter().any(|p| p.is_sc(sc::SCLootItemTookPacket));
+                let failed = got.iter().any(|p| p.is_sc(sc::SCLootItemFailedPacket));
+                if want_took && !took {
+                    bail!("FAIL lootexpect took: no SCLootItemTook (failed: {failed})");
+                }
+                if !want_took && (took || !failed) {
+                    bail!("FAIL lootexpect failed: SCLootItemFailed expected (took: {took}, failed: {failed})");
+                }
+                println!(
+                    "    lootexpect {} ok",
+                    if want_took { "took" } else { "failed" }
+                );
             }
             "roll" => {
                 let roll = match parts.first().copied() {
