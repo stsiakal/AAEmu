@@ -800,7 +800,7 @@ async fn finish_cancels_without_moving_money_when_a_putup_item_became_invalid() 
 
 #[tokio::test]
 async fn failed_item_move_leaves_the_money_untransferred() {
-    let mut w = world();
+    let w = world();
     w.pa.data().money = 100;
     w.pb.data().money = 100;
     let id = give(&w, &w.pa, slot_type::INVENTORY, STACK, 5, 0);
