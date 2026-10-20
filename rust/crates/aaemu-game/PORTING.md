@@ -1753,6 +1753,9 @@ and in NPC wandering / buff remaining times.
 
 ## C# bugs noticed (mirrored, not fixed)
 
+Later sections record fixes for several of these entries; check the subsystem's later
+feature-audit/deviation note before porting one as-is.
+
 * systems::social: `AchievementGameData` reads the `'t'` / `'f'` text booleans of compact.sqlite3 with
   `GetBoolean(column)` (`GetInt64 != 0`), so `is_active`, `is_hidden`, `complete_or` and
   `or_unit_reqs` always load as `false`.
@@ -2552,3 +2555,34 @@ the death never started its timer):
   when the item has no pending repair time. With the timer above, a destroyed vehicle therefore
   comes back at full HP only after its repair wait, not when it is still on cooldown. (As the
   mirrored `SummonSlave.ReadDetails` bug above notes, the timer itself is still lost on restart.)
+
+## Level 51-55 capstones and experience (3.0.4.2 backport, 2026-10-20)
+
+The 1.2 `compact.sqlite3` hides the ten ability-level 55 capstones (`skills.show = 'f'`) and
+carries a placeholder level 51-55 curve (level 51 needs 8,082,000 total exp, level 55
+179,307,360), so the last five levels are not playable the retail way. The opt-in patch
+`SQL/patches/compact/2026-10-20-level-55-retail-3.0.sql` backports the values from the
+3.0.4.2 compact (`D:/aa-re/db-references/3.0.4.2-20240828/compact.sqlite3`):
+
+* `skills.show = 't'` for the one capstone of each ability: 23587, 23588, 23589, 23591, 23592,
+  23593, 23594, 23595, 23596 and 23934 (all `ability_level` 55).
+* `levels.total_exp` 51..55 = 5,174,400 / 6,550,320 / 8,751,792 / 12,164,073 / 17,453,110.
+  The 1.2 `skill_points` (24..28) are kept.
+* `quest_supplies.exp` for levels 51..55 = 9,023 / 12,604 / 16,986 / 21,989 / 27,512, matched
+  by level (`quest_supplies` is keyed by level in both databases); the 1.2 copper is kept.
+* `levels.total_mate_exp` stays at the 1.2 values: the 3.0 rows for 51-55 (1,032,880 ..
+  3,488,622) rise above the untouched 1.2 level 56 row (2,849,000), and
+  `ExperienceManager.Load` (`ExperienceTable::from_templates`) requires strictly increasing
+  `total_mate_exp`, so applying them would make the game data fail to load.
+
+Each `UPDATE` is guarded by the 1.2 original value, so the script is rerun-safe and leaves
+customized rows alone. It applies like the other compact patches: back up the server's
+`Data/compact.sqlite3`, run it offline with `sqlite3` (see the script header), then restart; the
+runtime loaders stay read-only. `PLAYER_LEVEL_CAP` is already 55 and `/level 55` raises the active
+abilities to 55 (`Abilities.AddActiveExp` is capped by the level-55 exp), so the capstones are
+offered and pass the learn-path ability-level check once the data is patched. The regression test
+`data::level55_patch_tests::level55_patch_applies_to_a_copy_and_loads` (`#[ignore]`, gated by
+`AAEMU_COMPACT_DB`) executes the real patch file twice on a copy and checks the values and the
+server loaders. Open (out of tree): the Bevy client's hardcoded XP table
+(`D:/aaemu-client/AABevy1.2/crates/aa-net/src/model.rs`) must be updated to the same 51-55 values
+for its UI to agree.
