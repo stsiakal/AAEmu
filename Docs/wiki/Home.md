@@ -45,6 +45,7 @@ Open source server software for ArcheAge written in Rust (originally written in 
 - [Developer Notes](Developer-Notes)
 - [Dungeons and Mentoring](Dungeons)
 - [Bots](Bots)
+- [Player Bots](Player-Bots)
 - [Server Backlog](Server-Backlog)
 - [Quest Technical Audit](Quest-Audit)
 - [Mail Technical Audit](Mail-Audit)
