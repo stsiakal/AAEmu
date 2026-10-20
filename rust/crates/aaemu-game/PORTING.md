@@ -2389,3 +2389,18 @@ Oracles: the 1.2-era C# (`git show a2ab80abd^:AAEmu.Game/Core/Managers/DuelManag
 last movement packet carried that yaw (seen as a Linux-only failure of
 `dash_moves_npc_and_broadcasts_movement`). Within 1e-3 of the end point the heading of the step
 itself (`heading(cur, end)`) is used. The C# original has the same degenerate `atan2`.
+
+## Guild invitation and rank guards, loot master membership (2026-10-20)
+
+Deviations from the 1.2 C# `ExpeditionManager` / `TeamManager`, which trusted every client id
+(found by a code audit; reproduced in flow tests, no retail oracle for the missing checks):
+
+- `ReplyInvite` joined any guild whose id the client sent. `Invite` now records a pending
+  invitation per invited character (guild id, 60 s expiry like party invitations); the reply must
+  match it, is consumed by any answer, and a character already in a guild cannot join another.
+- `Kick` and `ChangeMemberRole` only checked the caller's policy flag (and `role > new_role`). Both
+  now also require the caller's role to be strictly higher than the target's current role, so the
+  leader (255) can neither be expelled nor demoted, and equals cannot act on each other.
+- `ChangeLootingRule` accepted any character id as loot master. It must now be 0 or a member of the
+  team; otherwise only that field is ignored (logged). Over-head markers are unchanged: their
+  target is any unit or object, not a team member.
