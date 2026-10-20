@@ -6,5 +6,6 @@
 
 UPDATE `slaves`
 SET `slave_kind_id` = 10
-WHERE `id` IN (75, 80);
+WHERE `id` IN (75, 80)
+  AND `slave_kind_id` = 2;   -- original SmallSailingShip value; reruns and custom rows stay untouched
 
