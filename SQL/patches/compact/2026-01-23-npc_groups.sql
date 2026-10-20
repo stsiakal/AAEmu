@@ -15,6 +15,10 @@
 
 PRAGMA foreign_keys = false;
 
+-- Deterministic full rebuild of npc_groups: running it again produces the exact same table,
+-- and it replaces the table on an already-fixed database. It is recorded as applied, so the
+-- automatic applier runs it only once.
+
 -- ----------------------------
 -- Table structure for npc_groups
 -- ----------------------------

@@ -99,6 +99,11 @@ cmd_sync() {
     if [ -s "$COMPACT" ]; then cp "$COMPACT" "$LIVE/rs-game/Data/"
     else echo "WARNING: no compact.sqlite3 (set AAEMU_COMPACT_DB)"; fi
   fi
+  # SQL/patches/compact/*.sql are the source of truth for fixes to the read-only game data;
+  # record and apply them to the runtime copy (a no-op when they are already recorded).
+  if [ -s "$LIVE/rs-game/Data/compact.sqlite3" ]; then
+    (cd "$REPO/rust" && cargo run -q -p xtask -- compact-patches "$(winpath "$LIVE/rs-game/Data/compact.sqlite3")")
+  fi
   [ -n "$LANE" ] && lane_configs
   for f in "$LIVE/rs-login/Config.Local.json" "$LIVE/rs-game/Config.Local.json"; do
     [ -f "$f" ] || echo "WARNING: missing $f (ports, DB, ClientData) - see rust/LIVE-TESTING.md section 2"

@@ -2,4 +2,5 @@
 -- Fix for Elf Main quest "Closing the Gate ( 3889 )"
 -- Original quest_id was 4280
 -- Fixes what SphereQuest needs to be check
-UPDATE "main"."sphere_quests" SET "quest_id"=3889 WHERE "id"='789'
+-- Guarded by the original value so reruns and customized rows are left alone.
+UPDATE "main"."sphere_quests" SET "quest_id"=3889 WHERE "id"='789' AND "quest_id"='4280';

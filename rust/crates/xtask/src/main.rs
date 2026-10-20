@@ -10,6 +10,8 @@
 //!   variables.
 //! * `ci` — the checks CI runs: `cargo fmt --check`, `cargo clippy -D warnings`, `cargo test`, and
 //!   the S->C packet coverage ratchet (`tools/opcode_coverage/sc_usage.py --check`, needs python).
+//! * `compact-patches` — apply `SQL/patches/compact/*.sql` to a `compact.sqlite3` copy and record
+//!   each one in its `aaemu_compact_patches` table (also run by `publish` and live-stack `sync`).
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader};
@@ -17,8 +19,11 @@ use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
+#[cfg(test)]
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{bail, Context, Result};
+use rusqlite::OptionalExtension;
 
 const USAGE: &str = "\
 Usage: cargo xtask <command> [options]
@@ -37,6 +42,9 @@ Commands:
               --db-host <host>   MySQL host passed to the servers (default: 127.0.0.1)
               --db-port <port>   MySQL port (default: DB_PORT from .env, else 3306)
   ci        cargo fmt --check, clippy -D warnings, test, S->C coverage ratchet (the CI checks)
+  compact-patches [<db>]  Apply SQL/patches/compact/*.sql in name order, recording each file
+              --patches <dir>    patch directory (default: <repo>/SQL/patches/compact)
+              (default db: rust/crates/aaemu-game/app/Data/compact.sqlite3)
 ";
 
 /// The login server's internal (game-server registration) port in the shipped `Config.json`.
@@ -48,6 +56,7 @@ fn main() {
         Some("publish") => publish(&args[1..]),
         Some("dev") => dev(&args[1..]),
         Some("ci") => ci(),
+        Some("compact-patches") => compact_patches(&args[1..]),
         Some("help" | "-h" | "--help") | None => {
             print!("{USAGE}");
             Ok(())
@@ -311,7 +320,11 @@ fn publish(args: &[String]) -> Result<()> {
             std::fs::copy(root.join(f), dist.join(f))?;
         }
     }
-    if !dist.join("AAEmu.Game/Data/compact.sqlite3").is_file() {
+    let compact = dist.join("AAEmu.Game/Data/compact.sqlite3");
+    if !skip_db && compact.is_file() {
+        let outcome = apply_compact_patches(&compact, &root.join("SQL/patches/compact"))?;
+        report_compact_patches(&outcome, &format!("{}", compact.display()))?;
+    } else if !compact.is_file() {
         println!(
             "note: no compact.sqlite3 was published; copy it to {} before starting the game server",
             dist.join("AAEmu.Game/Data").display()
@@ -337,6 +350,178 @@ fn publish(args: &[String]) -> Result<()> {
     }
     println!("Published to {}", dist.display());
     Ok(())
+}
+
+// ---------------------------------------------------------------------------------------------
+// compact-patches
+// ---------------------------------------------------------------------------------------------
+
+/// Table recording the compact patches applied to a database.
+const COMPACT_PATCH_TABLE: &str = "aaemu_compact_patches";
+
+/// What happened to one patch file during a run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PatchStatus {
+    Applied,
+    AlreadyRecorded,
+    Changed,
+}
+
+/// Result of one applier run, in file-name order.
+#[derive(Debug, Default)]
+struct PatchOutcome {
+    statuses: Vec<(String, PatchStatus)>,
+}
+
+impl PatchOutcome {
+    fn names(&self, status: PatchStatus) -> impl Iterator<Item = &str> {
+        self.statuses
+            .iter()
+            .filter(move |(_, s)| *s == status)
+            .map(|(name, _)| name.as_str())
+    }
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::Digest;
+    hex::encode(sha2::Sha256::digest(bytes))
+}
+
+/// Removes transaction-control statements so every file runs in the applier's own transaction
+/// (SQLite does not nest transactions). Only whole lines are matched, so comments and strings
+/// are left alone.
+fn strip_transaction_control(sql: &str) -> String {
+    sql.lines()
+        .filter(|line| {
+            let statement = line.trim().trim_end_matches(';').trim();
+            !statement.eq_ignore_ascii_case("begin")
+                && !statement.eq_ignore_ascii_case("begin transaction")
+                && !statement.eq_ignore_ascii_case("commit")
+                && !statement.eq_ignore_ascii_case("commit transaction")
+                && !statement.eq_ignore_ascii_case("end")
+                && !statement.eq_ignore_ascii_case("end transaction")
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// The `*.sql` files of `dir`, in file-name order.
+fn patch_files(dir: &Path) -> Result<Vec<PathBuf>> {
+    let mut files = Vec::new();
+    for entry in std::fs::read_dir(dir)
+        .with_context(|| format!("reading patch directory {}", dir.display()))?
+    {
+        let path = entry?.path();
+        if path.is_file()
+            && path
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("sql"))
+        {
+            files.push(path);
+        }
+    }
+    files.sort();
+    Ok(files)
+}
+
+/// Applies every patch in `dir` that is not recorded in the database yet and records it.
+///
+/// A recorded patch whose file content changed is reported as [`PatchStatus::Changed`] and is
+/// never re-run: compact patches are immutable, so a fix must arrive as a new dated file.
+fn apply_compact_patches(db: &Path, dir: &Path) -> Result<PatchOutcome> {
+    let mut conn =
+        rusqlite::Connection::open(db).with_context(|| format!("opening {}", db.display()))?;
+    conn.busy_timeout(Duration::from_secs(30))?;
+    // The npc_groups/npc_group_members patches rebuild tables; keep FK checks out of the way.
+    conn.execute_batch("PRAGMA foreign_keys = OFF;")?;
+    conn.execute_batch(&format!(
+        "CREATE TABLE IF NOT EXISTS {COMPACT_PATCH_TABLE} (\
+         name TEXT PRIMARY KEY, sha256 TEXT NOT NULL, applied_at TEXT NOT NULL);"
+    ))?;
+
+    let mut outcome = PatchOutcome::default();
+    for path in patch_files(dir)? {
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let sql = std::fs::read_to_string(&path)
+            .with_context(|| format!("reading {}", path.display()))?;
+        let hash = sha256_hex(sql.as_bytes());
+        let recorded: Option<String> = conn
+            .query_row(
+                &format!("SELECT sha256 FROM {COMPACT_PATCH_TABLE} WHERE name = ?1"),
+                [&name],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let status = match recorded {
+            Some(recorded) if recorded == hash => PatchStatus::AlreadyRecorded,
+            Some(_) => PatchStatus::Changed,
+            None => {
+                let tx = conn.transaction()?;
+                tx.execute_batch(&strip_transaction_control(&sql))
+                    .with_context(|| format!("applying {name}"))?;
+                tx.execute(
+                    &format!(
+                        "INSERT INTO {COMPACT_PATCH_TABLE} (name, sha256, applied_at) \
+                         VALUES (?1, ?2, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))"
+                    ),
+                    rusqlite::params![name, hash],
+                )?;
+                tx.commit()?;
+                PatchStatus::Applied
+            }
+        };
+        outcome.statuses.push((name, status));
+    }
+    Ok(outcome)
+}
+
+/// Prints a run's outcome and fails when a recorded patch file changed.
+fn report_compact_patches(outcome: &PatchOutcome, db: &str) -> Result<()> {
+    for name in outcome.names(PatchStatus::Applied) {
+        println!("compact patches: applied {name}");
+    }
+    for name in outcome.names(PatchStatus::AlreadyRecorded) {
+        println!("compact patches: already recorded {name}");
+    }
+    for name in outcome.names(PatchStatus::Changed) {
+        eprintln!("warning: compact patches: {name} changed after it was recorded; not re-run");
+    }
+    let changed = outcome.names(PatchStatus::Changed).count();
+    if changed > 0 {
+        bail!(
+            "{db}: {changed} compact patch file(s) changed after being applied; patches are \
+             immutable - revert the file or add a new dated patch"
+        );
+    }
+    Ok(())
+}
+
+fn compact_patches(args: &[String]) -> Result<()> {
+    let mut db: Option<PathBuf> = None;
+    let mut dir: Option<PathBuf> = None;
+    let mut it = args.iter();
+    while let Some(arg) = it.next() {
+        match arg.as_str() {
+            "--patches" => {
+                let value = it.next().context("--patches needs a value")?;
+                dir = Some(PathBuf::from(value));
+            }
+            other if other.starts_with("--") => bail!("unknown option `{other}`\n\n{USAGE}"),
+            other if db.is_none() => db = Some(PathBuf::from(other)),
+            other => bail!("unexpected argument `{other}`\n\n{USAGE}"),
+        }
+    }
+    let db =
+        db.unwrap_or_else(|| workspace_dir().join("crates/aaemu-game/app/Data/compact.sqlite3"));
+    let dir = dir.unwrap_or_else(|| repo_root().join("SQL/patches/compact"));
+    if !db.is_file() {
+        bail!("compact database not found: {}", db.display());
+    }
+    let outcome = apply_compact_patches(&db, &dir)?;
+    report_compact_patches(&outcome, &db.display().to_string())
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -617,5 +802,133 @@ mod tests {
         let env = parse_env("# c\nDB_USER=root\n\nDB_PASSWORD=\"p=w\"\n");
         assert_eq!(env["DB_USER"], "root");
         assert_eq!(env["DB_PASSWORD"], "p=w");
+    }
+
+    /// A private directory removed when the test ends (also on panic).
+    struct TempDir(PathBuf);
+
+    impl TempDir {
+        fn new(tag: &str) -> Self {
+            let nanos = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_or(0, |d| d.as_nanos());
+            let path = std::env::temp_dir()
+                .join(format!("aaemu-xtask-{tag}-{}-{nanos}", std::process::id()));
+            std::fs::create_dir_all(&path).expect("create temp dir");
+            Self(path)
+        }
+
+        fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn setup(tag: &str) -> (TempDir, PathBuf, PathBuf) {
+        let tmp = TempDir::new(tag);
+        let patches = tmp.path().join("patches");
+        std::fs::create_dir(&patches).expect("create patches dir");
+        let db = tmp.path().join("compact.sqlite3");
+        (tmp, patches, db)
+    }
+
+    fn count(conn: &rusqlite::Connection, sql: &str) -> i64 {
+        conn.query_row(sql, [], |row| row.get(0)).expect("count")
+    }
+
+    #[test]
+    fn transaction_control_is_stripped_but_comments_stay() {
+        let sql = "BEGIN;\nUPDATE t SET a = 1; -- begin;\nCOMMIT TRANSACTION;\nEND TRANSACTION;";
+        assert_eq!(
+            strip_transaction_control(sql),
+            "UPDATE t SET a = 1; -- begin;"
+        );
+    }
+
+    #[test]
+    fn compact_patches_apply_once_and_rerun_is_a_no_op() {
+        let (_tmp, patches, db) = setup("compact-once");
+        std::fs::write(
+            patches.join("01-create.sql"),
+            "CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT);\nINSERT INTO t VALUES (1, 'a');\n",
+        )
+        .unwrap();
+        std::fs::write(
+            patches.join("02-update.sql"),
+            "BEGIN;\nUPDATE t SET v = 'b' WHERE id = 1 AND v = 'a';\nCOMMIT;\n",
+        )
+        .unwrap();
+
+        let first = apply_compact_patches(&db, &patches).unwrap();
+        assert_eq!(first.names(PatchStatus::Applied).count(), 2);
+        assert_eq!(first.names(PatchStatus::AlreadyRecorded).count(), 0);
+
+        let second = apply_compact_patches(&db, &patches).unwrap();
+        assert_eq!(second.names(PatchStatus::Applied).count(), 0);
+        assert_eq!(second.names(PatchStatus::AlreadyRecorded).count(), 2);
+        assert!(report_compact_patches(&second, "test db").is_ok());
+
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        let v: String = conn
+            .query_row("SELECT v FROM t", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(v, "b");
+        assert_eq!(
+            count(&conn, "SELECT COUNT(*) FROM aaemu_compact_patches"),
+            2
+        );
+    }
+
+    #[test]
+    fn compact_patches_report_a_changed_patch_without_rerunning_it() {
+        let (_tmp, patches, db) = setup("compact-changed");
+        let file = patches.join("01.sql");
+        std::fs::write(
+            &file,
+            "CREATE TABLE t (id INTEGER);\nINSERT INTO t VALUES (1);\n",
+        )
+        .unwrap();
+        apply_compact_patches(&db, &patches).unwrap();
+
+        std::fs::write(&file, "INSERT INTO t VALUES (2);\n").unwrap();
+        let second = apply_compact_patches(&db, &patches).unwrap();
+        assert_eq!(second.names(PatchStatus::Changed).count(), 1);
+        assert!(report_compact_patches(&second, "test db").is_err());
+
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM t"), 1);
+        assert_eq!(
+            count(&conn, "SELECT COUNT(*) FROM aaemu_compact_patches"),
+            1
+        );
+    }
+
+    #[test]
+    fn compact_patches_roll_back_a_failing_file() {
+        let (_tmp, patches, db) = setup("compact-rollback");
+        std::fs::write(
+            patches.join("01-bad.sql"),
+            "CREATE TABLE u (id INTEGER);\nINSERT INTO no_such_table VALUES (1);\n",
+        )
+        .unwrap();
+        assert!(apply_compact_patches(&db, &patches).is_err());
+
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        assert_eq!(
+            count(
+                &conn,
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'u'"
+            ),
+            0
+        );
+        assert_eq!(
+            count(&conn, "SELECT COUNT(*) FROM aaemu_compact_patches"),
+            0
+        );
     }
 }
