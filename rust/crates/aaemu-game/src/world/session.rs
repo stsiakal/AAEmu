@@ -317,6 +317,8 @@ pub async fn select_character(
     // Force player into main_world when coming from character select
     c.unit.transform.instance_id = DEFAULT_INSTANCE_ID;
     load_character_details(server, &mut c).await?;
+    // Account-wide attributes (`account_attributes`, economy): loaded once per character select.
+    crate::systems::economy::account_attributes::load(server, c.account_id).await;
     // Character.Load(): Mates.Load (vehicles subsystem)
     crate::systems::vehicles::load_character(server, c.id).await;
     let offline_friend_ids: Vec<u32> = c
@@ -1155,6 +1157,13 @@ pub async fn leave_world_task(
         server.chat.leave_all_channels(p);
         // Handle Family
         crate::systems::social::session::on_leave_world_family(server, p);
+        // A pending guild invitation does not outlive the invited character's session.
+        server
+            .expeditions
+            .invitations
+            .lock()
+            .expect("expedition invitations poisoned")
+            .remove(&p.character_id);
         let (exp, id) = {
             let c = p.data();
             (c.unit.expedition_id, c.id)
