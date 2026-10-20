@@ -721,6 +721,14 @@ is no longer mirrored (see "Known deviations", dead NPC returned and healed).
 
 ## Known deviations from the C#
 
+* systems::npcs (`DespawnOnCreatorDeath`): the 1.2 C# loaded `despawn_on_creator_death` for
+  `SpawnEffect` and `NpcSpawnerSpawnEffect` but never read it, so summoned NPCs outlived their
+  creator. Rust registers every effect-spawned NPC under the caster's obj id and despawns those
+  summons from `Unit.DoDie` of the creator (player or NPC). A creator that logs out or is
+  despawned without dying still leaves its summons, as in the 1.2 C# (the later 10.x C# only
+  forwards the flag to the native Zone: `WorldIntegration.cs` `PublishNpcSpawn` /
+  `WZNpcSpawnerEventPacket`).
+
 * systems::services / systems::vehicles (mount speed analysis): `SusManager` samples the
   driver's (or owner's) `teleport_seq` and `disabled_set_position` for mates, and successful
   ride / unride operations reset the mate baseline. C# `SusManager` / `CharacterMates` did
@@ -1575,6 +1583,15 @@ is no longer mirrored (see "Known deviations", dead NPC returned and healed).
   `PostDate`) and a buyout sends `SCAuctionBidPacket` with `isBuyout = true`, the lot's
   `direct_money` and the buyer's identity (the C# buyout branch sent nothing although the 1.2
   packet carries the flag). Seller / item mail delivery is unchanged.
+* systems::economy (auction settlement, 2026-10-20): the C# ignored `MailForAuction.Send()`
+  (`RemoveAuctionLotSold` / `RemoveAuctionLotFail` / `CancelAuctionLot` removed the lot anyway),
+  so a mail that was not stored lost the seller's money or the buyer's item. Here a settlement
+  removes the lot only after every one of its mails was delivered; otherwise the lot (or, for an
+  outbid refund in the bidding path, just the refund) stays queued in `AuctionManager::pending`
+  and `update_auction_house` retries the still-missing mails on its next tick, remembering which
+  ones are already out so nothing is delivered twice. The queue is in memory: a restart inside
+  the retry window loses a pending outbid refund, and a pending sale that has not reached its
+  `end_time` reverts to the lot's saved bidder fields.
 
 * systems::economy (trade safety, 2026-10-19): a trade is made only when both sides locked and
   both confirmed (`OkTrade` previously accepted a confirmation with one side locked). Only the
