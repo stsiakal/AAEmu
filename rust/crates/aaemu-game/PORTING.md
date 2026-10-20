@@ -2389,3 +2389,17 @@ Oracles: the 1.2-era C# (`git show a2ab80abd^:AAEmu.Game/Core/Managers/DuelManag
 last movement packet carried that yaw (seen as a Linux-only failure of
 `dash_moves_npc_and_broadcasts_movement`). Within 1e-3 of the end point the heading of the step
 itself (`heading(cur, end)`) is used. The C# original has the same degenerate `atan2`.
+
+## Trade item integrity and craft materials (2026-10-20)
+
+- `trade::add_item` (C# `TradeManager.AddItem` only checked `item.Count >= amount`) now also
+  cancels the trade for a soul-bound item, an item outside the bag, or an item id the same side
+  already put up (the flag check matches mail and auction). `finish_trade` re-validates every
+  put-up item (still in the giver's bag, unbound, enough units, no duplicate) before any money or
+  item moves, and cancels the whole trade otherwise (the C# and the earlier port moved money
+  first and only logged failed item moves).
+- Craft materials: the C# counted `Inventory.GetItemsCount` (bag + equipment + bank) but consumed
+  from `Bag` only and ignored the result, so a craft with materials in the bank produced the
+  product for free. The port counts the bag only (start and again in `hand_out_products`, before
+  any product is handed out) and refuses with `NOT_ENOUGH_REQUIRED_ITEM` otherwise. Labor is
+  still charged by `Skill.EndSkill` as before.

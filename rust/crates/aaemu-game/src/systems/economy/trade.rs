@@ -318,9 +318,34 @@ pub fn add_item(server: &GameServer, character: &PlayerRef, st: u8, slot: u8, am
         cancel_locked(server, &mut trades, character.obj_id, 0, trade_id); // TODO (C#) - Reason
         return;
     }
+    // Only unbound bag items may be put up (as for mail and auction), and each item once.
+    if item.slot_type != slot_type::INVENTORY
+        || item.flags & crate::models::item::ITEM_FLAG_SOUL_BOUND != 0
+    {
+        tracing::warn!(
+            "Trade Id:{trade_id} {} put up a bound item or a non-bag slot ({st}-{slot}), refused.",
+            name_of(character)
+        );
+        cancel_locked(server, &mut trades, character.obj_id, 0, trade_id);
+        return;
+    }
     let Some(t) = trade_mut(&mut trades, trade_id) else {
         return;
     };
+    let own_items = if t.owner_obj_id == character.obj_id {
+        &t.owner_items
+    } else {
+        &t.target_items
+    };
+    if own_items.iter().any(|(id, _)| *id == item.id) {
+        tracing::warn!(
+            "Trade Id:{trade_id} {} put up item {} twice, refused.",
+            name_of(character),
+            item.id
+        );
+        cancel_locked(server, &mut trades, character.obj_id, 0, trade_id);
+        return;
+    }
     let Some((owner, target)) = partners(server, t) else {
         return;
     };
@@ -649,6 +674,20 @@ pub fn finish_trade(
         return;
     };
 
+    // Validate every put-up item before anything moves, so a bad item cannot leave a trade with
+    // the money transferred and the items not.
+    for (giver, list) in [(owner, &trade.owner_items), (target, &trade.target_items)] {
+        if !trade_items_valid(giver, list) {
+            send_canceled(server, &trade, giver.obj_id, 0);
+            tracing::warn!(
+                "Trade Id:{trade_id} {} ({}) put up items that are missing, bound, duplicated or short, possible exploit or modified client!",
+                name_of(giver),
+                giver.obj_id
+            );
+            return;
+        }
+    }
+
     let mut has_errors = 0;
     let mut tasks_owner = Vec::new();
     let mut tasks_target = Vec::new();
@@ -726,6 +765,20 @@ pub fn finish_trade(
             "{has_errors}item(s) could not be trade for tradeId: {trade_id} between {on} ({oi}) and {tn} ({ti}), possible exploit or modified client!"
         );
     }
+}
+
+/// Every put-up item still sits unbound in the giver's bag with enough units, once.
+fn trade_items_valid(giver: &PlayerRef, list: &[(u64, i32)]) -> bool {
+    let inv = Inv::of(giver);
+    let bag = inv.bag();
+    let bag = bag.lock().expect("container poisoned");
+    list.iter().enumerate().all(|(i, &(item_id, amount))| {
+        amount > 0
+            && list[..i].iter().all(|(id, _)| *id != item_id)
+            && bag.get_item_by_id(item_id).is_some_and(|it| {
+                it.count >= amount && it.flags & crate::models::item::ITEM_FLAG_SOUL_BOUND == 0
+            })
+    })
 }
 
 /// Moves `amount` units of `item_id` from `from` into `to`'s bag, splitting a larger stack

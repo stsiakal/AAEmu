@@ -742,3 +742,58 @@ async fn money_spent_after_putup_cancels() {
     assert_eq!(pa.data().money, 50);
     assert_eq!(w.pb.data().money, 0);
 }
+
+#[tokio::test]
+async fn soul_bound_and_duplicate_putups_cancel_the_trade() {
+    use crate::models::item::ITEM_FLAG_SOUL_BOUND;
+    // A bound item cannot be put up.
+    let mut w = world();
+    let id = give(&w, &w.pa, slot_type::INVENTORY, STACK, 2, 0);
+    {
+        let inv = Inv::of(&w.pa);
+        let bag = inv.bag();
+        bag.lock().unwrap().get_item_by_id_mut(id).unwrap().flags |= ITEM_FLAG_SOUL_BOUND;
+    }
+    start(&mut w);
+    putup_item(&mut w, 0, 2, 0, 1);
+    assert_eq!(w.a.drain(), vec![canceled(0, true)]);
+    assert_eq!(w.b.drain(), vec![canceled(0, false)]);
+    assert!(w.server.systems.economy.trade.trades().is_empty());
+
+    // The same item twice cancels at the second put-up.
+    let mut w = world();
+    give(&w, &w.pa, slot_type::INVENTORY, STACK, 5, 0);
+    start(&mut w);
+    putup_item(&mut w, 0, 2, 0, 3);
+    w.a.drain();
+    w.b.drain();
+    putup_item(&mut w, 0, 2, 0, 3);
+    assert_eq!(w.a.drain(), vec![canceled(0, true)]);
+    assert!(w.server.systems.economy.trade.trades().is_empty());
+}
+
+#[tokio::test]
+async fn finish_cancels_without_moving_money_when_a_putup_item_became_invalid() {
+    use crate::models::item::ITEM_FLAG_SOUL_BOUND;
+    let mut w = world();
+    w.pa.data().money = 100;
+    w.pb.data().money = 100;
+    let id = give(&w, &w.pa, slot_type::INVENTORY, STACK, 2, 0);
+    start(&mut w);
+    putup_item(&mut w, 0, 2, 0, 1);
+    putup_money(&mut w, 1, 50);
+    // The item gets bound after the put-up (e.g. equipped / traded elsewhere).
+    {
+        let inv = Inv::of(&w.pa);
+        let bag = inv.bag();
+        bag.lock().unwrap().get_item_by_id_mut(id).unwrap().flags |= ITEM_FLAG_SOUL_BOUND;
+    }
+    lock(&mut w, 0, true);
+    lock(&mut w, 1, true);
+    ok(&mut w, 0);
+    ok(&mut w, 1);
+    assert_eq!(w.pa.data().money, 100);
+    assert_eq!(w.pb.data().money, 100);
+    assert_eq!(item_at(&w.pa, 2, 0).unwrap().count, 2);
+    assert!(item_at(&w.pb, 2, 0).is_none());
+}
