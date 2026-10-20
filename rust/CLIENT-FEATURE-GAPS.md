@@ -4,6 +4,14 @@ An audit of what the **ArcheAge 1.2 client supports** that the **Rust game serve
 implement**. Written against the target client in `D:\AA1.2` and the servers in
 `rust/crates/aaemu-{game,login}`. Method, reproduction commands and caveats are at the end.
 
+> **Status (2026-10-20):** partly superseded by
+> [rust/CLIENT-DB-GAP-AUDIT.md](CLIENT-DB-GAP-AUDIT.md) (2026-10-14). The packet counts below are
+> from 2026-10-13: 115 S→C opcodes without a Rust type and 73 defined-but-never-sent. The
+> 2026-10-14 audit counted 108 typeless and 73 never sent; the current CI baseline
+> (`rust/tools/opcode_coverage/sc_baseline.json`, 2026-10-15) records 108 typeless and 70 never
+> sent after the ranking and schedule-item wiring. Sections 1, 2 and 5 were implemented on
+> 2026-10-15.
+
 ## Summary
 
 The server's **packet plumbing is complete**; its **feature coverage is not**.
@@ -27,6 +35,11 @@ server half was never written**. Findings are ordered by player impact.
 ## Findings
 
 ### 1. Achievements — client panel exists, server has no implementation
+
+> **Superseded (2026-10-15):** the achievement manager, runtime, hooks and rewards now exist
+> (`systems/social/achievement_manager.rs` and the `achievement_*` modules) and send the
+> `SCAchievement*` family. See [rust/CLIENT-DB-GAP-AUDIT.md](CLIENT-DB-GAP-AUDIT.md) for the later
+> audit; this section records the 2026-10-13 state.
 
 `X2Achievement` · 8 UI scripts (`achievement/*.alb`) · data shipped: `achievements` **1 743
 rows**, `achievement_objectives` **3 558 rows**, `pre_completed_achievements` **94 rows**.
@@ -59,6 +72,10 @@ five `SCAchievement*Packet` names — in `Bin64/decompiled/x2game-dev_dedicate.c
 porting oracle for this finding.
 
 ### 2. Ranking boards — opcodes declared, no packet type, no data loaded
+
+> **Superseded (2026-10-15):** the ranking boards are loaded and answered
+> (`systems/social/ranking_manager.rs`, commit `8b262ac6b`). See
+> [rust/CLIENT-DB-GAP-AUDIT.md](CLIENT-DB-GAP-AUDIT.md) for the later audit.
 
 `X2Rank` · 8 UI scripts (`ranking/*.alb`). The client data ships complete rank definitions:
 
@@ -122,6 +139,10 @@ Player-visible effect: the second-password UI cannot complete a single flow.
 names (plus `SCSecondPassReservedClearTimePacket`) in `x2game-dev_dedicate.c`.
 
 ### 5. Event calendar / schedule items — data loaded, packet never sent
+
+> **Superseded (2026-10-15):** schedule items are loaded, sent and claimable
+> (`systems/npcs/schedule_item_manager.rs`, commit `389a37d0f`). See
+> [rust/CLIENT-DB-GAP-AUDIT.md](CLIENT-DB-GAP-AUDIT.md) for the later audit.
 
 `hud/main_menu_bar/timer.alb` calls `GetScheduleItemList`, `GetScheduleItemInfo`,
 `CreateScheduleItemTimer` and **`TakeScheduleItem`** — a player-facing "claim this event

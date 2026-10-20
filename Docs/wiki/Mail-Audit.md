@@ -72,11 +72,11 @@ fixture and screenshot are saved alongside the evidence.
 
 The full catalogue of quests remains subject to the [Quest Technical Audit](Quest-Audit).
 Absent quest areas/components are not repaired by mail fixes. Scheduled mail
-expiry/return policy is still unimplemented. Auction delivery failure handling
-still needs review: AuctionManager::send_mail ignores the mail hook's failure
-result, so settlement can remove a lot without delivering its item/refund and
-without retaining a delivery retry. Successful delivery tests do not cover this
-failure path.
+expiry/return policy is still unimplemented. Auction delivery failure is now
+retried: a settlement whose result mail fails keeps the lot (or outbid refund)
+pending and the auction tick retries the missing mails until they are delivered
+(`4db88094f`, upstream PR NickMesser/AAEmu#17). The retry tests cover failed sale,
+expiry, cancel and outbid-refund mails; a live failure-path test is still missing.
 Failed-bid refunds use the offer-failed mail type instead of bid-failed; recipient
 name lookup is case-sensitive. These are recorded audit findings, not certified
 mail behavior.
