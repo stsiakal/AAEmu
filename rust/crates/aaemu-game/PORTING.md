@@ -1753,6 +1753,9 @@ and in NPC wandering / buff remaining times.
 
 ## C# bugs noticed (mirrored, not fixed)
 
+Later sections record fixes for several of these entries; check the subsystem's later
+feature-audit/deviation note before porting one as-is.
+
 * systems::social: `AchievementGameData` reads the `'t'` / `'f'` text booleans of compact.sqlite3 with
   `GetBoolean(column)` (`GetInt64 != 0`), so `is_active`, `is_hidden`, `complete_or` and
   `or_unit_reqs` always load as `false`.
