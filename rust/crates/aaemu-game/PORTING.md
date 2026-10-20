@@ -2364,21 +2364,9 @@ Lv20+ increases this duration to 60 seconds") and the unpacked 1.2 `x2game.dll` 
 unit id up in the client's objects and plays an effect (`FUN_393558e0`) on it when found;
 `FUN_391dc8c0` (`OnNaviTeleport`) moves the camera/player to the sent position.
 
-* `OpenPortalEffect` range: the C# test `x > pos.X + d || y > pos.Y + d` passed every point behind
-  or beside the caster and refused forward points beyond `d` in the +x/+y directions. Now a 2D
-  distance: within `max(open_portal_effects.distance, 5 m) + 1 m` of the caster. The data column is
-  3.0 but the tooltip (and so the client, which places the gate "5 meters away") says 5 m, so 3.0
-  would refuse the real client's own spot. No in-front rule: the data has none (skill 11216
-  `front_angle` is 0).
+* Upstream's portal work (`6e3d9490f`, merged 2026-10-20) supersedes the first version of this
+  section: the open distance, `SCPortalDeleted`, `SCUnitPortalUsed` and the navi / teleporter
+  packets follow upstream now (see its section). Kept on top of it:
 * Portal lifetime: 30 s, or 60 s when the owner's Occultism (`AbilityType.Death` = 5) level, read
-  from the ability exp like the quest requirements do, is 20 or more (C#: fixed 30 s).
-* `CSDeletePortal` now answers `SCPortalDeleted(type, id)` when an entry was removed (C#: silent).
-  The district portal list is still not rebuilt (mirrored).
-* `SCUnitPortalUsed(user obj id)` is sent to the bystanders around the user just before a portal
-  teleport (C#: never sent). Which unit the client expects is not confirmed (user vs. portal);
-  the effect is cosmetic.
-* Not changed, no oracle: `CSUseTeleport` (no NPC has `teleporter` = 't' in the data), and
-  `CSNaviTeleport` / `CSNaviOpenPortal` stay logged no-ops. The C# only logged them, the
-  `doodad_func_navi_teleports` / `_open_portals` tables hold only ids, and the one real use, the
-  White Dress Portrait (doodad 3347, skill 15193), already works through its `Return` special
-  effect (worldgate 304) without the packet. `SCNaviTeleport` stays unsent.
+  from the ability exp like the quest requirements do, is 20 or more (C# and upstream: fixed
+  30 s).
