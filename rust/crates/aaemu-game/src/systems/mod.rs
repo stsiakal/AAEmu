@@ -14,6 +14,7 @@
 //! | [`vehicles`] | MateManager, SlaveManager, ShipyardManager, TransferManager (mounts, vehicles, ships, carriages) |
 //! | [`services`] | WebApi, Discord bot, Tick / Task managers, timed rewards, accounts, music, radar, sus, commands infrastructure, misc managers |
 //! | [`ai`] | AIManager, NPC AI (behaviors, params, paths), geodata / navmesh, physics |
+//! | [`bots`] | in-server player bots (phase 0: connectionless spawn, walk, cast, remove) |
 //!
 //! Every subsystem module exposes the same five hooks (see `CONTRIBUTING-PORT.md`):
 //!
@@ -28,6 +29,7 @@
 //! This file is the only central list; adding a *new* subsystem adds one line per list below.
 
 pub mod ai;
+pub mod bots;
 pub mod economy;
 pub mod housing;
 pub mod instances;
@@ -112,6 +114,8 @@ pub struct Systems {
     pub vehicles: vehicles::System,
     pub services: services::System,
     pub ai: ai::System,
+    /// Server-side roster of the in-server player bots (`systems::bots`).
+    pub bots: bots::System,
     /// Behaviour hooks shared code calls into (installed by the owning subsystem at start).
     pub hooks: Hooks,
 }
@@ -128,6 +132,7 @@ pub fn register_packets(reg: &mut PacketRegistry) {
     vehicles::register(reg);
     services::register(reg);
     ai::register(reg);
+    bots::register(reg);
 }
 
 /// Starts every subsystem after the phase-1/2 managers are up (`ManagerOrchestrator` order:
@@ -167,6 +172,8 @@ pub async fn start_all(server: &Arc<GameServer>) -> anyhow::Result<()> {
     services::System::start(server).await?;
     tracing::debug!("Starting subsystem ai");
     ai::System::start(server).await?;
+    tracing::debug!("Starting subsystem bots");
+    bots::System::start(server).await?;
     Ok(())
 }
 

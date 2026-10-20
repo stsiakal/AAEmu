@@ -1,0 +1,50 @@
+# Phase 0 connectionless bots (systems/bots): a GM adds an offline character as a bot, walks it,
+# casts a skill as it, kills it (normal revive), removes it and adds it again.
+#
+# Bots:
+#   gmb      GM operator running /bot ...
+#   tgt      plain account that only creates its character and leaves (the future bot)
+#   watcher  plain player nearby; must see the bot's spawn, movement and cast like a player's
+#
+# Run with Scripts/verify.sh.
+
+suite bots-phase0
+bot gmb gm
+bot tgt
+bot watcher
+
+[tgt]
+sync ready
+pump 1
+
+[watcher]
+sync ready
+waitpeer 120 ${gmb}
+expectpkt SCUnitStatePacket 60
+expectpkt SCOneUnitMovementPacket 60
+expectpkt SCSkillFiredPacket 90
+expectpkt SCUnitDeathPacket 90
+expectpkt SCCharacterResurrectedPacket 90
+
+[gmb]
+sync ready
+tp 15578 15382 126.5
+pump 25
+gm bot add ${tgt}
+gm bot list
+gm bot walk ${tgt} 12595 15406
+pump 4
+gm bot cast ${tgt} 13273
+pump 3
+pkill ${tgt}
+gm bot list
+pump 25
+gm bot list
+# walk back to the spawn point so a rerun starts with everybody in sight of each other
+gm bot walk ${tgt} 15578 15382
+pump 22
+expectdb "SELECT COUNT(*) FROM characters WHERE name='${tgt}'" 1
+gm bot remove ${tgt}
+expectdb "SELECT COUNT(*) FROM characters WHERE name='${tgt}' AND hp>0" 1
+gm bot add ${tgt}
+gm bot remove ${tgt}
