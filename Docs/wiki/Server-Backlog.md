@@ -27,9 +27,14 @@ Confirmed in code unless marked SUSPECT.
 | `CSSellItems` (lane `money-guard`) | HIGH | Duplicate entries are paid N times; no merchant distance | `systems/economy/store.rs:573-670`, `:656` | Reject duplicates; check distance |
 | `CSBuyItems` doodad shop (lane `money-guard`) | HIGH | `npc_obj_id` 0 skips the catalog filter | `systems/economy/store.rs` ~281-372 | Apply the filter for doodad shops |
 | Auction (lane `money-guard`) | MED | Usable from anywhere | `systems/economy/auction_packets.rs:52-70` | Require auctioneer range |
-| Guild invite reply (lane `guild-guard`) | HIGH | Joins any guild without an invite | `systems/social/expedition.rs:824-865` | Require a pending invite |
-| Guild kick and role change (lane `guild-guard`) | MED | Ignore rank | `systems/social/expedition.rs` ~950, ~994 | Check the actor's rank |
-| Loot master and markers (lane `guild-guard`) | MED, SUSPECT | Accept non-members | `systems/social/team.rs` ~1035 | Check team membership |
+
+### Fixed
+
+- **Guild invitations and ranks** (reproduced, fixed in `12336d422`): a guild invite reply needs a
+  pending, unexpired invitation to that guild and a replier without a guild; kick and role change
+  need a strictly higher rank than the target, so the leader can be neither kicked nor demoted.
+- **Loot master** (reproduced, fixed in `12336d422`): only 0 or a team member is accepted. Party
+  markers target units, not members, so they need no check.
 
 ### Open
 
