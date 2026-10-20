@@ -1,7 +1,7 @@
 # Server Backlog
 
 - Audience: Contributors
-- Last verified against: `rust-rewrite-bots` at `009172b05` (static code review), October 20, 2026
+- Last verified against: `rust-rewrite-bots` at `38ec93b09` (code review and the 2026-10-20 bot checks), October 20, 2026
 - Target: ArcheAge 1.2 (`r208022`)
 
 ## Overview
@@ -21,33 +21,39 @@ Confirmed in code unless marked SUSPECT.
 
 ### Fixed
 
-- **Bank deposit/withdraw** (reproduced, fixed in `334987a9a`): non-positive amounts are refused
-  (a negative deposit used to mint gold and drive the bank negative) and the bank needs a banker
-  NPC within 5 m of the current interaction object.
-- **`CSSellItems`** (reproduced, fixed in `334987a9a`): each item is listed once, the merchant must
-  be within 3 m, and only items actually moved to buy-back are paid (repeated entries and failed
-  moves used to pay, with wrapping arithmetic).
-- **`CSBuyItems` doodad shop** (reproduced, fixed in `334987a9a`): goods must come from the NPC's
-  merchant pack or the doodad's `DoodadFuncStoreUi` pack; a purchase without a catalog is refused,
-  so a zero `npc_obj_id` no longer makes every template buyable.
-- **Auction distance** (reproduced, fixed in `334987a9a`): requests need an auctioneer NPC within
-  5 m, named by the packet ids or the current interaction object (the ids were ignored).
-- **Guild invitations and ranks** (reproduced, fixed in `12336d422`): a guild invite reply needs a
-  pending, unexpired invitation to that guild and a replier without a guild; kick and role change
-  need a strictly higher rank than the target, so the leader can be neither kicked nor demoted.
-- **Loot master** (reproduced, fixed in `12336d422`): only 0 or a team member is accepted. Party
-  markers target units, not members, so they need no check.
+- **Bank deposit/withdraw** (reproduced, fixed in `334987a9a`, upstream PR NickMesser/AAEmu#23):
+  non-positive amounts are refused (a negative deposit used to mint gold and drive the bank
+  negative) and the bank needs a banker NPC within 5 m of the current interaction object. The 5 m
+  range is a guess, not from retail data.
+- **`CSSellItems`** (reproduced, fixed in `334987a9a`, upstream PR NickMesser/AAEmu#23): each item
+  is listed once, the merchant must be within 3 m, and only items actually moved to buy-back are
+  paid (repeated entries and failed moves used to pay, with wrapping arithmetic).
+- **`CSBuyItems` doodad shop** (reproduced, fixed in `334987a9a`, upstream PR NickMesser/AAEmu#23):
+  goods must come from the NPC's merchant pack or the doodad's `DoodadFuncStoreUi` pack; a purchase
+  without a catalog is refused, so a zero `npc_obj_id` no longer makes every template buyable.
+- **Auction distance** (reproduced, fixed in `334987a9a`, upstream PR NickMesser/AAEmu#23): requests
+  need an auctioneer NPC within 5 m, named by the packet ids or the current interaction object (the
+  ids were ignored).
+- **Guild invitations and ranks** (reproduced, fixed in `12336d422`, upstream PR
+  NickMesser/AAEmu#21): a guild invite reply needs a pending, unexpired invitation to that guild
+  and a replier without a guild; kick and role change need a strictly higher rank than the target,
+  so the leader can be neither kicked nor demoted.
+- **Loot master** (reproduced, fixed in `12336d422`, upstream PR NickMesser/AAEmu#21): only 0 or a
+  team member is accepted. Party markers target units, not members, so they need no check.
+- **Skill cast authority** (fixed in `a6ca5fc4f`, upstream PR NickMesser/AAEmu#22): a Mount-caster
+  needs a caster the player may use (self, a usable mate, a slave the player owns or rides), doodad
+  and slave targets get a bounded range allowance instead of a blanket exemption, and the
+  undefined-use fallback only accepts skills named by a player-facing source in the static data.
+  This closes the former "Skill cast as another unit", "Skill range waived" and "Undefined-use
+  skill fallback" rows.
 
 ### Open
 
 | Item | Severity | What is wrong | Where | Fix direction |
 | --- | --- | --- | --- | --- |
-| Skill cast as another unit | HIGH | `SkillCaster::Mount` lets a client cast as an arbitrary unit; only mates are checked | `systems/skills/handlers.rs:85-135` | Verify the caster is the player's own mount |
-| Corpse loot | HIGH | No eligibility or range check | `systems/economy/looting.rs:1176-1236`, ~765-900 | Check eligibility and distance |
+| Corpse loot | HIGH | Quest-item eligibility and the team loot-rule/dice checks exist, but taking an item does not check the distance to the corpse | `systems/economy/looting.rs:776-960` (take), `:810-822` (quest item) | Add the take-distance check (in progress in lane `authority1`) |
 | Movement fully trusted | MED | `MoveVerifier` is off by default; `sus.rs` only logs above 25 m/s | `world/session.rs:753-905`, `app/Configurations/Physics.json`, `systems/services/sus.rs` | Enable and tune the verifier; needs retail speeds |
-| Skill range waived | MED | Range is skipped for doodad and slave targets | `systems/skills/validation.rs` | Apply range to those targets |
-| Undefined-use skill fallback | MED | Runs any ability-0 skill | `systems/skills/handlers.rs` ~225-245 | Restrict to known use skills |
-| Portal and navi teleport | MED | `CSUsePortal` and navi teleport skip the distance check | `systems/npcs/portal/mod.rs:850`, `:1012`, `:1069` | Check distance to the gate |
+| Portal and navi teleport | MED | `CSUsePortal` and `CSNaviTeleport` still skip the distance check; `14cfd990f` added only the OpenPortalEffect gate-point and `CSNaviOpenPortal` ranges | `systems/npcs/portal/mod.rs:843-953`, `:1069-1088`, `:1095-1116` | Check distance to the gate |
 | `CSSaveTutorial` | MED | Writes any quest id as completed; rows grow without bound | `systems/quests/packets.rs` ~491-523 | Validate ids; cap rows |
 | In-place resurrect | MED | Works without an offer | `systems/skills/resurrect.rs:128-150` | Require a pending offer |
 | `CSSaveUIData` | LOW | Unbounded keys and strings | `systems/services/character_packets.rs` ~683 | Cap sizes |
@@ -58,25 +64,36 @@ Confirmed in code unless marked SUSPECT.
 
 ## B. Gameplay and integrity
 
-Static revalidation.
+### Fixed
+
+- **Trade** (fixed in `f740311d2` and `8a12189c3`, upstream PR NickMesser/AAEmu#19): only unbound
+  bag items can be put up, each once; the finish re-validates every item before anything moves and
+  moves the money only after every item moved.
+- **Craft materials** (fixed in `f740311d2`, upstream PR NickMesser/AAEmu#19): materials are counted
+  and consumed from the bag only, and the product hand-out re-checks them and cancels the craft
+  when they are missing.
+- **Auction settlement** (fixed in `4db88094f`, upstream PR NickMesser/AAEmu#17): a failed result
+  mail keeps the lot (or outbid refund) as a pending settlement and the auction tick retries the
+  missing mails until they are delivered.
+- **Ship death** (fixed in `e9aedb49d`, upstream PR NickMesser/AAEmu#24): death stores the repair
+  start time, and a loaded 0-HP vehicle is only reset to full HP once the repair time has passed.
+- **Summon despawn** (fixed in `1fe501e80`, upstream PR NickMesser/AAEmu#18): summons flagged
+  `despawn_on_creator_death` are registered under the caster and removed when the caster dies.
+
+Static revalidation of the remaining rows.
 
 | Item | Severity | What is wrong | Where | Fix direction |
 | --- | --- | --- | --- | --- |
-| Trade | HIGH | `add_item` accepts bound or duplicate items; money moves before items on finish | `systems/economy/trade.rs:307-345`, ~660 | Validate on add; make the finish atomic |
-| Craft materials | HIGH | Counts materials in all containers but consumes from the bag, and ignores the result | `systems/economy/craft.rs:319` vs `:688` | Count and consume from the same containers; check the result |
-| Auction settlement | HIGH | The lot is removed when the mail fails | `systems/economy/auction.rs:553-556` | Remove the lot only after the mail is stored |
-| Ship death | MED | `repair_start` 0 allows an instant resummon; a zero-HP load becomes max HP | `systems/vehicles/slaves.rs:2017-2018`, `:1243-1250`, `:1367` | Set `repair_start` on death; keep zero HP on load |
 | Death transition | MED | Not once-only under concurrent lethal hits | `systems/skills/combat.rs:215`, `:246` | Make the transition atomic |
 | Enter world | MED | Ignores `try_add_character`; no per-account atomic reservation | `world/session.rs:369` | Check the result; reserve per account |
 | Disconnect cleanup | MED | No unwind guard if cleanup panics | `net/listener.rs:95` | Add a guard |
 | ID loader | MED | Fails open on a DB error | `managers/id.rs:244` | Fail startup |
-| `despawn_on_creator_death` | MED | Loaded but unused | `systems/skills/data/effects.rs:293-303` | Implement in summon despawn |
 | Summon effects | MED | Reference missing event spawner ids (data gap) | summon effect data | Fix the data or the loader |
 | Doodad funcs | LOW | `EvidenceItemLoot`, `AreaTrigger` and `Bubble` only log | `systems/npcs/doodad/funcs/mod.rs:165-170` | Implement per retail |
 | Shipyard | LOW | Runtime state is not persisted | `systems/vehicles/` | Persist it |
 | Plot caster | LOW | `execute_tree` live-caster check; recycled `caster_obj_id` in buff events (needs a reuse test) | `systems/skills/` | Write the reuse test first |
 | Aggro help | LOW | Rule-0 shortcut (needs retail evidence) | `systems/ai/behaviors.rs:641` | Get a retail capture |
-| Dungeon reconnect | LOW | Reconnect to the same instance, and the lockout and reset policy; after the instance-exit fix lands | [Dungeons](Dungeons) | Decide the policy |
+| Dungeon reconnect | LOW | Reconnect to the same instance, and the lockout and reset policy (the instance-exit fixes `ae5c73933` / `00ba92067` are merged) | [Dungeons](Dungeons) | Decide the policy |
 | Item id reuse | LOW | An id can be reused before the deletion commit | `managers/item.rs:207` | Reserve until commit |
 | Default premium | LOW | New connections default to premium through 2030 (mirrors the C# policy) | `net/connection.rs:45-62` | Decide the policy |
 | Unarmed MeleeParry | LOW | Server gives 1.88; the original client shows 0 (level 10, no weapon). Found by a retail oracle capture | stat code | Find the formula |
@@ -99,11 +116,22 @@ From the [Bots](Bots) sweeps. Sizes are counts in the sweep that saw them.
 | --- | --- | --- | --- |
 | No `SCLoadInstancePacket` after the exit doodad 4535 (skill 16560) | Quest sweep (2026-10-19) | 1,477 Firran, 1,820 Harani, 344 Nuian, 1,264 Elf | Not reproduced on `rust-rewrite-bots`: the sweep predates the obstacle-ray fixes `ae5c73933` / `00ba92067` (`PORTING.md` names entrance 3674 and exit 4535); most failures cascade from one late enter. Re-run the sweep to close |
 | A doodad did not appear after `/spawn doodad` | Quest sweep, Harani | 468 | Likely bot-side: a doodad spawned in a fresh instance is only visible after the bot sends `CSInstanceLoadedPacket` (script command `loaded`) and teleports once |
-| `/move <name> <place>` on another player answers "Moved" but the player stays put | PvP check | 1 | SUSPECT, not reproduced in isolation |
+| `/move <name> <place>` on another player answers "Moved" but the player stays put | PvP check (2026-10-20) | 1 | SUSPECT, not reproduced in isolation; the target branch calls `teleport_player` for the target (`systems/services/commands/scripts/move_cmd.rs:94-111`) |
 | No sign sphere for the quest component | Quest sweep; quest 1525 | 378 | Data gap |
 | `mother_faction` requirement not met | Quest sweep | 232 | Quest prerequisite |
 | Using an item did not update quest 261 | Player mode | 1 quest | Open |
 | NPC 7491 never spawned, so its leash cannot be measured | AI sweep | 1 NPC | Spawn data |
+
+Added 2026-10-20:
+
+- **Party invitations** (SUSPECT, found live): an invitation is only expired when the target
+  answers (`systems/social/team.rs:651`), and a new invitation to the same player is refused while
+  any entry exists (`systems/social/team.rs:599`), so a stale invitation blocks later invitations
+  until it is answered or the server restarts.
+- **Dungeon 101 / zone 265 exit** (SUSPECT, quest sweep sample): the exit skill is refused with
+  result 50, and entrance doodad 3674 still fails for some quests in the sweep sample. Rerun the
+  quest sweep to see whether the merged obstacle-ray fixes cover this; the first row above is the
+  earlier 4535 / skill 16560 sample.
 
 ## Related
 
