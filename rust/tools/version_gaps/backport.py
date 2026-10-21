@@ -59,10 +59,13 @@ NAMED_SETS = {
 # Named families that are selected from the two databases instead of an id list.
 # `gear-1a` is the zero-asset first batch of the 3.0 gear backport: costumes,
 # armor and cloaks below the Eanad power line whose four playable-race looks are
-# already in the 1.2 pak.
-GEAR_FAMILIES = ("gear-1a",)
+# already in the 1.2 pak. `gear-1b-costumes` is its costume complement: the
+# costumes whose four-race art is not in the 1.2 pak and is carried by the 3.0
+# pak, shipped with an overlay pak.
+GEAR_FAMILIES = ("gear-1a", "gear-1b-costumes")
 GEAR_1A_MAX_ITEM_LEVEL = 62
 PLAYABLE_RACES = ("nuian", "elf", "hariharan", "ferre")
+NON_PLAYABLE_RACES = ("dwarf", "warborn")
 # The 3.0.4.2 export carries emulator-custom Dawnsdrop sets above this id; their
 # items are refused even where the item id itself is below CUSTOM_ID_MIN.
 DAWNSDROP_SET_MIN = 9_000_001
@@ -183,6 +186,14 @@ def _pak_asset_name(path):
 def _playable_race_of_path(path):
     lowered = (path or "").replace("\\", "/").lower()
     for race in PLAYABLE_RACES:
+        if f"/characters/{race}/" in lowered:
+            return race
+    return None
+
+
+def _non_playable_race_of_path(path):
+    lowered = (path or "").replace("\\", "/").lower()
+    for race in NON_PLAYABLE_RACES:
         if f"/characters/{race}/" in lowered:
             return race
     return None
@@ -408,6 +419,158 @@ def select_gear_1a(base, ref, pak_paths):
     }
 
 
+def select_gear_1b_costumes(base, ref, pak12_paths, pak30_paths):
+    """Select the costume complement of batch 1a, carried by a 3.0 overlay pak.
+
+    Selection rule (documented in the generated patch header):
+
+    * item id absent from the base (1.2 plus the earlier batch 1a) and below
+      `CUSTOM_ID_MIN` (8,000,000);
+    * not an emulator-custom Dawnsdrop item: no `eiset_id` >= 9,000,001 and no
+      item id in 34,936..34,984;
+    * `items.level` <= 62 (the Eanad power line);
+    * costume only (category 10/173 or armor slot 31, category not 94/96/100);
+    * no `item_proc_bindings`, no equip set with a proc or a bonus buff unit
+      attribute above 186, no `use_skill_id` missing from 1.2;
+    * a look for each of the four playable races, with at least one playable
+      path absent from the 1.2 pak (otherwise batch 1a already has it) and every
+      playable path present in the 3.0 pak (the overlay source). Dwarf/Warborn
+      paths stay data-only.
+
+    `base` is expected to be the 1.2 database with the earlier compact patches
+    (batch 1a) applied, so synthetic ids are allocated above their rows.
+    """
+    pak12 = {_pak_asset_name(path) for path in pak12_paths or () if path}
+    pak30 = {_pak_asset_name(path) for path in pak30_paths or () if path}
+    base_items = base.ids("items")
+    base_skills = base.ids("skills")
+    sets = _item_class_ids(ref)
+    high_attribute_sets = _set_ids_with_high_attributes(ref)
+    proc_sets = _set_ids_with_procs(ref)
+    proc_items = (
+        {row["item_id"] for row in ref.rows("select distinct item_id from item_proc_bindings")}
+        if ref.has("item_proc_bindings")
+        else set()
+    )
+    item_columns = set(ref.columns("items"))
+
+    skipped = defaultdict(lambda: {"count": 0, "examples": []})
+
+    def skip(reason, item_id):
+        entry = skipped[reason]
+        entry["count"] += 1
+        if len(entry["examples"]) < 20:
+            entry["examples"].append(item_id)
+
+    selected = []
+    all_paths = set()
+    playable_paths = set()
+    dwarf_warborn_paths = set()
+    other_paths = set()
+    for item in ref.rows("select * from items order by id"):
+        item_id = item["id"]
+        if item_id in base_items:
+            # 1.2 content or batch 1a (the base carries the earlier patch).
+            continue
+        if item_id >= CUSTOM_ID_MIN:
+            skip("custom_id_ge_8m", item_id)
+            continue
+        set_ids = sets.get(item_id, set())
+        if any(set_id >= DAWNSDROP_SET_MIN for set_id in set_ids):
+            skip("custom_dawnsdrop_set", item_id)
+            continue
+        if item_id in DAWNSDROP_ITEM_IDS:
+            skip("custom_dawnsdrop_item", item_id)
+            continue
+        category_id = item.get("category_id") or 0
+        if not ref.has("item_armors"):
+            skip("outside_batch_family", item_id)
+            continue
+        has_armor = ref.row(
+            "select 1 from item_armors where item_id = ? limit 1", (item_id,)
+        )
+        is_costume = bool(
+            has_armor
+            and category_id not in (94, 96, 100)
+            and (
+                category_id in (10, 173)
+                or ref.row(
+                    "select 1 from item_armors where item_id = ? and slot_type_id = 31"
+                    " limit 1",
+                    (item_id,),
+                )
+            )
+        )
+        if not is_costume:
+            skip("outside_batch_family", item_id)
+            continue
+        level = item.get("level", item.get("LEVEL")) or 0
+        if level > GEAR_1A_MAX_ITEM_LEVEL:
+            skip("above_eanad", item_id)
+            continue
+        if item_id in proc_items:
+            skip("item_proc", item_id)
+            continue
+        if set_ids & high_attribute_sets:
+            skip("set_attribute_gt_186", item_id)
+            continue
+        if set_ids & proc_sets:
+            skip("set_proc", item_id)
+            continue
+        use_skill_id = (item.get("use_skill_id") if "use_skill_id" in item_columns else 0) or 0
+        if use_skill_id and use_skill_id not in base_skills:
+            skip("new_use_skill", item_id)
+            continue
+        paths = armor_look_paths(ref, item_id)
+        races = {_playable_race_of_path(path) for path in paths}
+        races.discard(None)
+        if len(races) != len(PLAYABLE_RACES):
+            skip("no_four_race_art", item_id)
+            continue
+        playable = [
+            path for path in paths if _playable_race_of_path(path) is not None
+        ]
+        if not playable:
+            skip("no_four_race_art", item_id)
+            continue
+        if all(_pak_asset_name(path) in pak12 for path in playable):
+            skip("zero_asset_in_1_2", item_id)
+            continue
+        if any(_pak_asset_name(path) not in pak30 for path in playable):
+            skip("playable_art_missing_from_3_0", item_id)
+            continue
+        selected.append(item_id)
+        for path in paths:
+            name = _pak_asset_name(path)
+            all_paths.add(name)
+            if _playable_race_of_path(path) is not None:
+                playable_paths.add(name)
+            elif _non_playable_race_of_path(path) is not None:
+                dwarf_warborn_paths.add(name)
+            else:
+                other_paths.add(name)
+
+    return {
+        "family": "gear-1b-costumes",
+        "items": selected,
+        "counts": {
+            "costume": len(selected),
+            "total": len(selected),
+        },
+        "skipped": {reason: dict(entry) for reason, entry in sorted(skipped.items())},
+        "looks": {
+            "distinct_paths": len(all_paths),
+            "playable_paths": len(playable_paths),
+            "dwarf_warborn_paths": len(dwarf_warborn_paths),
+            "other_paths": len(other_paths),
+            "new_playable_paths": sorted(playable_paths - pak12),
+            "shared_playable_paths": sorted(playable_paths & pak12),
+            "missing_from_1_2_pak": sorted(all_paths - pak12),
+            "missing_from_3_0_pak": sorted(all_paths - pak30),
+        },
+    }
+
+
 def sha256_file(path):
     digest = hashlib.sha256()
     with open(path, "rb") as handle:
@@ -474,6 +637,7 @@ class Borrower:
             "already_present": [],
             "borrowed_rows": defaultdict(int),
             "replaced_rows": defaultdict(int),
+            "duplicate_item_keyed_rows": [],
             "boolean_value_conversions": defaultdict(lambda: defaultdict(int)),
             "materials_without_1_2_source": [],
             "icons_missing_in_1_2": [],
@@ -483,6 +647,7 @@ class Borrower:
         self._buff_effect_buff_ids = set()
         self.seen_sets = set()
         self.seen_localized_keys = set()
+        self.seen_item_keyed = set()
         self.replacements = defaultdict(list)
         self._max_unit_attribute = None
         self.armor_asset_map = {}
@@ -762,9 +927,22 @@ class Borrower:
         `dyeable_items` errors on a duplicate item id; `item_grade_enchanting_supports`
         keeps the first row; the body-part / summon / backpack rows are templates and
         reject a duplicate item template. A 1.2 orphan row for an imported item is
-        therefore updated in place instead of inserting a second row.
+        therefore updated in place instead of inserting a second row. When the 3.0
+        source itself carries several rows for one item (three dyeable costumes do),
+        only the first is imported; the rest are reported as dropped duplicates.
         """
         item_id = ref_row.get("item_id")
+        key = (table, item_id)
+        if key in self.seen_item_keyed:
+            self.report["duplicate_item_keyed_rows"].append(
+                {
+                    "table": table,
+                    "item_id": item_id,
+                    "dropped_id": ref_row.get("id"),
+                }
+            )
+            return None
+        self.seen_item_keyed.add(key)
         base_row = None
         if item_id is not None and self.base.has(table):
             candidates = self.base.rows(
@@ -2021,6 +2199,46 @@ def write_asset_list(out_path, section):
     Path(out_path).write_text("\n".join(section["paths"]) + "\n", encoding="utf-8")
 
 
+def overlay_path_list(assets_needed, pak12):
+    """New overlay files: playable-race look paths and icons absent from 1.2.
+
+    Dwarf/Warborn look paths stay data-only (no art in this batch). The overlay
+    tool's `--closure` adds the materials/textures/models those files reference.
+    """
+    pak12 = pak12 or set()
+    models = set()
+    for path in assets_needed.get("model_paths") or []:
+        name = _pak_asset_name(path)
+        if name in pak12 or _non_playable_race_of_path(name) is not None:
+            continue
+        models.add(name)
+    icons = set()
+    for filename in assets_needed.get("icon_files") or []:
+        name = _pak_asset_name("ui/icon/" + filename)
+        if name not in pak12:
+            icons.add(name)
+    return {
+        "models": sorted(models),
+        "icons": sorted(icons),
+        "paths": sorted(models | icons),
+    }
+
+
+def write_overlay_list(out_path, overlay, item_count):
+    lines = [
+        "# 3.0 gear batch 1b-costumes overlay input (four playable races only).",
+        f"# {item_count} costumes: {len(overlay['models'])} new look paths"
+        f" + {len(overlay['icons'])} new item icons; run with --closure --new-only.",
+        "# Build: cargo xtask overlay-pak --source <3.0.4.2 game_pak> --list <this file>",
+        "#        --closure --new-only --exclude-present-in <1.2 game_pak>",
+        "#        --exclude-path /characters/dwarf/ --exclude-path /characters/warborn/",
+        "#        --out <pak>",
+    ]
+    Path(out_path).write_text(
+        "\n".join(lines + overlay["paths"]) + "\n", encoding="utf-8"
+    )
+
+
 def selection_header(selection, borrowed_rows, report):
     counts = selection["counts"]
     lines = [
@@ -2086,6 +2304,95 @@ def selection_header(selection, borrowed_rows, report):
     return lines
 
 
+def selection_header_1b(selection, borrowed_rows, report, overlay):
+    counts = selection["counts"]
+    looks = selection["looks"]
+    lines = [
+        "3.0 gear batch 1b-costumes (inventory report section 7). Retail 3.0 content only.",
+        "Base: the 1.2 database with 2026-10-21-gear-3.0-batch-1a.sql applied (patches run",
+        "  in file-name order), so batch 1a items and their synthesized look ids are present.",
+        "Selection: item id absent from 1.2 and batch 1a and below 8,000,000; not an",
+        "  emulator-custom Dawnsdrop item (set id >= 9,000,001 or item id 34936..34984);",
+        "  item level <= 62 (the Eanad power line); costume only (category 10/173 or armor",
+        "  slot 31, category not 94/96/100); no item proc, no set proc, no set bonus unit",
+        "  attribute above 186, no 3.0-only use skill; a look for each of the four playable",
+        "  races, at least one playable look path absent from the 1.2 pak (the batch 1a",
+        "  complement) and every playable look path present in the 3.0.4.2 pak (the overlay",
+        "  source). Dwarf/Warborn look paths are imported as data-only item_assets rows.",
+        f"Selected: {counts['costume']} costumes = {counts['total']} items.",
+    ]
+    skipped = [
+        f"{reason} {entry['count']}"
+        for reason, entry in selection["skipped"].items()
+        if entry["count"]
+    ]
+    if skipped:
+        lines.append("Skipped candidates: " + ", ".join(skipped) + ".")
+    lines.append(
+        f"Looks: {looks['distinct_paths']} distinct paths = {looks['playable_paths']}"
+        f" playable-race + {looks['dwarf_warborn_paths']} Dwarf/Warborn"
+        f" + {looks['other_paths']} race-neutral."
+    )
+    lines.append(
+        f"  {len(looks['shared_playable_paths'])} playable paths already exist in the"
+        f" 1.2 pak and are reused; {len(looks['new_playable_paths'])} are new in the 3.0"
+        f" chains, {len(overlay['models'])} of them are imported primary looks and carried"
+        " by the overlay (the rest are 3.0 asset2_id secondary looks, which 1.2 cannot"
+        " store)."
+    )
+    lines.append(
+        "  Changed-shared-file rule: the overlay only ADDS files. The five direct look"
+        " paths whose 3.0 bytes differ from 1.2 (the four female award001 .chr files and"
+        " nu_m_sk_lucius001.chr) keep the 1.2 file: they are the same costume models"
+        " (lucius001 is the 1.2 item 16066 art), so the imported costumes render that"
+        " outfit and no existing 1.2 art changes. Changed closure materials/textures are"
+        " skipped by the overlay tool's --new-only and listed in the manifest."
+    )
+    lines.append(
+        f"Overlay input: {len(overlay['models'])} new playable-race look paths +"
+        f" {len(overlay['icons'])} new item icons; cargo xtask overlay-pak --closure"
+        " --new-only --exclude-path /characters/dwarf/ --exclude-path /characters/warborn/"
+        " adds their materials/textures/models and enforces the add-only, four-race rule."
+    )
+    if borrowed_rows:
+        lines.append(
+            "Rows inserted: "
+            + ", ".join(
+                f"{table} {count}" for table, count in sorted(borrowed_rows.items())
+            )
+            + "."
+        )
+    replaced = {
+        table: count
+        for table, count in (report.get("replaced_rows") or {}).items()
+        if count
+    }
+    if replaced:
+        lines.append(
+            "Rows replaced (existing-key rows updated in place, not duplicated): "
+            + ", ".join(f"{table} {count}" for table, count in sorted(replaced.items()))
+            + "."
+        )
+    lines.append(
+        "Keyed-child checks: localized_texts by (tbl_name, tbl_column_name, idx);"
+        " item_armors/item_weapons/item_accessories and item_grade_enchanting_supports,"
+        " item_enchanting_gems, dyeable_items, item_body_parts, item_summon_mates,"
+        " item_summon_slaves, item_backpacks by item_id."
+    )
+    lines.append(
+        "  unit_modifiers (owner_id), craft_products/craft_materials (craft_id),"
+        " tagged_buffs, skill_modifiers and equip_item_set_bonuses are multi-row"
+        " children; checked, none had an existing row for the imported parents."
+    )
+    if report.get("orphan_crafts_in_3_0"):
+        lines.append(
+            "3.0 orphan crafts (products without a crafts row): "
+            + ", ".join(str(c) for c in report["orphan_crafts_in_3_0"])
+            + "."
+        )
+    return lines
+
+
 def run_backport(
     base_path,
     ref_path,
@@ -2097,19 +2404,32 @@ def run_backport(
     assets_extract_dir=None,
     pak10_listing=None,
     pak12_listing=None,
+    pak30_listing=None,
+    overlay_list_out=None,
 ):
     started = time.time()
     base = Db(path=base_path)
     ref = Db(path=ref_path)
     try:
         selection = None
+        pak12 = read_listing(pak12_listing)
+        overlay = None
         if items_spec in GEAR_FAMILIES:
             if not pak12_listing:
                 raise SystemExit(
                     f"--items {items_spec} needs --pak12-listing (the 1.2 pak paths)"
                 )
-            pak_paths = read_listing(pak12_listing)
-            selection = select_gear_1a(base, ref, pak_paths or ())
+            if items_spec == "gear-1b-costumes":
+                if not pak30_listing:
+                    raise SystemExit(
+                        "--items gear-1b-costumes needs --pak30-listing"
+                        " (the 3.0.4.2 pak paths, the overlay source)"
+                    )
+                selection = select_gear_1b_costumes(
+                    base, ref, pak12 or (), read_listing(pak30_listing) or ()
+                )
+            else:
+                selection = select_gear_1a(base, ref, pak12 or ())
             item_ids = selection["items"]
             if not item_ids:
                 raise SystemExit(f"--items {items_spec} selected no items")
@@ -2118,6 +2438,8 @@ def run_backport(
         closure, rows, report = build_backport(
             base, ref, item_ids, skip_craft_pack_crafts=selection is not None
         )
+        if selection is not None and selection["family"] == "gear-1b-costumes":
+            overlay = overlay_path_list(report.get("assets_needed", {}), pak12)
         base_sha = sha256_file(base_path)
         ref_sha = sha256_file(ref_path)
         if command is None:
@@ -2127,13 +2449,23 @@ def run_backport(
             )
             if items_spec in GEAR_FAMILIES:
                 command += f" --pak12-listing {pak12_listing}"
+            if items_spec == "gear-1b-costumes":
+                command += f" --pak30-listing {pak30_listing}"
+                if overlay_list_out:
+                    command += f" --overlay-list-out {overlay_list_out}"
             command += f" --out-sql {out_sql} --out-db {out_db}"
         replacements = report.pop("_replacements", {})
         extra_header = None
         title = "version_gaps backport: borrowed gear"
         if selection is not None:
-            extra_header = selection_header(selection, report["borrowed_rows"], report)
-            title = "version_gaps backport: 3.0 gear batch 1a"
+            if selection["family"] == "gear-1b-costumes":
+                extra_header = selection_header_1b(
+                    selection, report["borrowed_rows"], report, overlay
+                )
+                title = "version_gaps backport: 3.0 gear batch 1b-costumes"
+            else:
+                extra_header = selection_header(selection, report["borrowed_rows"], report)
+                title = "version_gaps backport: 3.0 gear batch 1a"
         sql = render_patch(
             rows,
             base_path,
@@ -2154,6 +2486,15 @@ def run_backport(
         }
         if selection is not None:
             report["selection"] = selection
+        if overlay is not None:
+            report["overlay_list"] = {
+                "model_paths": len(overlay["models"]),
+                "icons": len(overlay["icons"]),
+                "paths": len(overlay["paths"]),
+                "list": str(overlay_list_out) if overlay_list_out else None,
+            }
+            if overlay_list_out:
+                write_overlay_list(overlay_list_out, overlay, len(item_ids))
         report["title"] = f"gear backport: {items_spec}"
         report["sha256"] = {"base": base_sha, "ref": ref_sha}
         report["closure"] = {
@@ -2193,18 +2534,38 @@ def print_summary(report):
     selection = report.get("selection")
     if selection:
         counts = selection["counts"]
-        print(
-            f"selection {selection['family']}: {counts['costume']} costumes +"
-            f" {counts['armor']} armor + {counts['cloak']} cloaks ="
-            f" {counts['total']} items"
-        )
+        if selection["family"] == "gear-1b-costumes":
+            print(
+                f"selection {selection['family']}: {counts['total']} costumes"
+            )
+        else:
+            print(
+                f"selection {selection['family']}: {counts['costume']} costumes +"
+                f" {counts['armor']} armor + {counts['cloak']} cloaks ="
+                f" {counts['total']} items"
+            )
         for reason, entry in selection["skipped"].items():
             if entry["count"]:
                 print(f"  skipped {reason}: {entry['count']}")
+        looks = selection["looks"]
         print(
-            "  look paths not in the 1.2 pak (non-playable races):"
-            f" {len(selection['looks']['missing_from_1_2_pak'])}"
+            "  look paths:"
+            f" {looks['distinct_paths']} distinct,"
+            f" {looks['playable_paths']} playable,"
+            f" {looks['dwarf_warborn_paths']} dwarf/warborn,"
+            f" {len(looks['missing_from_1_2_pak'])} not in the 1.2 pak"
+            + (
+                f", {len(looks['missing_from_3_0_pak'])} not in the 3.0 pak"
+                if "missing_from_3_0_pak" in looks
+                else ""
+            )
         )
+        overlay = report.get("overlay_list")
+        if overlay:
+            print(
+                f"  overlay input: {overlay['model_paths']} look paths +"
+                f" {overlay['icons']} icons = {overlay['paths']} files"
+            )
     print("borrowed rows per table:")
     for table, count in sorted(report["borrowed_rows"].items()):
         print(f"  {table}: {count}")
@@ -2545,6 +2906,14 @@ def main(argv=None):
     parser.add_argument("--pak10-listing", help="10.x pak listing (one path per line)")
     parser.add_argument("--pak12-listing", help="1.2 pak listing (one path per line)")
     parser.add_argument(
+        "--pak30-listing",
+        help="3.0.4.2 pak listing (one path per line; gear-1b-costumes overlay source)",
+    )
+    parser.add_argument(
+        "--overlay-list-out",
+        help="overlay input list (new playable-race look paths + new icons)",
+    )
+    parser.add_argument(
         "--command",
         help="command line recorded in the SQL header (default: this invocation)",
     )
@@ -2561,6 +2930,8 @@ def main(argv=None):
         assets_extract_dir=args.assets_extract_dir,
         pak10_listing=args.pak10_listing,
         pak12_listing=args.pak12_listing,
+        pak30_listing=args.pak30_listing,
+        overlay_list_out=args.overlay_list_out,
     )
     with open(args.report, "w", encoding="utf-8") as handle:
         json.dump(report, handle, ensure_ascii=False, indent=2, default=str)
