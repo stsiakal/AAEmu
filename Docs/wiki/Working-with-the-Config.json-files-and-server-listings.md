@@ -286,19 +286,22 @@ Enable one in `Configurations/Areas.json` (or `Config.Local.json`, which wins):
   spawn files are not loaded. Entering one of its zones anyway (walking over the border or a GM
   teleport) sends the player to the closest open respawn portal with `SCErrorMsg(ClosedZone)`.
 - A descriptor lists its zone ids and client zone keys, optional group / sub zone ids, quest zone
-  ids (default: the zone ids), worlds, and spawn files:
+  ids (default: the zone ids), worlds, spawn files, and optional `ClientSources` (overlay paks or
+  directories):
 
 ```json
 {
     "ZoneIds": [227, 242],
     "ZoneKeys": [287, 286],
     "QuestZoneIds": [227],
-    "Worlds": ["main_world"],
+    "ClientSources": ["Data/Areas/sunbite-wilds/sunbite-wilds.pak"],
     "Spawns": [
         { "World": "main_world", "NpcSpawns": "Data/Areas/sunbite-wilds/npc_spawns.json" }
     ]
 }
 ```
 
-The shipped pilot is `sunbite-wilds` (Sunbite Wilds 3+4, `zone_key` 286/287); its contents, data
-sources and limits are documented in [Backports](Backports#sunbite-wilds-pilot).
+The shipped pilot is `sunbite-wilds` (Sunbite Wilds 3+4, `zone_key` 286/287). Its 3.0 terrain
+overlay `Data/Areas/sunbite-wilds/sunbite-wilds.pak` is generated, not committed; when the package
+is enabled and the file is missing, startup fails instead of silently using the 1.2 terrain. Its
+contents, data sources and limits are documented in [Backports](Backports#sunbite-wilds-pilot-optional-area).

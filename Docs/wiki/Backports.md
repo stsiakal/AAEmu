@@ -222,47 +222,68 @@ Server paths are under `rust/crates/aaemu-game/src/` unless stated otherwise; Be
 
 ## Sunbite Wilds pilot (optional area)
 
-The first optional-area package makes the 1.2 client's dormant Sunbite Wilds 3+4 terrain live
-without a client pak: `zone_key` 286 and 287 already exist in the 1.2 `world.xml`, but 1.2 has no
-`zones` rows or content for them (`Areas` inventory §3.4). It is server-only, opt-in through
-`Areas:Enabled` (see [Working with the Config files](Working-with-the-Config.json-files-and-server-listings#optional-later-version-areas-areas)),
-and every row is a compact patch that never overwrites a 1.2 id.
+The first optional-area package makes the 1.2 client's dormant Sunbite Wilds 3+4 live. The 3.0.4.2
+client is now the source: its `game_pak` has no `zone_server/npc_spawners.g`, but it keeps the retail
+placement map at `game/worlds/main_world/map_data/npc_map/e_sunny_wilderness.dat` (16-byte records:
+`u32 npc id`, `f32 x`, `f32 y`, `f32 z`). That file, the 3.0 `world.xml`, and the 3.0
+`compact.sqlite3` / `compact.server.table.sqlite3` provide all content. 10.x is not used.
+
+Important: the 3.0 client re-terraformed and moved these zones. Its `world.xml` puts `zone_key`
+286/287 at origin `(21, 4)` with six sector-owning cells (21/22,4-6), while the 1.2 `world.xml`
+declares them at `(18, 4)`/`(18, 5)` and their cells do not match the 3.0 heightmaps. A stable
+1.2-terrain package is therefore impossible: the package ships a **terrain overlay**.
 
 | Content | Count | Source |
 | --- | ---: | --- |
-| Zones (`e_sunny_wilderness_3` / `_4`) | 2 | 3.0.4.2 `zones` (ids 242 / 227, keys 286 / 287; group 13 already exists in 1.2) |
-| Quests at level <= 55 | 81 | 3.0 `quest_contexts.zone_id = 227` (levels 2-30), with 350 components and 482 acts |
-| NPC templates (new ids) | 111 | 3.0 `npcs` (levels 10-50); 3.0 `npc_initial_buffs`, postures, AI params and nicknames |
-| Item templates (new ids) | 105 | 3.0 `items`; all levels <= 62, no new id >= 8,000,000 |
-| Doodad templates (new ids) | 36 | 3.0 `doodad_almighties` referenced by the quests (no placements exist in the pak) |
-| NPC spawner templates | 28 reused + 78 imported | 28 ids and their members already exist in 1.2 and match 3.0; the other 78 are 10.x-only templates |
-| NPC spawn placements | 322 | 10.x `level_design/zone/{286,287}/zone_server/npc_spawners.g`, mapped into the 1.2 zone's owned sectors |
+| Zones (`e_sunny_wilderness_3` / `_4`) | 2 | 3.0 `zones` (ids 242 / 227, keys 286 / 287; group 13 reuses the 1.2 row) |
+| Quests at level <= 55 | 78 | 3.0 `quest_contexts.zone_id = 227` (levels 2-29), 338 components / 465 acts |
+| NPC templates imported | 141 | 3.0 `npcs` (levels 3-50); 31 colliding 3.0 ids remapped into `30000000+`; 6 use a 1.2 model as a visual fallback |
+| NPCs placed | 148 | 3.0 `npc_map`; 449 placements (362 in 286/287, the rest are quest givers/talk NPCs in 157/190) |
+| Spawner templates | 148 | 7 safe 1.2 one-member templates reused, 141 one-member synthetic templates (100000000+) so every placement pins exactly one NPC |
+| Item templates (new) | 102 | 3.0 `items`; all level 1, no new id >= 8,000,000 |
+| Doodad templates (new) | 36 | 3.0 `doodad_almighties` referenced by the quests (no placements exist in the pak) |
+| Loot | 13 packs / 34 rows | 3.0 server `loot_pack_dropping_npcs` / `loots` / `loot_groups`, filtered to items that exist |
 
-Regenerate with `rust/tools/area_package/build_sunbite.py`; its header carries the exact command.
-The compact patches are `SQL/patches/compact/2026-10-21-sunbite-wilds-*.sql` and are rerun-safe
-(`NOT EXISTS` guards, including the tables without a primary key).
+**Terrain overlay (`Data/Areas/sunbite-wilds/sunbite-wilds.pak`)**
 
-**Deliberate limits and guesses**
+- 3.0 cells `021_004`, `021_005`, `021_006`, `022_004`, `022_005`, `022_006`: all 73 files
+  (heightmap, object, vegetation, cover, ...), 33,376,333 bytes of source data; the packed overlay
+  is 33,402,368 bytes (~31.9 MiB).
+- A merged `world.xml` replaces the zone nodes 157, 190, 286 and 287. 157/190 are needed because
+  3.0 places the early Sunbite quest NPCs there; their **terrain stays 1.2** (only the zone
+  boundaries come from 3.0). `world.g` is unchanged (1.2 already lists 286/287).
+- The pak is generated, never committed:
+  `python -I rust/tools/area_package/build_sunbite.py ... --build-overlay
+  rust/crates/aaemu-game/app/Data/Areas/sunbite-wilds/sunbite-wilds.pak`.
+- Server: the package descriptor lists it under `ClientSources`; `Areas:Enabled` prepends it to
+  `ClientData.Sources`, first source wins. Bevy: copy/symlink it into the base pak's `overlays/`
+  folder or add it to `AA_PAK_OVERLAYS`.
+- Measured 3.0-vs-1.2 terrain difference (raw heightmap nodes): cell 021_004 max 199.8 m (212,530
+  of 278,784 samples differ by >3 m), 021_005 max 167.8 m (220,656), 021_006 max 99.2 m (53,174);
+  the 022_004/005/006 node layouts differ too. At the 362 placements in 286/287 the authored Z was
+  within 3 m of the 3.0 terrain for 343 (94.8%).
 
-- **Placements are a 10.x guess.** 3.0 ships the spawner tables but no placement files for these
-  zones, so the only placement source is the 10.x client. The 10.x zones moved to origin
-  (21, 4) while 1.2 keeps (18, 4) / (18, 5), and the cell shapes differ; the tool maps each 10.x
-  cell proportionally onto the 1.2 zone's sector-owning cells. 250 of 322 points still fell in a
-  neighbouring 1.2 zone's sector and were moved to the nearest sector Sunbite owns, so their
-  positions are a guess. The authored 10.x Z is kept (the 1.2 heightmap is not read; re-snap with
-  the `dump_terrain_heights` test if the live check reveals floating or buried NPCs).
-- **1.2 boundary kept.** The 1.2 `world.xml` sector ownership is unchanged; the package does not
-  ship a client overlay.
-- **One quest skipped.** Quest 8155 references NPC 17156, whose 3.0 model (2136) does not exist in
-  1.2; 81 of 82 candidates remain. Every imported NPC uses a 1.2 model.
-- **No loot.** Neither 3.0 nor 10.x links the new Sunbite NPCs to a loot pack
-  (`loot_pack_dropping_npcs` has no rows for them), so the package has no loot patch; quest rewards
-  are the source of items.
-- **Doodads are templates only.** The 10.x pak has no `main_world` doodad placement file, so the 36
-  quest doodad templates exist but no doodads are placed.
-- **Quest text is client-side.** The server sends ids; the 1.2 client shows only text it already
-  has, so some new quest names/descriptions may be blank or Korean.
+**Placement validation (offline, server heightmap sampler)**
+
+- 511 candidate placements; 378 (74%) authored Z within 3 m of the server terrain. Every final
+  placement is **snapped to the sampled terrain** (509 candidate entries after dropping 2 unplaceable NPCs, then 449 unique placements after deduplicating repeated npc_map records),
+  so the package is 100% on-ground by construction.
+- 133 placements moved by >3 m when snapping, 19 by >50 m (interiors/cliffs); 0 in water; 19 on
+  slopes >45 deg. 0 needed sector re-anchoring after merging the 157/190 zone nodes.
+- The validation command uses the ignored `dump_terrain_heights` test with the tool's
+  `--overlay-dir` scratch source; the generator refuses to write output without `--heights`.
+
+**Quest reachability**
+
+- 78 of 82 candidate quests remain. Quests 8152-8155 are skipped because their start/end NPCs have
+  no 3.0 `npc_map` record. Every kept quest's accept/report NPC is placed.
+- NPC levels 3-50. The six level-50 NPCs are 3.0 guards/service NPCs (guard, farm manager, priest,
+  auctioneer, merchant recruiter), not 10.x data.
+- 2 3.0-only NPCs (17077/17079, model 2118 absent from the 1.2 client) have no placement and are
+  not imported. 6 colliding 3.0 NPCs whose models are absent from 1.2 keep a 1.2 model as a visual
+  fallback; their 3.0 level/stats are kept.
 
 `cargo xtask compact-patches` applies the patches twice in the ignored
 `sunbite_area_package_real_data` test and then loads the zone, quest and full subsystem data with
-`Areas:Enabled` on and off.
+`Areas:Enabled` on and off. The overlay itself is checked by
+`sunbite_overlay_pak_is_read_first` (`AAEMU_OVERLAY_PAK` + `AAEMU_GAME_PAK`).

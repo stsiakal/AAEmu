@@ -742,10 +742,13 @@ is no longer mirrored (see "Known deviations", dead NPC returned and healed).
   spawn files. Disabled packages are filtered from `ZoneData`, `WorldTemplates`, `PortalData` /
   `PortalTables`, `QuestData` and the spawn loaders; `world::session::on_zone_change` sends a
   player who enters a disabled zone to the closest open respawn portal with
-  `SCErrorMsg(ClosedZone)`. The first package is `sunbite-wilds` (2 zones, 81 quests, 111 NPCs,
-  105 items, 36 doodad templates, 322 placements); it is documented in `Docs/wiki/Backports.md`.
-  A spawn entry's `SpawnerId` now pins the authored spawner template when the game data has it,
-  so a package placement cannot clone every template that happens to contain the same NPC.
+  `SCErrorMsg(ClosedZone)`. A package may also list `ClientSources`: when enabled, those sources
+  are prepended to `ClientData.Sources` (first source wins) so a terrain overlay pak can replace
+  world.xml and cells. The first package is `sunbite-wilds` (2 zones, 78 quests, 141 imported
+  NPCs, 102 new items, 36 doodad templates, 449 placements, 13 loot packs, a 33.4 MB 3.0 terrain
+  overlay); it is documented in `Docs/wiki/Backports.md`. A spawn entry's `SpawnerId` now pins the
+  authored spawner template, so a package placement cannot clone every template that happens to
+  contain the same NPC; the package adds one-member templates for NPCs without a safe 1.2 pin.
 * systems::skills / systems::npcs (`Interaction` special effect 10): the former C# class was a
   TODO stub. The 1.2 `special_effects` rows put a `WorldInteractionType` in `value1` (row 11030:
   19 `Use`, 36: 10 `DigTerrain`, 215: 29 `SummonBeanstalk`) and an optional doodad id in
