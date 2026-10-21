@@ -27,6 +27,12 @@ const PATCH_SQL: &str = include_str!(concat!(
     "/../../../SQL/patches/compact/2026-10-21-gear-3.0-batch-1a.sql"
 ));
 
+/// The batch 1b costume patch, applied after batch 1a.
+const PATCH_1B_SQL: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../../SQL/patches/compact/2026-10-21-gear-3.0-batch-1b-costumes.sql"
+));
+
 /// Selected gear items (the three samples: a cloak, an underwear costume and a leather
 /// armor piece) plus the 295 rows the patch inserts (288 gear + 7 craft materials).
 const SAMPLE_CLOAK: u32 = 3006;
@@ -50,6 +56,31 @@ const INSERTED_CRAFT_MATERIALS: i64 = 55;
 const INSERTED_TEXTS: i64 = 849;
 const REPLACED_TEXTS: i64 = 16;
 const INSERTED_TAGS: i64 = 2;
+
+/// Batch 1b samples: a prisoner costume with new art in every playable race, an
+/// award costume whose female `.chr` files stay at the 1.2 version, and the
+/// Immortal Guardian robe whose 1.2 `lucius001.chr` is kept.
+const B_SAMPLE_COSTUME: u32 = 35119;
+const B_SAMPLE_AWARD: u32 = 36681;
+const B_SAMPLE_LUCIUS: u32 = 51173;
+const B_INSERTED_ITEMS: i64 = 315;
+const B_INSERTED_ARMOR_ROWS: i64 = 313;
+const B_INSERTED_LOOKS: i64 = 119;
+const B_INSERTED_LOOK_PATHS: i64 = 1439;
+const B_INSERTED_ITEM_ASSETS: i64 = 1392;
+const B_INSERTED_ICONS: i64 = 199;
+const B_INSERTED_CRAFTS: i64 = 19;
+const B_INSERTED_CRAFT_PRODUCTS: i64 = 19;
+const B_INSERTED_CRAFT_MATERIALS: i64 = 34;
+const B_INSERTED_TEXTS: i64 = 735;
+const B_INSERTED_DYEABLE: i64 = 76;
+const B_INSERTED_BUFFS: i64 = 4;
+const B_INSERTED_UNIT_MODIFIERS: i64 = 4;
+const B_INSERTED_SKILLS: i64 = 1;
+const B_INSERTED_SKILL_EFFECTS: i64 = 1;
+const B_INSERTED_EFFECTS: i64 = 1;
+const B_INSERTED_CRAFT_EFFECTS: i64 = 1;
+const B_INSERTED_TAGGED_BUFFS: i64 = 4;
 
 /// A private copy of the real database, removed when the test ends (also on panic).
 struct TempCopy(PathBuf);
@@ -441,6 +472,221 @@ fn gear_1a_patch_applies_to_a_copy_and_loads() {
             assert_eq!(e.equip_item_set_id, 0, "item {item_id} has no equip set");
         }
     }
+    assert_eq!(
+        conn.query_row("PRAGMA integrity_check", [], |r| r.get::<_, String>(0))
+            .expect("integrity check"),
+        "ok"
+    );
+}
+#[test]
+#[ignore = "needs AAEMU_COMPACT_DB"]
+fn gear_1b_costume_patch_applies_after_1a_and_loads() {
+    let Ok(source) = std::env::var("AAEMU_COMPACT_DB") else {
+        return;
+    };
+    let copy = TempCopy::new(Path::new(&source));
+    let conn = copy.open();
+    conn.execute_batch("PRAGMA foreign_keys = OFF;")
+        .expect("foreign keys off as in the applier");
+
+    conn.execute_batch(PATCH_SQL).expect("batch 1a");
+    conn.execute_batch(PATCH_SQL).expect("batch 1a rerun");
+    let before = counts(&conn);
+    let before_templates = ItemData::load(&conn)
+        .expect("load batch 1a items")
+        .templates
+        .len();
+    let before_look_max = row_i64(
+        &conn,
+        "SELECT COALESCE(MAX(id), 0) FROM armor_assets WHERE id < 8000000",
+        &[],
+    );
+    let before_custom_items = row_i64(&conn, "SELECT COUNT(*) FROM items WHERE id >= 8000000", &[]);
+    let before_custom_set_rows = row_i64(
+        &conn,
+        "SELECT COUNT(*) FROM item_armors WHERE eiset_id >= 9000001",
+        &[],
+    );
+
+    conn.execute_batch(PATCH_1B_SQL).expect("batch 1b");
+    let after_first = counts(&conn);
+    conn.execute_batch(PATCH_1B_SQL).expect("batch 1b rerun");
+    let after = counts(&conn);
+    assert_eq!(after_first, after, "second batch 1b run changed the data");
+
+    assert_eq!(after.items - before.items, B_INSERTED_ITEMS);
+    assert_eq!(
+        after.item_armors - before.item_armors,
+        B_INSERTED_ARMOR_ROWS
+    );
+    assert_eq!(after.armor_assets - before.armor_assets, B_INSERTED_LOOKS);
+    assert_eq!(
+        after.item_armor_assets - before.item_armor_assets,
+        B_INSERTED_LOOK_PATHS
+    );
+    assert_eq!(
+        after.item_assets - before.item_assets,
+        B_INSERTED_ITEM_ASSETS
+    );
+    assert_eq!(after.icons - before.icons, B_INSERTED_ICONS);
+    assert_eq!(after.crafts - before.crafts, B_INSERTED_CRAFTS);
+    assert_eq!(
+        after.craft_products - before.craft_products,
+        B_INSERTED_CRAFT_PRODUCTS
+    );
+    assert_eq!(
+        after.craft_materials - before.craft_materials,
+        B_INSERTED_CRAFT_MATERIALS
+    );
+    assert_eq!(
+        after.localized_texts - before.localized_texts,
+        B_INSERTED_TEXTS
+    );
+    assert_eq!(
+        after.dyeable_items - before.dyeable_items,
+        B_INSERTED_DYEABLE
+    );
+    assert_eq!(after.buffs - before.buffs, B_INSERTED_BUFFS);
+    assert_eq!(
+        after.unit_modifiers - before.unit_modifiers,
+        B_INSERTED_UNIT_MODIFIERS
+    );
+    assert_eq!(after.skills - before.skills, B_INSERTED_SKILLS);
+    assert_eq!(
+        after.skill_effects - before.skill_effects,
+        B_INSERTED_SKILL_EFFECTS
+    );
+    assert_eq!(after.effects - before.effects, B_INSERTED_EFFECTS);
+    assert_eq!(
+        after.craft_effects - before.craft_effects,
+        B_INSERTED_CRAFT_EFFECTS
+    );
+    assert_eq!(
+        after.tagged_buffs - before.tagged_buffs,
+        B_INSERTED_TAGGED_BUFFS
+    );
+    assert_eq!(after.item_categories, before.item_categories);
+    assert_eq!(after.tags, before.tags);
+    assert_eq!(after.equip_item_sets, before.equip_item_sets);
+    assert_eq!(after.equip_item_set_bonuses, before.equip_item_set_bonuses);
+    assert_eq!(after.item_proc_bindings, before.item_proc_bindings);
+    assert_eq!(
+        row_i64(
+            &conn,
+            concat!(
+                "SELECT COUNT(*) FROM (SELECT 1 FROM localized_texts",
+                " GROUP BY tbl_name, tbl_column_name, idx HAVING COUNT(*) > 1)",
+            ),
+            &[],
+        ),
+        0,
+        "no duplicate localized_texts keys after batch 1b"
+    );
+
+    // The custom bands stay untouched and every imported look is re-keyed above
+    // the 1.2 + 1a range (but below the custom band).
+    assert_eq!(
+        row_i64(&conn, "SELECT COUNT(*) FROM items WHERE id >= 8000000", &[]),
+        before_custom_items
+    );
+    assert_eq!(
+        row_i64(
+            &conn,
+            "SELECT COUNT(*) FROM item_armors WHERE eiset_id >= 9000001",
+            &[]
+        ),
+        before_custom_set_rows
+    );
+    assert_eq!(
+        row_i64(
+            &conn,
+            "SELECT COUNT(*) FROM equip_item_sets WHERE id >= 9000001",
+            &[]
+        ),
+        0
+    );
+
+    let data = ItemData::load(&conn).expect("ItemData::load accepts 1a + 1b");
+    assert_eq!(
+        data.templates.len(),
+        before_templates + B_INSERTED_ITEMS as usize
+    );
+    assert!(
+        data.equip_item_set(206).is_some(),
+        "1.2 Eanad set still loads"
+    );
+    for item_id in [B_SAMPLE_COSTUME, B_SAMPLE_AWARD, B_SAMPLE_LUCIUS] {
+        let template = data.template(item_id).expect("imported costume template");
+        assert_eq!(template.category_id, 10, "item {item_id}");
+        assert!(
+            matches!(
+                template.kind,
+                TemplateKind::Armor(ref e) if e.slot_type_id == 31
+            ),
+            "item {item_id} is a costume"
+        );
+        let (asset_id, slot): (i64, i64) = conn
+            .query_row(
+                "SELECT asset_id, slot_type_id FROM item_armors WHERE item_id = ?1",
+                [item_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .expect("sample armor row");
+        assert_eq!(slot, 31);
+        assert!(
+            asset_id > before_look_max && asset_id < 8_000_000,
+            "item {item_id} look {asset_id} is re-keyed above the 1a range"
+        );
+        let paths = leaf_paths(&conn, item_id);
+        for race in ["nuian", "elf", "hariharan", "ferre"] {
+            assert!(
+                paths
+                    .iter()
+                    .any(|path| path.contains(&format!("/characters/{race}/"))),
+                "item {item_id} has a {race} look path"
+            );
+        }
+        assert_eq!(
+            row_i64(
+                &conn,
+                concat!(
+                    "SELECT COUNT(*) FROM item_armor_assets iaa",
+                    " LEFT JOIN item_assets ia ON ia.id = iaa.asset_id",
+                    " WHERE iaa.armor_asset_id = ?1 AND ia.id IS NULL",
+                ),
+                &[asset_id],
+            ),
+            0,
+            "item {item_id} look chain has no dangling item_assets row"
+        );
+    }
+
+    // The award costume keeps the 1.2 award001 files for its female races (the
+    // overlay must not change existing art); the Immortal Guardian robe reuses
+    // the 1.2 lucius001 file that item 16066 already renders.
+    let award = leaf_paths(&conn, B_SAMPLE_AWARD);
+    for race in ["nuian", "elf", "hariharan", "ferre"] {
+        assert!(
+            award
+                .iter()
+                .any(|path| path.contains(&format!("/{race}/female/costume/"))
+                    && path.contains("_sk_award001/")),
+            "award costume has the {race} female award001 path"
+        );
+    }
+    let lucius = leaf_paths(&conn, B_SAMPLE_LUCIUS);
+    assert!(
+        lucius
+            .iter()
+            .any(|path| path.ends_with("nu_m_sk_lucius001.chr")),
+        "Immortal Guardian robe uses the 1.2 lucius001 file"
+    );
+
+    let sample = leaf_paths(&conn, B_SAMPLE_COSTUME);
+    assert!(
+        sample.iter().any(|path| path.contains("prisoner001")),
+        "prisoner costume paths are imported"
+    );
     assert_eq!(
         conn.query_row("PRAGMA integrity_check", [], |r| r.get::<_, String>(0))
             .expect("integrity check"),
