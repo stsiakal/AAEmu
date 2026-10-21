@@ -119,6 +119,9 @@ pub struct ExpectedPosition {
     pub instance_id: u32,
     /// Server time (unix ms) the destination was sent.
     pub sent_ms: i64,
+    /// The marker comes from a movement-guard correction: seed the accepted catch-up move with
+    /// a full travel budget (the client may still deliver a queued burst).
+    pub full_budget: bool,
 }
 
 /// `Character`.
@@ -129,6 +132,10 @@ pub struct Character {
     pub id: u32,
     pub account_id: u32,
     pub access_level: i32,
+    /// The account row's `access_level` as last read at character select / bot spawn (not
+    /// persisted). The effective level is `max(access_level, account_access_level)`, the same
+    /// rule as the command permission check.
+    pub account_access_level: i32,
     pub race: u8,
     pub gender: u8,
     pub experience: i32,
@@ -291,29 +298,45 @@ impl Character {
         self.mark_expected_position_at(x, y, z, crate::world::now_ms());
     }
 
+    /// A movement-guard correction destination: the catch-up move gets a full travel budget.
+    pub fn mark_correction_position(&mut self, x: f32, y: f32, z: f32) {
+        self.mark_expected_position_at_with_budget(x, y, z, crate::world::now_ms(), true);
+    }
+
     /// [`Self::mark_expected_position`] with an explicit server time (tests).
     pub fn mark_expected_position_at(&mut self, x: f32, y: f32, z: f32, now_ms: i64) {
+        self.mark_expected_position_at_with_budget(x, y, z, now_ms, false);
+    }
+
+    /// [`Self::mark_expected_position`] with an explicit server time and budget flag.
+    pub fn mark_expected_position_at_with_budget(
+        &mut self,
+        x: f32,
+        y: f32,
+        z: f32,
+        now_ms: i64,
+        full_budget: bool,
+    ) {
         self.expected_position = Some(ExpectedPosition {
             x,
             y,
             z,
             instance_id: self.unit.transform.instance_id,
             sent_ms: now_ms,
+            full_budget,
         });
     }
 
-    /// Consumes the whitelist marker when `(x, y, z)` is within `radius` of it; returns whether
-    /// it was (the marker is kept when it is not, until it expires).
-    pub fn take_expected_position(&mut self, x: f32, y: f32, z: f32, radius: f32) -> bool {
-        let Some(e) = self.expected_position else {
-            return false;
-        };
+    /// Consumes the whitelist marker when `(x, y, z)` is within `radius` of it; `Some(full_budget)`
+    /// when it was consumed (the marker is kept when it is not, until it expires).
+    pub fn take_expected_position(&mut self, x: f32, y: f32, z: f32, radius: f32) -> Option<bool> {
+        let e = self.expected_position?;
         let (dx, dy, dz) = (x - e.x, y - e.y, z - e.z);
         if dx * dx + dy * dy + dz * dz <= radius * radius {
             self.expected_position = None;
-            true
+            Some(e.full_budget)
         } else {
-            false
+            None
         }
     }
 
@@ -327,6 +350,7 @@ impl Character {
             id,
             account_id,
             access_level: 0,
+            account_access_level: 0,
             race: 0,
             gender: 0,
             experience: 0,

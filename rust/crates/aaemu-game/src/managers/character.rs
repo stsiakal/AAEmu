@@ -320,6 +320,7 @@ pub async fn create(
     c.unit.faction_id = template.faction_id;
     c.faction_name = String::new();
     c.access_level = access_level;
+    c.account_access_level = account.access_level;
     c.labor_power = account.labor;
     c.labor_power_modified = crate::db::unix(account.last_updated);
     c.num_inventory_slots = template.num_inventory_slot;

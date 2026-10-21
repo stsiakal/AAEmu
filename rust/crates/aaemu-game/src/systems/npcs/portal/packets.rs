@@ -233,7 +233,7 @@ impl ClientPacket for CSTeleportEndedPacket {
             // position is accepted when it is the destination the server sent (or when the
             // server sent no explicit destination, as the 1.2 C# always trusted it); otherwise
             // the server-known destination wins and the next move is validated from there.
-            let (was_disabled, mut server_pos, accept_reported) = {
+            let (was_disabled, mut server_pos, accept_reported, full_budget) = {
                 let c = me.data();
                 let expected = c.expected_position;
                 let fresh = expected.is_some_and(|e| {
@@ -247,7 +247,13 @@ impl ClientPacket for CSTeleportEndedPacket {
                         <= cfg.move_verify_expected_radius * cfg.move_verify_expected_radius
                 });
                 let fallback = expected.map(|e| (e.x, e.y, e.z));
-                (c.disabled_set_position, fallback, fresh && at_destination)
+                let full_budget = expected.is_some_and(|e| e.full_budget);
+                (
+                    c.disabled_set_position,
+                    fallback,
+                    fresh && at_destination,
+                    full_budget,
+                )
             };
             if !was_disabled && !accept_reported {
                 tracing::debug!(
@@ -268,7 +274,7 @@ impl ClientPacket for CSTeleportEndedPacket {
                 c.unit.transform.set_xyz(x, y, z);
                 // The first move after the teleport must start from where the server left the
                 // player (a client that reappears elsewhere is corrected).
-                c.mark_expected_position_at(x, y, z, now);
+                c.mark_expected_position_at_with_budget(x, y, z, now, full_budget);
                 c.set_disabled_set_position(false);
             }
             server.systems.ai.collision.move_speed.reset(me.obj_id);

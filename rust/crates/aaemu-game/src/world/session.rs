@@ -317,6 +317,14 @@ pub async fn select_character(
     else {
         return Ok(());
     };
+    // The command permission check uses the maximum of the character and account levels; the
+    // sync movement guard reads this cached account value.
+    c.account_access_level = crate::systems::services::accounts::get_account_details(
+        server,
+        c.account_id,
+    )
+    .await
+    .access_level;
     conn.characters[idx] = c.clone();
     // Force player into main_world when coming from character select
     c.unit.transform.instance_id = DEFAULT_INSTANCE_ID;
@@ -898,7 +906,7 @@ fn check_movement_guard(
             {
                 let mut c = player.data();
                 // The server sends the client back: the client's recovery move is whitelisted.
-                c.mark_expected_position(x, y, z);
+                c.mark_correction_position(x, y, z);
                 c.set_disabled_set_position(true);
             }
             player.send(SCTeleportUnitPacket {

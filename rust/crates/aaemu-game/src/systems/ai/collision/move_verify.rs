@@ -327,7 +327,11 @@ impl MoveSpeedGuard {
             let (access_level, seq, character_id, expected_ok) = {
                 let mut c = p.data();
                 teleport_seq = c.teleport_seq;
-                let access = c.access_level;
+                // Same rule as the command permission check.
+                let access = crate::systems::services::character::effective_access_level_from(
+                    c.access_level,
+                    c.account_access_level,
+                );
                 let character_id = c.id;
                 let expected = c.expected_position;
                 let fresh = expected.is_some_and(|e| {
@@ -336,12 +340,15 @@ impl MoveSpeedGuard {
                         && now_ms - e.sent_ms <= cfg.move_verify_expected_timeout_ms
                 });
                 let ok = fresh
-                    && c.take_expected_position(
-                        pos[0],
-                        pos[1],
-                        pos[2],
-                        cfg.move_verify_expected_radius,
-                    );
+                    .then(|| {
+                        c.take_expected_position(
+                            pos[0],
+                            pos[1],
+                            pos[2],
+                            cfg.move_verify_expected_radius,
+                        )
+                    })
+                    .flatten();
                 (access, c.teleport_seq, character_id, ok)
             };
             if cfg.move_verify_gm_exempt && access_level >= cfg.move_verify_gm_access_level {
@@ -352,9 +359,17 @@ impl MoveSpeedGuard {
                 self.reset(obj_id);
                 return MoveDecision::Accept;
             }
-            if expected_ok {
-                // The client's catch-up move after a server teleport: accept it as the anchor.
-                self.seed(obj_id, pos, now_ms, snap.instance_id, seq);
+            if let Some(full_budget) = expected_ok {
+                // The client's catch-up move after a server teleport (or a guard correction):
+                // accept it as the anchor. A correction keeps a full budget for the rest of the
+                // client's queued burst.
+                let max_speed = self.max_speed(server, &snap, u, is_player, falling, now_ms, cfg);
+                let budget = if full_budget {
+                    capacity(max_speed, cfg)
+                } else {
+                    0.0
+                };
+                self.seed(obj_id, pos, now_ms, snap.instance_id, seq, budget);
                 return MoveDecision::Accept;
             }
         }
@@ -474,7 +489,15 @@ impl MoveSpeedGuard {
         self.check_vehicle_at(server, slave, pos, crate::world::now_ms())
     }
 
-    fn seed(&self, obj_id: u32, pos: [f32; 3], now_ms: i64, instance_id: u32, teleport_seq: u32) {
+    fn seed(
+        &self,
+        obj_id: u32,
+        pos: [f32; 3],
+        now_ms: i64,
+        instance_id: u32,
+        teleport_seq: u32,
+        budget: f32,
+    ) {
         self.units.insert(
             obj_id,
             SpeedState {
@@ -482,11 +505,29 @@ impl MoveSpeedGuard {
                 y: pos[1],
                 z: pos[2],
                 last_ms: now_ms,
-                budget: 0.0,
+                budget,
                 instance_id,
                 teleport_seq,
             },
         );
+    }
+
+    /// Re-anchors a unit at a server-known position (spawn, mount / dismount, reconnect) with an
+    /// empty travel budget: legitimate motion refills it from the current speed.
+    pub fn reanchor(&self, obj_id: u32, instance_id: u32, teleport_seq: u32, pos: [f32; 3]) {
+        self.reanchor_at(obj_id, instance_id, teleport_seq, pos, crate::world::now_ms());
+    }
+
+    /// [`Self::reanchor`] with an explicit server time (tests).
+    pub fn reanchor_at(
+        &self,
+        obj_id: u32,
+        instance_id: u32,
+        teleport_seq: u32,
+        pos: [f32; 3],
+        now_ms: i64,
+    ) {
+        self.seed(obj_id, pos, now_ms, instance_id, teleport_seq, 0.0);
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -508,8 +549,7 @@ impl MoveSpeedGuard {
                 MoveDecision::Refuse(text)
             }
         };
-        let capacity =
-            (max_speed * cfg.move_verify_tolerance * cfg.move_verify_window_seconds).max(1.0);
+        let capacity = capacity(max_speed, cfg);
         let Some(prev) = self.units.get(&obj_id).map(|r| *r) else {
             self.units.insert(
                 obj_id,
@@ -690,6 +730,11 @@ fn snapshot(target: &WorldObject, now_ms: i64) -> Option<UnitSnapshot> {
                 .max(u.skill_state.displaced_until_ms),
         }
     })
+}
+
+/// The travel budget a unit can accumulate: `window` seconds at the tolerated speed.
+fn capacity(max_speed: f32, cfg: &PhysicsConfig) -> f32 {
+    (max_speed * cfg.move_verify_tolerance * cfg.move_verify_window_seconds).max(1.0)
 }
 
 fn distance(a: [f32; 3], b: [f32; 3]) -> f32 {

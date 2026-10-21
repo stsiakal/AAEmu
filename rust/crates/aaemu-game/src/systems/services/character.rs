@@ -39,7 +39,13 @@ pub async fn effective_access_level(server: &GameServer, player: &PlayerRef) -> 
 /// The rule of `GetEffectiveAccessLevel`: `Math.Max(character.AccessLevel,
 /// accountDetails.AccessLevel)`.
 pub fn effective_access_level_of(character_access_level: i32, details: &AccountDetails) -> i32 {
-    character_access_level.max(details.access_level)
+    effective_access_level_from(character_access_level, details.access_level)
+}
+
+/// The `Math.Max(character.AccessLevel, account.AccessLevel)` rule for callers that cache the
+/// two values separately (the sync movement guard).
+pub fn effective_access_level_from(character_access_level: i32, account_access_level: i32) -> i32 {
+    character_access_level.max(account_access_level)
 }
 
 /// The access level the command system treats as GM: `testai` and the other admin commands
