@@ -12,6 +12,7 @@
 //!   "ZoneGroupIds": [],
 //!   "SubZoneIds": [],
 //!   "QuestZoneIds": [227],
+//!   "ClientSources": ["Data/Areas/sunbite-wilds/sunbite-wilds.pak"],
 //!   "Spawns": [
 //!     { "World": "main_world", "NpcSpawns": "Data/Areas/sunbite-wilds/npc_spawns.json" }
 //!   ]
@@ -59,6 +60,9 @@ pub struct AreaPackage {
     pub quest_zone_ids: Vec<u32>,
     /// World template names that exist only when the package is enabled (type A packages).
     pub worlds: Vec<String>,
+    /// Client sources prepended to `ClientData.Sources` while the package is enabled
+    /// (a terrain overlay pak or an unpacked directory).
+    pub client_sources: Vec<String>,
     /// Spawn files loaded only when the package is enabled.
     pub spawns: Vec<AreaSpawns>,
 }
@@ -86,6 +90,7 @@ pub struct Areas {
     disabled_sub_zone_ids: HashSet<u32>,
     disabled_quest_zone_ids: HashSet<u32>,
     disabled_worlds: HashSet<String>,
+    client_sources: Vec<String>,
     npc_spawn_files: HashMap<String, Vec<PathBuf>>,
     doodad_spawn_files: HashMap<String, Vec<PathBuf>>,
 }
@@ -146,6 +151,11 @@ impl Areas {
                 )));
             };
             areas.enabled.insert(name.clone());
+            for source in &package.client_sources {
+                areas
+                    .client_sources
+                    .push(app_path.join(source).to_string_lossy().into_owned());
+            }
             for spawns in &package.spawns {
                 for (field, target) in [
                     (&spawns.npc_spawns, &mut areas.npc_spawn_files),
@@ -243,6 +253,11 @@ impl Areas {
         self.disabled_worlds.contains(world)
     }
 
+    /// Client sources of every enabled package, in descriptor order.
+    pub fn client_sources(&self) -> &[String] {
+        &self.client_sources
+    }
+
     /// Package NPC spawn files of a world template (enabled packages only).
     pub fn npc_spawn_files(&self, world: &str) -> &[PathBuf] {
         self.npc_spawn_files.get(world).map_or(&[], Vec::as_slice)
@@ -313,6 +328,7 @@ mod tests {
             r#"{
                 "ZoneIds": [227, 242],
                 "ZoneKeys": [287, 286],
+                "ClientSources": ["Data/Areas/overlay.pak"],
                 "Spawns": [{ "World": "main_world", "NpcSpawns": "Data/Areas/npc.json" }]
             }"#,
         );
@@ -322,6 +338,8 @@ mod tests {
         assert!(!areas.zone_disabled(227, 287));
         assert!(!areas.world_disabled("instance_optional"));
         assert_eq!(areas.npc_spawn_files("main_world").len(), 1);
+        assert_eq!(areas.client_sources().len(), 1);
+        assert!(areas.client_sources()[0].ends_with("overlay.pak"));
         assert_eq!(areas.enabled_names(), vec!["sunbite-wilds".to_string()]);
         std::fs::remove_dir_all(&root).ok();
     }

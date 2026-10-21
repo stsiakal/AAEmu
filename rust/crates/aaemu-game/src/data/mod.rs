@@ -98,7 +98,19 @@ impl GameData {
         let skills = SkillData::load(&conn)?;
         let formulas = FormulaManager::load(&conn)?;
 
-        let files = client_files::ClientFileManager::from_sources(client_sources, app_path);
+        // An enabled area package may ship a client overlay (terrain cells / world.xml); it must
+        // be the first source so `ClientFileManager` resolves those files from it.
+        let mut sources = areas.client_sources().to_vec();
+        for source in &sources {
+            if !Path::new(source).is_file() {
+                return Err(GameDataError::File(format!(
+                    "Areas: enabled package client source {} does not exist",
+                    source
+                )));
+            }
+        }
+        sources.extend(client_sources.iter().cloned());
+        let files = client_files::ClientFileManager::from_sources(&sources, app_path);
         let worlds = WorldTemplates::load_with_areas(&files, app_path, &areas)?;
         let main_world = worlds.get_world_template_by_name("main_world");
         let characters = CharacterData::load(

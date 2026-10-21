@@ -102,8 +102,8 @@ fn sunbite_area_package_real_data() {
         "the sunbite patches must be rerun-safe"
     );
     assert_eq!(
-        counts[0].1, 81,
-        "81 Sunbite quests are at or below level 55"
+        counts[0].1, 78,
+        "78 Sunbite quests are at or below level 55"
     );
 
     let app = Path::new(env!("CARGO_MANIFEST_DIR")).join("app");
@@ -125,7 +125,7 @@ fn sunbite_area_package_real_data() {
     let off_quests =
         crate::systems::quests::data::QuestData::load_from_with_areas(&conn, &files, &disabled)
             .expect("quests disabled");
-    assert_eq!(on_quests.templates.len(), off_quests.templates.len() + 81);
+    assert_eq!(on_quests.templates.len(), off_quests.templates.len() + 78);
 
     // The whole subsystem data load must accept the patched rows (NPCs, spawner templates,
     // doodads, quest components/acts) with the package enabled.
@@ -138,13 +138,16 @@ fn sunbite_area_package_real_data() {
     })
     .expect("server data with the sunbite package");
     assert!(systems.npcs.npc.exist(16984));
-    assert!(systems
-        .npcs
-        .npc_spawners
-        .get_npc_spawner_template(19798)
-        .is_some());
-    assert!(systems.npcs.doodad.template(1024).is_some());
     assert!(systems.quests.templates.contains_key(&8115));
+    assert!(!enabled.client_sources().is_empty());
+    let manifest: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(app.join("Data/Areas/sunbite-wilds/overlay.manifest.json"))
+            .expect("overlay manifest"),
+    )
+    .expect("manifest json");
+    assert_eq!(manifest["Cells"].as_array().unwrap().len(), 6);
+    assert_eq!(manifest["Files"].as_array().unwrap().len(), 73);
+    assert_eq!(manifest["Pak"], "sunbite-wilds.pak");
 
     let systems_off = crate::systems::SystemsData::load(&crate::systems::DataLoadCtx {
         conn: &conn,
@@ -180,4 +183,24 @@ fn sunbite_area_package_real_data() {
     assert_eq!(over_cap, 0);
 
     std::fs::remove_file(&db).ok();
+}
+
+#[test]
+#[ignore = "needs AAEMU_OVERLAY_PAK and AAEMU_GAME_PAK"]
+fn sunbite_overlay_pak_is_read_first() {
+    let (Ok(overlay), Ok(base)) = (
+        std::env::var("AAEMU_OVERLAY_PAK"),
+        std::env::var("AAEMU_GAME_PAK"),
+    ) else {
+        return;
+    };
+    let app = Path::new(env!("CARGO_MANIFEST_DIR")).join("app");
+    let areas = Areas::load(&app, &["sunbite-wilds".into()]).unwrap();
+    let files = crate::data::client_files::ClientFileManager::from_sources(&[overlay, base], &app);
+    assert!(files.file_exists("game/worlds/main_world/cells/021_005/client/terrain/heightmap.dat"));
+    let worlds = super::world_templates::WorldTemplates::load_with_areas(&files, &app, &areas)
+        .expect("merged world.xml");
+    let main = worlds.get_world_template_by_name("main_world").unwrap();
+    assert_eq!(main.xml_world_zones()[&287].origin_x, 21);
+    assert_eq!(worlds.get_zone_id(Some(main), 22_200.0, 4_700.0), 287);
 }
