@@ -1129,6 +1129,18 @@ is no longer mirrored (see "Known deviations", dead NPC returned and healed).
   by the `Resurrection` special effect and the free resurrection below
   `minimum_exp_loss_level`). The C# never checked, so any dead client could revive itself in
   place without an offer.
+* systems::skills (once-only death transition, 2026-10-21): the C# `ReduceCurrentHp` checked
+  `Hp <= 0`, applied the damage and called `DoDie` without a lock, so two concurrent lethal
+  hits (a skill hit and a DoT tick, fall / drowning damage, `GM /kill`, PvP, an NPC death) could
+  both run the death path: two `SCUnitDeathPacket`s, double exp / durability loss, two loot
+  generations, double quest kill credit and two respawn timers. Rust adds the Rust-only
+  `UnitBase::death_processed` claim, checked and set atomically under the unit's data lock
+  (`skills::combat::try_claim_death`); `ReduceCurrentHp` re-checks HP under the same lock that
+  applies the damage, `PostUpdateCurrentHp` claims before its kill events, and a direct `DoDie`
+  on an already-claimed life is refused with a WARN. The claim is cleared when a living unit is
+  damaged again or HP is restored (resurrection, repair, load), so a repaired tower or a
+  resurrected character still dies once per life. Tests:
+  `systems::skills::death_once_tests` (two racing hits on a player / an NPC, looped).
 * systems::skills: `Character.DoDie` is complete (exp / durability loss, escalating respawn timer,
   PvP honor / assists / kill counts, War-zone honor loss, `DropTradePackToFloor`). The PvP
   damage / heal histories are lists of (character id, unix ms) in `skill_char`.
