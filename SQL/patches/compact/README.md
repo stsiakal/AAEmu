@@ -61,3 +61,4 @@ guarded, so that is safe, but the record is what keeps the source of truth verif
 | `2026-10-15-halloween-gourd-respawn.sql` | gourd doodad 7422 final row respawns | guarded by original value |
 | `2026-10-20-level-55-retail-3.0.sql` | 3.0 level 51–55 capstones, experience curve and quest supplies | guarded by original values |
 | `2026-10-21-gear-3.0-batch-1a.sql` | 3.0 gear batch 1a: 288 retail costumes/armor/cloaks (≤ Eanad) + 7 craft materials, armor looks re-keyed above the 1.2 range | inserts guarded by `NOT EXISTS` on id; replacement `UPDATE`s rewrite the same values |
+| `2026-10-21-gear-3.0-batch-1b-costumes.sql` | 3.0 gear batch 1b-costumes: 313 retail costumes + 2 craft materials with art in the `gear-3.0-costumes.pak` overlay; apply after batch 1a | inserts guarded by `NOT EXISTS` on id; no replacement rows |

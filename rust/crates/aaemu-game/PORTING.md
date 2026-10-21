@@ -2499,13 +2499,65 @@ the 1.2 pak. The generated patch is
   ids, of which 13 have a `crafts` row and 7,678 is an orphan, plus 5 custom ones refused). The
   19 imported `crafts` rows are those 13 plus 6 festival-coin material crafts.
 
-Next families, in order (all need the same tool; blockers in brackets): Hardy/Heartless 3-piece
+Next families, in order (all need the same tool; blockers in brackets): the batch 1b gear
+remainder (armor, weapons, accessories, cloaks; each its own audit), Hardy/Heartless 3-piece
 class sets 387-392 (proc only, no engine; 18 items, base-piece source open), Distorted Whispers 386
 (not craftable, bonuses 3/5 + proc), Hexbane/Talisman/Tempting/Enchanting Melody 414-417 (lvl 53,
 no crafts), Soulforged/Maliceforged weapons and Bane's Bolt/Bloodmist/Abyssal Destroyer 2-piece
 weapon sets 393-395 (buffs only; weapon models), Auroria class sets (no set rows), then lunagems
 (socket tables reshaped, loader check). The Dawnsdrop/Hellforged sets use emulator-custom ids
 (>= 9,000,000) and are refused by the tool. A proc engine is the prerequisite for the 57 item procs.
+
+### Batch 1b-costumes: the art-carrying costumes (2026-10-21)
+
+`python -I -B -X utf8 rust/tools/version_gaps/backport.py --items gear-1b-costumes
+--pak12-listing <1.2 pak listing> --pak30-listing <3.0.4.2 pak listing>` selects the costume
+complement of batch 1a: item id absent from 1.2/batch 1a and below 8,000,000, no Dawnsdrop
+item (set id >= 9,000,001 or item id 34,936..34,984), `items.level` <= 62, costume only
+(category 10/173 or slot 31, category not 94/96/100), no item proc, no set proc, no bonus unit
+attribute above 186, no 3.0-only use skill, a look for each of the four playable races, at least
+one playable look path absent from the 1.2 pak, and every playable look path present in the 3.0
+pak. Dwarf/Warborn look paths are imported as data-only `item_assets` rows. The patch is generated
+against the 1.2 database **with batch 1a applied** (patch order), so its synthetic ids start above
+1a's (looks 3,856..3,974, `item_assets` 22,140..23,531). Generated patch:
+`SQL/patches/compact/2026-10-21-gear-3.0-batch-1b-costumes.sql`; inserts are guarded with
+`WHERE NOT EXISTS` on the id and a second run is a no-op.
+
+- **313 costumes** plus **2 craft-material items**, with 19 crafts (19 products / 34 materials),
+  119 new `armor_assets` looks, 1,392 new `item_assets` rows, 1,439 `item_armor_assets` rows,
+  199 icons, 76 `dyeable_items`, 4 buffs, the craft skill/effect chain and 735 localized texts.
+  1.2 has no `item_armors.asset2_id`, so the 3.0 secondary look chain (308 paths on 132 rows) is
+  dropped, as are the 3.0-only `item_assets.hide_horn`/`hide_tail` values.
+- **Overlay pak** `gear-3.0-costumes.pak` (TypeA/WIBO, 2,582 files, 1,076,861,440 bytes) carries
+  907 new primary playable-race look paths + 200 new icons and their closure. It only adds files:
+  `cargo xtask overlay-pak --closure --new-only --exclude-present-in <1.2 pak>`. The list and a
+  manifest (size, SHA-256, changed-shared-file list) are in `rust/tools/version_gaps/overlays/`;
+  the pak itself is not committed. Install it in Bevy in `overlays/` next to `game_pak` or through
+  `AA_PAK_OVERLAYS`; a server client-file source list can also point at it (`ClientData.Sources`,
+  the first source wins). The stock 1.2 client cannot read a second pak and needs the files merged
+  into its own pak (`patch-client`).
+- **Changed-shared-file cases (61 files, none overlaid).** Five direct look paths exist in both paks
+  with different bytes: the four `.../sk_award001/*.chr` female files and
+  `nu_m_sk_lucius001.chr`. They stay at the 1.2 version because they are the same costume models
+  (the Lucius file is the 1.2 item 16066 art), so the imported costumes render that outfit from
+  the 1.2 file. The other 56 are closure materials/textures/models that `--new-only` skips; the new
+  models reference those same paths and use the 1.2 versions. Nine Warborn nude body textures pulled
+  by the `uniform003` materials are dropped by `--exclude-path`, so the overlay carries no
+  Dwarf/Warborn path.
+- **Skipped**: 220 costumes whose four-race art is only in the 10.x pak (e.g. 45256 Levi,
+  45315 Phoenix), 24 with no four-race art, 10 with a 3.0-only use skill, 5 above level 62, 2,270
+  emulator-custom 8M items and 104 Dawnsdrop items. The 3.0 source has three duplicate
+  `dyeable_items` rows (items 45490, 49412, 52301); only the first row per item is imported, since
+  `ItemData::load` rejects a duplicate dyeable item. Seven emulator-custom crafts (8M/9M ids) are
+  refused from the craft closure, and materials 40037/40383 are imported without a 1.2 craft
+  source. 93 closure references are unresolved/ambiguous
+  (15 duplicate `.mtl` stems, 47 extension-less model refs that resolve to an included file, 3
+  textures present in 1.2); 28 references to 11 distinct textures are absent from the 1.2, 3.0 and
+  10.x paks (broken in the source, e.g. `objects/test/wat/mask2.dds`, `fe_m_sk_necro_*.dds`).
+- **Tests**: `test_backport.py` covers the selection and the new-files-only overlay list;
+  `gear_1b_costume_patch_applies_after_1a_and_loads` applies both patches twice to a copy, checks
+  the counts, the re-keyed looks, the no-duplicate text/dyeable keys and `ItemData::load`. Static
+  and offline checks only so far; the in-game check follows separately.
 
 ## Bevy-client server fixes (October 19, 2026)
 
