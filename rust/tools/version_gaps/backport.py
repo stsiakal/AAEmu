@@ -419,7 +419,7 @@ def select_gear_1a(base, ref, pak_paths):
     }
 
 
-def select_gear_1b_costumes(base, ref, pak12_paths, pak30_paths):
+def select_gear_1b_costumes(base, ref, pak12_paths, pak30_paths, skip_paths=None):
     """Select the costume complement of batch 1a, carried by a 3.0 overlay pak.
 
     Selection rule (documented in the generated patch header):
@@ -435,13 +435,17 @@ def select_gear_1b_costumes(base, ref, pak12_paths, pak30_paths):
     * a look for each of the four playable races, with at least one playable
       path absent from the 1.2 pak (otherwise batch 1a already has it) and every
       playable path present in the 3.0 pak (the overlay source). Dwarf/Warborn
-      paths stay data-only.
+      paths stay data-only;
+    * no look path in `skip_paths`, the direct models whose material -> texture
+      closure still has a reference no source pak can satisfy after the
+      overlay's texture repair pass.
 
     `base` is expected to be the 1.2 database with the earlier compact patches
     (batch 1a) applied, so synthetic ids are allocated above their rows.
     """
     pak12 = {_pak_asset_name(path) for path in pak12_paths or () if path}
     pak30 = {_pak_asset_name(path) for path in pak30_paths or () if path}
+    skip_paths = {_pak_asset_name(path) for path in skip_paths or () if path}
     base_items = base.ids("items")
     base_skills = base.ids("skills")
     sets = _item_class_ids(ref)
@@ -467,6 +471,7 @@ def select_gear_1b_costumes(base, ref, pak12_paths, pak30_paths):
     playable_paths = set()
     dwarf_warborn_paths = set()
     other_paths = set()
+    skipped_missing_textures = []
     for item in ref.rows("select * from items order by id"):
         item_id = item["id"]
         if item_id in base_items:
@@ -522,6 +527,15 @@ def select_gear_1b_costumes(base, ref, pak12_paths, pak30_paths):
             skip("new_use_skill", item_id)
             continue
         paths = armor_look_paths(ref, item_id)
+        missing_texture_paths = sorted(
+            {_pak_asset_name(path) for path in paths} & skip_paths
+        )
+        if missing_texture_paths:
+            skip("missing_texture_unresolved", item_id)
+            skipped_missing_textures.append(
+                {"item_id": item_id, "paths": missing_texture_paths}
+            )
+            continue
         races = {_playable_race_of_path(path) for path in paths}
         races.discard(None)
         if len(races) != len(PLAYABLE_RACES):
@@ -558,6 +572,7 @@ def select_gear_1b_costumes(base, ref, pak12_paths, pak30_paths):
             "total": len(selected),
         },
         "skipped": {reason: dict(entry) for reason, entry in sorted(skipped.items())},
+        "skipped_missing_textures": skipped_missing_textures,
         "looks": {
             "distinct_paths": len(all_paths),
             "playable_paths": len(playable_paths),
@@ -2142,6 +2157,20 @@ def read_listing(path):
     return lines
 
 
+def read_path_list(path):
+    """A list of pak paths (overlay input or unresolved roots), with # comments."""
+    if path is None:
+        return set()
+    paths = set()
+    with open(path, encoding="utf-8", errors="replace") as handle:
+        for line in handle:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            paths.add(_pak_asset_name(line))
+    return paths
+
+
 def build_assets_section(assets_needed, extract_dir, pak10, pak12):
     model_paths = set(assets_needed.get("model_paths") or [])
     icon_files = set(assets_needed.get("icon_files") or [])
@@ -2328,6 +2357,25 @@ def selection_header_1b(selection, borrowed_rows, report, overlay):
     ]
     if skipped:
         lines.append("Skipped candidates: " + ", ".join(skipped) + ".")
+    missing_textures = selection.get("skipped_missing_textures") or []
+    if missing_textures:
+        ids = ", ".join(str(entry["item_id"]) for entry in missing_textures)
+        lines.append(
+            f"Skipped {len(missing_textures)} costumes with texture references no source"
+            f" pak can satisfy (unresolved after the overlay repair pass): {ids}."
+        )
+        for entry in missing_textures[:12]:
+            lines.append(
+                f"  item {entry['item_id']}: " + ", ".join(entry["paths"])
+            )
+        if len(missing_textures) > 12:
+            lines.append(f"  ... {len(missing_textures) - 12} more in the report.")
+    lines.append(
+        "Texture repair: the overlay pass rewrites a missing texture reference in a new"
+        " 3.0 .mtl to the unambiguous same-suffix texture beside the material or model"
+        " (e.g. the necro001 materials use their own _df/_sp/_ddn); the skipped ids"
+        " above have no such replacement for at least one race."
+    )
     lines.append(
         f"Looks: {looks['distinct_paths']} distinct paths = {looks['playable_paths']}"
         f" playable-race + {looks['dwarf_warborn_paths']} Dwarf/Warborn"
@@ -2406,6 +2454,7 @@ def run_backport(
     pak12_listing=None,
     pak30_listing=None,
     overlay_list_out=None,
+    skip_art_paths=None,
 ):
     started = time.time()
     base = Db(path=base_path)
@@ -2426,7 +2475,11 @@ def run_backport(
                         " (the 3.0.4.2 pak paths, the overlay source)"
                     )
                 selection = select_gear_1b_costumes(
-                    base, ref, pak12 or (), read_listing(pak30_listing) or ()
+                    base,
+                    ref,
+                    pak12 or (),
+                    read_listing(pak30_listing) or (),
+                    read_path_list(skip_art_paths),
                 )
             else:
                 selection = select_gear_1a(base, ref, pak12 or ())
@@ -2453,6 +2506,8 @@ def run_backport(
                 command += f" --pak30-listing {pak30_listing}"
                 if overlay_list_out:
                     command += f" --overlay-list-out {overlay_list_out}"
+                if skip_art_paths:
+                    command += f" --skip-art-paths {skip_art_paths}"
             command += f" --out-sql {out_sql} --out-db {out_db}"
         replacements = report.pop("_replacements", {})
         extra_header = None
@@ -2547,6 +2602,8 @@ def print_summary(report):
         for reason, entry in selection["skipped"].items():
             if entry["count"]:
                 print(f"  skipped {reason}: {entry['count']}")
+        for entry in selection.get("skipped_missing_textures") or []:
+            print(f"  missing texture item {entry['item_id']}: {entry['paths']}")
         looks = selection["looks"]
         print(
             "  look paths:"
@@ -2914,6 +2971,13 @@ def main(argv=None):
         help="overlay input list (new playable-race look paths + new icons)",
     )
     parser.add_argument(
+        "--skip-art-paths",
+        help=(
+            "unresolved texture roots from overlay-pak --unresolved-list;"
+            " costumes using them are skipped"
+        ),
+    )
+    parser.add_argument(
         "--command",
         help="command line recorded in the SQL header (default: this invocation)",
     )
@@ -2932,6 +2996,7 @@ def main(argv=None):
         pak12_listing=args.pak12_listing,
         pak30_listing=args.pak30_listing,
         overlay_list_out=args.overlay_list_out,
+        skip_art_paths=args.skip_art_paths,
     )
     with open(args.report, "w", encoding="utf-8") as handle:
         json.dump(report, handle, ensure_ascii=False, indent=2, default=str)

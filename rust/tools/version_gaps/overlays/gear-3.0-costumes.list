@@ -1,5 +1,5 @@
 # 3.0 gear batch 1b-costumes overlay input (four playable races only).
-# 313 costumes: 907 new look paths + 200 new item icons; run with --closure --new-only.
+# 300 costumes: 867 new look paths + 190 new item icons; run with --closure --new-only.
 # Build: cargo xtask overlay-pak --source <3.0.4.2 game_pak> --list <this file>
 #        --closure --new-only --exclude-present-in <1.2 game_pak>
 #        --exclude-path /characters/dwarf/ --exclude-path /characters/warborn/
@@ -37,7 +37,6 @@ game/objects/characters/elf/female/costume/el_f_sk_hussar001/el_f_sk_hussar001s.
 game/objects/characters/elf/female/costume/el_f_sk_inoch001/el_f_sk_inoch001.chr
 game/objects/characters/elf/female/costume/el_f_sk_kitty001/el_f_sk_kitty001.chr
 game/objects/characters/elf/female/costume/el_f_sk_kitty002/el_f_sk_kitty002.cdf
-game/objects/characters/elf/female/costume/el_f_sk_kyprosa001/el_f_sk_kyprosa001.chr
 game/objects/characters/elf/female/costume/el_f_sk_laborday002/el_f_sk_laborday002.chr
 game/objects/characters/elf/female/costume/el_f_sk_land_of_sunlights/el_f_sk_land_of_sunlights.chr
 game/objects/characters/elf/female/costume/el_f_sk_lucius001/el_f_sk_lucius001.chr
@@ -52,7 +51,6 @@ game/objects/characters/elf/female/costume/el_f_sk_milkcow004/el_f_sk_milkcow004
 game/objects/characters/elf/female/costume/el_f_sk_mummy001/el_f_sk_mummy001.chr
 game/objects/characters/elf/female/costume/el_f_sk_musa001/el_f_sk_musa001_v0104.cdf
 game/objects/characters/elf/female/costume/el_f_sk_naima001/el_f_sk_naima001.chr
-game/objects/characters/elf/female/costume/el_f_sk_necro001/el_f_sk_necro001.chr
 game/objects/characters/elf/female/costume/el_f_sk_ninetail_fox001/el_f_sk_ninetail_fox001.chr
 game/objects/characters/elf/female/costume/el_f_sk_ninja001/el_f_sk_ninja001.chr
 game/objects/characters/elf/female/costume/el_f_sk_ninja002/el_f_sk_ninja002.cdf
@@ -62,7 +60,6 @@ game/objects/characters/elf/female/costume/el_f_sk_orchidna001/el_f_sk_orchidna0
 game/objects/characters/elf/female/costume/el_f_sk_owlpostman001/el_f_sk_owlpostman001.chr
 game/objects/characters/elf/female/costume/el_f_sk_party002/el_f_sk_party002.chr
 game/objects/characters/elf/female/costume/el_f_sk_pirate001/el_f_sk_pirate001.chr
-game/objects/characters/elf/female/costume/el_f_sk_pirate002/el_f_sk_pirate002.cdf
 game/objects/characters/elf/female/costume/el_f_sk_prisoner001/el_f_sk_prisoner001.chr
 game/objects/characters/elf/female/costume/el_f_sk_qipao001/el_f_sk_qipao001.chr
 game/objects/characters/elf/female/costume/el_f_sk_qipao002/el_f_sk_qipao002.cdf
@@ -97,7 +94,6 @@ game/objects/characters/elf/female/costume/el_f_sk_swimsuit002/el_f_sk_swimsuit0
 game/objects/characters/elf/female/costume/el_f_sk_swimsuit012/el_f_sk_swimsuit012.chr
 game/objects/characters/elf/female/costume/el_f_sk_swimsuit013/el_f_sk_swimsuit013.chr
 game/objects/characters/elf/female/costume/el_f_sk_swimsuit014/el_f_sk_swimsuit014.chr
-game/objects/characters/elf/female/costume/el_f_sk_swimsuit015/el_f_sk_swimsuit015.chr
 game/objects/characters/elf/female/costume/el_f_sk_uniform003/el_f_sk_uniform003.chr
 game/objects/characters/elf/female/costume/el_f_sk_valentine001/el_f_sk_valentine001.chr
 game/objects/characters/elf/female/costume/el_f_sk_valentine002/el_f_sk_valentine002.chr
@@ -105,7 +101,6 @@ game/objects/characters/elf/female/costume/el_f_sk_whiteday001/el_f_sk_whiteday0
 game/objects/characters/elf/female/costume/el_f_sk_whiteshirt001/el_f_sk_whiteshirt001.chr
 game/objects/characters/elf/female/costume/el_f_sk_whiteshirt002/el_f_sk_whiteshirt002.cdf
 game/objects/characters/elf/female/costume/el_f_sk_witch001/el_f_sk_witch001.chr
-game/objects/characters/elf/female/costume/el_f_sk_witcher001/el_f_sk_witcher001.chr
 game/objects/characters/elf/female/costume/el_f_sk_yata004/el_f_sk_yata004.chr
 game/objects/characters/elf/female/costume/el_f_sk_yata005/el_f_sk_yata005.chr
 game/objects/characters/elf/female/costume/el_f_sk_yata006/el_f_sk_yata006.chr
@@ -153,7 +148,6 @@ game/objects/characters/elf/male/costume/el_m_sk_incubus001/el_m_sk_incubus001.c
 game/objects/characters/elf/male/costume/el_m_sk_inoch001/el_m_sk_inoch001.chr
 game/objects/characters/elf/male/costume/el_m_sk_kitty001/el_m_sk_kitty001.chr
 game/objects/characters/elf/male/costume/el_m_sk_kitty002/el_m_sk_kitty002.cdf
-game/objects/characters/elf/male/costume/el_m_sk_kyprosa001/el_m_sk_kyprosa001.chr
 game/objects/characters/elf/male/costume/el_m_sk_laborday002/el_m_sk_laborday002.chr
 game/objects/characters/elf/male/costume/el_m_sk_land_of_sunlights/el_m_sk_land_of_sunlights.chr
 game/objects/characters/elf/male/costume/el_m_sk_lucius001/el_m_sk_lucius001.chr
@@ -168,7 +162,6 @@ game/objects/characters/elf/male/costume/el_m_sk_milkcow004/el_m_sk_milkcow004.c
 game/objects/characters/elf/male/costume/el_m_sk_mummy001/el_m_sk_mummy001.chr
 game/objects/characters/elf/male/costume/el_m_sk_musa001/el_m_sk_musa001_v0104.cdf
 game/objects/characters/elf/male/costume/el_m_sk_naima001/el_m_sk_naima001.chr
-game/objects/characters/elf/male/costume/el_m_sk_necro001/el_m_sk_necro001.chr
 game/objects/characters/elf/male/costume/el_m_sk_ninetail_fox001/el_m_sk_ninetail_fox001.chr
 game/objects/characters/elf/male/costume/el_m_sk_ninja001/el_m_sk_ninja001.chr
 game/objects/characters/elf/male/costume/el_m_sk_ninja002/el_m_sk_ninja002.cdf
@@ -178,7 +171,6 @@ game/objects/characters/elf/male/costume/el_m_sk_orchidna001/el_m_sk_orchidna001
 game/objects/characters/elf/male/costume/el_m_sk_owlpostman001/el_m_sk_owlpostman001.chr
 game/objects/characters/elf/male/costume/el_m_sk_party002/el_m_sk_party002.chr
 game/objects/characters/elf/male/costume/el_m_sk_pirate001/el_m_sk_pirate001.chr
-game/objects/characters/elf/male/costume/el_m_sk_pirate002/el_m_sk_pirate002.cdf
 game/objects/characters/elf/male/costume/el_m_sk_prisoner001/el_m_sk_prisoner001.chr
 game/objects/characters/elf/male/costume/el_m_sk_qipao001/el_m_sk_qipao001.chr
 game/objects/characters/elf/male/costume/el_m_sk_qipao002/el_m_sk_qipao002.cdf
@@ -212,13 +204,11 @@ game/objects/characters/elf/male/costume/el_m_sk_swimsuit002/el_m_sk_swimsuit002
 game/objects/characters/elf/male/costume/el_m_sk_swimsuit012/el_m_sk_swimsuit012.chr
 game/objects/characters/elf/male/costume/el_m_sk_swimsuit013/el_m_sk_swimsuit013.chr
 game/objects/characters/elf/male/costume/el_m_sk_swimsuit014/el_m_sk_swimsuit014.chr
-game/objects/characters/elf/male/costume/el_m_sk_swimsuit015/el_m_sk_swimsuit015.chr
 game/objects/characters/elf/male/costume/el_m_sk_uniform003/el_m_sk_uniform003.chr
 game/objects/characters/elf/male/costume/el_m_sk_valentine001/el_m_sk_valentine001.chr
 game/objects/characters/elf/male/costume/el_m_sk_valentine002/el_m_sk_valentine002.chr
 game/objects/characters/elf/male/costume/el_m_sk_whiteshirt001/el_m_sk_whiteshirt001.chr
 game/objects/characters/elf/male/costume/el_m_sk_whiteshirt002/el_m_sk_whiteshirt002.cdf
-game/objects/characters/elf/male/costume/el_m_sk_witcher001/el_m_sk_witcher001.chr
 game/objects/characters/elf/male/costume/el_m_sk_wizard001/el_m_sk_wizard001.chr
 game/objects/characters/elf/male/costume/el_m_sk_yata004/el_m_sk_yata004.chr
 game/objects/characters/elf/male/costume/el_m_sk_yata005/el_m_sk_yata005.chr
@@ -265,7 +255,6 @@ game/objects/characters/ferre/female/costume/fe_f_sk_hussar001/fe_f_sk_hussar001
 game/objects/characters/ferre/female/costume/fe_f_sk_inoch001/fe_f_sk_inoch001.chr
 game/objects/characters/ferre/female/costume/fe_f_sk_kitty001/fe_f_sk_kitty001.chr
 game/objects/characters/ferre/female/costume/fe_f_sk_kitty002/fe_f_sk_kitty002.cdf
-game/objects/characters/ferre/female/costume/fe_f_sk_kyprosa001/fe_f_sk_kyprosa001.chr
 game/objects/characters/ferre/female/costume/fe_f_sk_laborday002/fe_f_sk_laborday002.chr
 game/objects/characters/ferre/female/costume/fe_f_sk_land_of_sunlights/fe_f_sk_land_of_sunlights.chr
 game/objects/characters/ferre/female/costume/fe_f_sk_lucius001/fe_f_sk_lucius001.chr
@@ -280,7 +269,6 @@ game/objects/characters/ferre/female/costume/fe_f_sk_milkcow004/fe_f_sk_milkcow0
 game/objects/characters/ferre/female/costume/fe_f_sk_mummy001/fe_f_sk_mummy001.chr
 game/objects/characters/ferre/female/costume/fe_f_sk_musa001/fe_f_sk_musa001_v0104.cdf
 game/objects/characters/ferre/female/costume/fe_f_sk_naima001/fe_f_sk_naima001.chr
-game/objects/characters/ferre/female/costume/fe_f_sk_necro001/fe_f_sk_necro001.chr
 game/objects/characters/ferre/female/costume/fe_f_sk_ninetail_fox001/fe_f_sk_ninetail_fox001.chr
 game/objects/characters/ferre/female/costume/fe_f_sk_ninja001/fe_f_sk_ninja001.chr
 game/objects/characters/ferre/female/costume/fe_f_sk_ninja002/fe_f_sk_ninja002.cdf
@@ -290,7 +278,6 @@ game/objects/characters/ferre/female/costume/fe_f_sk_orchidna001/fe_f_sk_orchidn
 game/objects/characters/ferre/female/costume/fe_f_sk_owlpostman001/fe_f_sk_owlpostman001.chr
 game/objects/characters/ferre/female/costume/fe_f_sk_party002/fe_f_sk_party002.chr
 game/objects/characters/ferre/female/costume/fe_f_sk_pirate001/fe_f_sk_pirate001.chr
-game/objects/characters/ferre/female/costume/fe_f_sk_pirate002/fe_f_sk_pirate002.cdf
 game/objects/characters/ferre/female/costume/fe_f_sk_prisoner001/fe_f_sk_prisoner001.chr
 game/objects/characters/ferre/female/costume/fe_f_sk_qipao001/fe_f_sk_qipao001.chr
 game/objects/characters/ferre/female/costume/fe_f_sk_qipao002/fe_f_sk_qipao002.cdf
@@ -325,7 +312,6 @@ game/objects/characters/ferre/female/costume/fe_f_sk_swimsuit002/fe_f_sk_swimsui
 game/objects/characters/ferre/female/costume/fe_f_sk_swimsuit012/fe_f_sk_swimsuit012.chr
 game/objects/characters/ferre/female/costume/fe_f_sk_swimsuit013/fe_f_sk_swimsuit013.chr
 game/objects/characters/ferre/female/costume/fe_f_sk_swimsuit014/fe_f_sk_swimsuit014.chr
-game/objects/characters/ferre/female/costume/fe_f_sk_swimsuit015/fe_f_sk_swimsuit015.chr
 game/objects/characters/ferre/female/costume/fe_f_sk_uniform003/fe_f_sk_uniform003.chr
 game/objects/characters/ferre/female/costume/fe_f_sk_valentine001/fe_f_sk_valentine001.chr
 game/objects/characters/ferre/female/costume/fe_f_sk_valentine002/fe_f_sk_valentine002.chr
@@ -333,7 +319,6 @@ game/objects/characters/ferre/female/costume/fe_f_sk_whiteday001/fe_f_sk_whiteda
 game/objects/characters/ferre/female/costume/fe_f_sk_whiteshirt001/fe_f_sk_whiteshirt001.chr
 game/objects/characters/ferre/female/costume/fe_f_sk_whiteshirt002/fe_f_sk_whiteshirt002.cdf
 game/objects/characters/ferre/female/costume/fe_f_sk_witch001/fe_f_sk_witch001.chr
-game/objects/characters/ferre/female/costume/fe_f_sk_witcher001/fe_f_sk_witcher001.chr
 game/objects/characters/ferre/female/costume/fe_f_sk_yata004/fe_f_sk_yata004.chr
 game/objects/characters/ferre/female/costume/fe_f_sk_yata005/fe_f_sk_yata005.chr
 game/objects/characters/ferre/female/costume/fe_f_sk_yata006/fe_f_sk_yata006.chr
@@ -381,7 +366,6 @@ game/objects/characters/ferre/male/costume/fe_m_sk_incubus001/fe_m_sk_incubus001
 game/objects/characters/ferre/male/costume/fe_m_sk_inoch001/fe_m_sk_inoch001.chr
 game/objects/characters/ferre/male/costume/fe_m_sk_kitty001/fe_m_sk_kitty001.chr
 game/objects/characters/ferre/male/costume/fe_m_sk_kitty002/fe_m_sk_kitty002.cdf
-game/objects/characters/ferre/male/costume/fe_m_sk_kyprosa001/fe_m_sk_kyprosa001.chr
 game/objects/characters/ferre/male/costume/fe_m_sk_laborday002/fe_m_sk_laborday002.chr
 game/objects/characters/ferre/male/costume/fe_m_sk_land_of_sunlights/fe_m_sk_land_of_sunlights.chr
 game/objects/characters/ferre/male/costume/fe_m_sk_lucius001/fe_m_sk_lucius001.chr
@@ -396,7 +380,6 @@ game/objects/characters/ferre/male/costume/fe_m_sk_milkcow004/fe_m_sk_milkcow004
 game/objects/characters/ferre/male/costume/fe_m_sk_mummy001/fe_m_sk_mummy001.chr
 game/objects/characters/ferre/male/costume/fe_m_sk_musa001/fe_m_sk_musa001_v0104.cdf
 game/objects/characters/ferre/male/costume/fe_m_sk_naima001/fe_m_sk_naima001.chr
-game/objects/characters/ferre/male/costume/fe_m_sk_necro001/fe_m_sk_necro001.chr
 game/objects/characters/ferre/male/costume/fe_m_sk_ninetail_fox001/fe_m_sk_ninetail_fox001.chr
 game/objects/characters/ferre/male/costume/fe_m_sk_ninja001/fe_m_sk_ninja001.chr
 game/objects/characters/ferre/male/costume/fe_m_sk_ninja002/fe_m_sk_ninja002.cdf
@@ -406,7 +389,6 @@ game/objects/characters/ferre/male/costume/fe_m_sk_orchidna001/fe_m_sk_orchidna0
 game/objects/characters/ferre/male/costume/fe_m_sk_owlpostman001/fe_m_sk_owlpostman001.chr
 game/objects/characters/ferre/male/costume/fe_m_sk_party002/fe_m_sk_party002.chr
 game/objects/characters/ferre/male/costume/fe_m_sk_pirate001/fe_m_sk_pirate001.chr
-game/objects/characters/ferre/male/costume/fe_m_sk_pirate002/fe_m_sk_pirate002.cdf
 game/objects/characters/ferre/male/costume/fe_m_sk_prisoner001/fe_m_sk_prisoner001.chr
 game/objects/characters/ferre/male/costume/fe_m_sk_qipao001/fe_m_sk_qipao001.chr
 game/objects/characters/ferre/male/costume/fe_m_sk_qipao002/fe_m_sk_qipao002.cdf
@@ -440,13 +422,11 @@ game/objects/characters/ferre/male/costume/fe_m_sk_swimsuit002/fe_m_sk_swimsuit0
 game/objects/characters/ferre/male/costume/fe_m_sk_swimsuit012/fe_m_sk_swimsuit012.chr
 game/objects/characters/ferre/male/costume/fe_m_sk_swimsuit013/fe_m_sk_swimsuit013.chr
 game/objects/characters/ferre/male/costume/fe_m_sk_swimsuit014/fe_m_sk_swimsuit014.chr
-game/objects/characters/ferre/male/costume/fe_m_sk_swimsuit015/fe_m_sk_swimsuit015.chr
 game/objects/characters/ferre/male/costume/fe_m_sk_uniform003/fe_m_sk_uniform003.chr
 game/objects/characters/ferre/male/costume/fe_m_sk_valentine001/fe_m_sk_valentine001.chr
 game/objects/characters/ferre/male/costume/fe_m_sk_valentine002/fe_m_sk_valentine002.chr
 game/objects/characters/ferre/male/costume/fe_m_sk_whiteshirt001/fe_m_sk_whiteshirt001.chr
 game/objects/characters/ferre/male/costume/fe_m_sk_whiteshirt002/fe_m_sk_whiteshirt002.cdf
-game/objects/characters/ferre/male/costume/fe_m_sk_witcher001/fe_m_sk_witcher001.chr
 game/objects/characters/ferre/male/costume/fe_m_sk_wizard001/fe_m_sk_wizard001.chr
 game/objects/characters/ferre/male/costume/fe_m_sk_yata004/fe_m_sk_yata004.chr
 game/objects/characters/ferre/male/costume/fe_m_sk_yata005/fe_m_sk_yata005.chr
@@ -493,7 +473,6 @@ game/objects/characters/hariharan/female/costume/ha_f_sk_hussar001/ha_f_sk_hussa
 game/objects/characters/hariharan/female/costume/ha_f_sk_inoch001/ha_f_sk_inoch001.chr
 game/objects/characters/hariharan/female/costume/ha_f_sk_kitty001/ha_f_sk_kitty001.chr
 game/objects/characters/hariharan/female/costume/ha_f_sk_kitty002/ha_f_sk_kitty002.cdf
-game/objects/characters/hariharan/female/costume/ha_f_sk_kyprosa001/ha_f_sk_kyprosa001.chr
 game/objects/characters/hariharan/female/costume/ha_f_sk_laborday002/ha_f_sk_laborday002.chr
 game/objects/characters/hariharan/female/costume/ha_f_sk_land_of_sunlights/ha_f_sk_land_of_sunlights.chr
 game/objects/characters/hariharan/female/costume/ha_f_sk_lucius001/ha_f_sk_lucius001.chr
@@ -508,7 +487,6 @@ game/objects/characters/hariharan/female/costume/ha_f_sk_milkcow004/ha_f_sk_milk
 game/objects/characters/hariharan/female/costume/ha_f_sk_mummy001/ha_f_sk_mummy001.chr
 game/objects/characters/hariharan/female/costume/ha_f_sk_musa001/ha_f_sk_musa001_v0104.cdf
 game/objects/characters/hariharan/female/costume/ha_f_sk_naima001/ha_f_sk_naima001.chr
-game/objects/characters/hariharan/female/costume/ha_f_sk_necro001/ha_f_sk_necro001.chr
 game/objects/characters/hariharan/female/costume/ha_f_sk_ninetail_fox001/ha_f_sk_ninetail_fox001.chr
 game/objects/characters/hariharan/female/costume/ha_f_sk_ninja001/ha_f_sk_ninja001.chr
 game/objects/characters/hariharan/female/costume/ha_f_sk_ninja002/ha_f_sk_ninja002.cdf
@@ -518,7 +496,6 @@ game/objects/characters/hariharan/female/costume/ha_f_sk_orchidna001/ha_f_sk_orc
 game/objects/characters/hariharan/female/costume/ha_f_sk_owlpostman001/ha_f_sk_owlpostman001.chr
 game/objects/characters/hariharan/female/costume/ha_f_sk_party003/ha_f_sk_party003.chr
 game/objects/characters/hariharan/female/costume/ha_f_sk_pirate001/ha_f_sk_pirate001.chr
-game/objects/characters/hariharan/female/costume/ha_f_sk_pirate002/ha_f_sk_pirate002.cdf
 game/objects/characters/hariharan/female/costume/ha_f_sk_prisoner001/ha_f_sk_prisoner001.chr
 game/objects/characters/hariharan/female/costume/ha_f_sk_qipao001/ha_f_sk_qipao001.chr
 game/objects/characters/hariharan/female/costume/ha_f_sk_qipao002/ha_f_sk_qipao002.cdf
@@ -553,7 +530,6 @@ game/objects/characters/hariharan/female/costume/ha_f_sk_swimsuit002/ha_f_sk_swi
 game/objects/characters/hariharan/female/costume/ha_f_sk_swimsuit012/ha_f_sk_swimsuit012.chr
 game/objects/characters/hariharan/female/costume/ha_f_sk_swimsuit013/ha_f_sk_swimsuit013.chr
 game/objects/characters/hariharan/female/costume/ha_f_sk_swimsuit014/ha_f_sk_swimsuit014.chr
-game/objects/characters/hariharan/female/costume/ha_f_sk_swimsuit015/ha_f_sk_swimsuit015.chr
 game/objects/characters/hariharan/female/costume/ha_f_sk_uniform003/ha_f_sk_uniform003.chr
 game/objects/characters/hariharan/female/costume/ha_f_sk_valentine001/ha_f_sk_valentine001.chr
 game/objects/characters/hariharan/female/costume/ha_f_sk_valentine002/ha_f_sk_valentine002.chr
@@ -561,7 +537,6 @@ game/objects/characters/hariharan/female/costume/ha_f_sk_whiteday001/ha_f_sk_whi
 game/objects/characters/hariharan/female/costume/ha_f_sk_whiteshirt001/ha_f_sk_whiteshirt001.chr
 game/objects/characters/hariharan/female/costume/ha_f_sk_whiteshirt002/ha_f_sk_whiteshirt002.cdf
 game/objects/characters/hariharan/female/costume/ha_f_sk_witch001/ha_f_sk_witch001.chr
-game/objects/characters/hariharan/female/costume/ha_f_sk_witcher001/ha_f_sk_witcher001.chr
 game/objects/characters/hariharan/female/costume/ha_f_sk_yata004/ha_f_sk_yata004.chr
 game/objects/characters/hariharan/female/costume/ha_f_sk_yata005/ha_f_sk_yata005.chr
 game/objects/characters/hariharan/female/costume/ha_f_sk_yata006/ha_f_sk_yata006.chr
@@ -609,7 +584,6 @@ game/objects/characters/hariharan/male/costume/ha_m_sk_incubus001/ha_m_sk_incubu
 game/objects/characters/hariharan/male/costume/ha_m_sk_inoch001/ha_m_sk_inoch001.chr
 game/objects/characters/hariharan/male/costume/ha_m_sk_kitty001/ha_m_sk_kitty001.chr
 game/objects/characters/hariharan/male/costume/ha_m_sk_kitty002/ha_m_sk_kitty002.cdf
-game/objects/characters/hariharan/male/costume/ha_m_sk_kyprosa001/ha_m_sk_kyprosa001.chr
 game/objects/characters/hariharan/male/costume/ha_m_sk_laborday002/ha_m_sk_laborday002.chr
 game/objects/characters/hariharan/male/costume/ha_m_sk_land_of_sunlights/ha_m_sk_land_of_sunlights.chr
 game/objects/characters/hariharan/male/costume/ha_m_sk_lucius001/ha_m_sk_lucius001.chr
@@ -624,7 +598,6 @@ game/objects/characters/hariharan/male/costume/ha_m_sk_milkcow004/ha_m_sk_milkco
 game/objects/characters/hariharan/male/costume/ha_m_sk_mummy001/ha_m_sk_mummy001.chr
 game/objects/characters/hariharan/male/costume/ha_m_sk_musa001/ha_m_sk_musa001_v0104.cdf
 game/objects/characters/hariharan/male/costume/ha_m_sk_naima001/ha_m_sk_naima001.chr
-game/objects/characters/hariharan/male/costume/ha_m_sk_necro001/ha_m_sk_necro001.chr
 game/objects/characters/hariharan/male/costume/ha_m_sk_ninetail_fox001/ha_m_sk_ninetail_fox001.chr
 game/objects/characters/hariharan/male/costume/ha_m_sk_ninja001/ha_m_sk_ninja001.chr
 game/objects/characters/hariharan/male/costume/ha_m_sk_ninja002/ha_m_sk_ninja002.cdf
@@ -634,7 +607,6 @@ game/objects/characters/hariharan/male/costume/ha_m_sk_orchidna001/ha_m_sk_orchi
 game/objects/characters/hariharan/male/costume/ha_m_sk_owlpostman001/ha_m_sk_owlpostman001.chr
 game/objects/characters/hariharan/male/costume/ha_m_sk_party002/ha_m_sk_party002.chr
 game/objects/characters/hariharan/male/costume/ha_m_sk_pirate001/ha_m_sk_pirate001.chr
-game/objects/characters/hariharan/male/costume/ha_m_sk_pirate002/ha_m_sk_pirate002.cdf
 game/objects/characters/hariharan/male/costume/ha_m_sk_prisoner001/ha_m_sk_prisoner001.chr
 game/objects/characters/hariharan/male/costume/ha_m_sk_qipao001/ha_m_sk_qipao001.chr
 game/objects/characters/hariharan/male/costume/ha_m_sk_qipao002/ha_m_sk_qipao002.cdf
@@ -668,13 +640,11 @@ game/objects/characters/hariharan/male/costume/ha_m_sk_swimsuit002/ha_m_sk_swims
 game/objects/characters/hariharan/male/costume/ha_m_sk_swimsuit012/ha_m_sk_swimsuit012.chr
 game/objects/characters/hariharan/male/costume/ha_m_sk_swimsuit013/ha_m_sk_swimsuit013.chr
 game/objects/characters/hariharan/male/costume/ha_m_sk_swimsuit014/ha_m_sk_swimsuit014.chr
-game/objects/characters/hariharan/male/costume/ha_m_sk_swimsuit015/ha_m_sk_swimsuit015.chr
 game/objects/characters/hariharan/male/costume/ha_m_sk_uniform003/ha_m_sk_uniform003.chr
 game/objects/characters/hariharan/male/costume/ha_m_sk_valentine001/ha_m_sk_valentine001.chr
 game/objects/characters/hariharan/male/costume/ha_m_sk_valentine002/ha_m_sk_valentine002.chr
 game/objects/characters/hariharan/male/costume/ha_m_sk_whiteshirt001/ha_m_sk_whiteshirt001.chr
 game/objects/characters/hariharan/male/costume/ha_m_sk_whiteshirt002/ha_m_sk_whiteshirt002.cdf
-game/objects/characters/hariharan/male/costume/ha_m_sk_witcher001/ha_m_sk_witcher001.chr
 game/objects/characters/hariharan/male/costume/ha_m_sk_wizard001/ha_m_sk_wizard001.chr
 game/objects/characters/hariharan/male/costume/ha_m_sk_yata004/ha_m_sk_yata004.chr
 game/objects/characters/hariharan/male/costume/ha_m_sk_yata005/ha_m_sk_yata005.chr
@@ -721,7 +691,6 @@ game/objects/characters/nuian/female/costume/nu_f_sk_hussar001/nu_f_sk_hussar001
 game/objects/characters/nuian/female/costume/nu_f_sk_inoch001/nu_f_sk_inoch001.chr
 game/objects/characters/nuian/female/costume/nu_f_sk_kitty001/nu_f_sk_kitty001.chr
 game/objects/characters/nuian/female/costume/nu_f_sk_kitty002/nu_f_sk_kitty002.cdf
-game/objects/characters/nuian/female/costume/nu_f_sk_kyprosa001/nu_f_sk_kyprosa001.chr
 game/objects/characters/nuian/female/costume/nu_f_sk_laborday002/nu_f_sk_laborday002.chr
 game/objects/characters/nuian/female/costume/nu_f_sk_land_of_sunlights/nu_f_sk_land_of_sunlights.chr
 game/objects/characters/nuian/female/costume/nu_f_sk_lucius001/nu_f_sk_lucius001.chr
@@ -736,7 +705,6 @@ game/objects/characters/nuian/female/costume/nu_f_sk_milkcow004/nu_f_sk_milkcow0
 game/objects/characters/nuian/female/costume/nu_f_sk_mummy001/nu_f_sk_mummy001.chr
 game/objects/characters/nuian/female/costume/nu_f_sk_musa001/nu_f_sk_musa001_v0104.cdf
 game/objects/characters/nuian/female/costume/nu_f_sk_naima001/nu_f_sk_naima001.chr
-game/objects/characters/nuian/female/costume/nu_f_sk_necro001/nu_f_sk_necro001.chr
 game/objects/characters/nuian/female/costume/nu_f_sk_ninetail_fox001/nu_f_sk_ninetail_fox001.chr
 game/objects/characters/nuian/female/costume/nu_f_sk_ninja001/nu_f_sk_ninja001.chr
 game/objects/characters/nuian/female/costume/nu_f_sk_ninja002/nu_f_sk_ninja002.cdf
@@ -746,7 +714,6 @@ game/objects/characters/nuian/female/costume/nu_f_sk_orchidna001/nu_f_sk_orchidn
 game/objects/characters/nuian/female/costume/nu_f_sk_owlpostman001/nu_f_sk_owlpostman001.chr
 game/objects/characters/nuian/female/costume/nu_f_sk_party002/nu_f_sk_party002.chr
 game/objects/characters/nuian/female/costume/nu_f_sk_pirate001/nu_f_sk_pirate001.chr
-game/objects/characters/nuian/female/costume/nu_f_sk_pirate002/nu_f_sk_pirate002.cdf
 game/objects/characters/nuian/female/costume/nu_f_sk_prisoner001/nu_f_sk_prisoner001.chr
 game/objects/characters/nuian/female/costume/nu_f_sk_qipao001/nu_f_sk_qipao001.chr
 game/objects/characters/nuian/female/costume/nu_f_sk_qipao002/nu_f_sk_qipao002.cdf
@@ -779,7 +746,6 @@ game/objects/characters/nuian/female/costume/nu_f_sk_swimsuit002/nu_f_sk_swimsui
 game/objects/characters/nuian/female/costume/nu_f_sk_swimsuit012/nu_f_sk_swimsuit012.chr
 game/objects/characters/nuian/female/costume/nu_f_sk_swimsuit013/nu_f_sk_swimsuit013.chr
 game/objects/characters/nuian/female/costume/nu_f_sk_swimsuit014/nu_f_sk_swimsuit014.chr
-game/objects/characters/nuian/female/costume/nu_f_sk_swimsuit015/nu_f_sk_swimsuit015.chr
 game/objects/characters/nuian/female/costume/nu_f_sk_uniform003/nu_f_sk_uniform003.chr
 game/objects/characters/nuian/female/costume/nu_f_sk_valentine001/nu_f_sk_valentine001.chr
 game/objects/characters/nuian/female/costume/nu_f_sk_valentine002/nu_f_sk_valentine002.chr
@@ -787,7 +753,6 @@ game/objects/characters/nuian/female/costume/nu_f_sk_whiteday001/nu_f_sk_whiteda
 game/objects/characters/nuian/female/costume/nu_f_sk_whiteshirt001/nu_f_sk_whiteshirt001.chr
 game/objects/characters/nuian/female/costume/nu_f_sk_whiteshirt002/nu_f_sk_whiteshirt002.cdf
 game/objects/characters/nuian/female/costume/nu_f_sk_witch001/nu_f_sk_witch001.chr
-game/objects/characters/nuian/female/costume/nu_f_sk_witcher001/nu_f_sk_witcher001.chr
 game/objects/characters/nuian/female/costume/nu_f_sk_yata004/nu_f_sk_yata004.chr
 game/objects/characters/nuian/female/costume/nu_f_sk_yata005/nu_f_sk_yata005.chr
 game/objects/characters/nuian/female/costume/nu_f_sk_yata006/nu_f_sk_yata006.chr
@@ -835,7 +800,6 @@ game/objects/characters/nuian/male/costume/nu_m_sk_incubus001/nu_m_sk_incubus001
 game/objects/characters/nuian/male/costume/nu_m_sk_inoch001/nu_m_sk_inoch001.chr
 game/objects/characters/nuian/male/costume/nu_m_sk_kitty001/nu_m_sk_kitty001.chr
 game/objects/characters/nuian/male/costume/nu_m_sk_kitty002/nu_m_sk_kitty002.cdf
-game/objects/characters/nuian/male/costume/nu_m_sk_kyprosa001/nu_m_sk_kyprosa001.chr
 game/objects/characters/nuian/male/costume/nu_m_sk_laborday002/nu_m_sk_laborday002.chr
 game/objects/characters/nuian/male/costume/nu_m_sk_land_of_sunlights/nu_m_sk_land_of_sunlights.chr
 game/objects/characters/nuian/male/costume/nu_m_sk_melisara001/nu_m_sk_melisara001.chr
@@ -849,7 +813,6 @@ game/objects/characters/nuian/male/costume/nu_m_sk_milkcow004/nu_m_sk_milkcow004
 game/objects/characters/nuian/male/costume/nu_m_sk_mummy001/nu_m_sk_mummy001.chr
 game/objects/characters/nuian/male/costume/nu_m_sk_musa001/nu_m_sk_musa001_v0104.cdf
 game/objects/characters/nuian/male/costume/nu_m_sk_naima001/nu_m_sk_naima001.chr
-game/objects/characters/nuian/male/costume/nu_m_sk_necro001/nu_m_sk_necro001.chr
 game/objects/characters/nuian/male/costume/nu_m_sk_ninetail_fox001/nu_m_sk_ninetail_fox001.chr
 game/objects/characters/nuian/male/costume/nu_m_sk_ninja001/nu_m_sk_ninja001.chr
 game/objects/characters/nuian/male/costume/nu_m_sk_ninja002/nu_m_sk_ninja002.cdf
@@ -859,7 +822,6 @@ game/objects/characters/nuian/male/costume/nu_m_sk_orchidna001/nu_m_sk_orchidna0
 game/objects/characters/nuian/male/costume/nu_m_sk_owlpostmas001/nu_m_sk_owlpostman001.chr
 game/objects/characters/nuian/male/costume/nu_m_sk_party002/nu_m_sk_party002.chr
 game/objects/characters/nuian/male/costume/nu_m_sk_pirate001/nu_m_sk_pirate001.chr
-game/objects/characters/nuian/male/costume/nu_m_sk_pirate002/nu_m_sk_pirate002.cdf
 game/objects/characters/nuian/male/costume/nu_m_sk_prisoner001/nu_m_sk_prisoner001.chr
 game/objects/characters/nuian/male/costume/nu_m_sk_qipao001/nu_m_sk_qipao001.chr
 game/objects/characters/nuian/male/costume/nu_m_sk_qipao002/nu_m_sk_qipao002.cdf
@@ -891,13 +853,11 @@ game/objects/characters/nuian/male/costume/nu_m_sk_swimsuit002/nu_m_sk_swimsuit0
 game/objects/characters/nuian/male/costume/nu_m_sk_swimsuit012/nu_m_sk_swimsuit012.chr
 game/objects/characters/nuian/male/costume/nu_m_sk_swimsuit013/nu_m_sk_swimsuit013.chr
 game/objects/characters/nuian/male/costume/nu_m_sk_swimsuit014/nu_m_sk_swimsuit014.chr
-game/objects/characters/nuian/male/costume/nu_m_sk_swimsuit015/nu_m_sk_swimsuit015.chr
 game/objects/characters/nuian/male/costume/nu_m_sk_uniform003/nu_m_sk_uniform003.chr
 game/objects/characters/nuian/male/costume/nu_m_sk_valentine001/nu_m_sk_valentine001.chr
 game/objects/characters/nuian/male/costume/nu_m_sk_valentine002/nu_m_sk_valentine002.chr
 game/objects/characters/nuian/male/costume/nu_m_sk_whiteshirt001/nu_m_sk_whiteshirt001.chr
 game/objects/characters/nuian/male/costume/nu_m_sk_whiteshirt002/nu_m_sk_whiteshirt002.cdf
-game/objects/characters/nuian/male/costume/nu_m_sk_witcher001/nu_m_sk_witcher001.chr
 game/objects/characters/nuian/male/costume/nu_m_sk_wizard001/nu_m_sk_wizard001.chr
 game/objects/characters/nuian/male/costume/nu_m_sk_yata004/nu_m_sk_yata004.chr
 game/objects/characters/nuian/male/costume/nu_m_sk_yata005/nu_m_sk_yata005.chr
@@ -942,7 +902,6 @@ game/ui/icon/costume_set/nu_f_sk_hussar001s.dds
 game/ui/icon/costume_set/nu_f_sk_inoch001.dds
 game/ui/icon/costume_set/nu_f_sk_kitty001.dds
 game/ui/icon/costume_set/nu_f_sk_kitty002.dds
-game/ui/icon/costume_set/nu_f_sk_kyprosa001.dds
 game/ui/icon/costume_set/nu_f_sk_laborday002.dds
 game/ui/icon/costume_set/nu_f_sk_land_of_sunlights.dds
 game/ui/icon/costume_set/nu_f_sk_melisara001.dds
@@ -951,7 +910,6 @@ game/ui/icon/costume_set/nu_f_sk_metalpriest001.dds
 game/ui/icon/costume_set/nu_f_sk_mummy001.dds
 game/ui/icon/costume_set/nu_f_sk_musa001_v0104.dds
 game/ui/icon/costume_set/nu_f_sk_naima001.dds
-game/ui/icon/costume_set/nu_f_sk_necro001.dds
 game/ui/icon/costume_set/nu_f_sk_ninetail_fox001.dds
 game/ui/icon/costume_set/nu_f_sk_ninja001.dds
 game/ui/icon/costume_set/nu_f_sk_ninja002.dds
@@ -961,7 +919,6 @@ game/ui/icon/costume_set/nu_f_sk_orchidna001.dds
 game/ui/icon/costume_set/nu_f_sk_owlpostman001.dds
 game/ui/icon/costume_set/nu_f_sk_party002.dds
 game/ui/icon/costume_set/nu_f_sk_pirate001.dds
-game/ui/icon/costume_set/nu_f_sk_pirate002.dds
 game/ui/icon/costume_set/nu_f_sk_prisoner001.dds
 game/ui/icon/costume_set/nu_f_sk_qipao001.dds
 game/ui/icon/costume_set/nu_f_sk_qipao002.dds
@@ -994,14 +951,12 @@ game/ui/icon/costume_set/nu_f_sk_swimsuit002_v105.dds
 game/ui/icon/costume_set/nu_f_sk_swimsuit012.dds
 game/ui/icon/costume_set/nu_f_sk_swimsuit013.dds
 game/ui/icon/costume_set/nu_f_sk_swimsuit014.dds
-game/ui/icon/costume_set/nu_f_sk_swimsuit015.dds
 game/ui/icon/costume_set/nu_f_sk_uniform003.dds
 game/ui/icon/costume_set/nu_f_sk_valentine001.dds
 game/ui/icon/costume_set/nu_f_sk_valentine002.dds
 game/ui/icon/costume_set/nu_f_sk_whiteshirt001.dds
 game/ui/icon/costume_set/nu_f_sk_whiteshirt002.dds
 game/ui/icon/costume_set/nu_f_sk_witch001.dds
-game/ui/icon/costume_set/nu_f_sk_witcher001.dds
 game/ui/icon/costume_set/nu_f_sk_yukata001.dds
 game/ui/icon/costume_set/nu_f_sk_yukata002.dds
 game/ui/icon/costume_set/nu_f_sk_yukata003.dds
@@ -1036,7 +991,6 @@ game/ui/icon/costume_set/nu_m_sk_incubus001.dds
 game/ui/icon/costume_set/nu_m_sk_inoch001.dds
 game/ui/icon/costume_set/nu_m_sk_kitty001.dds
 game/ui/icon/costume_set/nu_m_sk_kitty002.dds
-game/ui/icon/costume_set/nu_m_sk_kyprosa001.dds
 game/ui/icon/costume_set/nu_m_sk_laborday002.dds
 game/ui/icon/costume_set/nu_m_sk_land_of_sunlights.dds
 game/ui/icon/costume_set/nu_m_sk_melisara001.dds
@@ -1049,7 +1003,6 @@ game/ui/icon/costume_set/nu_m_sk_milkcow004.dds
 game/ui/icon/costume_set/nu_m_sk_mummy001.dds
 game/ui/icon/costume_set/nu_m_sk_musa001_v0104.dds
 game/ui/icon/costume_set/nu_m_sk_naima001.dds
-game/ui/icon/costume_set/nu_m_sk_necro001.dds
 game/ui/icon/costume_set/nu_m_sk_ninetail_fox001.dds
 game/ui/icon/costume_set/nu_m_sk_ninja001.dds
 game/ui/icon/costume_set/nu_m_sk_ninja002.dds
@@ -1059,7 +1012,6 @@ game/ui/icon/costume_set/nu_m_sk_orchidna001.dds
 game/ui/icon/costume_set/nu_m_sk_owlpostman001.dds
 game/ui/icon/costume_set/nu_m_sk_party002.dds
 game/ui/icon/costume_set/nu_m_sk_pirate001.dds
-game/ui/icon/costume_set/nu_m_sk_pirate002.dds
 game/ui/icon/costume_set/nu_m_sk_prisoner001.dds
 game/ui/icon/costume_set/nu_m_sk_qipao001.dds
 game/ui/icon/costume_set/nu_m_sk_qipao002.dds
@@ -1092,13 +1044,11 @@ game/ui/icon/costume_set/nu_m_sk_swimsuit002_v103.dds
 game/ui/icon/costume_set/nu_m_sk_swimsuit012.dds
 game/ui/icon/costume_set/nu_m_sk_swimsuit013.dds
 game/ui/icon/costume_set/nu_m_sk_swimsuit014.dds
-game/ui/icon/costume_set/nu_m_sk_swimsuit015.dds
 game/ui/icon/costume_set/nu_m_sk_uniform003.dds
 game/ui/icon/costume_set/nu_m_sk_valentine001.dds
 game/ui/icon/costume_set/nu_m_sk_valentine002.dds
 game/ui/icon/costume_set/nu_m_sk_whiteshirt001.dds
 game/ui/icon/costume_set/nu_m_sk_whiteshirt002.dds
-game/ui/icon/costume_set/nu_m_sk_witcher001.dds
 game/ui/icon/costume_set/nu_m_sk_wizard001.dds
 game/ui/icon/costume_set/nu_m_sk_yata004.dds
 game/ui/icon/costume_set/nu_m_sk_yata005.dds

@@ -59,6 +59,8 @@ Commands:
               --exclude-present-in <pak>  skip files identical in this pak (repeatable)
               --exclude-path <text>      skip paths containing this text (repeatable)
               --new-only         skip every file present in an exclude pak, changed or not
+              --repair-missing-textures  rewrite missing .mtl texture refs to a same-suffix match
+              --unresolved-list <file>   write the roots whose texture refs could not be repaired
 ";
 
 /// The login server's internal (game-server registration) port in the shipped `Config.json`.

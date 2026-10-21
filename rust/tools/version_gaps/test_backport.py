@@ -1187,6 +1187,30 @@ class Gear1bCostumeSelectionTests(unittest.TestCase):
         self.assertEqual(len(looks["new_playable_paths"]), 6)
         self.assertEqual(looks["missing_from_3_0_pak"], [])
 
+    def test_unresolved_texture_root_skips_item_and_reports_paths(self):
+        base, ref = gear_base(), self.gear_1b_ref()
+        pak12 = {
+            "game/" + path
+            for item_id, races in ((2001, GEAR_RACES[:2]), (2002, GEAR_RACES))
+            for path in gear_paths(item_id, races)
+        }
+        pak30 = {
+            "game/" + path
+            for item_id in (2001, 2002, 2003, 2009)
+            for path in gear_paths(
+                item_id, GEAR_RACES + ("dwarf",) if item_id == 2001 else GEAR_RACES
+            )
+        }
+        pak30.remove("game/" + gear_paths(2003)[0])
+        root = "game/" + gear_paths(2001)[0]
+        selection = select_gear_1b_costumes(base, ref, pak12, pak30, {root})
+        self.assertEqual(selection["items"], [2009])
+        self.assertEqual(selection["skipped"]["missing_texture_unresolved"]["count"], 1)
+        self.assertEqual(
+            selection["skipped_missing_textures"],
+            [{"item_id": 2001, "paths": [root]}],
+        )
+
     def test_overlay_list_is_new_playable_art_only(self):
         base, ref = gear_base(), self.gear_1b_ref()
         pak12 = {

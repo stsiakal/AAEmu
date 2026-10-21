@@ -133,19 +133,23 @@ as are item procs, set procs and set bonuses above unit attribute 186. The inven
 "333 retail" rows still contained 45 Dawnsdrop items, so the retail-only batch is 288 (the count
 correction and the skipped rows are in `PORTING.md` under "Batch 1a").
 
-**Batch 1b-costumes is done on `feat/gear-1b-costumes`**: the 313 costumes whose four playable-race
-art is not in the 1.2 pak, with 907 primary look paths and 200 icons in the overlay pak
-`gear-3.0-costumes.pak` (TypeA/WIBO, 2,582 files, 1,076,861,440 bytes), plus 2 craft-material items
+**Batch 1b-costumes is done on `feat/gear-1b-costumes`**: 300 costumes whose four playable-race art
+is not in the 1.2 pak, with 867 primary look paths and 190 icons in the overlay pak
+`gear-3.0-costumes.pak` (TypeA/WIBO, 2,447 files, 1,011,265,024 bytes), plus 2 craft-material items
 and 19 crafts. The compact patch is `SQL/patches/compact/2026-10-21-gear-3.0-batch-1b-costumes.sql`
 (generated on top of batch 1a, so the two apply in file-name order). The overlay is built with
-`--new-only` and `--exclude-path /characters/{dwarf,warborn}/`, so it only adds files and carries no
-Dwarf/Warborn path: 61 changed shared files (5 direct award001/lucius001 models and
-56 closure materials/textures) stay at their 1.2 version and are listed in
-`rust/tools/version_gaps/overlays/gear-3.0-costumes.manifest.json`. 220 costumes are skipped because
-their four-race art exists only in the 10.x pak; the rest of the skips are 24 no-four-race costumes,
-10 with a 3.0-only use skill, 5 above level 62, the 8M emulator band and the Dawnsdrop sets. The
-pak is not committed. Install it in Bevy as `overlays/gear-3.0-costumes.pak` next to `game_pak`, or
-point `AA_PAK_OVERLAYS` at it; a server reads it first from `ClientData.Sources`.
+`--new-only`, `--repair-missing-textures` and `--exclude-path /characters/{dwarf,warborn}/`, so it
+only adds files and carries no Dwarf/Warborn path: 60 changed shared files (5 direct
+award001/lucius001 models and 55 closure materials/textures) stay at their 1.2 version and are
+listed in `rust/tools/version_gaps/overlays/gear-3.0-costumes.manifest.json`. The repair pass ships
+five corrected material refs (saint001, saint002 and three valentine002 refs); 13 costumes are
+skipped because at least one race has no unambiguous replacement (52470/53219 necro001,
+49711/52481 witcher001, 41002/46752/49420 kyprosa001, 35755/39482/46715/49340 pirate002,
+53217/53601 swimsuit015). 220 more are skipped because their four-race art exists only in the 10.x
+pak; the rest are 24 no-four-race costumes, 10 with a 3.0-only use skill, 5 above level 62, the 8M
+emulator band and the Dawnsdrop sets. The pak is not committed. Install it in Bevy as
+`overlays/gear-3.0-costumes.pak` next to `game_pak`, or point `AA_PAK_OVERLAYS` at it; a server reads
+it first from `ClientData.Sources`.
 
 Later batches follow the report: the rest of 1b (armor, weapons, accessories, cloaks), 2 (data-only
 set bonuses), then 3-8 (high-attribute sets, proc families, 3.0 use skills, lunagems, pet armor,
@@ -250,10 +254,15 @@ also lists every written file with its size and source, the skipped identical fi
 missing/ambiguous references, warnings and the `included_new` / `included_changed` /
 `identical_skipped` counts. `--exclude-path <text>` (repeatable) drops any listed or closure path
 that contains the text (case-insensitive), e.g. the Dwarf/Warborn race trees for a four-race batch;
-the report lists them under `path_excluded`.
+the report lists them under `path_excluded`. `--repair-missing-textures` rewrites a missing texture
+reference in a new 3.0 `.mtl` to the unambiguous same-role-suffix texture beside the material (same
+stem) or beside the model, adds that texture, and reports each rewrite under `texture_repairs`; refs
+with no unambiguous match stay under `texture_repair_unresolved` and their direct root can be
+written with `--unresolved-list` (pass that list to `backport.py --skip-art-paths`). A material
+present in a stock 1.2 pak is never rewritten (`texture_repair_shared_1_2`).
 
-For batch 1b-costumes the built pak is `gear-3.0-costumes.pak` (2,582 files, 1,076,861,440 bytes,
-SHA-256 `cd86cce92ee090af10c297038946f277a962323eb70f7cedb5d708f89fd492e0`, full value in `rust/tools/version_gaps/overlays/gear-3.0-costumes.manifest.json`).
+For batch 1b-costumes the built pak is `gear-3.0-costumes.pak` (2,447 files, 1,011,265,024 bytes,
+SHA-256 `791c84c067ec854517759eabc4a80f54189e4332a0a4425a616ecefd7422627a`, full value in `rust/tools/version_gaps/overlays/gear-3.0-costumes.manifest.json`).
 Install it in Bevy as `overlays/gear-3.0-costumes.pak` inside the client folder next to `game_pak`,
 or point `AA_PAK_OVERLAYS` at the file; the client discovers `overlays/*.pak` over the stock pak.
 For a server run, list the overlay before the 1.2 `game_pak` in `ClientData.Sources` (the first
