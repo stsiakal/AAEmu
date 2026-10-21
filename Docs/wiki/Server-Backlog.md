@@ -59,12 +59,23 @@ Confirmed in code unless marked SUSPECT.
   real tutorial entries (`quest_contexts.category_id = 45`), at most 256.
 - **`CSSaveUIData`** (reproduced, fixed in `1a27e69f6`, upstream PR NickMesser/AAEmu#25): keys
   0..=16 and values up to 16 KiB (the 1.2 client's largest observed payload is 4,708 bytes).
+- **Movement fully trusted** (fixed in `dc163d01b`): every player, mount and land-vehicle move is
+  now checked against the real speed from `compact.sqlite3` (`game_stances.max_speed` 5.4 m/s
+  for actor model 10, mounts 9-10 m/s, glider buffs 6-16 m/s, `vehicle_models.velocity`), times
+  `MoveSpeedMul` and buffs, over a travel-budget window (`Physics.MoveVerify*`, on by default)
+  instead of a flat 25 m/s log. A move longer than 50 m is refused unless it matches a
+  server-sent destination (`Character.expected_position`: portals, GM `/move`, resurrection,
+  instance moves, blink; `CSTeleportEnded` now adopts the server-known position); a refused
+  player move is corrected with `SCTeleportUnit`, logged once and counted in `sus.rs`. Falling
+  and recent knockback/displacement skills are bounded; GMs and in-server bots are exempt;
+  data without an actor model fails open. Suite: `systems::ai::collision::speed_guard_tests`.
+  GMs still bypass the check by design (`MoveVerifyGmExempt`); retail max speeds beyond the
+  static-data values are not needed.
 
 ### Open
 
 | Item | Severity | What is wrong | Where | Fix direction |
 | --- | --- | --- | --- | --- |
-| Movement fully trusted | MED | `MoveVerifier` is off by default; `sus.rs` only logs above 25 m/s | `world/session.rs:753-905`, `app/Configurations/Physics.json`, `systems/services/sus.rs` | Enable and tune the verifier; needs retail speeds |
 | Portal and navi teleport | MED | `CSUsePortal` and `CSNaviTeleport` still skip the distance check; `14cfd990f` added only the OpenPortalEffect gate-point and `CSNaviOpenPortal` ranges | `systems/npcs/portal/mod.rs:843-953`, `:1069-1088`, `:1095-1116` | Check distance to the gate |
 | Mount seat | LOW | A passenger boards a stranger's mount seat from any distance | `systems/vehicles/mates.rs:312` | Check distance |
 | `CSChangeDoodadData` | LOW | No range check | `systems/npcs/doodad/manager.rs:670` | Check distance |
