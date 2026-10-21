@@ -1,3544 +1,4941 @@
 [
   {
-    "UnitId": 17594,
-    "Title": "sunbite-wilds: 10.x spawner 19798 (zone 286)",
-    "SpawnerId": 19798,
+    "UnitId": 502,
+    "Title": "sunbite-wilds: 3.0 npc_map (502)",
     "Position": {
-      "X": 19076.914,
-      "Y": 5731.36,
-      "Z": 131.688,
-      "Yaw": 173.0
-    }
-  },
-  {
-    "UnitId": 17273,
-    "Title": "sunbite-wilds: 10.x spawner 19458 (zone 286)",
-    "SpawnerId": 19458,
-    "Position": {
-      "X": 19077.289,
-      "Y": 5639.27,
-      "Z": 123.495,
-      "Yaw": -82.9998
-    }
-  },
-  {
-    "UnitId": 17413,
-    "Title": "sunbite-wilds: 10.x spawner 19601 (zone 286)",
-    "SpawnerId": 19601,
-    "Position": {
-      "X": 19072.756,
-      "Y": 5560.68,
-      "Z": 132.542,
-      "Yaw": -160.0002
-    }
-  },
-  {
-    "UnitId": 13423,
-    "Title": "sunbite-wilds: 10.x spawner 14945 (zone 286)",
-    "SpawnerId": 14945,
-    "Position": {
-      "X": 19160.817,
-      "Y": 5649.22,
-      "Z": 136.505,
-      "Yaw": 118.9999
-    }
-  },
-  {
-    "UnitId": 17350,
-    "Title": "sunbite-wilds: 10.x spawner 19535 (zone 286)",
-    "SpawnerId": 19535,
-    "Position": {
-      "X": 19122.54,
-      "Y": 5795.077,
-      "Z": 148.167,
-      "Yaw": -40.0
-    }
-  },
-  {
-    "UnitId": 17014,
-    "Title": "sunbite-wilds: 10.x spawner 19160 (zone 286)",
-    "SpawnerId": 19160,
-    "Position": {
-      "X": 19098.555,
-      "Y": 5646.85,
-      "Z": 136.636,
-      "Yaw": 98.0004
-    }
-  },
-  {
-    "UnitId": 7989,
-    "Title": "sunbite-wilds: 10.x spawner 8874 (zone 286)",
-    "SpawnerId": 8874,
-    "Position": {
-      "X": 19103.882,
-      "Y": 5748.01,
-      "Z": 146.337,
-      "Yaw": 149.9998
-    }
-  },
-  {
-    "UnitId": 13412,
-    "Title": "sunbite-wilds: 10.x spawner 14934 (zone 286)",
-    "SpawnerId": 14934,
-    "Position": {
-      "X": 19100.879,
-      "Y": 5620.32,
-      "Z": 131.686,
-      "Yaw": 42.0
-    }
-  },
-  {
-    "UnitId": 17593,
-    "Title": "sunbite-wilds: 10.x spawner 19797 (zone 286)",
-    "SpawnerId": 19797,
-    "Position": {
-      "X": 19102.019,
-      "Y": 5583.24,
-      "Z": 131.686,
+      "X": 21661.336,
+      "Y": 5743.34,
+      "Z": 146.08,
       "Yaw": 0.0
-    }
-  },
-  {
-    "UnitId": 17593,
-    "Title": "sunbite-wilds: 10.x spawner 19797 (zone 286)",
-    "SpawnerId": 19797,
-    "Position": {
-      "X": 19098.336,
-      "Y": 5704.65,
-      "Z": 140.867,
-      "Yaw": 0.0
-    }
-  },
-  {
-    "UnitId": 17257,
-    "Title": "sunbite-wilds: 10.x spawner 19442 (zone 286)",
-    "SpawnerId": 19442,
-    "Position": {
-      "X": 19108.767,
-      "Y": 5581.98,
-      "Z": 122.312,
-      "Yaw": -9.0
-    }
-  },
-  {
-    "UnitId": 17352,
-    "Title": "sunbite-wilds: 10.x spawner 19537 (zone 286)",
-    "SpawnerId": 19537,
-    "Position": {
-      "X": 19119.117,
-      "Y": 5809.326,
-      "Z": 148.445,
-      "Yaw": -149.9998
-    }
-  },
-  {
-    "UnitId": 17007,
-    "Title": "sunbite-wilds: 10.x spawner 19153 (zone 286)",
-    "SpawnerId": 19153,
-    "Position": {
-      "X": 19085.182,
-      "Y": 5593.99,
-      "Z": 141.588,
-      "Yaw": -111.0003
-    }
-  },
-  {
-    "UnitId": 17004,
-    "Title": "sunbite-wilds: 10.x spawner 19150 (zone 286)",
-    "SpawnerId": 19150,
-    "Position": {
-      "X": 19079.212,
-      "Y": 5543.02,
-      "Z": 141.813,
-      "Yaw": 75.0002
-    }
-  },
-  {
-    "UnitId": 17593,
-    "Title": "sunbite-wilds: 10.x spawner 19797 (zone 286)",
-    "SpawnerId": 19797,
-    "Position": {
-      "X": 19099.508,
-      "Y": 5714.74,
-      "Z": 131.67,
-      "Yaw": 0.0
-    }
-  },
-  {
-    "UnitId": 13423,
-    "Title": "sunbite-wilds: 10.x spawner 14945 (zone 286)",
-    "SpawnerId": 14945,
-    "Position": {
-      "X": 19121.59,
-      "Y": 5679.9,
-      "Z": 136.505,
-      "Yaw": -155.0
-    }
-  },
-  {
-    "UnitId": 17005,
-    "Title": "sunbite-wilds: 10.x spawner 19151 (zone 286)",
-    "SpawnerId": 19151,
-    "Position": {
-      "X": 19079.48,
-      "Y": 5576.22,
-      "Z": 140.814,
-      "Yaw": -96.0002
-    }
-  },
-  {
-    "UnitId": 17413,
-    "Title": "sunbite-wilds: 10.x spawner 19601 (zone 286)",
-    "SpawnerId": 19601,
-    "Position": {
-      "X": 19108.963,
-      "Y": 5689.77,
-      "Z": 132.635,
-      "Yaw": 0.0
-    }
-  },
-  {
-    "UnitId": 17594,
-    "Title": "sunbite-wilds: 10.x spawner 19798 (zone 286)",
-    "SpawnerId": 19798,
-    "Position": {
-      "X": 19123.132,
-      "Y": 5749.32,
-      "Z": 131.685,
-      "Yaw": -67.0
-    }
-  },
-  {
-    "UnitId": 17251,
-    "Title": "sunbite-wilds: 10.x spawner 19436 (zone 286)",
-    "SpawnerId": 19436,
-    "Position": {
-      "X": 19084.594,
-      "Y": 5609.83,
-      "Z": 122.506,
-      "Yaw": -49.0002
-    }
-  },
-  {
-    "UnitId": 17594,
-    "Title": "sunbite-wilds: 10.x spawner 19798 (zone 286)",
-    "SpawnerId": 19798,
-    "Position": {
-      "X": 19099.856,
-      "Y": 5717.51,
-      "Z": 131.67,
-      "Yaw": 173.0
-    }
+    },
+    "SpawnerId": 481
   },
   {
     "UnitId": 502,
-    "Title": "sunbite-wilds: 10.x spawner 481 (zone 286)",
-    "SpawnerId": 481,
+    "Title": "sunbite-wilds: 3.0 npc_map (502)",
     "Position": {
-      "X": 19101.335,
-      "Y": 5743.34,
-      "Z": 146.137,
-      "Yaw": 149.9998
-    }
-  },
-  {
-    "UnitId": 17593,
-    "Title": "sunbite-wilds: 10.x spawner 19797 (zone 286)",
-    "SpawnerId": 19797,
-    "Position": {
-      "X": 19092.593,
-      "Y": 5511.05,
-      "Z": 131.686,
-      "Yaw": -172.0002
-    }
-  },
-  {
-    "UnitId": 13423,
-    "Title": "sunbite-wilds: 10.x spawner 14945 (zone 286)",
-    "SpawnerId": 14945,
-    "Position": {
-      "X": 19122.474,
-      "Y": 5629.86,
-      "Z": 132.38,
-      "Yaw": -157.0002
-    }
-  },
-  {
-    "UnitId": 13423,
-    "Title": "sunbite-wilds: 10.x spawner 14945 (zone 286)",
-    "SpawnerId": 14945,
-    "Position": {
-      "X": 19141.378,
-      "Y": 5678.37,
-      "Z": 136.505,
-      "Yaw": 140.9998
-    }
-  },
-  {
-    "UnitId": 17413,
-    "Title": "sunbite-wilds: 10.x spawner 19601 (zone 286)",
-    "SpawnerId": 19601,
-    "Position": {
-      "X": 19097.37,
-      "Y": 5753.95,
-      "Z": 178.518,
-      "Yaw": 40.0
-    }
-  },
-  {
-    "UnitId": 17413,
-    "Title": "sunbite-wilds: 10.x spawner 19601 (zone 286)",
-    "SpawnerId": 19601,
-    "Position": {
-      "X": 19073.556,
-      "Y": 5481.62,
-      "Z": 178.078,
-      "Yaw": 145.0001
-    }
-  },
-  {
-    "UnitId": 17593,
-    "Title": "sunbite-wilds: 10.x spawner 19797 (zone 286)",
-    "SpawnerId": 19797,
-    "Position": {
-      "X": 19134.548,
-      "Y": 5656.65,
-      "Z": 122.058,
+      "X": 21882.576,
+      "Y": 4766.952,
+      "Z": 147.277,
       "Yaw": 0.0
-    }
+    },
+    "SpawnerId": 481
   },
   {
-    "UnitId": 17413,
-    "Title": "sunbite-wilds: 10.x spawner 19601 (zone 286)",
-    "SpawnerId": 19601,
+    "UnitId": 502,
+    "Title": "sunbite-wilds: 3.0 npc_map (502)",
     "Position": {
-      "X": 19115.596,
-      "Y": 5655.05,
-      "Z": 122.945,
-      "Yaw": 94.9998
-    }
+      "X": 22037.943,
+      "Y": 6133.59,
+      "Z": 167.938,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 481
   },
   {
-    "UnitId": 17594,
-    "Title": "sunbite-wilds: 10.x spawner 19798 (zone 286)",
-    "SpawnerId": 19798,
+    "UnitId": 502,
+    "Title": "sunbite-wilds: 3.0 npc_map (502)",
     "Position": {
-      "X": 19115.931,
-      "Y": 5703.89,
-      "Z": 131.743,
-      "Yaw": -67.0
-    }
+      "X": 22416.604,
+      "Y": 5576.9,
+      "Z": 134.176,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 481
   },
   {
-    "UnitId": 17594,
-    "Title": "sunbite-wilds: 10.x spawner 19798 (zone 286)",
-    "SpawnerId": 19798,
+    "UnitId": 502,
+    "Title": "sunbite-wilds: 3.0 npc_map (502)",
     "Position": {
-      "X": 19095.387,
-      "Y": 5682.94,
-      "Z": 140.877,
-      "Yaw": -67.0
-    }
+      "X": 22539.689,
+      "Y": 4782.148,
+      "Z": 149.63,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 481
   },
   {
-    "UnitId": 17593,
-    "Title": "sunbite-wilds: 10.x spawner 19797 (zone 286)",
-    "SpawnerId": 19797,
+    "UnitId": 502,
+    "Title": "sunbite-wilds: 3.0 npc_map (502)",
     "Position": {
-      "X": 19118.266,
-      "Y": 5705.31,
-      "Z": 131.823,
-      "Yaw": -172.0002
-    }
+      "X": 22682.471,
+      "Y": 6136.49,
+      "Z": 178.927,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 481
   },
   {
-    "UnitId": 13423,
-    "Title": "sunbite-wilds: 10.x spawner 14945 (zone 286)",
-    "SpawnerId": 14945,
+    "UnitId": 502,
+    "Title": "sunbite-wilds: 3.0 npc_map (502)",
     "Position": {
-      "X": 19112.515,
-      "Y": 5629.22,
-      "Z": 136.505,
-      "Yaw": -36.0
-    }
+      "X": 22999.34,
+      "Y": 5574.84,
+      "Z": 186.053,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 481
   },
   {
-    "UnitId": 17276,
-    "Title": "sunbite-wilds: 10.x spawner 19461 (zone 286)",
-    "SpawnerId": 19461,
+    "UnitId": 2209,
+    "Title": "sunbite-wilds: 3.0 npc_map (2209)",
     "Position": {
-      "X": 19087.777,
-      "Y": 5606.8,
-      "Z": 122.599,
-      "Yaw": -50.9999
-    }
+      "X": 21863.064,
+      "Y": 5931.09,
+      "Z": 187.18,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 2185
   },
   {
-    "UnitId": 17593,
-    "Title": "sunbite-wilds: 10.x spawner 19797 (zone 286)",
-    "SpawnerId": 19797,
+    "UnitId": 2209,
+    "Title": "sunbite-wilds: 3.0 npc_map (2209)",
     "Position": {
-      "X": 19088.186,
-      "Y": 5547.73,
-      "Z": 131.667,
-      "Yaw": 14.0
-    }
+      "X": 21865.949,
+      "Y": 5937.65,
+      "Z": 187.1,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 2185
   },
   {
-    "UnitId": 17285,
-    "Title": "sunbite-wilds: 10.x spawner 19470 (zone 286)",
-    "SpawnerId": 19470,
+    "UnitId": 2209,
+    "Title": "sunbite-wilds: 3.0 npc_map (2209)",
     "Position": {
-      "X": 19113.757,
-      "Y": 5372.16,
-      "Z": 179.003,
-      "Yaw": -23.0
-    }
+      "X": 21867.865,
+      "Y": 5937.31,
+      "Z": 187.015,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 2185
   },
   {
-    "UnitId": 17593,
-    "Title": "sunbite-wilds: 10.x spawner 19797 (zone 286)",
-    "SpawnerId": 19797,
+    "UnitId": 2209,
+    "Title": "sunbite-wilds: 3.0 npc_map (2209)",
     "Position": {
-      "X": 19107.058,
-      "Y": 5652.92,
-      "Z": 121.997,
-      "Yaw": -172.0002
-    }
+      "X": 21874.473,
+      "Y": 5932.46,
+      "Z": 186.583,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 2185
   },
   {
-    "UnitId": 4865,
-    "Title": "sunbite-wilds: 10.x spawner 5494 (zone 286)",
-    "SpawnerId": 5494,
+    "UnitId": 3603,
+    "Title": "sunbite-wilds: 3.0 npc_map (3603)",
     "Position": {
-      "X": 19135.179,
+      "X": 22525.98,
+      "Y": 6172.08,
+      "Z": 173.993,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 3500
+  },
+  {
+    "UnitId": 3603,
+    "Title": "sunbite-wilds: 3.0 npc_map (3603)",
+    "Position": {
+      "X": 22574.83,
+      "Y": 6189.55,
+      "Z": 174.55,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 3500
+  },
+  {
+    "UnitId": 3603,
+    "Title": "sunbite-wilds: 3.0 npc_map (3603)",
+    "Position": {
+      "X": 22601.1,
+      "Y": 6131.96,
+      "Z": 175.529,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 3500
+  },
+  {
+    "UnitId": 3603,
+    "Title": "sunbite-wilds: 3.0 npc_map (3603)",
+    "Position": {
+      "X": 22609.561,
+      "Y": 6097.82,
+      "Z": 179.065,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 3500
+  },
+  {
+    "UnitId": 3603,
+    "Title": "sunbite-wilds: 3.0 npc_map (3603)",
+    "Position": {
+      "X": 22627.471,
+      "Y": 6098.89,
+      "Z": 179.141,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 3500
+  },
+  {
+    "UnitId": 3603,
+    "Title": "sunbite-wilds: 3.0 npc_map (3603)",
+    "Position": {
+      "X": 22629.16,
+      "Y": 6126.23,
+      "Z": 177.48,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 3500
+  },
+  {
+    "UnitId": 3603,
+    "Title": "sunbite-wilds: 3.0 npc_map (3603)",
+    "Position": {
+      "X": 22643.0,
+      "Y": 6069.97,
+      "Z": 180.895,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 3500
+  },
+  {
+    "UnitId": 3603,
+    "Title": "sunbite-wilds: 3.0 npc_map (3603)",
+    "Position": {
+      "X": 22651.52,
+      "Y": 6112.35,
+      "Z": 179.56,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 3500
+  },
+  {
+    "UnitId": 3603,
+    "Title": "sunbite-wilds: 3.0 npc_map (3603)",
+    "Position": {
+      "X": 22657.721,
+      "Y": 5998.77,
+      "Z": 185.839,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 3500
+  },
+  {
+    "UnitId": 3603,
+    "Title": "sunbite-wilds: 3.0 npc_map (3603)",
+    "Position": {
+      "X": 22662.34,
+      "Y": 6008.77,
+      "Z": 186.264,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 3500
+  },
+  {
+    "UnitId": 3603,
+    "Title": "sunbite-wilds: 3.0 npc_map (3603)",
+    "Position": {
+      "X": 22669.279,
+      "Y": 6030.32,
+      "Z": 185.478,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 3500
+  },
+  {
+    "UnitId": 3603,
+    "Title": "sunbite-wilds: 3.0 npc_map (3603)",
+    "Position": {
+      "X": 22672.381,
+      "Y": 6059.03,
+      "Z": 182.39,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 3500
+  },
+  {
+    "UnitId": 3603,
+    "Title": "sunbite-wilds: 3.0 npc_map (3603)",
+    "Position": {
+      "X": 22675.301,
+      "Y": 6104.91,
+      "Z": 180.621,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 3500
+  },
+  {
+    "UnitId": 3603,
+    "Title": "sunbite-wilds: 3.0 npc_map (3603)",
+    "Position": {
+      "X": 22682.52,
+      "Y": 6016.4,
+      "Z": 185.134,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 3500
+  },
+  {
+    "UnitId": 30000000,
+    "Title": "sunbite-wilds: 3.0 npc_map (4834)",
+    "Position": {
+      "X": 20077.76,
+      "Y": 5958.959,
+      "Z": 209.374,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000000
+  },
+  {
+    "UnitId": 30000000,
+    "Title": "sunbite-wilds: 3.0 npc_map (4834)",
+    "Position": {
+      "X": 20138.436,
+      "Y": 5921.928,
+      "Z": 211.161,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000000
+  },
+  {
+    "UnitId": 30000000,
+    "Title": "sunbite-wilds: 3.0 npc_map (4834)",
+    "Position": {
+      "X": 20173.605,
+      "Y": 5981.118,
+      "Z": 208.079,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000000
+  },
+  {
+    "UnitId": 30000000,
+    "Title": "sunbite-wilds: 3.0 npc_map (4834)",
+    "Position": {
+      "X": 20213.379,
+      "Y": 6047.705,
+      "Z": 203.441,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000000
+  },
+  {
+    "UnitId": 30000000,
+    "Title": "sunbite-wilds: 3.0 npc_map (4834)",
+    "Position": {
+      "X": 20241.08,
+      "Y": 5831.339,
+      "Z": 217.853,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000000
+  },
+  {
+    "UnitId": 30000000,
+    "Title": "sunbite-wilds: 3.0 npc_map (4834)",
+    "Position": {
+      "X": 20259.824,
+      "Y": 6051.317,
+      "Z": 204.171,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000000
+  },
+  {
+    "UnitId": 30000000,
+    "Title": "sunbite-wilds: 3.0 npc_map (4834)",
+    "Position": {
+      "X": 20259.986,
+      "Y": 5986.93,
+      "Z": 206.14,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000000
+  },
+  {
+    "UnitId": 30000000,
+    "Title": "sunbite-wilds: 3.0 npc_map (4834)",
+    "Position": {
+      "X": 20264.305,
+      "Y": 5880.477,
+      "Z": 211.147,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000000
+  },
+  {
+    "UnitId": 30000000,
+    "Title": "sunbite-wilds: 3.0 npc_map (4834)",
+    "Position": {
+      "X": 20309.383,
+      "Y": 5926.988,
+      "Z": 204.925,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000000
+  },
+  {
+    "UnitId": 30000000,
+    "Title": "sunbite-wilds: 3.0 npc_map (4834)",
+    "Position": {
+      "X": 20367.375,
+      "Y": 5880.53,
+      "Z": 214.653,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000000
+  },
+  {
+    "UnitId": 30000000,
+    "Title": "sunbite-wilds: 3.0 npc_map (4834)",
+    "Position": {
+      "X": 20371.043,
+      "Y": 5796.633,
+      "Z": 255.899,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000000
+  },
+  {
+    "UnitId": 30000000,
+    "Title": "sunbite-wilds: 3.0 npc_map (4834)",
+    "Position": {
+      "X": 20423.469,
+      "Y": 5935.2,
+      "Z": 208.345,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000000
+  },
+  {
+    "UnitId": 30000000,
+    "Title": "sunbite-wilds: 3.0 npc_map (4834)",
+    "Position": {
+      "X": 20450.262,
+      "Y": 5860.078,
+      "Z": 246.73,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000000
+  },
+  {
+    "UnitId": 30000000,
+    "Title": "sunbite-wilds: 3.0 npc_map (4834)",
+    "Position": {
+      "X": 20467.146,
+      "Y": 5985.88,
+      "Z": 202.776,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000000
+  },
+  {
+    "UnitId": 30000000,
+    "Title": "sunbite-wilds: 3.0 npc_map (4834)",
+    "Position": {
+      "X": 20492.148,
+      "Y": 5909.42,
+      "Z": 227.597,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000000
+  },
+  {
+    "UnitId": 30000000,
+    "Title": "sunbite-wilds: 3.0 npc_map (4834)",
+    "Position": {
+      "X": 20522.078,
+      "Y": 5842.574,
+      "Z": 251.208,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000000
+  },
+  {
+    "UnitId": 30000000,
+    "Title": "sunbite-wilds: 3.0 npc_map (4834)",
+    "Position": {
+      "X": 20555.389,
+      "Y": 5967.235,
+      "Z": 242.919,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000000
+  },
+  {
+    "UnitId": 30000001,
+    "Title": "sunbite-wilds: 3.0 npc_map (4835)",
+    "Position": {
+      "X": 20176.85,
+      "Y": 5972.91,
+      "Z": 208.311,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000001
+  },
+  {
+    "UnitId": 30000001,
+    "Title": "sunbite-wilds: 3.0 npc_map (4835)",
+    "Position": {
+      "X": 20197.293,
+      "Y": 5881.8,
+      "Z": 210.735,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000001
+  },
+  {
+    "UnitId": 30000001,
+    "Title": "sunbite-wilds: 3.0 npc_map (4835)",
+    "Position": {
+      "X": 20210.359,
+      "Y": 6058.74,
+      "Z": 203.882,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000001
+  },
+  {
+    "UnitId": 30000001,
+    "Title": "sunbite-wilds: 3.0 npc_map (4835)",
+    "Position": {
+      "X": 20216.146,
+      "Y": 5998.71,
+      "Z": 205.087,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000001
+  },
+  {
+    "UnitId": 30000001,
+    "Title": "sunbite-wilds: 3.0 npc_map (4835)",
+    "Position": {
+      "X": 20230.322,
+      "Y": 5840.69,
+      "Z": 216.922,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000001
+  },
+  {
+    "UnitId": 30000001,
+    "Title": "sunbite-wilds: 3.0 npc_map (4835)",
+    "Position": {
+      "X": 20243.668,
+      "Y": 5909.08,
+      "Z": 207.306,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000001
+  },
+  {
+    "UnitId": 30000001,
+    "Title": "sunbite-wilds: 3.0 npc_map (4835)",
+    "Position": {
+      "X": 20249.389,
+      "Y": 5861.72,
+      "Z": 212.897,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000001
+  },
+  {
+    "UnitId": 30000001,
+    "Title": "sunbite-wilds: 3.0 npc_map (4835)",
+    "Position": {
+      "X": 20253.031,
+      "Y": 5982.64,
+      "Z": 206.202,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000001
+  },
+  {
+    "UnitId": 30000001,
+    "Title": "sunbite-wilds: 3.0 npc_map (4835)",
+    "Position": {
+      "X": 20254.512,
+      "Y": 5818.19,
+      "Z": 227.931,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000001
+  },
+  {
+    "UnitId": 30000001,
+    "Title": "sunbite-wilds: 3.0 npc_map (4835)",
+    "Position": {
+      "X": 20258.479,
+      "Y": 6046.32,
+      "Z": 204.458,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000001
+  },
+  {
+    "UnitId": 30000001,
+    "Title": "sunbite-wilds: 3.0 npc_map (4835)",
+    "Position": {
+      "X": 20292.447,
+      "Y": 5921.13,
+      "Z": 205.679,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000001
+  },
+  {
+    "UnitId": 30000001,
+    "Title": "sunbite-wilds: 3.0 npc_map (4835)",
+    "Position": {
+      "X": 20294.223,
+      "Y": 5793.5,
+      "Z": 232.829,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000001
+  },
+  {
+    "UnitId": 30000001,
+    "Title": "sunbite-wilds: 3.0 npc_map (4835)",
+    "Position": {
+      "X": 20309.408,
+      "Y": 5936.21,
+      "Z": 203.818,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000001
+  },
+  {
+    "UnitId": 30000001,
+    "Title": "sunbite-wilds: 3.0 npc_map (4835)",
+    "Position": {
+      "X": 20310.299,
+      "Y": 5875.58,
+      "Z": 214.37,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000001
+  },
+  {
+    "UnitId": 30000001,
+    "Title": "sunbite-wilds: 3.0 npc_map (4835)",
+    "Position": {
+      "X": 20311.131,
+      "Y": 5842.71,
+      "Z": 220.064,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000001
+  },
+  {
+    "UnitId": 30000001,
+    "Title": "sunbite-wilds: 3.0 npc_map (4835)",
+    "Position": {
+      "X": 20323.662,
+      "Y": 5785.26,
+      "Z": 255.046,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000001
+  },
+  {
+    "UnitId": 30000001,
+    "Title": "sunbite-wilds: 3.0 npc_map (4835)",
+    "Position": {
+      "X": 20329.084,
+      "Y": 5814.74,
+      "Z": 221.853,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000001
+  },
+  {
+    "UnitId": 30000001,
+    "Title": "sunbite-wilds: 3.0 npc_map (4835)",
+    "Position": {
+      "X": 20367.721,
+      "Y": 5882.91,
+      "Z": 214.342,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000001
+  },
+  {
+    "UnitId": 30000001,
+    "Title": "sunbite-wilds: 3.0 npc_map (4835)",
+    "Position": {
+      "X": 20371.008,
+      "Y": 5927.01,
+      "Z": 202.242,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000001
+  },
+  {
+    "UnitId": 30000001,
+    "Title": "sunbite-wilds: 3.0 npc_map (4835)",
+    "Position": {
+      "X": 20394.723,
+      "Y": 5854.74,
+      "Z": 220.536,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000001
+  },
+  {
+    "UnitId": 30000001,
+    "Title": "sunbite-wilds: 3.0 npc_map (4835)",
+    "Position": {
+      "X": 20401.393,
+      "Y": 5824.74,
+      "Z": 232.171,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000001
+  },
+  {
+    "UnitId": 30000001,
+    "Title": "sunbite-wilds: 3.0 npc_map (4835)",
+    "Position": {
+      "X": 20411.014,
+      "Y": 5794.38,
+      "Z": 261.215,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000001
+  },
+  {
+    "UnitId": 30000001,
+    "Title": "sunbite-wilds: 3.0 npc_map (4835)",
+    "Position": {
+      "X": 20419.734,
+      "Y": 5941.61,
+      "Z": 205.797,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000001
+  },
+  {
+    "UnitId": 30000001,
+    "Title": "sunbite-wilds: 3.0 npc_map (4835)",
+    "Position": {
+      "X": 20427.426,
+      "Y": 5896.9,
+      "Z": 211.751,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000001
+  },
+  {
+    "UnitId": 30000001,
+    "Title": "sunbite-wilds: 3.0 npc_map (4835)",
+    "Position": {
+      "X": 20439.352,
+      "Y": 5988.63,
+      "Z": 203.664,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000001
+  },
+  {
+    "UnitId": 30000001,
+    "Title": "sunbite-wilds: 3.0 npc_map (4835)",
+    "Position": {
+      "X": 20453.406,
+      "Y": 5862.43,
+      "Z": 247.637,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000001
+  },
+  {
+    "UnitId": 30000001,
+    "Title": "sunbite-wilds: 3.0 npc_map (4835)",
+    "Position": {
+      "X": 20476.119,
+      "Y": 5976.57,
+      "Z": 202.691,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000001
+  },
+  {
+    "UnitId": 30000001,
+    "Title": "sunbite-wilds: 3.0 npc_map (4835)",
+    "Position": {
+      "X": 20491.189,
+      "Y": 5911.42,
+      "Z": 226.962,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000001
+  },
+  {
+    "UnitId": 30000001,
+    "Title": "sunbite-wilds: 3.0 npc_map (4835)",
+    "Position": {
+      "X": 20533.02,
+      "Y": 5966.04,
+      "Z": 242.064,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000001
+  },
+  {
+    "UnitId": 30000001,
+    "Title": "sunbite-wilds: 3.0 npc_map (4835)",
+    "Position": {
+      "X": 20554.211,
+      "Y": 5945.21,
+      "Z": 251.384,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000001
+  },
+  {
+    "UnitId": 30000002,
+    "Title": "sunbite-wilds: 3.0 npc_map (4839)",
+    "Position": {
+      "X": 21817.617,
+      "Y": 6139.346,
+      "Z": 170.848,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000002
+  },
+  {
+    "UnitId": 30000002,
+    "Title": "sunbite-wilds: 3.0 npc_map (4839)",
+    "Position": {
+      "X": 21838.264,
+      "Y": 6074.744,
+      "Z": 169.568,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000002
+  },
+  {
+    "UnitId": 30000002,
+    "Title": "sunbite-wilds: 3.0 npc_map (4839)",
+    "Position": {
+      "X": 21847.387,
+      "Y": 6190.937,
+      "Z": 170.28,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000002
+  },
+  {
+    "UnitId": 30000002,
+    "Title": "sunbite-wilds: 3.0 npc_map (4839)",
+    "Position": {
+      "X": 21913.943,
+      "Y": 6138.759,
+      "Z": 169.568,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000002
+  },
+  {
+    "UnitId": 30000002,
+    "Title": "sunbite-wilds: 3.0 npc_map (4839)",
+    "Position": {
+      "X": 22115.57,
+      "Y": 6239.897,
+      "Z": 172.227,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000002
+  },
+  {
+    "UnitId": 30000002,
+    "Title": "sunbite-wilds: 3.0 npc_map (4839)",
+    "Position": {
+      "X": 22218.479,
+      "Y": 6229.822,
+      "Z": 184.678,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000002
+  },
+  {
+    "UnitId": 30000002,
+    "Title": "sunbite-wilds: 3.0 npc_map (4839)",
+    "Position": {
+      "X": 22232.107,
+      "Y": 6159.908,
+      "Z": 169.8,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000002
+  },
+  {
+    "UnitId": 30000003,
+    "Title": "sunbite-wilds: 3.0 npc_map (4840)",
+    "Position": {
+      "X": 21774.926,
+      "Y": 6170.87,
+      "Z": 172.701,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000003
+  },
+  {
+    "UnitId": 30000003,
+    "Title": "sunbite-wilds: 3.0 npc_map (4840)",
+    "Position": {
+      "X": 21800.133,
+      "Y": 6176.36,
+      "Z": 170.931,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000003
+  },
+  {
+    "UnitId": 30000003,
+    "Title": "sunbite-wilds: 3.0 npc_map (4840)",
+    "Position": {
+      "X": 21805.695,
+      "Y": 6096.34,
+      "Z": 169.322,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000003
+  },
+  {
+    "UnitId": 30000003,
+    "Title": "sunbite-wilds: 3.0 npc_map (4840)",
+    "Position": {
+      "X": 21811.551,
+      "Y": 6139.54,
+      "Z": 171.31,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000003
+  },
+  {
+    "UnitId": 30000003,
+    "Title": "sunbite-wilds: 3.0 npc_map (4840)",
+    "Position": {
+      "X": 21812.641,
+      "Y": 6163.43,
+      "Z": 169.894,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000003
+  },
+  {
+    "UnitId": 30000003,
+    "Title": "sunbite-wilds: 3.0 npc_map (4840)",
+    "Position": {
+      "X": 21812.83,
+      "Y": 6130.6,
+      "Z": 170.987,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000003
+  },
+  {
+    "UnitId": 30000003,
+    "Title": "sunbite-wilds: 3.0 npc_map (4840)",
+    "Position": {
+      "X": 21816.221,
+      "Y": 6072.41,
+      "Z": 169.841,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000003
+  },
+  {
+    "UnitId": 30000003,
+    "Title": "sunbite-wilds: 3.0 npc_map (4840)",
+    "Position": {
+      "X": 21816.973,
+      "Y": 6087.64,
+      "Z": 169.273,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000003
+  },
+  {
+    "UnitId": 30000003,
+    "Title": "sunbite-wilds: 3.0 npc_map (4840)",
+    "Position": {
+      "X": 21818.15,
+      "Y": 6197.11,
+      "Z": 170.409,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000003
+  },
+  {
+    "UnitId": 30000003,
+    "Title": "sunbite-wilds: 3.0 npc_map (4840)",
+    "Position": {
+      "X": 21832.035,
+      "Y": 6131.6,
+      "Z": 170.768,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000003
+  },
+  {
+    "UnitId": 30000003,
+    "Title": "sunbite-wilds: 3.0 npc_map (4840)",
+    "Position": {
+      "X": 21833.74,
+      "Y": 6105.84,
+      "Z": 169.19,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000003
+  },
+  {
+    "UnitId": 30000003,
+    "Title": "sunbite-wilds: 3.0 npc_map (4840)",
+    "Position": {
+      "X": 21834.582,
+      "Y": 6067.47,
+      "Z": 170.398,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000003
+  },
+  {
+    "UnitId": 30000003,
+    "Title": "sunbite-wilds: 3.0 npc_map (4840)",
+    "Position": {
+      "X": 21836.033,
+      "Y": 6161.44,
+      "Z": 170.485,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000003
+  },
+  {
+    "UnitId": 30000003,
+    "Title": "sunbite-wilds: 3.0 npc_map (4840)",
+    "Position": {
+      "X": 21836.881,
+      "Y": 6218.57,
+      "Z": 168.746,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000003
+  },
+  {
+    "UnitId": 30000003,
+    "Title": "sunbite-wilds: 3.0 npc_map (4840)",
+    "Position": {
+      "X": 21837.559,
+      "Y": 6090.19,
+      "Z": 169.19,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000003
+  },
+  {
+    "UnitId": 30000003,
+    "Title": "sunbite-wilds: 3.0 npc_map (4840)",
+    "Position": {
+      "X": 21841.209,
+      "Y": 6192.17,
+      "Z": 170.139,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000003
+  },
+  {
+    "UnitId": 30000003,
+    "Title": "sunbite-wilds: 3.0 npc_map (4840)",
+    "Position": {
+      "X": 21847.613,
+      "Y": 6060.61,
+      "Z": 169.219,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000003
+  },
+  {
+    "UnitId": 30000003,
+    "Title": "sunbite-wilds: 3.0 npc_map (4840)",
+    "Position": {
+      "X": 21854.842,
+      "Y": 6079.99,
+      "Z": 169.123,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000003
+  },
+  {
+    "UnitId": 30000003,
+    "Title": "sunbite-wilds: 3.0 npc_map (4840)",
+    "Position": {
+      "X": 21863.02,
+      "Y": 6185.65,
+      "Z": 170.106,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000003
+  },
+  {
+    "UnitId": 30000003,
+    "Title": "sunbite-wilds: 3.0 npc_map (4840)",
+    "Position": {
+      "X": 21880.506,
+      "Y": 6105.43,
+      "Z": 169.089,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000003
+  },
+  {
+    "UnitId": 30000003,
+    "Title": "sunbite-wilds: 3.0 npc_map (4840)",
+    "Position": {
+      "X": 21885.857,
+      "Y": 6179.49,
+      "Z": 170.494,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000003
+  },
+  {
+    "UnitId": 30000003,
+    "Title": "sunbite-wilds: 3.0 npc_map (4840)",
+    "Position": {
+      "X": 21891.814,
+      "Y": 6100.43,
+      "Z": 168.045,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000003
+  },
+  {
+    "UnitId": 30000003,
+    "Title": "sunbite-wilds: 3.0 npc_map (4840)",
+    "Position": {
+      "X": 21893.383,
+      "Y": 6111.78,
+      "Z": 168.657,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000003
+  },
+  {
+    "UnitId": 30000003,
+    "Title": "sunbite-wilds: 3.0 npc_map (4840)",
+    "Position": {
+      "X": 21899.141,
+      "Y": 6129.41,
+      "Z": 171.03,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000003
+  },
+  {
+    "UnitId": 30000003,
+    "Title": "sunbite-wilds: 3.0 npc_map (4840)",
+    "Position": {
+      "X": 21905.641,
+      "Y": 6152.98,
+      "Z": 171.924,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000003
+  },
+  {
+    "UnitId": 30000003,
+    "Title": "sunbite-wilds: 3.0 npc_map (4840)",
+    "Position": {
+      "X": 21905.887,
+      "Y": 6170.07,
+      "Z": 173.133,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000003
+  },
+  {
+    "UnitId": 30000003,
+    "Title": "sunbite-wilds: 3.0 npc_map (4840)",
+    "Position": {
+      "X": 21913.256,
+      "Y": 6137.16,
+      "Z": 169.476,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000003
+  },
+  {
+    "UnitId": 30000003,
+    "Title": "sunbite-wilds: 3.0 npc_map (4840)",
+    "Position": {
+      "X": 21933.479,
+      "Y": 6124.06,
+      "Z": 169.342,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000003
+  },
+  {
+    "UnitId": 30000003,
+    "Title": "sunbite-wilds: 3.0 npc_map (4840)",
+    "Position": {
+      "X": 21939.535,
+      "Y": 6151.71,
+      "Z": 174.282,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000003
+  },
+  {
+    "UnitId": 30000003,
+    "Title": "sunbite-wilds: 3.0 npc_map (4840)",
+    "Position": {
+      "X": 22036.943,
+      "Y": 6235.3,
+      "Z": 177.511,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000003
+  },
+  {
+    "UnitId": 30000003,
+    "Title": "sunbite-wilds: 3.0 npc_map (4840)",
+    "Position": {
+      "X": 22038.682,
+      "Y": 6194.51,
+      "Z": 170.651,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000003
+  },
+  {
+    "UnitId": 30000003,
+    "Title": "sunbite-wilds: 3.0 npc_map (4840)",
+    "Position": {
+      "X": 22052.492,
+      "Y": 6226.55,
+      "Z": 174.896,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000003
+  },
+  {
+    "UnitId": 30000003,
+    "Title": "sunbite-wilds: 3.0 npc_map (4840)",
+    "Position": {
+      "X": 22053.314,
+      "Y": 6248.34,
+      "Z": 175.214,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000003
+  },
+  {
+    "UnitId": 30000003,
+    "Title": "sunbite-wilds: 3.0 npc_map (4840)",
+    "Position": {
+      "X": 22106.609,
+      "Y": 6200.81,
+      "Z": 168.675,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000003
+  },
+  {
+    "UnitId": 30000003,
+    "Title": "sunbite-wilds: 3.0 npc_map (4840)",
+    "Position": {
+      "X": 22113.463,
+      "Y": 6149.3,
+      "Z": 168.155,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000003
+  },
+  {
+    "UnitId": 30000003,
+    "Title": "sunbite-wilds: 3.0 npc_map (4840)",
+    "Position": {
+      "X": 22116.301,
+      "Y": 6241.22,
+      "Z": 172.535,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000003
+  },
+  {
+    "UnitId": 30000003,
+    "Title": "sunbite-wilds: 3.0 npc_map (4840)",
+    "Position": {
+      "X": 22129.389,
+      "Y": 6195.75,
+      "Z": 167.549,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000003
+  },
+  {
+    "UnitId": 30000003,
+    "Title": "sunbite-wilds: 3.0 npc_map (4840)",
+    "Position": {
+      "X": 22160.188,
+      "Y": 6130.17,
+      "Z": 168.034,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000003
+  },
+  {
+    "UnitId": 30000003,
+    "Title": "sunbite-wilds: 3.0 npc_map (4840)",
+    "Position": {
+      "X": 22191.93,
+      "Y": 6095.39,
+      "Z": 168.654,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000003
+  },
+  {
+    "UnitId": 30000003,
+    "Title": "sunbite-wilds: 3.0 npc_map (4840)",
+    "Position": {
+      "X": 22195.844,
+      "Y": 6143.42,
+      "Z": 167.817,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000003
+  },
+  {
+    "UnitId": 30000003,
+    "Title": "sunbite-wilds: 3.0 npc_map (4840)",
+    "Position": {
+      "X": 22223.078,
+      "Y": 6233.01,
+      "Z": 186.993,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000003
+  },
+  {
+    "UnitId": 30000003,
+    "Title": "sunbite-wilds: 3.0 npc_map (4840)",
+    "Position": {
+      "X": 22229.516,
+      "Y": 6158.75,
+      "Z": 169.394,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000003
+  },
+  {
+    "UnitId": 30000003,
+    "Title": "sunbite-wilds: 3.0 npc_map (4840)",
+    "Position": {
+      "X": 22234.98,
+      "Y": 6196.21,
+      "Z": 179.926,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000003
+  },
+  {
+    "UnitId": 30000004,
+    "Title": "sunbite-wilds: 3.0 npc_map (4841)",
+    "Position": {
+      "X": 22464.736,
+      "Y": 6177.887,
+      "Z": 178.899,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000004
+  },
+  {
+    "UnitId": 30000004,
+    "Title": "sunbite-wilds: 3.0 npc_map (4841)",
+    "Position": {
+      "X": 22469.957,
+      "Y": 6120.093,
+      "Z": 186.624,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000004
+  },
+  {
+    "UnitId": 30000004,
+    "Title": "sunbite-wilds: 3.0 npc_map (4841)",
+    "Position": {
+      "X": 22495.676,
+      "Y": 5985.731,
+      "Z": 204.649,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000004
+  },
+  {
+    "UnitId": 30000004,
+    "Title": "sunbite-wilds: 3.0 npc_map (4841)",
+    "Position": {
+      "X": 22506.867,
+      "Y": 6047.822,
+      "Z": 199.728,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000004
+  },
+  {
+    "UnitId": 30000004,
+    "Title": "sunbite-wilds: 3.0 npc_map (4841)",
+    "Position": {
+      "X": 22534.43,
+      "Y": 5935.424,
+      "Z": 196.154,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000004
+  },
+  {
+    "UnitId": 30000004,
+    "Title": "sunbite-wilds: 3.0 npc_map (4841)",
+    "Position": {
+      "X": 22548.723,
+      "Y": 6109.406,
+      "Z": 179.602,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000004
+  },
+  {
+    "UnitId": 30000004,
+    "Title": "sunbite-wilds: 3.0 npc_map (4841)",
+    "Position": {
+      "X": 22571.621,
+      "Y": 5993.568,
+      "Z": 192.472,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000004
+  },
+  {
+    "UnitId": 30000004,
+    "Title": "sunbite-wilds: 3.0 npc_map (4841)",
+    "Position": {
+      "X": 22576.084,
+      "Y": 6053.53,
+      "Z": 186.112,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000004
+  },
+  {
+    "UnitId": 30000004,
+    "Title": "sunbite-wilds: 3.0 npc_map (4841)",
+    "Position": {
+      "X": 22619.367,
+      "Y": 5984.897,
+      "Z": 183.022,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000004
+  },
+  {
+    "UnitId": 30000005,
+    "Title": "sunbite-wilds: 3.0 npc_map (4842)",
+    "Position": {
+      "X": 22472.955,
+      "Y": 6054.93,
+      "Z": 211.074,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000005
+  },
+  {
+    "UnitId": 30000006,
+    "Title": "sunbite-wilds: 3.0 npc_map (4844)",
+    "Position": {
+      "X": 21817.617,
+      "Y": 6139.346,
+      "Z": 170.848,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000006
+  },
+  {
+    "UnitId": 30000006,
+    "Title": "sunbite-wilds: 3.0 npc_map (4844)",
+    "Position": {
+      "X": 21838.264,
+      "Y": 6074.744,
+      "Z": 169.568,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000006
+  },
+  {
+    "UnitId": 30000006,
+    "Title": "sunbite-wilds: 3.0 npc_map (4844)",
+    "Position": {
+      "X": 21847.387,
+      "Y": 6190.937,
+      "Z": 170.28,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000006
+  },
+  {
+    "UnitId": 30000006,
+    "Title": "sunbite-wilds: 3.0 npc_map (4844)",
+    "Position": {
+      "X": 21913.943,
+      "Y": 6138.759,
+      "Z": 169.568,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000006
+  },
+  {
+    "UnitId": 30000006,
+    "Title": "sunbite-wilds: 3.0 npc_map (4844)",
+    "Position": {
+      "X": 22115.57,
+      "Y": 6239.897,
+      "Z": 172.227,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000006
+  },
+  {
+    "UnitId": 30000006,
+    "Title": "sunbite-wilds: 3.0 npc_map (4844)",
+    "Position": {
+      "X": 22218.479,
+      "Y": 6229.822,
+      "Z": 184.678,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000006
+  },
+  {
+    "UnitId": 30000006,
+    "Title": "sunbite-wilds: 3.0 npc_map (4844)",
+    "Position": {
+      "X": 22232.107,
+      "Y": 6159.908,
+      "Z": 169.8,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000006
+  },
+  {
+    "UnitId": 30000007,
+    "Title": "sunbite-wilds: 3.0 npc_map (4845)",
+    "Position": {
+      "X": 22459.822,
+      "Y": 5354.263,
+      "Z": 130.05,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000007
+  },
+  {
+    "UnitId": 30000007,
+    "Title": "sunbite-wilds: 3.0 npc_map (4845)",
+    "Position": {
+      "X": 22558.799,
+      "Y": 5458.846,
+      "Z": 130.032,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000007
+  },
+  {
+    "UnitId": 30000007,
+    "Title": "sunbite-wilds: 3.0 npc_map (4845)",
+    "Position": {
+      "X": 22559.492,
+      "Y": 5530.993,
+      "Z": 129.904,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000007
+  },
+  {
+    "UnitId": 30000007,
+    "Title": "sunbite-wilds: 3.0 npc_map (4845)",
+    "Position": {
+      "X": 22566.211,
+      "Y": 5408.996,
+      "Z": 131.664,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000007
+  },
+  {
+    "UnitId": 30000007,
+    "Title": "sunbite-wilds: 3.0 npc_map (4845)",
+    "Position": {
+      "X": 22598.617,
+      "Y": 5596.961,
+      "Z": 131.03,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000007
+  },
+  {
+    "UnitId": 30000007,
+    "Title": "sunbite-wilds: 3.0 npc_map (4845)",
+    "Position": {
+      "X": 22620.238,
+      "Y": 5529.962,
+      "Z": 130.454,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000007
+  },
+  {
+    "UnitId": 30000007,
+    "Title": "sunbite-wilds: 3.0 npc_map (4845)",
+    "Position": {
+      "X": 22626.57,
+      "Y": 5441.886,
+      "Z": 129.802,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000007
+  },
+  {
+    "UnitId": 30000007,
+    "Title": "sunbite-wilds: 3.0 npc_map (4845)",
+    "Position": {
+      "X": 22654.855,
+      "Y": 5396.02,
+      "Z": 134.999,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000007
+  },
+  {
+    "UnitId": 30000008,
+    "Title": "sunbite-wilds: 3.0 npc_map (4846)",
+    "Position": {
+      "X": 22378.471,
+      "Y": 5295.67,
+      "Z": 135.354,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000008
+  },
+  {
+    "UnitId": 30000008,
+    "Title": "sunbite-wilds: 3.0 npc_map (4846)",
+    "Position": {
+      "X": 22426.402,
+      "Y": 5319.21,
+      "Z": 130.506,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000008
+  },
+  {
+    "UnitId": 30000008,
+    "Title": "sunbite-wilds: 3.0 npc_map (4846)",
+    "Position": {
+      "X": 22459.822,
+      "Y": 5354.263,
+      "Z": 130.05,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000008
+  },
+  {
+    "UnitId": 30000008,
+    "Title": "sunbite-wilds: 3.0 npc_map (4846)",
+    "Position": {
+      "X": 22470.268,
+      "Y": 5426.27,
+      "Z": 130.65,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000008
+  },
+  {
+    "UnitId": 30000008,
+    "Title": "sunbite-wilds: 3.0 npc_map (4846)",
+    "Position": {
+      "X": 22504.811,
+      "Y": 5390.43,
+      "Z": 133.218,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000008
+  },
+  {
+    "UnitId": 30000008,
+    "Title": "sunbite-wilds: 3.0 npc_map (4846)",
+    "Position": {
+      "X": 22512.211,
+      "Y": 5347.9,
+      "Z": 129.839,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000008
+  },
+  {
+    "UnitId": 30000008,
+    "Title": "sunbite-wilds: 3.0 npc_map (4846)",
+    "Position": {
+      "X": 22524.18,
+      "Y": 5430.04,
+      "Z": 130.395,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000008
+  },
+  {
+    "UnitId": 30000008,
+    "Title": "sunbite-wilds: 3.0 npc_map (4846)",
+    "Position": {
+      "X": 22558.799,
+      "Y": 5458.846,
+      "Z": 130.032,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000008
+  },
+  {
+    "UnitId": 30000008,
+    "Title": "sunbite-wilds: 3.0 npc_map (4846)",
+    "Position": {
+      "X": 22559.492,
+      "Y": 5530.993,
+      "Z": 129.904,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000008
+  },
+  {
+    "UnitId": 30000008,
+    "Title": "sunbite-wilds: 3.0 npc_map (4846)",
+    "Position": {
+      "X": 22566.211,
+      "Y": 5408.996,
+      "Z": 131.664,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000008
+  },
+  {
+    "UnitId": 30000008,
+    "Title": "sunbite-wilds: 3.0 npc_map (4846)",
+    "Position": {
+      "X": 22598.617,
+      "Y": 5596.961,
+      "Z": 131.03,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000008
+  },
+  {
+    "UnitId": 30000008,
+    "Title": "sunbite-wilds: 3.0 npc_map (4846)",
+    "Position": {
+      "X": 22620.238,
+      "Y": 5529.962,
+      "Z": 130.454,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000008
+  },
+  {
+    "UnitId": 30000008,
+    "Title": "sunbite-wilds: 3.0 npc_map (4846)",
+    "Position": {
+      "X": 22626.57,
+      "Y": 5441.886,
+      "Z": 129.802,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000008
+  },
+  {
+    "UnitId": 30000008,
+    "Title": "sunbite-wilds: 3.0 npc_map (4846)",
+    "Position": {
+      "X": 22628.6,
+      "Y": 5479.88,
+      "Z": 130.987,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000008
+  },
+  {
+    "UnitId": 30000008,
+    "Title": "sunbite-wilds: 3.0 npc_map (4846)",
+    "Position": {
+      "X": 22654.855,
+      "Y": 5396.02,
+      "Z": 134.999,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000008
+  },
+  {
+    "UnitId": 30000009,
+    "Title": "sunbite-wilds: 3.0 npc_map (4847)",
+    "Position": {
+      "X": 19352.133,
+      "Y": 6683.612,
+      "Z": 213.535,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000009
+  },
+  {
+    "UnitId": 30000009,
+    "Title": "sunbite-wilds: 3.0 npc_map (4847)",
+    "Position": {
+      "X": 19434.842,
+      "Y": 6704.393,
+      "Z": 210.151,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000009
+  },
+  {
+    "UnitId": 30000009,
+    "Title": "sunbite-wilds: 3.0 npc_map (4847)",
+    "Position": {
+      "X": 19461.967,
+      "Y": 6733.067,
+      "Z": 212.647,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000009
+  },
+  {
+    "UnitId": 30000009,
+    "Title": "sunbite-wilds: 3.0 npc_map (4847)",
+    "Position": {
+      "X": 19485.074,
+      "Y": 6712.868,
+      "Z": 181.064,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000009
+  },
+  {
+    "UnitId": 30000009,
+    "Title": "sunbite-wilds: 3.0 npc_map (4847)",
+    "Position": {
+      "X": 19490.619,
+      "Y": 6651.34,
+      "Z": 191.263,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000009
+  },
+  {
+    "UnitId": 30000010,
+    "Title": "sunbite-wilds: 3.0 npc_map (4849)",
+    "Position": {
+      "X": 22686.654,
+      "Y": 5793.137,
+      "Z": 204.53,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000010
+  },
+  {
+    "UnitId": 30000010,
+    "Title": "sunbite-wilds: 3.0 npc_map (4849)",
+    "Position": {
+      "X": 22689.799,
+      "Y": 5730.69,
+      "Z": 207.822,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000010
+  },
+  {
+    "UnitId": 30000010,
+    "Title": "sunbite-wilds: 3.0 npc_map (4849)",
+    "Position": {
+      "X": 22753.002,
+      "Y": 5727.894,
+      "Z": 206.167,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000010
+  },
+  {
+    "UnitId": 30000010,
+    "Title": "sunbite-wilds: 3.0 npc_map (4849)",
+    "Position": {
+      "X": 22756.096,
+      "Y": 5663.826,
+      "Z": 212.225,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000010
+  },
+  {
+    "UnitId": 30000010,
+    "Title": "sunbite-wilds: 3.0 npc_map (4849)",
+    "Position": {
+      "X": 22800.691,
+      "Y": 5531.14,
+      "Z": 212.577,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000010
+  },
+  {
+    "UnitId": 30000010,
+    "Title": "sunbite-wilds: 3.0 npc_map (4849)",
+    "Position": {
+      "X": 22809.582,
+      "Y": 5600.329,
+      "Z": 209.919,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000010
+  },
+  {
+    "UnitId": 30000010,
+    "Title": "sunbite-wilds: 3.0 npc_map (4849)",
+    "Position": {
+      "X": 22853.387,
+      "Y": 5719.009,
+      "Z": 203.734,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000010
+  },
+  {
+    "UnitId": 30000010,
+    "Title": "sunbite-wilds: 3.0 npc_map (4849)",
+    "Position": {
+      "X": 22880.867,
+      "Y": 5666.244,
+      "Z": 200.456,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000010
+  },
+  {
+    "UnitId": 30000010,
+    "Title": "sunbite-wilds: 3.0 npc_map (4849)",
+    "Position": {
+      "X": 22881.156,
+      "Y": 5404.717,
+      "Z": 173.776,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000010
+  },
+  {
+    "UnitId": 30000010,
+    "Title": "sunbite-wilds: 3.0 npc_map (4849)",
+    "Position": {
+      "X": 22909.682,
+      "Y": 5455.004,
+      "Z": 174.265,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000010
+  },
+  {
+    "UnitId": 30000010,
+    "Title": "sunbite-wilds: 3.0 npc_map (4849)",
+    "Position": {
+      "X": 22965.045,
+      "Y": 5410.53,
+      "Z": 183.018,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000010
+  },
+  {
+    "UnitId": 30000011,
+    "Title": "sunbite-wilds: 3.0 npc_map (4850)",
+    "Position": {
+      "X": 22686.654,
+      "Y": 5793.137,
+      "Z": 204.53,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000011
+  },
+  {
+    "UnitId": 30000011,
+    "Title": "sunbite-wilds: 3.0 npc_map (4850)",
+    "Position": {
+      "X": 22689.799,
+      "Y": 5730.69,
+      "Z": 207.822,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000011
+  },
+  {
+    "UnitId": 30000011,
+    "Title": "sunbite-wilds: 3.0 npc_map (4850)",
+    "Position": {
+      "X": 22753.002,
+      "Y": 5727.894,
+      "Z": 206.167,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000011
+  },
+  {
+    "UnitId": 30000011,
+    "Title": "sunbite-wilds: 3.0 npc_map (4850)",
+    "Position": {
+      "X": 22756.096,
+      "Y": 5663.826,
+      "Z": 212.225,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000011
+  },
+  {
+    "UnitId": 30000011,
+    "Title": "sunbite-wilds: 3.0 npc_map (4850)",
+    "Position": {
+      "X": 22800.691,
+      "Y": 5531.14,
+      "Z": 212.577,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000011
+  },
+  {
+    "UnitId": 30000011,
+    "Title": "sunbite-wilds: 3.0 npc_map (4850)",
+    "Position": {
+      "X": 22809.582,
+      "Y": 5600.329,
+      "Z": 209.919,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000011
+  },
+  {
+    "UnitId": 30000011,
+    "Title": "sunbite-wilds: 3.0 npc_map (4850)",
+    "Position": {
+      "X": 22853.387,
+      "Y": 5719.009,
+      "Z": 203.734,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000011
+  },
+  {
+    "UnitId": 30000011,
+    "Title": "sunbite-wilds: 3.0 npc_map (4850)",
+    "Position": {
+      "X": 22880.867,
+      "Y": 5666.244,
+      "Z": 200.456,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000011
+  },
+  {
+    "UnitId": 30000011,
+    "Title": "sunbite-wilds: 3.0 npc_map (4850)",
+    "Position": {
+      "X": 22881.156,
+      "Y": 5404.717,
+      "Z": 173.776,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000011
+  },
+  {
+    "UnitId": 30000011,
+    "Title": "sunbite-wilds: 3.0 npc_map (4850)",
+    "Position": {
+      "X": 22909.682,
+      "Y": 5455.004,
+      "Z": 174.265,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000011
+  },
+  {
+    "UnitId": 30000011,
+    "Title": "sunbite-wilds: 3.0 npc_map (4850)",
+    "Position": {
+      "X": 22965.045,
+      "Y": 5410.53,
+      "Z": 183.018,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000011
+  },
+  {
+    "UnitId": 30000012,
+    "Title": "sunbite-wilds: 3.0 npc_map (4851)",
+    "Position": {
+      "X": 22686.654,
+      "Y": 5793.137,
+      "Z": 204.53,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000012
+  },
+  {
+    "UnitId": 30000012,
+    "Title": "sunbite-wilds: 3.0 npc_map (4851)",
+    "Position": {
+      "X": 22689.799,
+      "Y": 5730.69,
+      "Z": 207.822,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000012
+  },
+  {
+    "UnitId": 30000012,
+    "Title": "sunbite-wilds: 3.0 npc_map (4851)",
+    "Position": {
+      "X": 22753.002,
+      "Y": 5727.894,
+      "Z": 206.167,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000012
+  },
+  {
+    "UnitId": 30000012,
+    "Title": "sunbite-wilds: 3.0 npc_map (4851)",
+    "Position": {
+      "X": 22756.096,
+      "Y": 5663.826,
+      "Z": 212.225,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000012
+  },
+  {
+    "UnitId": 30000012,
+    "Title": "sunbite-wilds: 3.0 npc_map (4851)",
+    "Position": {
+      "X": 22800.691,
+      "Y": 5531.14,
+      "Z": 212.577,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000012
+  },
+  {
+    "UnitId": 30000012,
+    "Title": "sunbite-wilds: 3.0 npc_map (4851)",
+    "Position": {
+      "X": 22809.582,
+      "Y": 5600.329,
+      "Z": 209.919,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000012
+  },
+  {
+    "UnitId": 30000012,
+    "Title": "sunbite-wilds: 3.0 npc_map (4851)",
+    "Position": {
+      "X": 22853.387,
+      "Y": 5719.009,
+      "Z": 203.734,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000012
+  },
+  {
+    "UnitId": 30000012,
+    "Title": "sunbite-wilds: 3.0 npc_map (4851)",
+    "Position": {
+      "X": 22880.867,
+      "Y": 5666.244,
+      "Z": 200.456,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000012
+  },
+  {
+    "UnitId": 30000012,
+    "Title": "sunbite-wilds: 3.0 npc_map (4851)",
+    "Position": {
+      "X": 22881.156,
+      "Y": 5404.717,
+      "Z": 173.776,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000012
+  },
+  {
+    "UnitId": 30000012,
+    "Title": "sunbite-wilds: 3.0 npc_map (4851)",
+    "Position": {
+      "X": 22909.682,
+      "Y": 5455.004,
+      "Z": 174.265,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000012
+  },
+  {
+    "UnitId": 30000012,
+    "Title": "sunbite-wilds: 3.0 npc_map (4851)",
+    "Position": {
+      "X": 22965.045,
+      "Y": 5410.53,
+      "Z": 183.018,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000012
+  },
+  {
+    "UnitId": 30000013,
+    "Title": "sunbite-wilds: 3.0 npc_map (4863)",
+    "Position": {
+      "X": 21880.211,
+      "Y": 5937.71,
+      "Z": 186.468,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000013
+  },
+  {
+    "UnitId": 30000013,
+    "Title": "sunbite-wilds: 3.0 npc_map (4863)",
+    "Position": {
+      "X": 21881.562,
+      "Y": 5938.82,
+      "Z": 186.44,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000013
+  },
+  {
+    "UnitId": 30000014,
+    "Title": "sunbite-wilds: 3.0 npc_map (4864)",
+    "Position": {
+      "X": 21825.111,
+      "Y": 5633.56,
+      "Z": 123.45,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000014
+  },
+  {
+    "UnitId": 30000015,
+    "Title": "sunbite-wilds: 3.0 npc_map (4865)",
+    "Position": {
+      "X": 21823.18,
       "Y": 5641.77,
-      "Z": 123.787,
-      "Yaw": -91.0
-    }
-  },
-  {
-    "UnitId": 17413,
-    "Title": "sunbite-wilds: 10.x spawner 19601 (zone 286)",
-    "SpawnerId": 19601,
-    "Position": {
-      "X": 19115.771,
-      "Y": 5620.1,
-      "Z": 123.243,
-      "Yaw": 85.0
-    }
-  },
-  {
-    "UnitId": 17594,
-    "Title": "sunbite-wilds: 10.x spawner 19798 (zone 286)",
-    "SpawnerId": 19798,
-    "Position": {
-      "X": 19090.258,
-      "Y": 5509.63,
-      "Z": 131.686,
-      "Yaw": -67.0
-    }
-  },
-  {
-    "UnitId": 17006,
-    "Title": "sunbite-wilds: 10.x spawner 19152 (zone 286)",
-    "SpawnerId": 19152,
-    "Position": {
-      "X": 19110.314,
-      "Y": 5583.65,
-      "Z": 140.814,
-      "Yaw": 85.0
-    }
-  },
-  {
-    "UnitId": 17594,
-    "Title": "sunbite-wilds: 10.x spawner 19798 (zone 286)",
-    "SpawnerId": 19798,
-    "Position": {
-      "X": 19087.552,
-      "Y": 5483.91,
-      "Z": 140.803,
-      "Yaw": -67.0
-    }
-  },
-  {
-    "UnitId": 17295,
-    "Title": "sunbite-wilds: 10.x spawner 19480 (zone 286)",
-    "SpawnerId": 19480,
-    "Position": {
-      "X": 19119.061,
-      "Y": 5695.12,
-      "Z": 122.308,
-      "Yaw": 115.0001
-    }
-  },
-  {
-    "UnitId": 17593,
-    "Title": "sunbite-wilds: 10.x spawner 19797 (zone 286)",
-    "SpawnerId": 19797,
-    "Position": {
-      "X": 19076.567,
-      "Y": 5728.6,
-      "Z": 131.688,
+      "Z": 123.454,
       "Yaw": 0.0
-    }
+    },
+    "SpawnerId": 100000015
   },
   {
-    "UnitId": 17593,
-    "Title": "sunbite-wilds: 10.x spawner 19797 (zone 286)",
-    "SpawnerId": 19797,
+    "UnitId": 30000016,
+    "Title": "sunbite-wilds: 3.0 npc_map (4866)",
     "Position": {
-      "X": 19097.515,
-      "Y": 5681.58,
-      "Z": 140.877,
-      "Yaw": 14.0
-    }
-  },
-  {
-    "UnitId": 17594,
-    "Title": "sunbite-wilds: 10.x spawner 19798 (zone 286)",
-    "SpawnerId": 19798,
-    "Position": {
-      "X": 19098.684,
-      "Y": 5707.41,
-      "Z": 140.867,
-      "Yaw": 173.0
-    }
-  },
-  {
-    "UnitId": 17594,
-    "Title": "sunbite-wilds: 10.x spawner 19798 (zone 286)",
-    "SpawnerId": 19798,
-    "Position": {
-      "X": 19104.724,
-      "Y": 5651.5,
-      "Z": 121.997,
-      "Yaw": -67.0
-    }
-  },
-  {
-    "UnitId": 17594,
-    "Title": "sunbite-wilds: 10.x spawner 19798 (zone 286)",
-    "SpawnerId": 19798,
-    "Position": {
-      "X": 19086.057,
-      "Y": 5549.09,
-      "Z": 131.667,
-      "Yaw": -67.0
-    }
-  },
-  {
-    "UnitId": 17349,
-    "Title": "sunbite-wilds: 10.x spawner 19534 (zone 286)",
-    "SpawnerId": 19534,
-    "Position": {
-      "X": 19109.771,
-      "Y": 5799.301,
-      "Z": 148.184,
+      "X": 21827.85,
+      "Y": 5646.38,
+      "Z": 123.612,
       "Yaw": 0.0
-    }
+    },
+    "SpawnerId": 100000016
   },
   {
-    "UnitId": 13423,
-    "Title": "sunbite-wilds: 10.x spawner 14945 (zone 286)",
-    "SpawnerId": 14945,
+    "UnitId": 7989,
+    "Title": "sunbite-wilds: 3.0 npc_map (7989)",
     "Position": {
-      "X": 19133.58,
-      "Y": 5631.34,
-      "Z": 132.314,
-      "Yaw": 173.9998
-    }
-  },
-  {
-    "UnitId": 13423,
-    "Title": "sunbite-wilds: 10.x spawner 14945 (zone 286)",
-    "SpawnerId": 14945,
-    "Position": {
-      "X": 19138.038,
-      "Y": 5680.07,
-      "Z": 136.505,
-      "Yaw": 140.9998
-    }
-  },
-  {
-    "UnitId": 17413,
-    "Title": "sunbite-wilds: 10.x spawner 19601 (zone 286)",
-    "SpawnerId": 19601,
-    "Position": {
-      "X": 19093.202,
-      "Y": 5778.39,
-      "Z": 145.644,
-      "Yaw": -30.0
-    }
-  },
-  {
-    "UnitId": 17593,
-    "Title": "sunbite-wilds: 10.x spawner 19797 (zone 286)",
-    "SpawnerId": 19797,
-    "Position": {
-      "X": 19109.581,
-      "Y": 5680.48,
-      "Z": 131.68,
+      "X": 21663.883,
+      "Y": 5748.01,
+      "Z": 146.287,
       "Yaw": 0.0
-    }
+    },
+    "SpawnerId": 8874
   },
   {
-    "UnitId": 13423,
-    "Title": "sunbite-wilds: 10.x spawner 14945 (zone 286)",
-    "SpawnerId": 14945,
+    "UnitId": 7989,
+    "Title": "sunbite-wilds: 3.0 npc_map (7989)",
     "Position": {
-      "X": 19107.26,
-      "Y": 5668.99,
-      "Z": 136.505,
-      "Yaw": -120.0003
-    }
+      "X": 21880.715,
+      "Y": 4763.065,
+      "Z": 147.608,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 8874
   },
   {
-    "UnitId": 17299,
-    "Title": "sunbite-wilds: 10.x spawner 19484 (zone 286)",
-    "SpawnerId": 19484,
+    "UnitId": 7989,
+    "Title": "sunbite-wilds: 3.0 npc_map (7989)",
     "Position": {
-      "X": 19087.387,
-      "Y": 5670.36,
-      "Z": 122.116,
-      "Yaw": -155.0
-    }
+      "X": 22038.119,
+      "Y": 6126.84,
+      "Z": 168.362,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 8874
   },
   {
-    "UnitId": 17413,
-    "Title": "sunbite-wilds: 10.x spawner 19601 (zone 286)",
-    "SpawnerId": 19601,
+    "UnitId": 7989,
+    "Title": "sunbite-wilds: 3.0 npc_map (7989)",
     "Position": {
-      "X": 19131.583,
-      "Y": 5486.67,
-      "Z": 178.03,
-      "Yaw": 145.0001
-    }
+      "X": 22410.18,
+      "Y": 5578.36,
+      "Z": 135.809,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 8874
   },
   {
-    "UnitId": 17462,
-    "Title": "sunbite-wilds: 10.x spawner 19658 (zone 286)",
-    "SpawnerId": 19658,
+    "UnitId": 7989,
+    "Title": "sunbite-wilds: 3.0 npc_map (7989)",
     "Position": {
-      "X": 19121.893,
-      "Y": 5641.55,
-      "Z": 132.38,
-      "Yaw": 98.0004
-    }
+      "X": 22539.84,
+      "Y": 4785.469,
+      "Z": 149.871,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 8874
+  },
+  {
+    "UnitId": 7989,
+    "Title": "sunbite-wilds: 3.0 npc_map (7989)",
+    "Position": {
+      "X": 22679.391,
+      "Y": 6131.98,
+      "Z": 179.313,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 8874
+  },
+  {
+    "UnitId": 7989,
+    "Title": "sunbite-wilds: 3.0 npc_map (7989)",
+    "Position": {
+      "X": 23004.529,
+      "Y": 5574.9,
+      "Z": 186.598,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 8874
   },
   {
     "UnitId": 9789,
-    "Title": "sunbite-wilds: 10.x spawner 10873 (zone 286)",
-    "SpawnerId": 10873,
+    "Title": "sunbite-wilds: 3.0 npc_map (9789)",
     "Position": {
-      "X": 19102.584,
+      "X": 21854.584,
       "Y": 5596.96,
-      "Z": 123.202,
-      "Yaw": -31.0001
-    }
-  },
-  {
-    "UnitId": 17279,
-    "Title": "sunbite-wilds: 10.x spawner 19464 (zone 286)",
-    "SpawnerId": 19464,
-    "Position": {
-      "X": 19089.966,
-      "Y": 5567.54,
-      "Z": 125.093,
-      "Yaw": -13.0
-    }
-  },
-  {
-    "UnitId": 13415,
-    "Title": "sunbite-wilds: 10.x spawner 14937 (zone 286)",
-    "SpawnerId": 14937,
-    "Position": {
-      "X": 19094.484,
-      "Y": 5550.05,
-      "Z": 131.745,
-      "Yaw": -170.9998
-    }
-  },
-  {
-    "UnitId": 4866,
-    "Title": "sunbite-wilds: 10.x spawner 5495 (zone 286)",
-    "SpawnerId": 5495,
-    "Position": {
-      "X": 19075.85,
-      "Y": 5646.38,
-      "Z": 123.639,
-      "Yaw": -124.0001
-    }
-  },
-  {
-    "UnitId": 17593,
-    "Title": "sunbite-wilds: 10.x spawner 19797 (zone 286)",
-    "SpawnerId": 19797,
-    "Position": {
-      "X": 19132.998,
-      "Y": 5489.7,
-      "Z": 140.803,
+      "Z": 123.143,
       "Yaw": 0.0
-    }
+    },
+    "SpawnerId": 10873
   },
   {
-    "UnitId": 17413,
-    "Title": "sunbite-wilds: 10.x spawner 19601 (zone 286)",
-    "SpawnerId": 19601,
+    "UnitId": 10857,
+    "Title": "sunbite-wilds: 3.0 npc_map (10857)",
     "Position": {
-      "X": 19095.449,
-      "Y": 5630.78,
-      "Z": 131.686,
-      "Yaw": 94.9998
-    }
+      "X": 21878.719,
+      "Y": 4784.182,
+      "Z": 148.363,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 12063
+  },
+  {
+    "UnitId": 10857,
+    "Title": "sunbite-wilds: 3.0 npc_map (10857)",
+    "Position": {
+      "X": 21916.766,
+      "Y": 5584.67,
+      "Z": 122.096,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 12063
+  },
+  {
+    "UnitId": 10857,
+    "Title": "sunbite-wilds: 3.0 npc_map (10857)",
+    "Position": {
+      "X": 22349.707,
+      "Y": 4527.324,
+      "Z": 168.315,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 12063
+  },
+  {
+    "UnitId": 10857,
+    "Title": "sunbite-wilds: 3.0 npc_map (10857)",
+    "Position": {
+      "X": 22517.99,
+      "Y": 4784.028,
+      "Z": 150.895,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 12063
   },
   {
     "UnitId": 11545,
-    "Title": "sunbite-wilds: 10.x spawner 12777 (zone 286)",
-    "SpawnerId": 12777,
+    "Title": "sunbite-wilds: 3.0 npc_map (11545)",
     "Position": {
-      "X": 19094.432,
+      "X": 21846.432,
       "Y": 5601.21,
-      "Z": 122.924,
-      "Yaw": -44.0
-    }
-  },
-  {
-    "UnitId": 17593,
-    "Title": "sunbite-wilds: 10.x spawner 19797 (zone 286)",
-    "SpawnerId": 19797,
-    "Position": {
-      "X": 19089.887,
-      "Y": 5485.34,
-      "Z": 140.803,
-      "Yaw": -172.0002
-    }
-  },
-  {
-    "UnitId": 13423,
-    "Title": "sunbite-wilds: 10.x spawner 14945 (zone 286)",
-    "SpawnerId": 14945,
-    "Position": {
-      "X": 19118.137,
-      "Y": 5678.12,
-      "Z": 136.505,
-      "Yaw": -155.0
-    }
-  },
-  {
-    "UnitId": 13413,
-    "Title": "sunbite-wilds: 10.x spawner 14935 (zone 286)",
-    "SpawnerId": 14935,
-    "Position": {
-      "X": 19097.79,
-      "Y": 5623.17,
-      "Z": 131.686,
-      "Yaw": -131.9997
-    }
-  },
-  {
-    "UnitId": 10857,
-    "Title": "sunbite-wilds: 10.x spawner 12063 (zone 286)",
-    "SpawnerId": 12063,
-    "Position": {
-      "X": 19126.718,
-      "Y": 5808.182,
-      "Z": 148.52,
-      "Yaw": -179.9998
-    }
-  },
-  {
-    "UnitId": 17250,
-    "Title": "sunbite-wilds: 10.x spawner 19435 (zone 286)",
-    "SpawnerId": 19435,
-    "Position": {
-      "X": 19092.507,
-      "Y": 5654.69,
-      "Z": 123.56,
-      "Yaw": -166.0002
-    }
-  },
-  {
-    "UnitId": 17593,
-    "Title": "sunbite-wilds: 10.x spawner 19797 (zone 286)",
-    "SpawnerId": 19797,
-    "Position": {
-      "X": 19080.164,
-      "Y": 5588.65,
-      "Z": 122.244,
+      "Z": 122.873,
       "Yaw": 0.0
-    }
+    },
+    "SpawnerId": 12777
   },
   {
-    "UnitId": 17296,
-    "Title": "sunbite-wilds: 10.x spawner 19481 (zone 286)",
-    "SpawnerId": 19481,
+    "UnitId": 30000017,
+    "Title": "sunbite-wilds: 3.0 npc_map (13408)",
     "Position": {
-      "X": 19075.661,
-      "Y": 5689.23,
-      "Z": 122.006,
-      "Yaw": -176.9998
-    }
+      "X": 22000.357,
+      "Y": 6068.26,
+      "Z": 172.316,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000017
   },
   {
-    "UnitId": 17258,
-    "Title": "sunbite-wilds: 10.x spawner 19443 (zone 286)",
-    "SpawnerId": 19443,
+    "UnitId": 30000018,
+    "Title": "sunbite-wilds: 3.0 npc_map (13409)",
     "Position": {
-      "X": 19083.132,
-      "Y": 5571.42,
-      "Z": 122.245,
-      "Yaw": -6.0
-    }
+      "X": 21997.99,
+      "Y": 6065.63,
+      "Z": 172.393,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000018
   },
   {
-    "UnitId": 17413,
-    "Title": "sunbite-wilds: 10.x spawner 19601 (zone 286)",
-    "SpawnerId": 19601,
+    "UnitId": 30000019,
+    "Title": "sunbite-wilds: 3.0 npc_map (13410)",
     "Position": {
-      "X": 19124.685,
-      "Y": 5625.86,
-      "Z": 122.591,
-      "Yaw": 94.9998
-    }
+      "X": 22740.699,
+      "Y": 6235.45,
+      "Z": 172.384,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000019
   },
   {
-    "UnitId": 17594,
-    "Title": "sunbite-wilds: 10.x spawner 19798 (zone 286)",
-    "SpawnerId": 19798,
+    "UnitId": 30000020,
+    "Title": "sunbite-wilds: 3.0 npc_map (13411)",
     "Position": {
-      "X": 19134.896,
-      "Y": 5659.41,
-      "Z": 122.058,
-      "Yaw": 173.0
-    }
+      "X": 22741.359,
+      "Y": 6237.68,
+      "Z": 172.393,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000020
   },
   {
-    "UnitId": 13423,
-    "Title": "sunbite-wilds: 10.x spawner 14945 (zone 286)",
-    "SpawnerId": 14945,
+    "UnitId": 30000021,
+    "Title": "sunbite-wilds: 3.0 npc_map (13412)",
     "Position": {
-      "X": 19155.063,
-      "Y": 5649.5,
-      "Z": 136.505,
-      "Yaw": 127.9999
-    }
+      "X": 22044.879,
+      "Y": 5620.32,
+      "Z": 131.643,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000021
   },
   {
-    "UnitId": 17413,
-    "Title": "sunbite-wilds: 10.x spawner 19601 (zone 286)",
-    "SpawnerId": 19601,
+    "UnitId": 30000022,
+    "Title": "sunbite-wilds: 3.0 npc_map (13413)",
     "Position": {
-      "X": 19124.364,
-      "Y": 5554.17,
-      "Z": 132.605,
-      "Yaw": -149.9998
-    }
+      "X": 22041.789,
+      "Y": 5623.17,
+      "Z": 131.643,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000022
   },
   {
-    "UnitId": 17594,
-    "Title": "sunbite-wilds: 10.x spawner 19798 (zone 286)",
-    "SpawnerId": 19798,
+    "UnitId": 30000023,
+    "Title": "sunbite-wilds: 3.0 npc_map (13414)",
     "Position": {
-      "X": 19102.367,
-      "Y": 5586.0,
-      "Z": 131.686,
-      "Yaw": 173.0
-    }
+      "X": 22038.051,
+      "Y": 5546.82,
+      "Z": 131.643,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000023
   },
   {
-    "UnitId": 17353,
-    "Title": "sunbite-wilds: 10.x spawner 19538 (zone 286)",
-    "SpawnerId": 19538,
+    "UnitId": 30000024,
+    "Title": "sunbite-wilds: 3.0 npc_map (13415)",
     "Position": {
-      "X": 19134.853,
-      "Y": 5809.09,
-      "Z": 147.994,
-      "Yaw": -179.9998
-    }
+      "X": 22038.484,
+      "Y": 5550.05,
+      "Z": 131.692,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000024
   },
   {
-    "UnitId": 17413,
-    "Title": "sunbite-wilds: 10.x spawner 19601 (zone 286)",
-    "SpawnerId": 19601,
+    "UnitId": 30000025,
+    "Title": "sunbite-wilds: 3.0 npc_map (13416)",
     "Position": {
-      "X": 19125.288,
-      "Y": 5613.93,
-      "Z": 122.188,
-      "Yaw": 94.9998
-    }
+      "X": 22411.439,
+      "Y": 5452.98,
+      "Z": 143.248,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000025
   },
   {
-    "UnitId": 17302,
-    "Title": "sunbite-wilds: 10.x spawner 19487 (zone 286)",
-    "SpawnerId": 19487,
+    "UnitId": 30000026,
+    "Title": "sunbite-wilds: 3.0 npc_map (13417)",
     "Position": {
-      "X": 19120.091,
-      "Y": 5578.29,
-      "Z": 122.312,
-      "Yaw": -11.0
-    }
+      "X": 22410.812,
+      "Y": 5456.24,
+      "Z": 143.127,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000026
   },
   {
-    "UnitId": 17593,
-    "Title": "sunbite-wilds: 10.x spawner 19797 (zone 286)",
-    "SpawnerId": 19797,
+    "UnitId": 30000027,
+    "Title": "sunbite-wilds: 3.0 npc_map (13422)",
     "Position": {
-      "X": 19089.681,
-      "Y": 5482.55,
-      "Z": 140.803,
-      "Yaw": 14.0
-    }
+      "X": 22522.25,
+      "Y": 6175.92,
+      "Z": 174.653,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000027
   },
   {
-    "UnitId": 13423,
-    "Title": "sunbite-wilds: 10.x spawner 14945 (zone 286)",
-    "SpawnerId": 14945,
+    "UnitId": 30000027,
+    "Title": "sunbite-wilds: 3.0 npc_map (13422)",
     "Position": {
-      "X": 19127.8,
+      "X": 22574.561,
+      "Y": 6184.09,
+      "Z": 173.637,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000027
+  },
+  {
+    "UnitId": 30000027,
+    "Title": "sunbite-wilds: 3.0 npc_map (13422)",
+    "Position": {
+      "X": 22607.42,
+      "Y": 6104.95,
+      "Z": 178.55,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000027
+  },
+  {
+    "UnitId": 30000027,
+    "Title": "sunbite-wilds: 3.0 npc_map (13422)",
+    "Position": {
+      "X": 22612.039,
+      "Y": 6091.33,
+      "Z": 179.273,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000027
+  },
+  {
+    "UnitId": 30000027,
+    "Title": "sunbite-wilds: 3.0 npc_map (13422)",
+    "Position": {
+      "X": 22621.061,
+      "Y": 6132.61,
+      "Z": 176.399,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000027
+  },
+  {
+    "UnitId": 30000027,
+    "Title": "sunbite-wilds: 3.0 npc_map (13422)",
+    "Position": {
+      "X": 22623.789,
+      "Y": 6138.88,
+      "Z": 175.706,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000027
+  },
+  {
+    "UnitId": 30000027,
+    "Title": "sunbite-wilds: 3.0 npc_map (13422)",
+    "Position": {
+      "X": 22628.85,
+      "Y": 6055.04,
+      "Z": 184.994,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000027
+  },
+  {
+    "UnitId": 30000027,
+    "Title": "sunbite-wilds: 3.0 npc_map (13422)",
+    "Position": {
+      "X": 22648.779,
+      "Y": 6155.51,
+      "Z": 177.736,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000027
+  },
+  {
+    "UnitId": 30000027,
+    "Title": "sunbite-wilds: 3.0 npc_map (13422)",
+    "Position": {
+      "X": 22650.26,
+      "Y": 6154.81,
+      "Z": 177.889,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000027
+  },
+  {
+    "UnitId": 30000027,
+    "Title": "sunbite-wilds: 3.0 npc_map (13422)",
+    "Position": {
+      "X": 22655.83,
+      "Y": 6052.85,
+      "Z": 183.279,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000027
+  },
+  {
+    "UnitId": 30000027,
+    "Title": "sunbite-wilds: 3.0 npc_map (13422)",
+    "Position": {
+      "X": 22668.91,
+      "Y": 6023.43,
+      "Z": 185.822,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000027
+  },
+  {
+    "UnitId": 30000027,
+    "Title": "sunbite-wilds: 3.0 npc_map (13422)",
+    "Position": {
+      "X": 22680.49,
+      "Y": 6012.14,
+      "Z": 185.417,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000027
+  },
+  {
+    "UnitId": 30000027,
+    "Title": "sunbite-wilds: 3.0 npc_map (13422)",
+    "Position": {
+      "X": 22683.34,
+      "Y": 6065.32,
+      "Z": 182.756,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000027
+  },
+  {
+    "UnitId": 30000027,
+    "Title": "sunbite-wilds: 3.0 npc_map (13422)",
+    "Position": {
+      "X": 22683.971,
+      "Y": 6038.4,
+      "Z": 183.854,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000027
+  },
+  {
+    "UnitId": 30000028,
+    "Title": "sunbite-wilds: 3.0 npc_map (13423)",
+    "Position": {
+      "X": 22066.475,
+      "Y": 5629.86,
+      "Z": 131.643,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000028
+  },
+  {
+    "UnitId": 30000028,
+    "Title": "sunbite-wilds: 3.0 npc_map (13423)",
+    "Position": {
+      "X": 22071.801,
       "Y": 5653.63,
-      "Z": 132.314,
-      "Yaw": 6.0
-    }
+      "Z": 132.063,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000028
   },
   {
-    "UnitId": 17594,
-    "Title": "sunbite-wilds: 10.x spawner 19798 (zone 286)",
-    "SpawnerId": 19798,
+    "UnitId": 30000028,
+    "Title": "sunbite-wilds: 3.0 npc_map (13423)",
     "Position": {
-      "X": 19109.929,
-      "Y": 5683.24,
-      "Z": 131.68,
-      "Yaw": 173.0
-    }
+      "X": 22077.58,
+      "Y": 5631.34,
+      "Z": 131.667,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000028
   },
   {
-    "UnitId": 10857,
-    "Title": "sunbite-wilds: 10.x spawner 12063 (zone 286)",
-    "SpawnerId": 12063,
+    "UnitId": 30000028,
+    "Title": "sunbite-wilds: 3.0 npc_map (13423)",
     "Position": {
-      "X": 19100.766,
-      "Y": 5584.67,
-      "Z": 122.187,
-      "Yaw": -26.0
-    }
-  },
-  {
-    "UnitId": 17282,
-    "Title": "sunbite-wilds: 10.x spawner 19467 (zone 286)",
-    "SpawnerId": 19467,
-    "Position": {
-      "X": 19098.255,
-      "Y": 5560.24,
-      "Z": 124.657,
-      "Yaw": -2.0
-    }
-  },
-  {
-    "UnitId": 17413,
-    "Title": "sunbite-wilds: 10.x spawner 19601 (zone 286)",
-    "SpawnerId": 19601,
-    "Position": {
-      "X": 19094.033,
-      "Y": 5645.72,
-      "Z": 131.68,
-      "Yaw": 100.0
-    }
-  },
-  {
-    "UnitId": 17593,
-    "Title": "sunbite-wilds: 10.x spawner 19797 (zone 286)",
-    "SpawnerId": 19797,
-    "Position": {
-      "X": 19118.06,
-      "Y": 5702.53,
-      "Z": 132.011,
-      "Yaw": 14.0
-    }
-  },
-  {
-    "UnitId": 17593,
-    "Title": "sunbite-wilds: 10.x spawner 19797 (zone 286)",
-    "SpawnerId": 19797,
-    "Position": {
-      "X": 19125.26,
-      "Y": 5747.96,
-      "Z": 131.685,
-      "Yaw": 14.0
-    }
-  },
-  {
-    "UnitId": 17594,
-    "Title": "sunbite-wilds: 10.x spawner 19798 (zone 286)",
-    "SpawnerId": 19798,
-    "Position": {
-      "X": 19133.346,
-      "Y": 5492.46,
-      "Z": 140.803,
-      "Yaw": 173.0
-    }
-  },
-  {
-    "UnitId": 13423,
-    "Title": "sunbite-wilds: 10.x spawner 14945 (zone 286)",
-    "SpawnerId": 14945,
-    "Position": {
-      "X": 19108.391,
-      "Y": 5634.33,
-      "Z": 136.505,
-      "Yaw": -42.0
-    }
-  },
-  {
-    "UnitId": 13423,
-    "Title": "sunbite-wilds: 10.x spawner 14945 (zone 286)",
-    "SpawnerId": 14945,
-    "Position": {
-      "X": 19134.655,
+      "X": 22078.654,
       "Y": 5654.07,
-      "Z": 132.314,
-      "Yaw": 7.0
-    }
+      "Z": 131.63,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000028
   },
   {
-    "UnitId": 17413,
-    "Title": "sunbite-wilds: 10.x spawner 19601 (zone 286)",
-    "SpawnerId": 19601,
+    "UnitId": 30000028,
+    "Title": "sunbite-wilds: 3.0 npc_map (13423)",
     "Position": {
-      "X": 19103.435,
-      "Y": 5758.94,
-      "Z": 178.518,
-      "Yaw": 40.0
-    }
+      "X": 22179.26,
+      "Y": 5668.99,
+      "Z": 133.643,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000028
   },
   {
-    "UnitId": 17292,
-    "Title": "sunbite-wilds: 10.x spawner 19477 (zone 286)",
-    "SpawnerId": 19477,
+    "UnitId": 30000028,
+    "Title": "sunbite-wilds: 3.0 npc_map (13423)",
     "Position": {
-      "X": 19084.837,
-      "Y": 5690.06,
-      "Z": 122.059,
-      "Yaw": -176.9998
-    }
+      "X": 22180.391,
+      "Y": 5634.33,
+      "Z": 133.643,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000028
+  },
+  {
+    "UnitId": 30000028,
+    "Title": "sunbite-wilds: 3.0 npc_map (13423)",
+    "Position": {
+      "X": 22184.516,
+      "Y": 5629.22,
+      "Z": 133.596,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000028
+  },
+  {
+    "UnitId": 30000028,
+    "Title": "sunbite-wilds: 3.0 npc_map (13423)",
+    "Position": {
+      "X": 22190.137,
+      "Y": 5678.12,
+      "Z": 133.643,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000028
+  },
+  {
+    "UnitId": 30000028,
+    "Title": "sunbite-wilds: 3.0 npc_map (13423)",
+    "Position": {
+      "X": 22193.59,
+      "Y": 5679.9,
+      "Z": 133.643,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000028
+  },
+  {
+    "UnitId": 30000028,
+    "Title": "sunbite-wilds: 3.0 npc_map (13423)",
+    "Position": {
+      "X": 22210.037,
+      "Y": 5680.07,
+      "Z": 133.643,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000028
+  },
+  {
+    "UnitId": 30000028,
+    "Title": "sunbite-wilds: 3.0 npc_map (13423)",
+    "Position": {
+      "X": 22212.535,
+      "Y": 5632.5,
+      "Z": 133.643,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000028
+  },
+  {
+    "UnitId": 30000028,
+    "Title": "sunbite-wilds: 3.0 npc_map (13423)",
+    "Position": {
+      "X": 22213.379,
+      "Y": 5678.37,
+      "Z": 133.643,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000028
+  },
+  {
+    "UnitId": 30000028,
+    "Title": "sunbite-wilds: 3.0 npc_map (13423)",
+    "Position": {
+      "X": 22219.168,
+      "Y": 5636.62,
+      "Z": 133.643,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000028
+  },
+  {
+    "UnitId": 30000028,
+    "Title": "sunbite-wilds: 3.0 npc_map (13423)",
+    "Position": {
+      "X": 22219.74,
+      "Y": 5674.57,
+      "Z": 133.643,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000028
+  },
+  {
+    "UnitId": 30000028,
+    "Title": "sunbite-wilds: 3.0 npc_map (13423)",
+    "Position": {
+      "X": 22225.494,
+      "Y": 5674.3,
+      "Z": 133.643,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000028
+  },
+  {
+    "UnitId": 30000028,
+    "Title": "sunbite-wilds: 3.0 npc_map (13423)",
+    "Position": {
+      "X": 22227.062,
+      "Y": 5649.5,
+      "Z": 133.643,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000028
+  },
+  {
+    "UnitId": 30000028,
+    "Title": "sunbite-wilds: 3.0 npc_map (13423)",
+    "Position": {
+      "X": 22232.816,
+      "Y": 5649.22,
+      "Z": 133.643,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000028
+  },
+  {
+    "UnitId": 30000029,
+    "Title": "sunbite-wilds: 3.0 npc_map (13424)",
+    "Position": {
+      "X": 22376.037,
+      "Y": 5434.53,
+      "Z": 145.656,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000029
+  },
+  {
+    "UnitId": 30000029,
+    "Title": "sunbite-wilds: 3.0 npc_map (13424)",
+    "Position": {
+      "X": 22378.846,
+      "Y": 5433.48,
+      "Z": 145.588,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000029
+  },
+  {
+    "UnitId": 30000029,
+    "Title": "sunbite-wilds: 3.0 npc_map (13424)",
+    "Position": {
+      "X": 22379.008,
+      "Y": 5436.53,
+      "Z": 145.897,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000029
+  },
+  {
+    "UnitId": 30000029,
+    "Title": "sunbite-wilds: 3.0 npc_map (13424)",
+    "Position": {
+      "X": 22421.264,
+      "Y": 5339.55,
+      "Z": 130.168,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000029
+  },
+  {
+    "UnitId": 30000029,
+    "Title": "sunbite-wilds: 3.0 npc_map (13424)",
+    "Position": {
+      "X": 22434.488,
+      "Y": 5390.28,
+      "Z": 130.214,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000029
+  },
+  {
+    "UnitId": 30000029,
+    "Title": "sunbite-wilds: 3.0 npc_map (13424)",
+    "Position": {
+      "X": 22450.721,
+      "Y": 5413.15,
+      "Z": 131.556,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000029
+  },
+  {
+    "UnitId": 30000029,
+    "Title": "sunbite-wilds: 3.0 npc_map (13424)",
+    "Position": {
+      "X": 22465.154,
+      "Y": 5417.27,
+      "Z": 131.016,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000029
+  },
+  {
+    "UnitId": 30000029,
+    "Title": "sunbite-wilds: 3.0 npc_map (13424)",
+    "Position": {
+      "X": 22474.195,
+      "Y": 5559.05,
+      "Z": 130.145,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000029
+  },
+  {
+    "UnitId": 30000029,
+    "Title": "sunbite-wilds: 3.0 npc_map (13424)",
+    "Position": {
+      "X": 22488.891,
+      "Y": 5547.68,
+      "Z": 130.221,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000029
+  },
+  {
+    "UnitId": 30000029,
+    "Title": "sunbite-wilds: 3.0 npc_map (13424)",
+    "Position": {
+      "X": 22505.93,
+      "Y": 5564.52,
+      "Z": 130.913,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000029
+  },
+  {
+    "UnitId": 30000029,
+    "Title": "sunbite-wilds: 3.0 npc_map (13424)",
+    "Position": {
+      "X": 22528.029,
+      "Y": 5541.43,
+      "Z": 129.974,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000029
+  },
+  {
+    "UnitId": 30000029,
+    "Title": "sunbite-wilds: 3.0 npc_map (13424)",
+    "Position": {
+      "X": 22541.27,
+      "Y": 5567.8,
+      "Z": 132.583,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000029
+  },
+  {
+    "UnitId": 30000029,
+    "Title": "sunbite-wilds: 3.0 npc_map (13424)",
+    "Position": {
+      "X": 22552.82,
+      "Y": 5575.5,
+      "Z": 132.247,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000029
+  },
+  {
+    "UnitId": 30000029,
+    "Title": "sunbite-wilds: 3.0 npc_map (13424)",
+    "Position": {
+      "X": 22565.4,
+      "Y": 5587.53,
+      "Z": 130.351,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000029
+  },
+  {
+    "UnitId": 30000029,
+    "Title": "sunbite-wilds: 3.0 npc_map (13424)",
+    "Position": {
+      "X": 22572.189,
+      "Y": 5626.89,
+      "Z": 129.579,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000029
+  },
+  {
+    "UnitId": 30000029,
+    "Title": "sunbite-wilds: 3.0 npc_map (13424)",
+    "Position": {
+      "X": 22588.529,
+      "Y": 5506.47,
+      "Z": 132.253,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000029
+  },
+  {
+    "UnitId": 30000029,
+    "Title": "sunbite-wilds: 3.0 npc_map (13424)",
+    "Position": {
+      "X": 22614.631,
+      "Y": 5459.78,
+      "Z": 130.101,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000029
+  },
+  {
+    "UnitId": 30000029,
+    "Title": "sunbite-wilds: 3.0 npc_map (13424)",
+    "Position": {
+      "X": 22615.211,
+      "Y": 5475.85,
+      "Z": 130.381,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000029
+  },
+  {
+    "UnitId": 30000029,
+    "Title": "sunbite-wilds: 3.0 npc_map (13424)",
+    "Position": {
+      "X": 22616.369,
+      "Y": 5422.07,
+      "Z": 129.739,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000029
+  },
+  {
+    "UnitId": 30000029,
+    "Title": "sunbite-wilds: 3.0 npc_map (13424)",
+    "Position": {
+      "X": 22646.561,
+      "Y": 5432.07,
+      "Z": 130.31,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000029
+  },
+  {
+    "UnitId": 30000030,
+    "Title": "sunbite-wilds: 3.0 npc_map (13425)",
+    "Position": {
+      "X": 22946.971,
+      "Y": 6132.68,
+      "Z": 159.319,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000030
+  },
+  {
+    "UnitId": 30000030,
+    "Title": "sunbite-wilds: 3.0 npc_map (13425)",
+    "Position": {
+      "X": 22948.59,
+      "Y": 6135.62,
+      "Z": 159.53,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000030
+  },
+  {
+    "UnitId": 30000030,
+    "Title": "sunbite-wilds: 3.0 npc_map (13425)",
+    "Position": {
+      "X": 22963.109,
+      "Y": 6125.36,
+      "Z": 157.594,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000030
+  },
+  {
+    "UnitId": 30000030,
+    "Title": "sunbite-wilds: 3.0 npc_map (13425)",
+    "Position": {
+      "X": 22964.57,
+      "Y": 6127.16,
+      "Z": 157.605,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000030
+  },
+  {
+    "UnitId": 16984,
+    "Title": "sunbite-wilds: 3.0 npc_map (16984)",
+    "Position": {
+      "X": 19200.502,
+      "Y": 6721.22,
+      "Z": 231.714,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000031
+  },
+  {
+    "UnitId": 16985,
+    "Title": "sunbite-wilds: 3.0 npc_map (16985)",
+    "Position": {
+      "X": 19212.941,
+      "Y": 6723.97,
+      "Z": 251.763,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000032
+  },
+  {
+    "UnitId": 16986,
+    "Title": "sunbite-wilds: 3.0 npc_map (16986)",
+    "Position": {
+      "X": 19198.574,
+      "Y": 6728.88,
+      "Z": 237.799,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000033
+  },
+  {
+    "UnitId": 16987,
+    "Title": "sunbite-wilds: 3.0 npc_map (16987)",
+    "Position": {
+      "X": 19196.088,
+      "Y": 6724.03,
+      "Z": 230.835,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000034
+  },
+  {
+    "UnitId": 16988,
+    "Title": "sunbite-wilds: 3.0 npc_map (16988)",
+    "Position": {
+      "X": 19252.189,
+      "Y": 6644.39,
+      "Z": 213.483,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000035
+  },
+  {
+    "UnitId": 16989,
+    "Title": "sunbite-wilds: 3.0 npc_map (16989)",
+    "Position": {
+      "X": 19364.246,
+      "Y": 6459.88,
+      "Z": 300.966,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000036
+  },
+  {
+    "UnitId": 16990,
+    "Title": "sunbite-wilds: 3.0 npc_map (16990)",
+    "Position": {
+      "X": 19446.689,
+      "Y": 5969.35,
+      "Z": 288.395,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000037
+  },
+  {
+    "UnitId": 16991,
+    "Title": "sunbite-wilds: 3.0 npc_map (16991)",
+    "Position": {
+      "X": 19492.92,
+      "Y": 5973.85,
+      "Z": 287.443,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000038
+  },
+  {
+    "UnitId": 16992,
+    "Title": "sunbite-wilds: 3.0 npc_map (16992)",
+    "Position": {
+      "X": 19600.57,
+      "Y": 5927.43,
+      "Z": 259.877,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000039
+  },
+  {
+    "UnitId": 16993,
+    "Title": "sunbite-wilds: 3.0 npc_map (16993)",
+    "Position": {
+      "X": 20208.256,
+      "Y": 6139.75,
+      "Z": 204.401,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000040
+  },
+  {
+    "UnitId": 16994,
+    "Title": "sunbite-wilds: 3.0 npc_map (16994)",
+    "Position": {
+      "X": 20369.223,
+      "Y": 6102.46,
+      "Z": 203.594,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000041
+  },
+  {
+    "UnitId": 16995,
+    "Title": "sunbite-wilds: 3.0 npc_map (16995)",
+    "Position": {
+      "X": 20397.59,
+      "Y": 6155.21,
+      "Z": 222.097,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000042
+  },
+  {
+    "UnitId": 16996,
+    "Title": "sunbite-wilds: 3.0 npc_map (16996)",
+    "Position": {
+      "X": 21122.381,
+      "Y": 5881.36,
+      "Z": 232.038,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000043
+  },
+  {
+    "UnitId": 16997,
+    "Title": "sunbite-wilds: 3.0 npc_map (16997)",
+    "Position": {
+      "X": 21073.74,
+      "Y": 5766.56,
+      "Z": 245.749,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000044
+  },
+  {
+    "UnitId": 16998,
+    "Title": "sunbite-wilds: 3.0 npc_map (16998)",
+    "Position": {
+      "X": 21074.85,
+      "Y": 5777.43,
+      "Z": 244.453,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000045
+  },
+  {
+    "UnitId": 16999,
+    "Title": "sunbite-wilds: 3.0 npc_map (16999)",
+    "Position": {
+      "X": 21082.779,
+      "Y": 5771.09,
+      "Z": 245.518,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000046
+  },
+  {
+    "UnitId": 17000,
+    "Title": "sunbite-wilds: 3.0 npc_map (17000)",
+    "Position": {
+      "X": 21148.26,
+      "Y": 5883.59,
+      "Z": 230.879,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000047
+  },
+  {
+    "UnitId": 17001,
+    "Title": "sunbite-wilds: 3.0 npc_map (17001)",
+    "Position": {
+      "X": 21119.76,
+      "Y": 6080.99,
+      "Z": 195.228,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000048
+  },
+  {
+    "UnitId": 17002,
+    "Title": "sunbite-wilds: 3.0 npc_map (17002)",
+    "Position": {
+      "X": 21244.26,
+      "Y": 5622.04,
+      "Z": 201.599,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000049
+  },
+  {
+    "UnitId": 17003,
+    "Title": "sunbite-wilds: 3.0 npc_map (17003)",
+    "Position": {
+      "X": 21354.131,
+      "Y": 5624.21,
+      "Z": 165.184,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000050
+  },
+  {
+    "UnitId": 17004,
+    "Title": "sunbite-wilds: 3.0 npc_map (17004)",
+    "Position": {
+      "X": 22087.213,
+      "Y": 5543.02,
+      "Z": 140.737,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000051
+  },
+  {
+    "UnitId": 17005,
+    "Title": "sunbite-wilds: 3.0 npc_map (17005)",
+    "Position": {
+      "X": 22087.48,
+      "Y": 5576.22,
+      "Z": 140.737,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000052
+  },
+  {
+    "UnitId": 17006,
+    "Title": "sunbite-wilds: 3.0 npc_map (17006)",
+    "Position": {
+      "X": 22118.314,
+      "Y": 5583.65,
+      "Z": 140.737,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000053
+  },
+  {
+    "UnitId": 17007,
+    "Title": "sunbite-wilds: 3.0 npc_map (17007)",
+    "Position": {
+      "X": 22093.182,
+      "Y": 5593.99,
+      "Z": 140.737,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000054
   },
   {
     "UnitId": 17008,
-    "Title": "sunbite-wilds: 10.x spawner 19154 (zone 286)",
-    "SpawnerId": 19154,
+    "Title": "sunbite-wilds: 3.0 npc_map (17008)",
     "Position": {
-      "X": 19108.597,
+      "X": 22116.598,
       "Y": 5605.63,
-      "Z": 140.814,
-      "Yaw": 163.0002
-    }
-  },
-  {
-    "UnitId": 17594,
-    "Title": "sunbite-wilds: 10.x spawner 19798 (zone 286)",
-    "SpawnerId": 19798,
-    "Position": {
-      "X": 19080.512,
-      "Y": 5591.41,
-      "Z": 122.293,
-      "Yaw": 173.0
-    }
-  },
-  {
-    "UnitId": 502,
-    "Title": "sunbite-wilds: 10.x spawner 481 (zone 286)",
-    "SpawnerId": 481,
-    "Position": {
-      "X": 19130.576,
-      "Y": 5790.952,
-      "Z": 147.31,
-      "Yaw": -29.0
-    }
-  },
-  {
-    "UnitId": 17348,
-    "Title": "sunbite-wilds: 10.x spawner 19533 (zone 286)",
-    "SpawnerId": 19533,
-    "Position": {
-      "X": 19114.742,
-      "Y": 5799.075,
-      "Z": 148.184,
+      "Z": 140.737,
       "Yaw": 0.0
-    }
-  },
-  {
-    "UnitId": 17610,
-    "Title": "sunbite-wilds: 10.x spawner 19814 (zone 286)",
-    "SpawnerId": 19814,
-    "Position": {
-      "X": 19086.841,
-      "Y": 5364.68,
-      "Z": 247.178,
-      "Yaw": -24.0
-    }
-  },
-  {
-    "UnitId": 17254,
-    "Title": "sunbite-wilds: 10.x spawner 19439 (zone 286)",
-    "SpawnerId": 19439,
-    "Position": {
-      "X": 19118.5,
-      "Y": 5570.21,
-      "Z": 122.31,
-      "Yaw": 64.0
-    }
-  },
-  {
-    "UnitId": 17593,
-    "Title": "sunbite-wilds: 10.x spawner 19797 (zone 286)",
-    "SpawnerId": 19797,
-    "Position": {
-      "X": 19106.852,
-      "Y": 5650.13,
-      "Z": 121.997,
-      "Yaw": 14.0
-    }
-  },
-  {
-    "UnitId": 7989,
-    "Title": "sunbite-wilds: 10.x spawner 8874 (zone 286)",
-    "SpawnerId": 8874,
-    "Position": {
-      "X": 19128.715,
-      "Y": 5787.065,
-      "Z": 147.641,
-      "Yaw": -29.0
-    }
-  },
-  {
-    "UnitId": 17010,
-    "Title": "sunbite-wilds: 10.x spawner 19156 (zone 286)",
-    "SpawnerId": 19156,
-    "Position": {
-      "X": 19125.599,
-      "Y": 5633.36,
-      "Z": 122.36,
-      "Yaw": 97.0
-    }
-  },
-  {
-    "UnitId": 17593,
-    "Title": "sunbite-wilds: 10.x spawner 19797 (zone 286)",
-    "SpawnerId": 19797,
-    "Position": {
-      "X": 19088.392,
-      "Y": 5550.52,
-      "Z": 131.667,
-      "Yaw": -172.0002
-    }
-  },
-  {
-    "UnitId": 17413,
-    "Title": "sunbite-wilds: 10.x spawner 19601 (zone 286)",
-    "SpawnerId": 19601,
-    "Position": {
-      "X": 19107.134,
-      "Y": 5771.82,
-      "Z": 144.027,
-      "Yaw": -30.0
-    }
-  },
-  {
-    "UnitId": 17593,
-    "Title": "sunbite-wilds: 10.x spawner 19797 (zone 286)",
-    "SpawnerId": 19797,
-    "Position": {
-      "X": 19092.387,
-      "Y": 5508.26,
-      "Z": 131.686,
-      "Yaw": 14.0
-    }
-  },
-  {
-    "UnitId": 17593,
-    "Title": "sunbite-wilds: 10.x spawner 19797 (zone 286)",
-    "SpawnerId": 19797,
-    "Position": {
-      "X": 19125.466,
-      "Y": 5750.74,
-      "Z": 131.685,
-      "Yaw": -172.0002
-    }
-  },
-  {
-    "UnitId": 13423,
-    "Title": "sunbite-wilds: 10.x spawner 14945 (zone 286)",
-    "SpawnerId": 14945,
-    "Position": {
-      "X": 19140.536,
-      "Y": 5632.5,
-      "Z": 136.505,
-      "Yaw": 39.0
-    }
-  },
-  {
-    "UnitId": 13414,
-    "Title": "sunbite-wilds: 10.x spawner 14936 (zone 286)",
-    "SpawnerId": 14936,
-    "Position": {
-      "X": 19094.051,
-      "Y": 5546.82,
-      "Z": 131.686,
-      "Yaw": -2.0
-    }
-  },
-  {
-    "UnitId": 17413,
-    "Title": "sunbite-wilds: 10.x spawner 19601 (zone 286)",
-    "SpawnerId": 19601,
-    "Position": {
-      "X": 19126.068,
-      "Y": 5688.78,
-      "Z": 132.635,
-      "Yaw": 0.0
-    }
-  },
-  {
-    "UnitId": 4864,
-    "Title": "sunbite-wilds: 10.x spawner 5493 (zone 286)",
-    "SpawnerId": 5493,
-    "Position": {
-      "X": 19073.112,
-      "Y": 5633.56,
-      "Z": 123.495,
-      "Yaw": -76.0
-    }
-  },
-  {
-    "UnitId": 13423,
-    "Title": "sunbite-wilds: 10.x spawner 14945 (zone 286)",
-    "SpawnerId": 14945,
-    "Position": {
-      "X": 19147.741,
-      "Y": 5674.57,
-      "Z": 136.505,
-      "Yaw": 127.9999
-    }
-  },
-  {
-    "UnitId": 13423,
-    "Title": "sunbite-wilds: 10.x spawner 14945 (zone 286)",
-    "SpawnerId": 14945,
-    "Position": {
-      "X": 19153.495,
-      "Y": 5674.3,
-      "Z": 136.505,
-      "Yaw": 118.9999
-    }
-  },
-  {
-    "UnitId": 13423,
-    "Title": "sunbite-wilds: 10.x spawner 14945 (zone 286)",
-    "SpawnerId": 14945,
-    "Position": {
-      "X": 19147.168,
-      "Y": 5636.62,
-      "Z": 136.505,
-      "Yaw": 30.0
-    }
-  },
-  {
-    "UnitId": 17289,
-    "Title": "sunbite-wilds: 10.x spawner 19474 (zone 286)",
-    "SpawnerId": 19474,
-    "Position": {
-      "X": 19090.658,
-      "Y": 5603.89,
-      "Z": 122.753,
-      "Yaw": -53.0
-    }
-  },
-  {
-    "UnitId": 17593,
-    "Title": "sunbite-wilds: 10.x spawner 19797 (zone 286)",
-    "SpawnerId": 19797,
-    "Position": {
-      "X": 19097.722,
-      "Y": 5684.36,
-      "Z": 140.877,
-      "Yaw": -172.0002
-    }
-  },
-  {
-    "UnitId": 17351,
-    "Title": "sunbite-wilds: 10.x spawner 19536 (zone 286)",
-    "SpawnerId": 19536,
-    "Position": {
-      "X": 19103.32,
-      "Y": 5820.93,
-      "Z": 148.184,
-      "Yaw": 149.9998
-    }
-  },
-  {
-    "UnitId": 17565,
-    "Title": "sunbite-wilds: 10.x spawner 19766 (zone 286)",
-    "SpawnerId": 19766,
-    "Position": {
-      "X": 19078.316,
-      "Y": 5813.22,
-      "Z": 151.429,
-      "Yaw": 44.9998
-    }
-  },
-  {
-    "UnitId": 13424,
-    "Title": "sunbite-wilds: 10.x spawner 14946 (zone 287)",
-    "SpawnerId": 14946,
-    "Position": {
-      "X": 20012.19,
-      "Y": 5754.89,
-      "Z": 129.643,
-      "Yaw": -94.0
-    }
-  },
-  {
-    "UnitId": 17011,
-    "Title": "sunbite-wilds: 10.x spawner 19157 (zone 287)",
-    "SpawnerId": 19157,
-    "Position": {
-      "X": 19998.53,
-      "Y": 5758.69,
-      "Z": 181.628,
-      "Yaw": -130.9999
-    }
-  },
-  {
-    "UnitId": 17317,
-    "Title": "sunbite-wilds: 10.x spawner 19502 (zone 287)",
-    "SpawnerId": 19502,
-    "Position": {
-      "X": 19974.97,
-      "Y": 5737.73,
-      "Z": 130.856,
-      "Yaw": -133.0001
-    }
-  },
-  {
-    "UnitId": 4840,
-    "Title": "sunbite-wilds: 10.x spawner 5469 (zone 287)",
-    "SpawnerId": 5469,
-    "Position": {
-      "X": 20372.944,
-      "Y": 5275.3,
-      "Z": 179.85,
-      "Yaw": 0.0
-    }
-  },
-  {
-    "UnitId": 17363,
-    "Title": "sunbite-wilds: 10.x spawner 19548 (zone 287)",
-    "SpawnerId": 19548,
-    "Position": {
-      "X": 20440.543,
-      "Y": 5807.015,
-      "Z": 150.484,
-      "Yaw": 179.9998
-    }
-  },
-  {
-    "UnitId": 3603,
-    "Title": "sunbite-wilds: 10.x spawner 3500 (zone 287)",
-    "SpawnerId": 3500,
-    "Position": {
-      "X": 19866.52,
-      "Y": 6016.4,
-      "Z": 185.181,
-      "Yaw": 0.0
-    }
-  },
-  {
-    "UnitId": 2209,
-    "Title": "sunbite-wilds: 10.x spawner 2185 (zone 287)",
-    "SpawnerId": 2185,
-    "Position": {
-      "X": 19947.865,
-      "Y": 5937.31,
-      "Z": 187.082,
-      "Yaw": -0.0
-    }
-  },
-  {
-    "UnitId": 4849,
-    "Title": "sunbite-wilds: 10.x spawner 19425 (zone 287)",
-    "SpawnerId": 19425,
-    "Position": {
-      "X": 19960.64,
-      "Y": 5931.37,
-      "Z": 203.713,
-      "Yaw": 0.0
-    }
-  },
-  {
-    "UnitId": 4840,
-    "Title": "sunbite-wilds: 10.x spawner 5469 (zone 287)",
-    "SpawnerId": 5469,
-    "Position": {
-      "X": 19870.842,
-      "Y": 6079.99,
-      "Z": 171.446,
-      "Yaw": 0.0
-    }
-  },
-  {
-    "UnitId": 4840,
-    "Title": "sunbite-wilds: 10.x spawner 5469 (zone 287)",
-    "SpawnerId": 5469,
-    "Position": {
-      "X": 20389.315,
-      "Y": 5288.34,
-      "Z": 177.503,
-      "Yaw": 0.0
-    }
-  },
-  {
-    "UnitId": 13422,
-    "Title": "sunbite-wilds: 10.x spawner 14944 (zone 287)",
-    "SpawnerId": 14944,
-    "Position": {
-      "X": 19871.79,
-      "Y": 6138.88,
-      "Z": 175.813,
-      "Yaw": 76.0
-    }
-  },
-  {
-    "UnitId": 4846,
-    "Title": "sunbite-wilds: 10.x spawner 19424 (zone 287)",
-    "SpawnerId": 19424,
-    "Position": {
-      "X": 19988.5,
-      "Y": 5712.7,
-      "Z": 130.677,
-      "Yaw": 0.0
-    }
-  },
-  {
-    "UnitId": 13424,
-    "Title": "sunbite-wilds: 10.x spawner 14946 (zone 287)",
-    "SpawnerId": 14946,
-    "Position": {
-      "X": 20402.72,
-      "Y": 5413.15,
-      "Z": 131.6,
-      "Yaw": 76.9998
-    }
-  },
-  {
-    "UnitId": 4849,
-    "Title": "sunbite-wilds: 10.x spawner 19425 (zone 287)",
-    "SpawnerId": 19425,
-    "Position": {
-      "X": 20028.13,
-      "Y": 5730.63,
-      "Z": 211.428,
-      "Yaw": 0.0
-    }
-  },
-  {
-    "UnitId": 17504,
-    "Title": "sunbite-wilds: 10.x spawner 19705 (zone 287)",
-    "SpawnerId": 19705,
-    "Position": {
-      "X": 19870.42,
-      "Y": 6128.2,
-      "Z": 159.425,
-      "Yaw": -12.0
-    }
-  },
-  {
-    "UnitId": 4840,
-    "Title": "sunbite-wilds: 10.x spawner 5469 (zone 287)",
-    "SpawnerId": 5469,
-    "Position": {
-      "X": 19865.255,
-      "Y": 6137.16,
-      "Z": 171.819,
-      "Yaw": 0.0
-    }
-  },
-  {
-    "UnitId": 13424,
-    "Title": "sunbite-wilds: 10.x spawner 14946 (zone 287)",
-    "SpawnerId": 14946,
-    "Position": {
-      "X": 20417.154,
-      "Y": 5417.27,
-      "Z": 131.081,
-      "Yaw": -94.0
-    }
-  },
-  {
-    "UnitId": 3603,
-    "Title": "sunbite-wilds: 10.x spawner 3500 (zone 287)",
-    "SpawnerId": 3500,
-    "Position": {
-      "X": 19899.52,
-      "Y": 6112.35,
-      "Z": 179.651,
-      "Yaw": 0.0
-    }
-  },
-  {
-    "UnitId": 502,
-    "Title": "sunbite-wilds: 10.x spawner 481 (zone 287)",
-    "SpawnerId": 481,
-    "Position": {
-      "X": 19851.69,
-      "Y": 6062.148,
-      "Z": 149.704,
-      "Yaw": -179.0
-    }
-  },
-  {
-    "UnitId": 13424,
-    "Title": "sunbite-wilds: 10.x spawner 14946 (zone 287)",
-    "SpawnerId": 14946,
-    "Position": {
-      "X": 20373.263,
-      "Y": 5339.55,
-      "Z": 130.239,
-      "Yaw": -94.0
-    }
-  },
-  {
-    "UnitId": 4840,
-    "Title": "sunbite-wilds: 10.x spawner 5469 (zone 287)",
-    "SpawnerId": 5469,
-    "Position": {
-      "X": 19891.551,
-      "Y": 6139.54,
-      "Z": 173.744,
-      "Yaw": 0.0
-    }
-  },
-  {
-    "UnitId": 13424,
-    "Title": "sunbite-wilds: 10.x spawner 14946 (zone 287)",
-    "SpawnerId": 14946,
-    "Position": {
-      "X": 20395.007,
-      "Y": 5436.53,
-      "Z": 155.448,
-      "Yaw": -76.0
-    }
-  },
-  {
-    "UnitId": 4849,
-    "Title": "sunbite-wilds: 10.x spawner 19425 (zone 287)",
-    "SpawnerId": 19425,
-    "Position": {
-      "X": 19983.16,
-      "Y": 5702.77,
-      "Z": 171.176,
-      "Yaw": 0.0
-    }
-  },
-  {
-    "UnitId": 4840,
-    "Title": "sunbite-wilds: 10.x spawner 5469 (zone 287)",
-    "SpawnerId": 5469,
-    "Position": {
-      "X": 20369.641,
-      "Y": 5256.98,
-      "Z": 171.446,
-      "Yaw": 0.0
-    }
-  },
-  {
-    "UnitId": 13417,
-    "Title": "sunbite-wilds: 10.x spawner 14939 (zone 287)",
-    "SpawnerId": 14939,
-    "Position": {
-      "X": 20362.812,
-      "Y": 5456.24,
-      "Z": 143.198,
-      "Yaw": -175.0002
-    }
-  },
-  {
-    "UnitId": 7989,
-    "Title": "sunbite-wilds: 10.x spawner 8874 (zone 287)",
-    "SpawnerId": 8874,
-    "Position": {
-      "X": 19851.84,
-      "Y": 6065.469,
-      "Z": 150.004,
-      "Yaw": 172.0002
-    }
-  },
-  {
-    "UnitId": 17494,
-    "Title": "sunbite-wilds: 10.x spawner 19695 (zone 287)",
-    "SpawnerId": 19695,
-    "Position": {
-      "X": 20377.243,
-      "Y": 5311.98,
-      "Z": 183.936,
-      "Yaw": -173.0
-    }
-  },
-  {
-    "UnitId": 4839,
-    "Title": "sunbite-wilds: 10.x spawner 19423 (zone 287)",
-    "SpawnerId": 19423,
-    "Position": {
-      "X": 19887.369,
-      "Y": 6078.92,
-      "Z": 170.171,
-      "Yaw": 0.0
-    }
-  },
-  {
-    "UnitId": 17355,
-    "Title": "sunbite-wilds: 10.x spawner 19540 (zone 287)",
-    "SpawnerId": 19540,
-    "Position": {
-      "X": 20309.661,
-      "Y": 5674.489,
-      "Z": 168.75,
-      "Yaw": -94.0
-    }
-  },
-  {
-    "UnitId": 4849,
-    "Title": "sunbite-wilds: 10.x spawner 19425 (zone 287)",
-    "SpawnerId": 19425,
-    "Position": {
-      "X": 19971.74,
-      "Y": 5728.52,
-      "Z": 213.401,
-      "Yaw": 0.0
-    }
-  },
-  {
-    "UnitId": 2209,
-    "Title": "sunbite-wilds: 10.x spawner 2185 (zone 287)",
-    "SpawnerId": 2185,
-    "Position": {
-      "X": 19943.065,
-      "Y": 5931.09,
-      "Z": 187.241,
-      "Yaw": -9.0
-    }
-  },
-  {
-    "UnitId": 3603,
-    "Title": "sunbite-wilds: 10.x spawner 3500 (zone 287)",
-    "SpawnerId": 3500,
-    "Position": {
-      "X": 19859.3,
-      "Y": 6104.91,
-      "Z": 180.671,
-      "Yaw": 0.0
-    }
-  },
-  {
-    "UnitId": 4849,
-    "Title": "sunbite-wilds: 10.x spawner 19425 (zone 287)",
-    "SpawnerId": 19425,
-    "Position": {
-      "X": 19951.72,
-      "Y": 5949.28,
-      "Z": 205.888,
-      "Yaw": 0.0
-    }
-  },
-  {
-    "UnitId": 4840,
-    "Title": "sunbite-wilds: 10.x spawner 5469 (zone 287)",
-    "SpawnerId": 5469,
-    "Position": {
-      "X": 19845.382,
-      "Y": 6111.78,
-      "Z": 170.999,
-      "Yaw": 0.0
-    }
-  },
-  {
-    "UnitId": 4840,
-    "Title": "sunbite-wilds: 10.x spawner 5469 (zone 287)",
-    "SpawnerId": 5469,
-    "Position": {
-      "X": 19851.141,
-      "Y": 6129.41,
-      "Z": 171.446,
-      "Yaw": 0.0
-    }
-  },
-  {
-    "UnitId": 4840,
-    "Title": "sunbite-wilds: 10.x spawner 5469 (zone 287)",
-    "SpawnerId": 5469,
-    "Position": {
-      "X": 19848.036,
-      "Y": 6131.6,
-      "Z": 171.446,
-      "Yaw": 0.0
-    }
-  },
-  {
-    "UnitId": 4840,
-    "Title": "sunbite-wilds: 10.x spawner 5469 (zone 287)",
-    "SpawnerId": 5469,
-    "Position": {
-      "X": 20369.887,
-      "Y": 5274.07,
-      "Z": 171.446,
-      "Yaw": 0.0
-    }
-  },
-  {
-    "UnitId": 502,
-    "Title": "sunbite-wilds: 10.x spawner 481 (zone 287)",
-    "SpawnerId": 481,
-    "Position": {
-      "X": 19989.943,
-      "Y": 6133.59,
-      "Z": 167.989,
-      "Yaw": 2.0
-    }
-  },
-  {
-    "UnitId": 3603,
-    "Title": "sunbite-wilds: 10.x spawner 3500 (zone 287)",
-    "SpawnerId": 3500,
-    "Position": {
-      "X": 19849.1,
-      "Y": 6131.96,
-      "Z": 175.603,
-      "Yaw": 0.0
-    }
-  },
-  {
-    "UnitId": 4839,
-    "Title": "sunbite-wilds: 10.x spawner 19423 (zone 287)",
-    "SpawnerId": 19423,
-    "Position": {
-      "X": 20358.92,
-      "Y": 5293.01,
-      "Z": 175.486,
-      "Yaw": 0.0
-    }
-  },
-  {
-    "UnitId": 17365,
-    "Title": "sunbite-wilds: 10.x spawner 19550 (zone 287)",
-    "SpawnerId": 19550,
-    "Position": {
-      "X": 20475.23,
-      "Y": 5804.742,
-      "Z": 150.742,
-      "Yaw": 175.0002
-    }
-  },
-  {
-    "UnitId": 502,
-    "Title": "sunbite-wilds: 10.x spawner 481 (zone 287)",
-    "SpawnerId": 481,
-    "Position": {
-      "X": 19991.34,
-      "Y": 5702.84,
-      "Z": 186.092,
-      "Yaw": 94.9998
-    }
-  },
-  {
-    "UnitId": 7989,
-    "Title": "sunbite-wilds: 10.x spawner 8874 (zone 287)",
-    "SpawnerId": 8874,
-    "Position": {
-      "X": 19996.53,
-      "Y": 5702.9,
-      "Z": 186.66,
-      "Yaw": 93.0002
-    }
-  },
-  {
-    "UnitId": 17500,
-    "Title": "sunbite-wilds: 10.x spawner 19701 (zone 287)",
-    "SpawnerId": 19701,
-    "Position": {
-      "X": 20383.491,
-      "Y": 5308.23,
-      "Z": 183.966,
-      "Yaw": 99.0002
-    }
-  },
-  {
-    "UnitId": 3603,
-    "Title": "sunbite-wilds: 10.x spawner 3500 (zone 287)",
-    "SpawnerId": 3500,
-    "Position": {
-      "X": 19856.38,
-      "Y": 6059.03,
-      "Z": 182.42,
-      "Yaw": 0.0
-    }
-  },
-  {
-    "UnitId": 13424,
-    "Title": "sunbite-wilds: 10.x spawner 14946 (zone 287)",
-    "SpawnerId": 14946,
-    "Position": {
-      "X": 19991.21,
-      "Y": 5731.85,
-      "Z": 130.42,
-      "Yaw": -176.0
-    }
-  },
-  {
-    "UnitId": 17634,
-    "Title": "sunbite-wilds: 10.x spawner 19840 (zone 287)",
-    "SpawnerId": 19840,
-    "Position": {
-      "X": 19952.532,
-      "Y": 5939.62,
-      "Z": 186.658,
-      "Yaw": 107.998
-    }
-  },
-  {
-    "UnitId": 13410,
-    "Title": "sunbite-wilds: 10.x spawner 14932 (zone 287)",
-    "SpawnerId": 14932,
-    "Position": {
-      "X": 19988.7,
-      "Y": 5723.45,
-      "Z": 172.433,
-      "Yaw": -15.0
-    }
-  },
-  {
-    "UnitId": 17268,
-    "Title": "sunbite-wilds: 10.x spawner 19453 (zone 287)",
-    "SpawnerId": 19453,
-    "Position": {
-      "X": 19999.36,
-      "Y": 5702.76,
-      "Z": 172.365,
-      "Yaw": 127.9999
-    }
-  },
-  {
-    "UnitId": 17477,
-    "Title": "sunbite-wilds: 10.x spawner 19674 (zone 287)",
-    "SpawnerId": 19674,
-    "Position": {
-      "X": 19971.33,
-      "Y": 5745.33,
-      "Z": 173.67,
-      "Yaw": 12.0
-    }
-  },
-  {
-    "UnitId": 13424,
-    "Title": "sunbite-wilds: 10.x spawner 14946 (zone 287)",
-    "SpawnerId": 14946,
-    "Position": {
-      "X": 19992.82,
-      "Y": 5703.5,
-      "Z": 132.314,
-      "Yaw": 160.0002
-    }
-  },
-  {
-    "UnitId": 7989,
-    "Title": "sunbite-wilds: 10.x spawner 8874 (zone 287)",
-    "SpawnerId": 8874,
-    "Position": {
-      "X": 19863.39,
-      "Y": 6131.98,
-      "Z": 179.363,
-      "Yaw": -30.0
-    }
-  },
-  {
-    "UnitId": 17271,
-    "Title": "sunbite-wilds: 10.x spawner 19456 (zone 287)",
-    "SpawnerId": 19456,
-    "Position": {
-      "X": 19937.782,
-      "Y": 6095.35,
-      "Z": 172.377,
-      "Yaw": -161.0
-    }
-  },
-  {
-    "UnitId": 17354,
-    "Title": "sunbite-wilds: 10.x spawner 19539 (zone 287)",
-    "SpawnerId": 19539,
-    "Position": {
-      "X": 20309.305,
-      "Y": 5670.883,
-      "Z": 168.75,
-      "Yaw": -106.0006
-    }
-  },
-  {
-    "UnitId": 17358,
-    "Title": "sunbite-wilds: 10.x spawner 19543 (zone 287)",
-    "SpawnerId": 19543,
-    "Position": {
-      "X": 20304.38,
-      "Y": 5650.304,
-      "Z": 168.75,
-      "Yaw": -127.0001
-    }
-  },
-  {
-    "UnitId": 502,
-    "Title": "sunbite-wilds: 10.x spawner 481 (zone 287)",
-    "SpawnerId": 481,
-    "Position": {
-      "X": 19866.47,
-      "Y": 6136.49,
-      "Z": 178.984,
-      "Yaw": -28.0
-    }
-  },
-  {
-    "UnitId": 17504,
-    "Title": "sunbite-wilds: 10.x spawner 19705 (zone 287)",
-    "SpawnerId": 19705,
-    "Position": {
-      "X": 19877.8,
-      "Y": 6122.41,
-      "Z": 159.368,
-      "Yaw": 21.0
-    }
-  },
-  {
-    "UnitId": 4846,
-    "Title": "sunbite-wilds: 10.x spawner 5475 (zone 287)",
-    "SpawnerId": 5475,
-    "Position": {
-      "X": 20476.18,
-      "Y": 5430.04,
-      "Z": 131.316,
-      "Yaw": 0.0
-    }
-  },
-  {
-    "UnitId": 13424,
-    "Title": "sunbite-wilds: 10.x spawner 14946 (zone 287)",
-    "SpawnerId": 14946,
-    "Position": {
-      "X": 20028.53,
-      "Y": 5698.47,
-      "Z": 132.335,
-      "Yaw": -103.9999
-    }
-  },
-  {
-    "UnitId": 4849,
-    "Title": "sunbite-wilds: 10.x spawner 19425 (zone 287)",
-    "SpawnerId": 19425,
-    "Position": {
-      "X": 20000.78,
-      "Y": 5704.08,
-      "Z": 182.563,
-      "Yaw": 0.0
-    }
-  },
-  {
-    "UnitId": 4846,
-    "Title": "sunbite-wilds: 10.x spawner 19424 (zone 287)",
-    "SpawnerId": 19424,
-    "Position": {
-      "X": 20023.95,
-      "Y": 5705.28,
-      "Z": 130.477,
-      "Yaw": 0.0
-    }
-  },
-  {
-    "UnitId": 13424,
-    "Title": "sunbite-wilds: 10.x spawner 14946 (zone 287)",
-    "SpawnerId": 14946,
-    "Position": {
-      "X": 19992.37,
-      "Y": 5742.07,
-      "Z": 129.811,
-      "Yaw": -176.0
-    }
-  },
-  {
-    "UnitId": 13422,
-    "Title": "sunbite-wilds: 10.x spawner 14944 (zone 287)",
-    "SpawnerId": 14944,
-    "Position": {
-      "X": 20024.78,
-      "Y": 5707.51,
-      "Z": 177.772,
-      "Yaw": 164.9998
-    }
-  },
-  {
-    "UnitId": 3603,
-    "Title": "sunbite-wilds: 10.x spawner 3500 (zone 287)",
-    "SpawnerId": 3500,
-    "Position": {
-      "X": 19875.47,
-      "Y": 6098.89,
-      "Z": 179.241,
-      "Yaw": 0.0
-    }
-  },
-  {
-    "UnitId": 4841,
-    "Title": "sunbite-wilds: 10.x spawner 19427 (zone 287)",
-    "SpawnerId": 19427,
-    "Position": {
-      "X": 20417.266,
-      "Y": 5307.97,
-      "Z": 180.449,
-      "Yaw": 0.0
-    }
-  },
-  {
-    "UnitId": 17364,
-    "Title": "sunbite-wilds: 10.x spawner 19549 (zone 287)",
-    "SpawnerId": 19549,
-    "Position": {
-      "X": 20459.49,
-      "Y": 5803.466,
-      "Z": 150.878,
-      "Yaw": -120.0003
-    }
-  },
-  {
-    "UnitId": 2209,
-    "Title": "sunbite-wilds: 10.x spawner 2185 (zone 287)",
-    "SpawnerId": 2185,
-    "Position": {
-      "X": 19945.949,
-      "Y": 5937.65,
-      "Z": 187.181,
-      "Yaw": -0.0
-    }
-  },
-  {
-    "UnitId": 4840,
-    "Title": "sunbite-wilds: 10.x spawner 5469 (zone 287)",
-    "SpawnerId": 5469,
-    "Position": {
-      "X": 20367.078,
-      "Y": 5273.01,
-      "Z": 189.324,
-      "Yaw": 0.0
-    }
-  },
-  {
-    "UnitId": 13424,
-    "Title": "sunbite-wilds: 10.x spawner 14946 (zone 287)",
-    "SpawnerId": 14946,
-    "Position": {
-      "X": 20392.037,
-      "Y": 5434.53,
-      "Z": 155.445,
-      "Yaw": -76.0
-    }
-  },
-  {
-    "UnitId": 17497,
-    "Title": "sunbite-wilds: 10.x spawner 19698 (zone 287)",
-    "SpawnerId": 19698,
-    "Position": {
-      "X": 20373.72,
-      "Y": 5310.59,
-      "Z": 183.596,
-      "Yaw": -142.0001
-    }
-  },
-  {
-    "UnitId": 4840,
-    "Title": "sunbite-wilds: 10.x spawner 5469 (zone 287)",
-    "SpawnerId": 5469,
-    "Position": {
-      "X": 20385.462,
-      "Y": 5253.3,
-      "Z": 170.492,
-      "Yaw": 0.0
-    }
-  },
-  {
-    "UnitId": 17474,
-    "Title": "sunbite-wilds: 10.x spawner 19671 (zone 287)",
-    "SpawnerId": 19671,
-    "Position": {
-      "X": 19929.227,
-      "Y": 6081.91,
-      "Z": 172.377,
-      "Yaw": -70.0
-    }
-  },
-  {
-    "UnitId": 4849,
-    "Title": "sunbite-wilds: 10.x spawner 19425 (zone 287)",
-    "SpawnerId": 19425,
-    "Position": {
-      "X": 20013.2,
-      "Y": 5757.57,
-      "Z": 175.12,
-      "Yaw": 0.0
-    }
-  },
-  {
-    "UnitId": 17359,
-    "Title": "sunbite-wilds: 10.x spawner 19544 (zone 287)",
-    "SpawnerId": 19544,
-    "Position": {
-      "X": 20297.277,
-      "Y": 5644.454,
-      "Z": 168.289,
-      "Yaw": -129.9995
-    }
-  },
-  {
-    "UnitId": 17267,
-    "Title": "sunbite-wilds: 10.x spawner 19452 (zone 287)",
-    "SpawnerId": 19452,
-    "Position": {
-      "X": 19943.643,
-      "Y": 6055.48,
-      "Z": 172.438,
-      "Yaw": 17.0
-    }
-  },
-  {
-    "UnitId": 4841,
-    "Title": "sunbite-wilds: 10.x spawner 19427 (zone 287)",
-    "SpawnerId": 19427,
-    "Position": {
-      "X": 19863.26,
-      "Y": 6059.73,
-      "Z": 190.738,
-      "Yaw": 0.0
-    }
-  },
-  {
-    "UnitId": 3603,
-    "Title": "sunbite-wilds: 10.x spawner 3500 (zone 287)",
-    "SpawnerId": 3500,
-    "Position": {
-      "X": 19841.72,
-      "Y": 6062.77,
-      "Z": 185.883,
-      "Yaw": 0.0
-    }
-  },
-  {
-    "UnitId": 4840,
-    "Title": "sunbite-wilds: 10.x spawner 5469 (zone 287)",
-    "SpawnerId": 5469,
-    "Position": {
-      "X": 20364.033,
-      "Y": 5265.44,
-      "Z": 171.446,
-      "Yaw": 0.0
-    }
-  },
-  {
-    "UnitId": 4842,
-    "Title": "sunbite-wilds: 10.x spawner 5471 (zone 287)",
-    "SpawnerId": 5471,
-    "Position": {
-      "X": 20424.955,
-      "Y": 6054.93,
-      "Z": 211.126,
-      "Yaw": -90.0002
-    }
-  },
-  {
-    "UnitId": 13425,
-    "Title": "sunbite-wilds: 10.x spawner 14947 (zone 287)",
-    "SpawnerId": 14947,
-    "Position": {
-      "X": 19892.57,
-      "Y": 6127.16,
-      "Z": 158.196,
-      "Yaw": 124.9999
-    }
-  },
-  {
-    "UnitId": 4846,
-    "Title": "sunbite-wilds: 10.x spawner 19424 (zone 287)",
-    "SpawnerId": 19424,
-    "Position": {
-      "X": 19983.74,
-      "Y": 5709.21,
-      "Z": 142.588,
-      "Yaw": 0.0
-    }
-  },
-  {
-    "UnitId": 17263,
-    "Title": "sunbite-wilds: 10.x spawner 19448 (zone 287)",
-    "SpawnerId": 19448,
-    "Position": {
-      "X": 19928.365,
-      "Y": 6055.44,
-      "Z": 172.438,
-      "Yaw": -8.0
-    }
-  },
-  {
-    "UnitId": 4840,
-    "Title": "sunbite-wilds: 10.x spawner 5469 (zone 287)",
-    "SpawnerId": 5469,
-    "Position": {
-      "X": 19885.478,
-      "Y": 6124.06,
-      "Z": 171.446,
-      "Yaw": 0.0
-    }
-  },
-  {
-    "UnitId": 13425,
-    "Title": "sunbite-wilds: 10.x spawner 14947 (zone 287)",
-    "SpawnerId": 14947,
-    "Position": {
-      "X": 19891.11,
-      "Y": 6125.36,
-      "Z": 157.879,
-      "Yaw": -46.0
-    }
-  },
-  {
-    "UnitId": 4840,
-    "Title": "sunbite-wilds: 10.x spawner 5469 (zone 287)",
-    "SpawnerId": 5469,
-    "Position": {
-      "X": 19885.696,
-      "Y": 6096.34,
-      "Z": 171.647,
-      "Yaw": 0.0
-    }
-  },
-  {
-    "UnitId": 4840,
-    "Title": "sunbite-wilds: 10.x spawner 5469 (zone 287)",
-    "SpawnerId": 5469,
-    "Position": {
-      "X": 19896.22,
-      "Y": 6072.41,
-      "Z": 171.446,
-      "Yaw": 0.0
-    }
-  },
-  {
-    "UnitId": 4846,
-    "Title": "sunbite-wilds: 10.x spawner 5475 (zone 287)",
-    "SpawnerId": 5475,
-    "Position": {
-      "X": 20422.267,
-      "Y": 5426.27,
-      "Z": 131.701,
-      "Yaw": 0.0
-    }
-  },
-  {
-    "UnitId": 13416,
-    "Title": "sunbite-wilds: 10.x spawner 14938 (zone 287)",
-    "SpawnerId": 14938,
-    "Position": {
-      "X": 20363.44,
-      "Y": 5452.98,
-      "Z": 143.301,
-      "Yaw": 7.0
-    }
-  },
-  {
-    "UnitId": 4840,
-    "Title": "sunbite-wilds: 10.x spawner 5469 (zone 287)",
-    "SpawnerId": 5469,
-    "Position": {
-      "X": 19853.558,
-      "Y": 6090.19,
-      "Z": 171.446,
-      "Yaw": 0.0
-    }
-  },
-  {
-    "UnitId": 10857,
-    "Title": "sunbite-wilds: 10.x spawner 12063 (zone 287)",
-    "SpawnerId": 12063,
-    "Position": {
-      "X": 20365.708,
-      "Y": 5551.324,
-      "Z": 168.391,
-      "Yaw": -40.0001
-    }
-  },
-  {
-    "UnitId": 4840,
-    "Title": "sunbite-wilds: 10.x spawner 5469 (zone 287)",
-    "SpawnerId": 5469,
-    "Position": {
-      "X": 20403.535,
-      "Y": 5255.71,
-      "Z": 176.651,
-      "Yaw": 0.0
-    }
-  },
-  {
-    "UnitId": 4840,
-    "Title": "sunbite-wilds: 10.x spawner 5469 (zone 287)",
-    "SpawnerId": 5469,
-    "Position": {
-      "X": 20008.133,
-      "Y": 5728.36,
-      "Z": 173.324,
-      "Yaw": 0.0
-    }
-  },
-  {
-    "UnitId": 13424,
-    "Title": "sunbite-wilds: 10.x spawner 14946 (zone 287)",
-    "SpawnerId": 14946,
-    "Position": {
-      "X": 20022.56,
-      "Y": 5752.07,
-      "Z": 130.383,
-      "Yaw": -103.9999
-    }
-  },
-  {
-    "UnitId": 4840,
-    "Title": "sunbite-wilds: 10.x spawner 5469 (zone 287)",
-    "SpawnerId": 5469,
-    "Position": {
-      "X": 19980.881,
-      "Y": 5706.57,
-      "Z": 171.446,
-      "Yaw": 0.0
-    }
-  },
-  {
-    "UnitId": 17498,
-    "Title": "sunbite-wilds: 10.x spawner 19699 (zone 287)",
-    "SpawnerId": 19699,
-    "Position": {
-      "X": 20372.483,
-      "Y": 5307.12,
-      "Z": 182.933,
-      "Yaw": -81.0002
-    }
-  },
-  {
-    "UnitId": 17374,
-    "Title": "sunbite-wilds: 10.x spawner 19562 (zone 287)",
-    "SpawnerId": 19562,
-    "Position": {
-      "X": 19961.51,
-      "Y": 5946.69,
-      "Z": 215.809,
-      "Yaw": -70.0
-    }
-  },
-  {
-    "UnitId": 4839,
-    "Title": "sunbite-wilds: 10.x spawner 19423 (zone 287)",
-    "SpawnerId": 19423,
-    "Position": {
-      "X": 20005.651,
-      "Y": 5708.4,
-      "Z": 173.722,
-      "Yaw": 0.0
-    }
-  },
-  {
-    "UnitId": 4841,
-    "Title": "sunbite-wilds: 10.x spawner 19427 (zone 287)",
-    "SpawnerId": 19427,
-    "Position": {
-      "X": 20462.23,
-      "Y": 5925.22,
-      "Z": 201.771,
-      "Yaw": 0.0
-    }
-  },
-  {
-    "UnitId": 17360,
-    "Title": "sunbite-wilds: 10.x spawner 19545 (zone 287)",
-    "SpawnerId": 19545,
-    "Position": {
-      "X": 20451.136,
-      "Y": 5788.131,
-      "Z": 150.593,
-      "Yaw": 50.0
-    }
-  },
-  {
-    "UnitId": 17073,
-    "Title": "sunbite-wilds: 10.x spawner 19233 (zone 287)",
-    "SpawnerId": 19233,
-    "Position": {
-      "X": 20379.069,
-      "Y": 5308.79,
-      "Z": 183.593,
-      "Yaw": 111.0003
-    }
-  },
-  {
-    "UnitId": 4849,
-    "Title": "sunbite-wilds: 10.x spawner 19425 (zone 287)",
-    "SpawnerId": 19425,
-    "Position": {
-      "X": 20003.02,
-      "Y": 5751.93,
-      "Z": 200.628,
-      "Yaw": 0.0
-    }
-  },
-  {
-    "UnitId": 13424,
-    "Title": "sunbite-wilds: 10.x spawner 14946 (zone 287)",
-    "SpawnerId": 14946,
-    "Position": {
-      "X": 20394.846,
-      "Y": 5433.48,
-      "Z": 155.445,
-      "Yaw": -76.0
-    }
-  },
-  {
-    "UnitId": 4840,
-    "Title": "sunbite-wilds: 10.x spawner 5469 (zone 287)",
-    "SpawnerId": 5469,
-    "Position": {
-      "X": 20020.64,
-      "Y": 5715.43,
-      "Z": 171.446,
-      "Yaw": 0.0
-    }
-  },
-  {
-    "UnitId": 4840,
-    "Title": "sunbite-wilds: 10.x spawner 5469 (zone 287)",
-    "SpawnerId": 5469,
-    "Position": {
-      "X": 19863.613,
-      "Y": 6060.61,
-      "Z": 171.446,
-      "Yaw": 0.0
-    }
-  },
-  {
-    "UnitId": 4849,
-    "Title": "sunbite-wilds: 10.x spawner 19425 (zone 287)",
-    "SpawnerId": 19425,
-    "Position": {
-      "X": 20024.05,
-      "Y": 5742.37,
-      "Z": 205.189,
-      "Yaw": 0.0
-    }
-  },
-  {
-    "UnitId": 17634,
-    "Title": "sunbite-wilds: 10.x spawner 19840 (zone 287)",
-    "SpawnerId": 19840,
-    "Position": {
-      "X": 19950.287,
-      "Y": 5937.33,
-      "Z": 186.803,
-      "Yaw": 7.9977
-    }
-  },
-  {
-    "UnitId": 17361,
-    "Title": "sunbite-wilds: 10.x spawner 19546 (zone 287)",
-    "SpawnerId": 19546,
-    "Position": {
-      "X": 20447.958,
-      "Y": 5784.526,
-      "Z": 150.593,
-      "Yaw": 50.0
-    }
-  },
-  {
-    "UnitId": 17307,
-    "Title": "sunbite-wilds: 10.x spawner 19492 (zone 287)",
-    "SpawnerId": 19492,
-    "Position": {
-      "X": 19938.089,
-      "Y": 6053.35,
-      "Z": 172.438,
-      "Yaw": -3.0
-    }
-  },
-  {
-    "UnitId": 13422,
-    "Title": "sunbite-wilds: 10.x spawner 14944 (zone 287)",
-    "SpawnerId": 14944,
-    "Position": {
-      "X": 19867.34,
-      "Y": 6065.32,
-      "Z": 182.947,
-      "Yaw": 76.0
-    }
-  },
-  {
-    "UnitId": 4840,
-    "Title": "sunbite-wilds: 10.x spawner 5469 (zone 287)",
-    "SpawnerId": 5469,
-    "Position": {
-      "X": 20391.019,
-      "Y": 5289.65,
-      "Z": 171.446,
-      "Yaw": 0.0
-    }
-  },
-  {
-    "UnitId": 4846,
-    "Title": "sunbite-wilds: 10.x spawner 5475 (zone 287)",
-    "SpawnerId": 5475,
-    "Position": {
-      "X": 20456.81,
-      "Y": 5390.43,
-      "Z": 133.505,
-      "Yaw": 0.0
-    }
-  },
-  {
-    "UnitId": 13422,
-    "Title": "sunbite-wilds: 10.x spawner 14944 (zone 287)",
-    "SpawnerId": 14944,
-    "Position": {
-      "X": 19869.06,
-      "Y": 6132.61,
-      "Z": 176.439,
-      "Yaw": 76.0
-    }
-  },
-  {
-    "UnitId": 17504,
-    "Title": "sunbite-wilds: 10.x spawner 19705 (zone 287)",
-    "SpawnerId": 19705,
-    "Position": {
-      "X": 19868.81,
-      "Y": 6118.85,
-      "Z": 159.483,
-      "Yaw": 63.0001
-    }
-  },
-  {
-    "UnitId": 4846,
-    "Title": "sunbite-wilds: 10.x spawner 19424 (zone 287)",
-    "SpawnerId": 19424,
-    "Position": {
-      "X": 20019.88,
-      "Y": 5721.77,
-      "Z": 129.981,
-      "Yaw": 0.0
-    }
-  },
-  {
-    "UnitId": 4849,
-    "Title": "sunbite-wilds: 10.x spawner 19425 (zone 287)",
-    "SpawnerId": 19425,
-    "Position": {
-      "X": 20026.85,
-      "Y": 5723.33,
-      "Z": 218.804,
-      "Yaw": 0.0
-    }
-  },
-  {
-    "UnitId": 13422,
-    "Title": "sunbite-wilds: 10.x spawner 14944 (zone 287)",
-    "SpawnerId": 14944,
-    "Position": {
-      "X": 19876.85,
-      "Y": 6055.04,
-      "Z": 185.039,
-      "Yaw": 76.0
-    }
-  },
-  {
-    "UnitId": 3603,
-    "Title": "sunbite-wilds: 10.x spawner 3500 (zone 287)",
-    "SpawnerId": 3500,
-    "Position": {
-      "X": 20477.98,
-      "Y": 5276.08,
-      "Z": 174.068,
-      "Yaw": 0.0
-    }
-  },
-  {
-    "UnitId": 13424,
-    "Title": "sunbite-wilds: 10.x spawner 14946 (zone 287)",
-    "SpawnerId": 14946,
-    "Position": {
-      "X": 20457.93,
-      "Y": 5564.52,
-      "Z": 130.954,
-      "Yaw": -22.0
-    }
-  },
-  {
-    "UnitId": 13425,
-    "Title": "sunbite-wilds: 10.x spawner 14947 (zone 287)",
-    "SpawnerId": 14947,
-    "Position": {
-      "X": 19874.97,
-      "Y": 6132.68,
-      "Z": 159.369,
-      "Yaw": -26.9998
-    }
-  },
-  {
-    "UnitId": 13422,
-    "Title": "sunbite-wilds: 10.x spawner 14944 (zone 287)",
-    "SpawnerId": 14944,
-    "Position": {
-      "X": 20474.25,
-      "Y": 5279.92,
-      "Z": 174.716,
-      "Yaw": 76.0
-    }
-  },
-  {
-    "UnitId": 13422,
-    "Title": "sunbite-wilds: 10.x spawner 14944 (zone 287)",
-    "SpawnerId": 14944,
-    "Position": {
-      "X": 20026.26,
-      "Y": 5706.81,
-      "Z": 177.924,
-      "Yaw": 112.9999
-    }
-  },
-  {
-    "UnitId": 4839,
-    "Title": "sunbite-wilds: 10.x spawner 19423 (zone 287)",
-    "SpawnerId": 19423,
-    "Position": {
-      "X": 19996.1,
-      "Y": 5700.96,
-      "Z": 171.393,
-      "Yaw": 0.0
-    }
-  },
-  {
-    "UnitId": 17264,
-    "Title": "sunbite-wilds: 10.x spawner 19449 (zone 287)",
-    "SpawnerId": 19449,
-    "Position": {
-      "X": 19988.56,
-      "Y": 5704.73,
-      "Z": 172.389,
-      "Yaw": -90.0002
-    }
-  },
-  {
-    "UnitId": 13424,
-    "Title": "sunbite-wilds: 10.x spawner 14946 (zone 287)",
-    "SpawnerId": 14946,
-    "Position": {
-      "X": 20005.4,
-      "Y": 5715.53,
-      "Z": 130.426,
-      "Yaw": -106.0001
-    }
-  },
-  {
-    "UnitId": 13422,
-    "Title": "sunbite-wilds: 10.x spawner 14944 (zone 287)",
-    "SpawnerId": 14944,
-    "Position": {
-      "X": 19852.91,
-      "Y": 6023.43,
-      "Z": 186.005,
-      "Yaw": -143.0
-    }
-  },
-  {
-    "UnitId": 4846,
-    "Title": "sunbite-wilds: 10.x spawner 5475 (zone 287)",
-    "SpawnerId": 5475,
-    "Position": {
-      "X": 20394.47,
-      "Y": 5295.67,
-      "Z": 136.376,
-      "Yaw": 0.0
-    }
-  },
-  {
-    "UnitId": 4839,
-    "Title": "sunbite-wilds: 10.x spawner 19423 (zone 287)",
-    "SpawnerId": 19423,
-    "Position": {
-      "X": 20359.31,
-      "Y": 5271.76,
-      "Z": 172.748,
-      "Yaw": 0.0
-    }
-  },
-  {
-    "UnitId": 4840,
-    "Title": "sunbite-wilds: 10.x spawner 5469 (zone 287)",
-    "SpawnerId": 5469,
-    "Position": {
-      "X": 20373.515,
-      "Y": 5262.75,
-      "Z": 171.749,
-      "Yaw": 0.0
-    }
-  },
-  {
-    "UnitId": 13422,
-    "Title": "sunbite-wilds: 10.x spawner 14944 (zone 287)",
-    "SpawnerId": 14944,
-    "Position": {
-      "X": 19855.42,
-      "Y": 6104.95,
-      "Z": 178.616,
-      "Yaw": 41.0
-    }
-  },
-  {
-    "UnitId": 17564,
-    "Title": "sunbite-wilds: 10.x spawner 19765 (zone 287)",
-    "SpawnerId": 19765,
-    "Position": {
-      "X": 19979.01,
-      "Y": 5740.07,
-      "Z": 173.308,
-      "Yaw": -48.9995
-    }
-  },
-  {
-    "UnitId": 3603,
-    "Title": "sunbite-wilds: 10.x spawner 3500 (zone 287)",
-    "SpawnerId": 3500,
-    "Position": {
-      "X": 19857.56,
-      "Y": 6097.82,
-      "Z": 179.146,
-      "Yaw": 0.0
-    }
-  },
-  {
-    "UnitId": 17039,
-    "Title": "sunbite-wilds: 10.x spawner 19195 (zone 287)",
-    "SpawnerId": 19195,
-    "Position": {
-      "X": 19941.518,
-      "Y": 6088.2,
-      "Z": 172.377,
-      "Yaw": 111.0003
-    }
-  },
-  {
-    "UnitId": 17634,
-    "Title": "sunbite-wilds: 10.x spawner 19840 (zone 287)",
-    "SpawnerId": 19840,
-    "Position": {
-      "X": 19949.731,
-      "Y": 5941.6,
-      "Z": 186.731,
-      "Yaw": -173.9987
-    }
-  },
-  {
-    "UnitId": 4840,
-    "Title": "sunbite-wilds: 10.x spawner 5469 (zone 287)",
-    "SpawnerId": 5469,
-    "Position": {
-      "X": 19892.83,
-      "Y": 6130.6,
-      "Z": 171.446,
-      "Yaw": 0.0
-    }
-  },
-  {
-    "UnitId": 4840,
-    "Title": "sunbite-wilds: 10.x spawner 5469 (zone 287)",
-    "SpawnerId": 5469,
-    "Position": {
-      "X": 20413.858,
-      "Y": 5283.49,
-      "Z": 172.853,
-      "Yaw": 0.0
-    }
-  },
-  {
-    "UnitId": 13422,
-    "Title": "sunbite-wilds: 10.x spawner 14944 (zone 287)",
-    "SpawnerId": 14944,
-    "Position": {
-      "X": 19860.04,
-      "Y": 6091.33,
-      "Z": 179.353,
-      "Yaw": 76.0
-    }
-  },
-  {
-    "UnitId": 13424,
-    "Title": "sunbite-wilds: 10.x spawner 14946 (zone 287)",
-    "SpawnerId": 14946,
-    "Position": {
-      "X": 19968.03,
-      "Y": 5733.43,
-      "Z": 130.047,
-      "Yaw": -149.0
-    }
-  },
-  {
-    "UnitId": 13424,
-    "Title": "sunbite-wilds: 10.x spawner 14946 (zone 287)",
-    "SpawnerId": 14946,
-    "Position": {
-      "X": 19981.27,
-      "Y": 5759.8,
-      "Z": 132.636,
-      "Yaw": -79.9998
-    }
-  },
-  {
-    "UnitId": 13424,
-    "Title": "sunbite-wilds: 10.x spawner 14946 (zone 287)",
-    "SpawnerId": 14946,
-    "Position": {
-      "X": 20440.89,
-      "Y": 5547.68,
-      "Z": 130.254,
-      "Yaw": -108.0003
-    }
-  },
-  {
-    "UnitId": 4840,
-    "Title": "sunbite-wilds: 10.x spawner 5469 (zone 287)",
-    "SpawnerId": 5469,
-    "Position": {
-      "X": 20378.981,
-      "Y": 5300.21,
-      "Z": 182.257,
-      "Yaw": 0.0
-    }
-  },
-  {
-    "UnitId": 4846,
-    "Title": "sunbite-wilds: 10.x spawner 19424 (zone 287)",
-    "SpawnerId": 19424,
-    "Position": {
-      "X": 19999.68,
-      "Y": 5714.59,
-      "Z": 131.679,
-      "Yaw": 0.0
-    }
+    },
+    "SpawnerId": 100000055
   },
   {
     "UnitId": 17009,
-    "Title": "sunbite-wilds: 10.x spawner 19155 (zone 287)",
-    "SpawnerId": 19155,
+    "Title": "sunbite-wilds: 3.0 npc_map (17009)",
     "Position": {
-      "X": 20361.841,
+      "X": 22409.842,
       "Y": 5439.64,
-      "Z": 143.77,
-      "Yaw": -70.0
-    }
-  },
-  {
-    "UnitId": 4840,
-    "Title": "sunbite-wilds: 10.x spawner 5469 (zone 287)",
-    "SpawnerId": 5469,
-    "Position": {
-      "X": 20112.187,
-      "Y": 6130.17,
-      "Z": 170.349,
+      "Z": 143.393,
       "Yaw": 0.0
-    }
+    },
+    "SpawnerId": 100000056
   },
   {
-    "UnitId": 4846,
-    "Title": "sunbite-wilds: 10.x spawner 19424 (zone 287)",
-    "SpawnerId": 19424,
+    "UnitId": 17010,
+    "Title": "sunbite-wilds: 3.0 npc_map (17010)",
     "Position": {
-      "X": 20419.249,
-      "Y": 5330.42,
-      "Z": 135.149,
+      "X": 21941.6,
+      "Y": 5633.36,
+      "Z": 109.233,
       "Yaw": 0.0
-    }
+    },
+    "SpawnerId": 100000057
   },
   {
-    "UnitId": 7989,
-    "Title": "sunbite-wilds: 10.x spawner 8874 (zone 287)",
-    "SpawnerId": 8874,
+    "UnitId": 17011,
+    "Title": "sunbite-wilds: 3.0 npc_map (17011)",
     "Position": {
-      "X": 19990.12,
-      "Y": 6126.84,
-      "Z": 168.43,
-      "Yaw": -0.0
-    }
-  },
-  {
-    "UnitId": 4840,
-    "Title": "sunbite-wilds: 10.x spawner 5469 (zone 287)",
-    "SpawnerId": 5469,
-    "Position": {
-      "X": 19896.505,
-      "Y": 6105.43,
-      "Z": 171.451,
+      "X": 22622.529,
+      "Y": 6270.69,
+      "Z": 181.58,
       "Yaw": 0.0
-    }
-  },
-  {
-    "UnitId": 17362,
-    "Title": "sunbite-wilds: 10.x spawner 19547 (zone 287)",
-    "SpawnerId": 19547,
-    "Position": {
-      "X": 20460.32,
-      "Y": 5792.057,
-      "Z": 150.825,
-      "Yaw": 15.0
-    }
-  },
-  {
-    "UnitId": 13422,
-    "Title": "sunbite-wilds: 10.x spawner 14944 (zone 287)",
-    "SpawnerId": 14944,
-    "Position": {
-      "X": 19903.83,
-      "Y": 6052.85,
-      "Z": 183.308,
-      "Yaw": -15.0
-    }
-  },
-  {
-    "UnitId": 4849,
-    "Title": "sunbite-wilds: 10.x spawner 19425 (zone 287)",
-    "SpawnerId": 19425,
-    "Position": {
-      "X": 19952.11,
-      "Y": 5941.08,
-      "Z": 209.243,
-      "Yaw": 0.0
-    }
-  },
-  {
-    "UnitId": 4840,
-    "Title": "sunbite-wilds: 10.x spawner 5469 (zone 287)",
-    "SpawnerId": 5469,
-    "Position": {
-      "X": 20147.844,
-      "Y": 6143.42,
-      "Z": 170.137,
-      "Yaw": 0.0
-    }
-  },
-  {
-    "UnitId": 4840,
-    "Title": "sunbite-wilds: 10.x spawner 5469 (zone 287)",
-    "SpawnerId": 5469,
-    "Position": {
-      "X": 20401.389,
-      "Y": 5299.75,
-      "Z": 169.874,
-      "Yaw": 0.0
-    }
-  },
-  {
-    "UnitId": 4841,
-    "Title": "sunbite-wilds: 10.x spawner 19427 (zone 287)",
-    "SpawnerId": 19427,
-    "Position": {
-      "X": 20428.825,
-      "Y": 6038.84,
-      "Z": 210.418,
-      "Yaw": 0.0
-    }
-  },
-  {
-    "UnitId": 4839,
-    "Title": "sunbite-wilds: 10.x spawner 19423 (zone 287)",
-    "SpawnerId": 19423,
-    "Position": {
-      "X": 20376.12,
-      "Y": 5292.98,
-      "Z": 190.481,
-      "Yaw": 0.0
-    }
-  },
-  {
-    "UnitId": 17013,
-    "Title": "sunbite-wilds: 10.x spawner 19159 (zone 287)",
-    "SpawnerId": 19159,
-    "Position": {
-      "X": 19878.92,
-      "Y": 6132.71,
-      "Z": 159.47,
-      "Yaw": 70.0
-    }
-  },
-  {
-    "UnitId": 7989,
-    "Title": "sunbite-wilds: 10.x spawner 8874 (zone 287)",
-    "SpawnerId": 8874,
-    "Position": {
-      "X": 20362.18,
-      "Y": 5578.36,
-      "Z": 135.837,
-      "Yaw": -103.0
-    }
-  },
-  {
-    "UnitId": 13424,
-    "Title": "sunbite-wilds: 10.x spawner 14946 (zone 287)",
-    "SpawnerId": 14946,
-    "Position": {
-      "X": 20426.196,
-      "Y": 5559.05,
-      "Z": 130.191,
-      "Yaw": 118.0001
-    }
-  },
-  {
-    "UnitId": 13408,
-    "Title": "sunbite-wilds: 10.x spawner 14930 (zone 287)",
-    "SpawnerId": 14930,
-    "Position": {
-      "X": 19952.357,
-      "Y": 6068.26,
-      "Z": 172.407,
-      "Yaw": 149.0
-    }
-  },
-  {
-    "UnitId": 3603,
-    "Title": "sunbite-wilds: 10.x spawner 3500 (zone 287)",
-    "SpawnerId": 3500,
-    "Position": {
-      "X": 19853.28,
-      "Y": 6030.32,
-      "Z": 185.524,
-      "Yaw": 0.0
-    }
+    },
+    "SpawnerId": 100000058
   },
   {
     "UnitId": 17012,
-    "Title": "sunbite-wilds: 10.x spawner 19158 (zone 287)",
-    "SpawnerId": 19158,
+    "Title": "sunbite-wilds: 3.0 npc_map (17012)",
     "Position": {
-      "X": 20008.06,
-      "Y": 5720.03,
-      "Z": 172.368,
-      "Yaw": 91.9998
-    }
-  },
-  {
-    "UnitId": 4840,
-    "Title": "sunbite-wilds: 10.x spawner 5469 (zone 287)",
-    "SpawnerId": 5469,
-    "Position": {
-      "X": 20378.609,
-      "Y": 5304.81,
-      "Z": 171.027,
+      "X": 22760.061,
+      "Y": 6232.03,
+      "Z": 172.299,
       "Yaw": 0.0
-    }
+    },
+    "SpawnerId": 100000059
   },
   {
-    "UnitId": 4840,
-    "Title": "sunbite-wilds: 10.x spawner 5469 (zone 287)",
-    "SpawnerId": 5469,
+    "UnitId": 17013,
+    "Title": "sunbite-wilds: 3.0 npc_map (17013)",
     "Position": {
-      "X": 19985.209,
-      "Y": 5744.17,
-      "Z": 172.493,
+      "X": 22950.92,
+      "Y": 6132.71,
+      "Z": 159.364,
       "Yaw": 0.0
-    }
+    },
+    "SpawnerId": 100000060
   },
   {
-    "UnitId": 13425,
-    "Title": "sunbite-wilds: 10.x spawner 14947 (zone 287)",
-    "SpawnerId": 14947,
+    "UnitId": 17014,
+    "Title": "sunbite-wilds: 3.0 npc_map (17014)",
     "Position": {
-      "X": 19876.59,
-      "Y": 6135.62,
-      "Z": 159.606,
-      "Yaw": 146.0
-    }
-  },
-  {
-    "UnitId": 4840,
-    "Title": "sunbite-wilds: 10.x spawner 5469 (zone 287)",
-    "SpawnerId": 5469,
-    "Position": {
-      "X": 19850.582,
-      "Y": 6067.47,
-      "Z": 172.722,
+      "X": 22170.555,
+      "Y": 5646.85,
+      "Z": 133.643,
       "Yaw": 0.0
-    }
+    },
+    "SpawnerId": 100000061
   },
   {
-    "UnitId": 4840,
-    "Title": "sunbite-wilds: 10.x spawner 5469 (zone 287)",
-    "SpawnerId": 5469,
+    "UnitId": 17015,
+    "Title": "sunbite-wilds: 3.0 npc_map (17015)",
     "Position": {
-      "X": 20388.493,
-      "Y": 5266.55,
-      "Z": 177.225,
+      "X": 22168.842,
+      "Y": 6268.36,
+      "Z": 183.274,
       "Yaw": 0.0
-    }
+    },
+    "SpawnerId": 100000062
   },
   {
-    "UnitId": 4846,
-    "Title": "sunbite-wilds: 10.x spawner 5475 (zone 287)",
-    "SpawnerId": 5475,
+    "UnitId": 17039,
+    "Title": "sunbite-wilds: 3.0 npc_map (17039)",
     "Position": {
-      "X": 20464.21,
-      "Y": 5347.9,
-      "Z": 130.243,
+      "X": 21989.518,
+      "Y": 6088.2,
+      "Z": 172.346,
       "Yaw": 0.0
-    }
+    },
+    "SpawnerId": 100000063
   },
   {
-    "UnitId": 4841,
-    "Title": "sunbite-wilds: 10.x spawner 19427 (zone 287)",
-    "SpawnerId": 19427,
+    "UnitId": 17040,
+    "Title": "sunbite-wilds: 3.0 npc_map (17040)",
     "Position": {
-      "X": 20398.221,
-      "Y": 6115.71,
-      "Z": 191.875,
+      "X": 20387.91,
+      "Y": 6102.94,
+      "Z": 202.777,
       "Yaw": 0.0
-    }
+    },
+    "SpawnerId": 100000064
   },
   {
-    "UnitId": 4846,
-    "Title": "sunbite-wilds: 10.x spawner 19424 (zone 287)",
-    "SpawnerId": 19424,
+    "UnitId": 17073,
+    "Title": "sunbite-wilds: 3.0 npc_map (17073)",
     "Position": {
-      "X": 20026.71,
-      "Y": 5698.92,
-      "Z": 134.402,
+      "X": 22171.068,
+      "Y": 6268.8,
+      "Z": 183.517,
       "Yaw": 0.0
-    }
+    },
+    "SpawnerId": 100000065
   },
   {
-    "UnitId": 4846,
-    "Title": "sunbite-wilds: 10.x spawner 5475 (zone 287)",
-    "SpawnerId": 5475,
+    "UnitId": 17250,
+    "Title": "sunbite-wilds: 3.0 npc_map (17250)",
     "Position": {
-      "X": 20378.402,
-      "Y": 5319.21,
-      "Z": 130.763,
+      "X": 21844.508,
+      "Y": 5654.69,
+      "Z": 123.549,
       "Yaw": 0.0
-    }
+    },
+    "SpawnerId": 100000066
   },
   {
-    "UnitId": 4846,
-    "Title": "sunbite-wilds: 10.x spawner 5475 (zone 287)",
-    "SpawnerId": 5475,
+    "UnitId": 17251,
+    "Title": "sunbite-wilds: 3.0 npc_map (17251)",
     "Position": {
-      "X": 20004.6,
-      "Y": 5735.88,
-      "Z": 132.03,
+      "X": 21836.594,
+      "Y": 5609.83,
+      "Z": 122.441,
       "Yaw": 0.0
-    }
+    },
+    "SpawnerId": 100000067
   },
   {
-    "UnitId": 4840,
-    "Title": "sunbite-wilds: 10.x spawner 5469 (zone 287)",
-    "SpawnerId": 5469,
+    "UnitId": 17254,
+    "Title": "sunbite-wilds: 3.0 npc_map (17254)",
     "Position": {
-      "X": 19982.926,
-      "Y": 5722.87,
-      "Z": 171.446,
+      "X": 21998.5,
+      "Y": 5570.21,
+      "Z": 122.235,
       "Yaw": 0.0
-    }
+    },
+    "SpawnerId": 100000068
   },
   {
-    "UnitId": 4840,
-    "Title": "sunbite-wilds: 10.x spawner 5469 (zone 287)",
-    "SpawnerId": 5469,
+    "UnitId": 17257,
+    "Title": "sunbite-wilds: 3.0 npc_map (17257)",
     "Position": {
-      "X": 20026.151,
-      "Y": 5749.11,
-      "Z": 171.446,
+      "X": 21924.768,
+      "Y": 5581.98,
+      "Z": 122.236,
       "Yaw": 0.0
-    }
+    },
+    "SpawnerId": 100000069
   },
   {
-    "UnitId": 4840,
-    "Title": "sunbite-wilds: 10.x spawner 5469 (zone 287)",
-    "SpawnerId": 5469,
+    "UnitId": 17258,
+    "Title": "sunbite-wilds: 3.0 npc_map (17258)",
     "Position": {
-      "X": 20374.681,
-      "Y": 5298.51,
-      "Z": 172.977,
+      "X": 21963.133,
+      "Y": 5571.42,
+      "Z": 122.189,
       "Yaw": 0.0
-    }
+    },
+    "SpawnerId": 100000070
+  },
+  {
+    "UnitId": 17263,
+    "Title": "sunbite-wilds: 3.0 npc_map (17263)",
+    "Position": {
+      "X": 21976.365,
+      "Y": 6055.44,
+      "Z": 172.393,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000071
+  },
+  {
+    "UnitId": 17264,
+    "Title": "sunbite-wilds: 3.0 npc_map (17264)",
+    "Position": {
+      "X": 22740.561,
+      "Y": 6216.73,
+      "Z": 172.342,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000072
+  },
+  {
+    "UnitId": 17267,
+    "Title": "sunbite-wilds: 3.0 npc_map (17267)",
+    "Position": {
+      "X": 21991.643,
+      "Y": 6055.48,
+      "Z": 172.393,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000073
+  },
+  {
+    "UnitId": 17268,
+    "Title": "sunbite-wilds: 3.0 npc_map (17268)",
+    "Position": {
+      "X": 22751.359,
+      "Y": 6214.76,
+      "Z": 172.299,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000074
+  },
+  {
+    "UnitId": 17271,
+    "Title": "sunbite-wilds: 3.0 npc_map (17271)",
+    "Position": {
+      "X": 21985.781,
+      "Y": 6095.35,
+      "Z": 172.346,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000075
   },
   {
     "UnitId": 17272,
-    "Title": "sunbite-wilds: 10.x spawner 19457 (zone 287)",
-    "SpawnerId": 19457,
+    "Title": "sunbite-wilds: 3.0 npc_map (17272)",
     "Position": {
-      "X": 20000.85,
-      "Y": 5730.41,
-      "Z": 172.365,
-      "Yaw": -167.9998
-    }
-  },
-  {
-    "UnitId": 502,
-    "Title": "sunbite-wilds: 10.x spawner 481 (zone 287)",
-    "SpawnerId": 481,
-    "Position": {
-      "X": 20368.604,
-      "Y": 5576.9,
-      "Z": 134.208,
-      "Yaw": -100.9999
-    }
-  },
-  {
-    "UnitId": 13422,
-    "Title": "sunbite-wilds: 10.x spawner 14944 (zone 287)",
-    "SpawnerId": 14944,
-    "Position": {
-      "X": 20014.56,
-      "Y": 5736.09,
-      "Z": 173.673,
-      "Yaw": 128.9997
-    }
-  },
-  {
-    "UnitId": 17373,
-    "Title": "sunbite-wilds: 10.x spawner 19561 (zone 287)",
-    "SpawnerId": 19561,
-    "Position": {
-      "X": 20000.43,
-      "Y": 5710.97,
-      "Z": 172.368,
-      "Yaw": 16.0
-    }
-  },
-  {
-    "UnitId": 4840,
-    "Title": "sunbite-wilds: 10.x spawner 5469 (zone 287)",
-    "SpawnerId": 5469,
-    "Position": {
-      "X": 19896.972,
-      "Y": 6087.64,
-      "Z": 171.446,
+      "X": 22752.85,
+      "Y": 6242.41,
+      "Z": 172.299,
       "Yaw": 0.0
-    }
+    },
+    "SpawnerId": 100000076
   },
   {
-    "UnitId": 3603,
-    "Title": "sunbite-wilds: 10.x spawner 3500 (zone 287)",
-    "SpawnerId": 3500,
+    "UnitId": 17273,
+    "Title": "sunbite-wilds: 3.0 npc_map (17273)",
     "Position": {
-      "X": 19877.16,
-      "Y": 6126.23,
-      "Z": 177.552,
+      "X": 21829.289,
+      "Y": 5639.27,
+      "Z": 123.439,
       "Yaw": 0.0
-    }
+    },
+    "SpawnerId": 100000077
   },
   {
-    "UnitId": 3603,
-    "Title": "sunbite-wilds: 10.x spawner 3500 (zone 287)",
-    "SpawnerId": 3500,
+    "UnitId": 17276,
+    "Title": "sunbite-wilds: 3.0 npc_map (17276)",
     "Position": {
-      "X": 19846.34,
-      "Y": 6072.77,
-      "Z": 186.325,
+      "X": 21839.777,
+      "Y": 5606.8,
+      "Z": 122.524,
       "Yaw": 0.0
-    }
+    },
+    "SpawnerId": 100000078
   },
   {
-    "UnitId": 4839,
-    "Title": "sunbite-wilds: 10.x spawner 19423 (zone 287)",
-    "SpawnerId": 19423,
+    "UnitId": 17279,
+    "Title": "sunbite-wilds: 3.0 npc_map (17279)",
     "Position": {
-      "X": 20388.735,
-      "Y": 5298.72,
-      "Z": 180.879,
+      "X": 21969.967,
+      "Y": 5567.54,
+      "Z": 122.225,
       "Yaw": 0.0
-    }
+    },
+    "SpawnerId": 100000079
   },
   {
-    "UnitId": 4863,
-    "Title": "sunbite-wilds: 10.x spawner 5492 (zone 287)",
-    "SpawnerId": 5492,
+    "UnitId": 17282,
+    "Title": "sunbite-wilds: 3.0 npc_map (17282)",
     "Position": {
-      "X": 19961.562,
-      "Y": 5938.82,
-      "Z": 186.734,
-      "Yaw": 139.0001
-    }
-  },
-  {
-    "UnitId": 3603,
-    "Title": "sunbite-wilds: 10.x spawner 3500 (zone 287)",
-    "SpawnerId": 3500,
-    "Position": {
-      "X": 20014.83,
-      "Y": 5741.55,
-      "Z": 174.593,
+      "X": 21978.256,
+      "Y": 5560.24,
+      "Z": 122.189,
       "Yaw": 0.0
-    }
+    },
+    "SpawnerId": 100000080
   },
   {
-    "UnitId": 4863,
-    "Title": "sunbite-wilds: 10.x spawner 5492 (zone 287)",
-    "SpawnerId": 5492,
+    "UnitId": 17285,
+    "Title": "sunbite-wilds: 3.0 npc_map (17285)",
     "Position": {
-      "X": 19960.21,
-      "Y": 5937.71,
-      "Z": 186.817,
-      "Yaw": -45.0001
-    }
-  },
-  {
-    "UnitId": 4840,
-    "Title": "sunbite-wilds: 10.x spawner 5469 (zone 287)",
-    "SpawnerId": 5469,
-    "Position": {
-      "X": 19849.741,
-      "Y": 6105.84,
-      "Z": 171.446,
+      "X": 21993.758,
+      "Y": 5372.16,
+      "Z": 178.987,
       "Yaw": 0.0
-    }
+    },
+    "SpawnerId": 100000081
   },
   {
-    "UnitId": 10857,
-    "Title": "sunbite-wilds: 10.x spawner 12063 (zone 287)",
-    "SpawnerId": 12063,
+    "UnitId": 17289,
+    "Title": "sunbite-wilds: 3.0 npc_map (17289)",
     "Position": {
-      "X": 20469.99,
-      "Y": 5808.028,
-      "Z": 151.242,
-      "Yaw": 175.0002
-    }
-  },
-  {
-    "UnitId": 13424,
-    "Title": "sunbite-wilds: 10.x spawner 14946 (zone 287)",
-    "SpawnerId": 14946,
-    "Position": {
-      "X": 20386.489,
-      "Y": 5390.28,
-      "Z": 130.228,
-      "Yaw": -94.0
-    }
-  },
-  {
-    "UnitId": 17356,
-    "Title": "sunbite-wilds: 10.x spawner 19541 (zone 287)",
-    "SpawnerId": 19541,
-    "Position": {
-      "X": 20307.859,
-      "Y": 5665.716,
-      "Z": 168.75,
-      "Yaw": -111.0003
-    }
-  },
-  {
-    "UnitId": 4840,
-    "Title": "sunbite-wilds: 10.x spawner 5469 (zone 287)",
-    "SpawnerId": 5469,
-    "Position": {
-      "X": 20388.3,
-      "Y": 5281.22,
-      "Z": 174.892,
+      "X": 21842.658,
+      "Y": 5603.89,
+      "Z": 122.693,
       "Yaw": 0.0
-    }
+    },
+    "SpawnerId": 100000082
   },
   {
-    "UnitId": 4841,
-    "Title": "sunbite-wilds: 10.x spawner 19427 (zone 287)",
-    "SpawnerId": 19427,
+    "UnitId": 17292,
+    "Title": "sunbite-wilds: 3.0 npc_map (17292)",
     "Position": {
-      "X": 19867.12,
-      "Y": 6051.18,
-      "Z": 196.836,
+      "X": 21964.838,
+      "Y": 5690.06,
+      "Z": 121.987,
       "Yaw": 0.0
-    }
+    },
+    "SpawnerId": 100000083
   },
   {
-    "UnitId": 17357,
-    "Title": "sunbite-wilds: 10.x spawner 19542 (zone 287)",
-    "SpawnerId": 19542,
+    "UnitId": 17295,
+    "Title": "sunbite-wilds: 3.0 npc_map (17295)",
     "Position": {
-      "X": 20308.554,
-      "Y": 5655.542,
-      "Z": 168.75,
-      "Yaw": -124.9999
-    }
-  },
-  {
-    "UnitId": 4841,
-    "Title": "sunbite-wilds: 10.x spawner 19427 (zone 287)",
-    "SpawnerId": 19427,
-    "Position": {
-      "X": 19848.11,
-      "Y": 6029.48,
-      "Z": 183.545,
+      "X": 21999.061,
+      "Y": 5695.12,
+      "Z": 122.236,
       "Yaw": 0.0
-    }
+    },
+    "SpawnerId": 100000084
   },
   {
-    "UnitId": 3603,
-    "Title": "sunbite-wilds: 10.x spawner 3500 (zone 287)",
-    "SpawnerId": 3500,
+    "UnitId": 17296,
+    "Title": "sunbite-wilds: 3.0 npc_map (17296)",
     "Position": {
-      "X": 19891.0,
-      "Y": 6069.97,
-      "Z": 180.937,
+      "X": 21955.66,
+      "Y": 5689.23,
+      "Z": 121.944,
       "Yaw": 0.0
-    }
+    },
+    "SpawnerId": 100000085
   },
   {
-    "UnitId": 4841,
-    "Title": "sunbite-wilds: 10.x spawner 19427 (zone 287)",
-    "SpawnerId": 19427,
+    "UnitId": 17299,
+    "Title": "sunbite-wilds: 3.0 npc_map (17299)",
     "Position": {
-      "X": 20479.9,
-      "Y": 6103.45,
-      "Z": 185.073,
+      "X": 21903.387,
+      "Y": 5670.36,
+      "Z": 122.041,
       "Yaw": 0.0
-    }
+    },
+    "SpawnerId": 100000086
   },
   {
-    "UnitId": 13424,
-    "Title": "sunbite-wilds: 10.x spawner 14946 (zone 287)",
-    "SpawnerId": 14946,
+    "UnitId": 17302,
+    "Title": "sunbite-wilds: 3.0 npc_map (17302)",
     "Position": {
-      "X": 19990.63,
-      "Y": 5715.78,
-      "Z": 130.125,
-      "Yaw": 13.0
-    }
-  },
-  {
-    "UnitId": 13422,
-    "Title": "sunbite-wilds: 10.x spawner 14944 (zone 287)",
-    "SpawnerId": 14944,
-    "Position": {
-      "X": 19867.97,
-      "Y": 6038.4,
-      "Z": 184.037,
-      "Yaw": 45.0
-    }
-  },
-  {
-    "UnitId": 4840,
-    "Title": "sunbite-wilds: 10.x spawner 5469 (zone 287)",
-    "SpawnerId": 5469,
-    "Position": {
-      "X": 19843.815,
-      "Y": 6100.43,
-      "Z": 170.415,
+      "X": 21936.092,
+      "Y": 5578.29,
+      "Z": 122.236,
       "Yaw": 0.0
-    }
+    },
+    "SpawnerId": 100000087
   },
   {
-    "UnitId": 4840,
-    "Title": "sunbite-wilds: 10.x spawner 5469 (zone 287)",
-    "SpawnerId": 5469,
+    "UnitId": 17307,
+    "Title": "sunbite-wilds: 3.0 npc_map (17307)",
     "Position": {
-      "X": 20143.93,
-      "Y": 6095.39,
-      "Z": 170.985,
+      "X": 21986.09,
+      "Y": 6053.35,
+      "Z": 172.393,
       "Yaw": 0.0
-    }
-  },
-  {
-    "UnitId": 13422,
-    "Title": "sunbite-wilds: 10.x spawner 14944 (zone 287)",
-    "SpawnerId": 14944,
-    "Position": {
-      "X": 19864.49,
-      "Y": 6076.14,
-      "Z": 185.602,
-      "Yaw": -155.0
-    }
-  },
-  {
-    "UnitId": 17493,
-    "Title": "sunbite-wilds: 10.x spawner 19694 (zone 287)",
-    "SpawnerId": 19694,
-    "Position": {
-      "X": 20381.146,
-      "Y": 5311.95,
-      "Z": 184.139,
-      "Yaw": 167.0
-    }
-  },
-  {
-    "UnitId": 13411,
-    "Title": "sunbite-wilds: 10.x spawner 14933 (zone 287)",
-    "SpawnerId": 14933,
-    "Position": {
-      "X": 19989.36,
-      "Y": 5725.68,
-      "Z": 172.433,
-      "Yaw": 164.0
-    }
-  },
-  {
-    "UnitId": 4846,
-    "Title": "sunbite-wilds: 10.x spawner 19424 (zone 287)",
-    "SpawnerId": 19424,
-    "Position": {
-      "X": 20019.19,
-      "Y": 5700.9,
-      "Z": 131.718,
-      "Yaw": 0.0
-    }
-  },
-  {
-    "UnitId": 4841,
-    "Title": "sunbite-wilds: 10.x spawner 19427 (zone 287)",
-    "SpawnerId": 19427,
-    "Position": {
-      "X": 20427.219,
-      "Y": 6004.74,
-      "Z": 207.992,
-      "Yaw": 0.0
-    }
-  },
-  {
-    "UnitId": 2209,
-    "Title": "sunbite-wilds: 10.x spawner 2185 (zone 287)",
-    "SpawnerId": 2185,
-    "Position": {
-      "X": 19954.473,
-      "Y": 5932.46,
-      "Z": 186.657,
-      "Yaw": 38.0
-    }
+    },
+    "SpawnerId": 100000088
   },
   {
     "UnitId": 17308,
-    "Title": "sunbite-wilds: 10.x spawner 19493 (zone 287)",
-    "SpawnerId": 19493,
+    "Title": "sunbite-wilds: 3.0 npc_map (17308)",
     "Position": {
-      "X": 19982.41,
-      "Y": 5712.72,
-      "Z": 172.53,
-      "Yaw": -100.9999
-    }
+      "X": 22734.41,
+      "Y": 6224.72,
+      "Z": 172.479,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000089
   },
   {
-    "UnitId": 13409,
-    "Title": "sunbite-wilds: 10.x spawner 14931 (zone 287)",
-    "SpawnerId": 14931,
+    "UnitId": 17314,
+    "Title": "sunbite-wilds: 3.0 npc_map (17314)",
     "Position": {
-      "X": 19949.99,
-      "Y": 6065.63,
-      "Z": 172.407,
-      "Yaw": -38.0
-    }
+      "X": 21113.85,
+      "Y": 6015.54,
+      "Z": 200.273,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000090
+  },
+  {
+    "UnitId": 17315,
+    "Title": "sunbite-wilds: 3.0 npc_map (17315)",
+    "Position": {
+      "X": 21357.42,
+      "Y": 5611.04,
+      "Z": 164.096,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000091
+  },
+  {
+    "UnitId": 17316,
+    "Title": "sunbite-wilds: 3.0 npc_map (17316)",
+    "Position": {
+      "X": 19418.104,
+      "Y": 5933.99,
+      "Z": 265.395,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000092
+  },
+  {
+    "UnitId": 17317,
+    "Title": "sunbite-wilds: 3.0 npc_map (17317)",
+    "Position": {
+      "X": 22534.971,
+      "Y": 5609.73,
+      "Z": 130.787,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000093
+  },
+  {
+    "UnitId": 17348,
+    "Title": "sunbite-wilds: 3.0 npc_map (17348)",
+    "Position": {
+      "X": 21866.742,
+      "Y": 4775.075,
+      "Z": 148.152,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000094
+  },
+  {
+    "UnitId": 17349,
+    "Title": "sunbite-wilds: 3.0 npc_map (17349)",
+    "Position": {
+      "X": 21861.771,
+      "Y": 4775.301,
+      "Z": 148.143,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000095
+  },
+  {
+    "UnitId": 17350,
+    "Title": "sunbite-wilds: 3.0 npc_map (17350)",
+    "Position": {
+      "X": 21874.539,
+      "Y": 4771.077,
+      "Z": 148.123,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000096
+  },
+  {
+    "UnitId": 17351,
+    "Title": "sunbite-wilds: 3.0 npc_map (17351)",
+    "Position": {
+      "X": 21855.32,
+      "Y": 4796.93,
+      "Z": 148.143,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000097
+  },
+  {
+    "UnitId": 17352,
+    "Title": "sunbite-wilds: 3.0 npc_map (17352)",
+    "Position": {
+      "X": 21871.117,
+      "Y": 4785.326,
+      "Z": 148.512,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000098
+  },
+  {
+    "UnitId": 17353,
+    "Title": "sunbite-wilds: 3.0 npc_map (17353)",
+    "Position": {
+      "X": 21886.854,
+      "Y": 4785.09,
+      "Z": 147.82,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000099
+  },
+  {
+    "UnitId": 17354,
+    "Title": "sunbite-wilds: 3.0 npc_map (17354)",
+    "Position": {
+      "X": 22357.305,
+      "Y": 4582.883,
+      "Z": 168.69,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000100
+  },
+  {
+    "UnitId": 17355,
+    "Title": "sunbite-wilds: 3.0 npc_map (17355)",
+    "Position": {
+      "X": 22357.66,
+      "Y": 4586.489,
+      "Z": 168.69,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000101
+  },
+  {
+    "UnitId": 17356,
+    "Title": "sunbite-wilds: 3.0 npc_map (17356)",
+    "Position": {
+      "X": 22355.859,
+      "Y": 4577.716,
+      "Z": 168.69,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000102
+  },
+  {
+    "UnitId": 17357,
+    "Title": "sunbite-wilds: 3.0 npc_map (17357)",
+    "Position": {
+      "X": 22356.555,
+      "Y": 4567.542,
+      "Z": 168.69,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000103
+  },
+  {
+    "UnitId": 17358,
+    "Title": "sunbite-wilds: 3.0 npc_map (17358)",
+    "Position": {
+      "X": 22352.381,
+      "Y": 4562.304,
+      "Z": 168.69,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000104
+  },
+  {
+    "UnitId": 17359,
+    "Title": "sunbite-wilds: 3.0 npc_map (17359)",
+    "Position": {
+      "X": 22345.277,
+      "Y": 4556.454,
+      "Z": 168.233,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000105
+  },
+  {
+    "UnitId": 17360,
+    "Title": "sunbite-wilds: 3.0 npc_map (17360)",
+    "Position": {
+      "X": 22499.137,
+      "Y": 4764.131,
+      "Z": 150.346,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000106
+  },
+  {
+    "UnitId": 17361,
+    "Title": "sunbite-wilds: 3.0 npc_map (17361)",
+    "Position": {
+      "X": 22495.957,
+      "Y": 4760.526,
+      "Z": 150.346,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000107
+  },
+  {
+    "UnitId": 17362,
+    "Title": "sunbite-wilds: 3.0 npc_map (17362)",
+    "Position": {
+      "X": 22508.32,
+      "Y": 4768.057,
+      "Z": 150.574,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000108
+  },
+  {
+    "UnitId": 17363,
+    "Title": "sunbite-wilds: 3.0 npc_map (17363)",
+    "Position": {
+      "X": 22488.543,
+      "Y": 4783.015,
+      "Z": 150.218,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000109
+  },
+  {
+    "UnitId": 17364,
+    "Title": "sunbite-wilds: 3.0 npc_map (17364)",
+    "Position": {
+      "X": 22507.49,
+      "Y": 4779.466,
+      "Z": 150.62,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000110
+  },
+  {
+    "UnitId": 17365,
+    "Title": "sunbite-wilds: 3.0 npc_map (17365)",
+    "Position": {
+      "X": 22523.23,
+      "Y": 4780.742,
+      "Z": 150.485,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000111
+  },
+  {
+    "UnitId": 17373,
+    "Title": "sunbite-wilds: 3.0 npc_map (17373)",
+    "Position": {
+      "X": 22752.43,
+      "Y": 6222.97,
+      "Z": 172.299,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000112
+  },
+  {
+    "UnitId": 17374,
+    "Title": "sunbite-wilds: 3.0 npc_map (17374)",
+    "Position": {
+      "X": 22777.51,
+      "Y": 5818.69,
+      "Z": 215.559,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000113
+  },
+  {
+    "UnitId": 17375,
+    "Title": "sunbite-wilds: 3.0 npc_map (17375)",
+    "Position": {
+      "X": 19305.24,
+      "Y": 5563.16,
+      "Z": 283.645,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000114
+  },
+  {
+    "UnitId": 17410,
+    "Title": "sunbite-wilds: 3.0 npc_map (17410)",
+    "Position": {
+      "X": 19428.564,
+      "Y": 6413.56,
+      "Z": 290.992,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000115
+  },
+  {
+    "UnitId": 17411,
+    "Title": "sunbite-wilds: 3.0 npc_map (17411)",
+    "Position": {
+      "X": 19363.361,
+      "Y": 6458.85,
+      "Z": 302.645,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000116
+  },
+  {
+    "UnitId": 17411,
+    "Title": "sunbite-wilds: 3.0 npc_map (17411)",
+    "Position": {
+      "X": 19600.25,
+      "Y": 5919.13,
+      "Z": 250.08,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000116
+  },
+  {
+    "UnitId": 17411,
+    "Title": "sunbite-wilds: 3.0 npc_map (17411)",
+    "Position": {
+      "X": 20398.266,
+      "Y": 6154.8,
+      "Z": 222.097,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000116
+  },
+  {
+    "UnitId": 17413,
+    "Title": "sunbite-wilds: 3.0 npc_map (17413)",
+    "Position": {
+      "X": 21812.686,
+      "Y": 5625.86,
+      "Z": 122.713,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000117
+  },
+  {
+    "UnitId": 17413,
+    "Title": "sunbite-wilds: 3.0 npc_map (17413)",
+    "Position": {
+      "X": 21813.287,
+      "Y": 5613.93,
+      "Z": 121.677,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000117
+  },
+  {
+    "UnitId": 17413,
+    "Title": "sunbite-wilds: 3.0 npc_map (17413)",
+    "Position": {
+      "X": 21860.963,
+      "Y": 5689.77,
+      "Z": 131.643,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000117
+  },
+  {
+    "UnitId": 17413,
+    "Title": "sunbite-wilds: 3.0 npc_map (17413)",
+    "Position": {
+      "X": 21876.363,
+      "Y": 5554.17,
+      "Z": 131.584,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000117
+  },
+  {
+    "UnitId": 17413,
+    "Title": "sunbite-wilds: 3.0 npc_map (17413)",
+    "Position": {
+      "X": 21878.068,
+      "Y": 5688.78,
+      "Z": 131.643,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000117
+  },
+  {
+    "UnitId": 17413,
+    "Title": "sunbite-wilds: 3.0 npc_map (17413)",
+    "Position": {
+      "X": 21888.756,
+      "Y": 5560.68,
+      "Z": 131.522,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000117
+  },
+  {
+    "UnitId": 17413,
+    "Title": "sunbite-wilds: 3.0 npc_map (17413)",
+    "Position": {
+      "X": 21913.369,
+      "Y": 5753.95,
+      "Z": 177.501,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000117
+  },
+  {
+    "UnitId": 17413,
+    "Title": "sunbite-wilds: 3.0 npc_map (17413)",
+    "Position": {
+      "X": 21919.436,
+      "Y": 5758.94,
+      "Z": 177.849,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000117
+  },
+  {
+    "UnitId": 17413,
+    "Title": "sunbite-wilds: 3.0 npc_map (17413)",
+    "Position": {
+      "X": 21947.582,
+      "Y": 5486.67,
+      "Z": 177.346,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000117
+  },
+  {
+    "UnitId": 17413,
+    "Title": "sunbite-wilds: 3.0 npc_map (17413)",
+    "Position": {
+      "X": 21953.557,
+      "Y": 5481.62,
+      "Z": 177.393,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000117
+  },
+  {
+    "UnitId": 17413,
+    "Title": "sunbite-wilds: 3.0 npc_map (17413)",
+    "Position": {
+      "X": 21995.596,
+      "Y": 5655.05,
+      "Z": 121.939,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000117
+  },
+  {
+    "UnitId": 17413,
+    "Title": "sunbite-wilds: 3.0 npc_map (17413)",
+    "Position": {
+      "X": 21995.771,
+      "Y": 5620.1,
+      "Z": 122.216,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000117
+  },
+  {
+    "UnitId": 17413,
+    "Title": "sunbite-wilds: 3.0 npc_map (17413)",
+    "Position": {
+      "X": 22038.033,
+      "Y": 5645.72,
+      "Z": 131.643,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000117
+  },
+  {
+    "UnitId": 17413,
+    "Title": "sunbite-wilds: 3.0 npc_map (17413)",
+    "Position": {
+      "X": 22039.449,
+      "Y": 5630.78,
+      "Z": 131.643,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000117
+  },
+  {
+    "UnitId": 17413,
+    "Title": "sunbite-wilds: 3.0 npc_map (17413)",
+    "Position": {
+      "X": 22101.201,
+      "Y": 5778.39,
+      "Z": 144.918,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000117
+  },
+  {
+    "UnitId": 17413,
+    "Title": "sunbite-wilds: 3.0 npc_map (17413)",
+    "Position": {
+      "X": 22115.135,
+      "Y": 5771.82,
+      "Z": 143.293,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000117
+  },
+  {
+    "UnitId": 17415,
+    "Title": "sunbite-wilds: 3.0 npc_map (17415)",
+    "Position": {
+      "X": 21242.939,
+      "Y": 5753.77,
+      "Z": 250.07,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000118
+  },
+  {
+    "UnitId": 17433,
+    "Title": "sunbite-wilds: 3.0 npc_map (17433)",
+    "Position": {
+      "X": 19259.322,
+      "Y": 6637.59,
+      "Z": 213.441,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000119
+  },
+  {
+    "UnitId": 17434,
+    "Title": "sunbite-wilds: 3.0 npc_map (17434)",
+    "Position": {
+      "X": 19547.48,
+      "Y": 6662.19,
+      "Z": 174.601,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000120
+  },
+  {
+    "UnitId": 17443,
+    "Title": "sunbite-wilds: 3.0 npc_map (17443)",
+    "Position": {
+      "X": 20383.428,
+      "Y": 6103.52,
+      "Z": 202.469,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000121
+  },
+  {
+    "UnitId": 17462,
+    "Title": "sunbite-wilds: 3.0 npc_map (17462)",
+    "Position": {
+      "X": 22065.893,
+      "Y": 5641.55,
+      "Z": 131.643,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000122
+  },
+  {
+    "UnitId": 17474,
+    "Title": "sunbite-wilds: 3.0 npc_map (17474)",
+    "Position": {
+      "X": 21977.227,
+      "Y": 6081.91,
+      "Z": 172.346,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000123
+  },
+  {
+    "UnitId": 17476,
+    "Title": "sunbite-wilds: 3.0 npc_map (17476)",
+    "Position": {
+      "X": 20654.07,
+      "Y": 5931.73,
+      "Z": 242.962,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000124
+  },
+  {
+    "UnitId": 17477,
+    "Title": "sunbite-wilds: 3.0 npc_map (17477)",
+    "Position": {
+      "X": 22723.33,
+      "Y": 6193.33,
+      "Z": 173.467,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000125
+  },
+  {
+    "UnitId": 17491,
+    "Title": "sunbite-wilds: 3.0 npc_map (17491)",
+    "Position": {
+      "X": 19128.492,
+      "Y": 6153.77,
+      "Z": 284.429,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000126
+  },
+  {
+    "UnitId": 17493,
+    "Title": "sunbite-wilds: 3.0 npc_map (17493)",
+    "Position": {
+      "X": 22173.146,
+      "Y": 6271.95,
+      "Z": 184.117,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000127
+  },
+  {
+    "UnitId": 17494,
+    "Title": "sunbite-wilds: 3.0 npc_map (17494)",
+    "Position": {
+      "X": 22169.242,
+      "Y": 6271.98,
+      "Z": 183.89,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000128
+  },
+  {
+    "UnitId": 17497,
+    "Title": "sunbite-wilds: 3.0 npc_map (17497)",
+    "Position": {
+      "X": 22165.721,
+      "Y": 6270.59,
+      "Z": 183.51,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000129
+  },
+  {
+    "UnitId": 17498,
+    "Title": "sunbite-wilds: 3.0 npc_map (17498)",
+    "Position": {
+      "X": 22164.482,
+      "Y": 6267.12,
+      "Z": 182.857,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000130
+  },
+  {
+    "UnitId": 17499,
+    "Title": "sunbite-wilds: 3.0 npc_map (17499)",
+    "Position": {
+      "X": 19904.855,
+      "Y": 5621.03,
+      "Z": 307.702,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000131
+  },
+  {
+    "UnitId": 17500,
+    "Title": "sunbite-wilds: 3.0 npc_map (17500)",
+    "Position": {
+      "X": 22175.49,
+      "Y": 6268.23,
+      "Z": 183.893,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000132
+  },
+  {
+    "UnitId": 17501,
+    "Title": "sunbite-wilds: 3.0 npc_map (17501)",
+    "Position": {
+      "X": 19949.178,
+      "Y": 5653.1,
+      "Z": 307.641,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000133
+  },
+  {
+    "UnitId": 17504,
+    "Title": "sunbite-wilds: 3.0 npc_map (17504)",
+    "Position": {
+      "X": 22940.811,
+      "Y": 6118.85,
+      "Z": 159.251,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000134
+  },
+  {
+    "UnitId": 17504,
+    "Title": "sunbite-wilds: 3.0 npc_map (17504)",
+    "Position": {
+      "X": 22942.42,
+      "Y": 6128.2,
+      "Z": 159.383,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000134
+  },
+  {
+    "UnitId": 17504,
+    "Title": "sunbite-wilds: 3.0 npc_map (17504)",
+    "Position": {
+      "X": 22949.801,
+      "Y": 6122.41,
+      "Z": 159.333,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000134
+  },
+  {
+    "UnitId": 17564,
+    "Title": "sunbite-wilds: 3.0 npc_map (17564)",
+    "Position": {
+      "X": 22731.01,
+      "Y": 6252.07,
+      "Z": 173.237,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000135
+  },
+  {
+    "UnitId": 17565,
+    "Title": "sunbite-wilds: 3.0 npc_map (17565)",
+    "Position": {
+      "X": 22150.316,
+      "Y": 5813.22,
+      "Z": 151.315,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000136
+  },
+  {
+    "UnitId": 17593,
+    "Title": "sunbite-wilds: 3.0 npc_map (17593)",
+    "Position": {
+      "X": 21886.549,
+      "Y": 5656.65,
+      "Z": 122.032,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000137
+  },
+  {
+    "UnitId": 17593,
+    "Title": "sunbite-wilds: 3.0 npc_map (17593)",
+    "Position": {
+      "X": 21896.164,
+      "Y": 5588.65,
+      "Z": 122.184,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000137
+  },
+  {
+    "UnitId": 17593,
+    "Title": "sunbite-wilds: 3.0 npc_map (17593)",
+    "Position": {
+      "X": 21904.186,
+      "Y": 5547.73,
+      "Z": 131.596,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000137
+  },
+  {
+    "UnitId": 17593,
+    "Title": "sunbite-wilds: 3.0 npc_map (17593)",
+    "Position": {
+      "X": 21904.393,
+      "Y": 5550.52,
+      "Z": 131.593,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000137
+  },
+  {
+    "UnitId": 17593,
+    "Title": "sunbite-wilds: 3.0 npc_map (17593)",
+    "Position": {
+      "X": 21915.508,
+      "Y": 5714.74,
+      "Z": 131.643,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000137
+  },
+  {
+    "UnitId": 17593,
+    "Title": "sunbite-wilds: 3.0 npc_map (17593)",
+    "Position": {
+      "X": 21922.852,
+      "Y": 5650.13,
+      "Z": 121.939,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000137
+  },
+  {
+    "UnitId": 17593,
+    "Title": "sunbite-wilds: 3.0 npc_map (17593)",
+    "Position": {
+      "X": 21923.059,
+      "Y": 5652.92,
+      "Z": 121.939,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000137
+  },
+  {
+    "UnitId": 17593,
+    "Title": "sunbite-wilds: 3.0 npc_map (17593)",
+    "Position": {
+      "X": 21972.387,
+      "Y": 5508.26,
+      "Z": 131.643,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000137
+  },
+  {
+    "UnitId": 17593,
+    "Title": "sunbite-wilds: 3.0 npc_map (17593)",
+    "Position": {
+      "X": 21972.594,
+      "Y": 5511.05,
+      "Z": 131.643,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000137
+  },
+  {
+    "UnitId": 17593,
+    "Title": "sunbite-wilds: 3.0 npc_map (17593)",
+    "Position": {
+      "X": 22005.26,
+      "Y": 5747.96,
+      "Z": 131.643,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000137
+  },
+  {
+    "UnitId": 17593,
+    "Title": "sunbite-wilds: 3.0 npc_map (17593)",
+    "Position": {
+      "X": 22005.467,
+      "Y": 5750.74,
+      "Z": 131.643,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000137
+  },
+  {
+    "UnitId": 17593,
+    "Title": "sunbite-wilds: 3.0 npc_map (17593)",
+    "Position": {
+      "X": 22020.566,
+      "Y": 5728.6,
+      "Z": 131.643,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000137
+  },
+  {
+    "UnitId": 17593,
+    "Title": "sunbite-wilds: 3.0 npc_map (17593)",
+    "Position": {
+      "X": 22046.02,
+      "Y": 5583.24,
+      "Z": 131.643,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000137
+  },
+  {
+    "UnitId": 17593,
+    "Title": "sunbite-wilds: 3.0 npc_map (17593)",
+    "Position": {
+      "X": 22053.58,
+      "Y": 5680.48,
+      "Z": 131.643,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000137
+  },
+  {
+    "UnitId": 17593,
+    "Title": "sunbite-wilds: 3.0 npc_map (17593)",
+    "Position": {
+      "X": 22062.061,
+      "Y": 5702.53,
+      "Z": 131.964,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000137
+  },
+  {
+    "UnitId": 17593,
+    "Title": "sunbite-wilds: 3.0 npc_map (17593)",
+    "Position": {
+      "X": 22062.266,
+      "Y": 5705.31,
+      "Z": 131.815,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000137
+  },
+  {
+    "UnitId": 17593,
+    "Title": "sunbite-wilds: 3.0 npc_map (17593)",
+    "Position": {
+      "X": 22076.998,
+      "Y": 5489.7,
+      "Z": 140.737,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000137
+  },
+  {
+    "UnitId": 17593,
+    "Title": "sunbite-wilds: 3.0 npc_map (17593)",
+    "Position": {
+      "X": 22097.682,
+      "Y": 5482.55,
+      "Z": 140.737,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000137
+  },
+  {
+    "UnitId": 17593,
+    "Title": "sunbite-wilds: 3.0 npc_map (17593)",
+    "Position": {
+      "X": 22097.887,
+      "Y": 5485.34,
+      "Z": 140.737,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000137
+  },
+  {
+    "UnitId": 17593,
+    "Title": "sunbite-wilds: 3.0 npc_map (17593)",
+    "Position": {
+      "X": 22105.516,
+      "Y": 5681.58,
+      "Z": 140.799,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000137
+  },
+  {
+    "UnitId": 17593,
+    "Title": "sunbite-wilds: 3.0 npc_map (17593)",
+    "Position": {
+      "X": 22105.723,
+      "Y": 5684.36,
+      "Z": 140.799,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000137
+  },
+  {
+    "UnitId": 17593,
+    "Title": "sunbite-wilds: 3.0 npc_map (17593)",
+    "Position": {
+      "X": 22106.336,
+      "Y": 5704.65,
+      "Z": 140.846,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000137
+  },
+  {
+    "UnitId": 17594,
+    "Title": "sunbite-wilds: 3.0 npc_map (17594)",
+    "Position": {
+      "X": 21886.896,
+      "Y": 5659.41,
+      "Z": 122.021,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000138
+  },
+  {
+    "UnitId": 17594,
+    "Title": "sunbite-wilds: 3.0 npc_map (17594)",
+    "Position": {
+      "X": 21896.512,
+      "Y": 5591.41,
+      "Z": 122.214,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000138
+  },
+  {
+    "UnitId": 17594,
+    "Title": "sunbite-wilds: 3.0 npc_map (17594)",
+    "Position": {
+      "X": 21902.057,
+      "Y": 5549.09,
+      "Z": 131.596,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000138
+  },
+  {
+    "UnitId": 17594,
+    "Title": "sunbite-wilds: 3.0 npc_map (17594)",
+    "Position": {
+      "X": 21915.855,
+      "Y": 5717.51,
+      "Z": 131.643,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000138
+  },
+  {
+    "UnitId": 17594,
+    "Title": "sunbite-wilds: 3.0 npc_map (17594)",
+    "Position": {
+      "X": 21920.725,
+      "Y": 5651.5,
+      "Z": 121.939,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000138
+  },
+  {
+    "UnitId": 17594,
+    "Title": "sunbite-wilds: 3.0 npc_map (17594)",
+    "Position": {
+      "X": 21970.258,
+      "Y": 5509.63,
+      "Z": 131.643,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000138
+  },
+  {
+    "UnitId": 17594,
+    "Title": "sunbite-wilds: 3.0 npc_map (17594)",
+    "Position": {
+      "X": 22003.133,
+      "Y": 5749.32,
+      "Z": 131.643,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000138
+  },
+  {
+    "UnitId": 17594,
+    "Title": "sunbite-wilds: 3.0 npc_map (17594)",
+    "Position": {
+      "X": 22020.914,
+      "Y": 5731.36,
+      "Z": 131.643,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000138
+  },
+  {
+    "UnitId": 17594,
+    "Title": "sunbite-wilds: 3.0 npc_map (17594)",
+    "Position": {
+      "X": 22046.367,
+      "Y": 5586.0,
+      "Z": 131.643,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000138
+  },
+  {
+    "UnitId": 17594,
+    "Title": "sunbite-wilds: 3.0 npc_map (17594)",
+    "Position": {
+      "X": 22053.93,
+      "Y": 5683.24,
+      "Z": 131.643,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000138
+  },
+  {
+    "UnitId": 17594,
+    "Title": "sunbite-wilds: 3.0 npc_map (17594)",
+    "Position": {
+      "X": 22059.932,
+      "Y": 5703.89,
+      "Z": 131.689,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000138
+  },
+  {
+    "UnitId": 17594,
+    "Title": "sunbite-wilds: 3.0 npc_map (17594)",
+    "Position": {
+      "X": 22077.346,
+      "Y": 5492.46,
+      "Z": 140.737,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000138
+  },
+  {
+    "UnitId": 17594,
+    "Title": "sunbite-wilds: 3.0 npc_map (17594)",
+    "Position": {
+      "X": 22095.553,
+      "Y": 5483.91,
+      "Z": 140.737,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000138
+  },
+  {
+    "UnitId": 17594,
+    "Title": "sunbite-wilds: 3.0 npc_map (17594)",
+    "Position": {
+      "X": 22103.387,
+      "Y": 5682.94,
+      "Z": 140.799,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000138
+  },
+  {
+    "UnitId": 17594,
+    "Title": "sunbite-wilds: 3.0 npc_map (17594)",
+    "Position": {
+      "X": 22106.684,
+      "Y": 5707.41,
+      "Z": 140.846,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000138
+  },
+  {
+    "UnitId": 17610,
+    "Title": "sunbite-wilds: 3.0 npc_map (17610)",
+    "Position": {
+      "X": 21966.842,
+      "Y": 5364.68,
+      "Z": 178.987,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000139
+  },
+  {
+    "UnitId": 17634,
+    "Title": "sunbite-wilds: 3.0 npc_map (17634)",
+    "Position": {
+      "X": 21869.73,
+      "Y": 5941.6,
+      "Z": 186.681,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000140
+  },
+  {
+    "UnitId": 17634,
+    "Title": "sunbite-wilds: 3.0 npc_map (17634)",
+    "Position": {
+      "X": 21870.287,
+      "Y": 5937.33,
+      "Z": 186.748,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000140
+  },
+  {
+    "UnitId": 17634,
+    "Title": "sunbite-wilds: 3.0 npc_map (17634)",
+    "Position": {
+      "X": 21872.531,
+      "Y": 5939.62,
+      "Z": 186.616,
+      "Yaw": 0.0
+    },
+    "SpawnerId": 100000140
   }
 ]

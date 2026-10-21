@@ -1,0 +1,394 @@
+{
+  "Package": "sunbite-wilds",
+  "World": "main_world",
+  "SourceVersion": "3.0.4.2",
+  "MergeZones": [
+    157,
+    190,
+    286,
+    287
+  ],
+  "Cells": [
+    "021_004",
+    "021_005",
+    "021_006",
+    "022_004",
+    "022_005",
+    "022_006"
+  ],
+  "Files": [
+    {
+      "Name": "game/worlds/main_world/cells/021_004/client/big_object.dat",
+      "Size": 631,
+      "Sha256": "cc7339e4e32bece5043d743d70412dca3d5e0a4ee339de73260022098fb14e6d"
+    },
+    {
+      "Name": "game/worlds/main_world/cells/021_004/client/brush.dat",
+      "Size": 94852,
+      "Sha256": "fc2dba0e5dd3342c18b43929d4d1a820f93a79e12c56187141de6787db47524f"
+    },
+    {
+      "Name": "game/worlds/main_world/cells/021_004/client/entities.xml",
+      "Size": 38917,
+      "Sha256": "5e2ab197b4324e8b394c0d643c7a1ddde6e726cad40672c11d6888989a6d22ea"
+    },
+    {
+      "Name": "game/worlds/main_world/cells/021_004/client/leveldata.xml",
+      "Size": 4811,
+      "Sha256": "46c685d7bf4f8871a988df1325feba91c0b8f33a6cb9932265bd2d97d6f80ad7"
+    },
+    {
+      "Name": "game/worlds/main_world/cells/021_004/client/material_list.dat",
+      "Size": 46544,
+      "Sha256": "558e3b9e39089ba95640f468e85d8e1cbd05ab80bd3f81fddc743208a8e2ddfb"
+    },
+    {
+      "Name": "game/worlds/main_world/cells/021_004/client/materials.dat",
+      "Size": 10500,
+      "Sha256": "72bbf4557d51e39f3fcc223d353cd3a623502790c8c0237696921339ee14be4c"
+    },
+    {
+      "Name": "game/worlds/main_world/cells/021_004/client/object.dat",
+      "Size": 1479772,
+      "Sha256": "a6443c87c03f27660a865e275e4746a5d363a157d001176cd452de6b964797d3"
+    },
+    {
+      "Name": "game/worlds/main_world/cells/021_004/client/shaderslist.txt",
+      "Size": 14543,
+      "Sha256": "fbb5519cd09c480052c326e1882d9732bef2210234441d445d1ff170d1102687"
+    },
+    {
+      "Name": "game/worlds/main_world/cells/021_004/client/statobjs.dat",
+      "Size": 14852,
+      "Sha256": "fdb24f76bfd6b4ed658ff4270fa4efcfcf1823cc099b71ca3c380c0af819c96f"
+    },
+    {
+      "Name": "game/worlds/main_world/cells/021_004/client/terrain/cover.ctc",
+      "Size": 2796232,
+      "Sha256": "70586d2c320302e8f34fd9b8a4f577fc251f3efd25b6f82f689e0b2f68a5052d"
+    },
+    {
+      "Name": "game/worlds/main_world/cells/021_004/client/terrain/heightmap.dat",
+      "Size": 593588,
+      "Sha256": "da6a3017ce346d039c3607f878cbdf22d50e4e0b1c6f9f376d946640bad9afad"
+    },
+    {
+      "Name": "game/worlds/main_world/cells/021_004/client/vegetation.dat",
+      "Size": 62276,
+      "Sha256": "53b8455b17149c7e2aa9c2edcebde14ddae2ab1143f8fdb23088f159d50974ed"
+    },
+    {
+      "Name": "game/worlds/main_world/cells/021_004/client/visareas.dat",
+      "Size": 28,
+      "Sha256": "909cb40f86fea0b72cd970ae47a388386e62f7e73c4b31a672cc51ceda8d7d33"
+    },
+    {
+      "Name": "game/worlds/main_world/cells/021_005/client/big_object.dat",
+      "Size": 1158,
+      "Sha256": "6e3e71edbd32657be55af0d09fb71cdf303dd744b57da4f1c5d8231b8317e5a4"
+    },
+    {
+      "Name": "game/worlds/main_world/cells/021_005/client/brush.dat",
+      "Size": 283908,
+      "Sha256": "44f762d278c381eda6664c4444d2a33706e917cb18d8f7794e09dd623a90a6c7"
+    },
+    {
+      "Name": "game/worlds/main_world/cells/021_005/client/entities.xml",
+      "Size": 202320,
+      "Sha256": "f07c46457cdd1b2031f3d6002f150594ea157ac250aefa2e967f490b5e0d0efb"
+    },
+    {
+      "Name": "game/worlds/main_world/cells/021_005/client/leveldata.xml",
+      "Size": 5570,
+      "Sha256": "061ff1f8b0c83b5dedb8095f2826dbb99b5be7e556434674064133e0b1f5dffe"
+    },
+    {
+      "Name": "game/worlds/main_world/cells/021_005/client/material_list.dat",
+      "Size": 126624,
+      "Sha256": "cefc7bc2c0b6c03551c2dc2a10a078b5754b00fd9e375b9b88fb6ec518db2eca"
+    },
+    {
+      "Name": "game/worlds/main_world/cells/021_005/client/materials.dat",
+      "Size": 28676,
+      "Sha256": "f492ac99eabcbdce8b7993d98e2e9b2023508bcf2828a28be3eca8dc047a3af1"
+    },
+    {
+      "Name": "game/worlds/main_world/cells/021_005/client/object.dat",
+      "Size": 1152110,
+      "Sha256": "28a739a65c347956c4a2a606e1ef2637b8cbb94f055ec307f48109cc0031815c"
+    },
+    {
+      "Name": "game/worlds/main_world/cells/021_005/client/statobjs.dat",
+      "Size": 39428,
+      "Sha256": "96f784f329ac942c21bff5d462f75f810a725754e03a29bf7b626d29f7523b0f"
+    },
+    {
+      "Name": "game/worlds/main_world/cells/021_005/client/terrain/cover.ctc",
+      "Size": 2796232,
+      "Sha256": "4452ed332aaaf433d54756606c95dadd411d1e382b1154dd751db023729c71a2"
+    },
+    {
+      "Name": "game/worlds/main_world/cells/021_005/client/terrain/heightmap.dat",
+      "Size": 594115,
+      "Sha256": "5e5ddafee728cfc6c0be8f6d1f397b3c0c252f4d3ae4d67e0bfb0f35b0f20700"
+    },
+    {
+      "Name": "game/worlds/main_world/cells/021_005/client/vegetation.dat",
+      "Size": 19332,
+      "Sha256": "7e7ed7bb0160ad223ad3bf59d19e75cb53256c5e9edf3e888b89b8abb63aa4d0"
+    },
+    {
+      "Name": "game/worlds/main_world/cells/021_005/client/visareas.dat",
+      "Size": 6308,
+      "Sha256": "f208e24ebfce7e76af961dc6a6794dcf63fa0922c884a86c9f9c595ebd40fd19"
+    },
+    {
+      "Name": "game/worlds/main_world/cells/021_006/client/big_object.dat",
+      "Size": 583,
+      "Sha256": "b5c87f05fff65fe457caeac4c26d0166ba242c98c07ed890ed3d25b42201f0a4"
+    },
+    {
+      "Name": "game/worlds/main_world/cells/021_006/client/brush.dat",
+      "Size": 108292,
+      "Sha256": "e341432e0ead5ec86d604b6727591b8ed503e5052178b31fe762d4001df5998c"
+    },
+    {
+      "Name": "game/worlds/main_world/cells/021_006/client/entities.xml",
+      "Size": 98558,
+      "Sha256": "c4977eec51da646be3cc98cdabb94de866b892f4a4176c4c7873898274932a17"
+    },
+    {
+      "Name": "game/worlds/main_world/cells/021_006/client/leveldata.xml",
+      "Size": 5454,
+      "Sha256": "8717cef0b1b6bbdde182aa8c9a3b8fd397cbdd4a0e327d4322a4a77527561e8c"
+    },
+    {
+      "Name": "game/worlds/main_world/cells/021_006/client/material_list.dat",
+      "Size": 90224,
+      "Sha256": "345e6dec37f566cb1acaa8b12ef1d7ab33a7813d5c3e0d7a5ac77d2df0b32f4a"
+    },
+    {
+      "Name": "game/worlds/main_world/cells/021_006/client/materials.dat",
+      "Size": 20484,
+      "Sha256": "abbc0d5333e99e054d48f90655f343ca49ce6ac9dd1940b41d52e4f08aec3d18"
+    },
+    {
+      "Name": "game/worlds/main_world/cells/021_006/client/object.dat",
+      "Size": 971231,
+      "Sha256": "f4b312ca16a38f06a5dd4ae9669c990ff62bc20f3ea5171173b288e75b3d2c1d"
+    },
+    {
+      "Name": "game/worlds/main_world/cells/021_006/client/statobjs.dat",
+      "Size": 27396,
+      "Sha256": "dc664063699e1054f090addefd5f87fe3582021b735384ea20c2e407a97f196a"
+    },
+    {
+      "Name": "game/worlds/main_world/cells/021_006/client/terrain/cover.ctc",
+      "Size": 2796232,
+      "Sha256": "8f755084e78016056c7fdaeb0f0d3ffce39e7106aa16efd4934fe3197f6b75de"
+    },
+    {
+      "Name": "game/worlds/main_world/cells/021_006/client/terrain/heightmap.dat",
+      "Size": 594229,
+      "Sha256": "13dd6b981d91d8c87225315f872c85ff905c62570f5108b5ebb107242196c5a6"
+    },
+    {
+      "Name": "game/worlds/main_world/cells/021_006/client/vegetation.dat",
+      "Size": 368260,
+      "Sha256": "9e889dc3fe6310bbacfa44bd59e55c74c7d4e21027f673e45526d7d54a073c81"
+    },
+    {
+      "Name": "game/worlds/main_world/cells/021_006/client/visareas.dat",
+      "Size": 33814,
+      "Sha256": "63d69349953ba854226a377edee0a350d1b945105ae15a491667dd7298eff784"
+    },
+    {
+      "Name": "game/worlds/main_world/cells/022_004/client/big_object.dat",
+      "Size": 631,
+      "Sha256": "8a6ce2cd63be87d649a5467cea7b9d156f4c1d905e46b00931a3208ed8207ca5"
+    },
+    {
+      "Name": "game/worlds/main_world/cells/022_004/client/brush.dat",
+      "Size": 12164,
+      "Sha256": "d01101b892b1ba10ee2f1dc7ff291a8d7961be61c51c3e56df25b3099a4f8de8"
+    },
+    {
+      "Name": "game/worlds/main_world/cells/022_004/client/entities.xml",
+      "Size": 9185,
+      "Sha256": "bf2462df37e96bc1026297b064c1fd58ea58c9cfcebf79604c5c57ddb39481a5"
+    },
+    {
+      "Name": "game/worlds/main_world/cells/022_004/client/leveldata.xml",
+      "Size": 4811,
+      "Sha256": "46c685d7bf4f8871a988df1325feba91c0b8f33a6cb9932265bd2d97d6f80ad7"
+    },
+    {
+      "Name": "game/worlds/main_world/cells/022_004/client/material_list.dat",
+      "Size": 4424,
+      "Sha256": "58434852f1fa62e1fd15a7e615d97c879361a900db8f55c5d52cd0e4f8e82bd6"
+    },
+    {
+      "Name": "game/worlds/main_world/cells/022_004/client/materials.dat",
+      "Size": 1028,
+      "Sha256": "f2fc74ace1f6a57605f66c2667c3b98042230298dead3e38465737745bf7f85e"
+    },
+    {
+      "Name": "game/worlds/main_world/cells/022_004/client/object.dat",
+      "Size": 756294,
+      "Sha256": "7a6e8ca00990f219acf6b893f4c841ac775441c73a013049c288a697c071036e"
+    },
+    {
+      "Name": "game/worlds/main_world/cells/022_004/client/statobjs.dat",
+      "Size": 1540,
+      "Sha256": "0f46ab63610f3201000f5b10a668819e0de946724fce5ca7eb77a5065ea09d01"
+    },
+    {
+      "Name": "game/worlds/main_world/cells/022_004/client/terrain/cover.ctc",
+      "Size": 2796232,
+      "Sha256": "2ff5e71ee010e40984408184a4c860f698fae6a0a2cbb4a06ff61e04373d2145"
+    },
+    {
+      "Name": "game/worlds/main_world/cells/022_004/client/terrain/heightmap.dat",
+      "Size": 542906,
+      "Sha256": "739a1529601ad2652c4ae11c402fbdc36ab5bdf656930c16f5bfe927839c9673"
+    },
+    {
+      "Name": "game/worlds/main_world/cells/022_004/client/vegetation.dat",
+      "Size": 16388,
+      "Sha256": "681913d82eb0630fbc4d2f6a647006825aa9bc1acf96e8c52b94f2b3a46faf86"
+    },
+    {
+      "Name": "game/worlds/main_world/cells/022_004/client/visareas.dat",
+      "Size": 28,
+      "Sha256": "909cb40f86fea0b72cd970ae47a388386e62f7e73c4b31a672cc51ceda8d7d33"
+    },
+    {
+      "Name": "game/worlds/main_world/cells/022_005/client/big_object.dat",
+      "Size": 1329,
+      "Sha256": "9a6dc4b1214d3e7cecdc3517dd7fa233e395cc5516315d6886bf27c322e31673"
+    },
+    {
+      "Name": "game/worlds/main_world/cells/022_005/client/brush.dat",
+      "Size": 61444,
+      "Sha256": "e473153a5f717d1d937ee6353eab4866d8753eab71b9a086c1ef5c70feabe5e8"
+    },
+    {
+      "Name": "game/worlds/main_world/cells/022_005/client/entities.xml",
+      "Size": 18338,
+      "Sha256": "26c9dbcab3caba016697b7207b3fcfc98613d3c5ba64f65e6ffcd86a5abf344c"
+    },
+    {
+      "Name": "game/worlds/main_world/cells/022_005/client/leveldata.xml",
+      "Size": 4992,
+      "Sha256": "8d02d7d78980db70e93c293e7d5394179ccb10b36fdd418266c0ebb6717cb33a"
+    },
+    {
+      "Name": "game/worlds/main_world/cells/022_005/client/material_list.dat",
+      "Size": 26524,
+      "Sha256": "7b1c758ce7dfe4d0b4bff16dbb08ff682371593465004296c624650b627f3857"
+    },
+    {
+      "Name": "game/worlds/main_world/cells/022_005/client/materials.dat",
+      "Size": 5636,
+      "Sha256": "62b8d158f0c918b088803a25c24a27cd4a75525d1ed2bdabf35e743a77c147c4"
+    },
+    {
+      "Name": "game/worlds/main_world/cells/022_005/client/object.dat",
+      "Size": 842567,
+      "Sha256": "59a0d53075eb28a1106b8c2feac2546f07dbdc8849ab7e71462b8a445b5ab35d"
+    },
+    {
+      "Name": "game/worlds/main_world/cells/022_005/client/statobjs.dat",
+      "Size": 8452,
+      "Sha256": "fc0085c9edd6f91f62c646dee1d1d4ff9a4b90fdbe787a4527e71c768df781d6"
+    },
+    {
+      "Name": "game/worlds/main_world/cells/022_005/client/terrain/cover.ctc",
+      "Size": 2796232,
+      "Sha256": "562a64911e82d1b0054edbff798e15d509cfd729283566c588f2fed4eb796d0e"
+    },
+    {
+      "Name": "game/worlds/main_world/cells/022_005/client/terrain/heightmap.dat",
+      "Size": 591994,
+      "Sha256": "488e07419364719e2fc55b922e82f8ab1ad87b8bc7817da42861333c86487b0f"
+    },
+    {
+      "Name": "game/worlds/main_world/cells/022_005/client/vegetation.dat",
+      "Size": 14340,
+      "Sha256": "3c9a960412a8f25a6451a1946ccd93d59a4f23ba343f3c5f34479b32758bd616"
+    },
+    {
+      "Name": "game/worlds/main_world/cells/022_005/client/visareas.dat",
+      "Size": 28,
+      "Sha256": "909cb40f86fea0b72cd970ae47a388386e62f7e73c4b31a672cc51ceda8d7d33"
+    },
+    {
+      "Name": "game/worlds/main_world/cells/022_006/client/big_object.dat",
+      "Size": 10366,
+      "Sha256": "a112da33562ce624c4c9f6c301fe3a8872b693e7d1b05442ba224da98f656bc3"
+    },
+    {
+      "Name": "game/worlds/main_world/cells/022_006/client/brush.dat",
+      "Size": 55812,
+      "Sha256": "4ad6ca0d481ff7bd1bf04c58860b120216ad4473056b0429b86f117473404e5e"
+    },
+    {
+      "Name": "game/worlds/main_world/cells/022_006/client/entities.xml",
+      "Size": 34668,
+      "Sha256": "79b075690f194d650a49d25f6fd491edf80e619b9a604b48cb42a5664ed9cbf1"
+    },
+    {
+      "Name": "game/worlds/main_world/cells/022_006/client/leveldata.xml",
+      "Size": 5582,
+      "Sha256": "79537f9657a7af09a672c3356313f5bf94a134c8c8ac637a24336c91ad5cc8e1"
+    },
+    {
+      "Name": "game/worlds/main_world/cells/022_006/client/material_list.dat",
+      "Size": 76184,
+      "Sha256": "0d3d6fbd4d841aedb3ffd728451a52f79731a548fbf6d9ebadb176645f17f346"
+    },
+    {
+      "Name": "game/worlds/main_world/cells/022_006/client/materials.dat",
+      "Size": 17924,
+      "Sha256": "294d2cca9ceb1417978fff812b5615401688a0a522deb3cc794d4ba944daaa9d"
+    },
+    {
+      "Name": "game/worlds/main_world/cells/022_006/client/object.dat",
+      "Size": 958419,
+      "Sha256": "c4605b0cec6708369aecb1215a61480137bbf51aa1d1b07f592b5d1a744e3609"
+    },
+    {
+      "Name": "game/worlds/main_world/cells/022_006/client/statobjs.dat",
+      "Size": 21764,
+      "Sha256": "ce4df87c923a813d8628e0bc86580a71f103176eb9627d3b23260f25f58f75ef"
+    },
+    {
+      "Name": "game/worlds/main_world/cells/022_006/client/terrain/cover.ctc",
+      "Size": 2796232,
+      "Sha256": "6f1fbea16e531d336acfb2b551b32e4d3ec509dba6ac4ed202f938a8521d63c8"
+    },
+    {
+      "Name": "game/worlds/main_world/cells/022_006/client/terrain/heightmap.dat",
+      "Size": 583265,
+      "Sha256": "ab20ef6a3c65b16dc1dc61ce3f49a822badd36422545eef2dacdc7a360723dc3"
+    },
+    {
+      "Name": "game/worlds/main_world/cells/022_006/client/vegetation.dat",
+      "Size": 121540,
+      "Sha256": "cddbade6906f8807fa717e16be362fe3c7d1d9fd249a894244579a3f87484281"
+    },
+    {
+      "Name": "game/worlds/main_world/cells/022_006/client/visareas.dat",
+      "Size": 15840,
+      "Sha256": "062b49c083eaaf3b1b1166581451673099a7d5ab9f03442c5d878d13f0563217"
+    }
+  ],
+  "SectorCounts": {
+    "286": 243,
+    "287": 661
+  },
+  "WorldXmlSize": 4633146,
+  "WorldXmlSha256": "65485da62250f95ed4b2e83541611893c8e0049899429cfe55512a2dd3568016",
+  "Pak": "sunbite-wilds.pak",
+  "SourceBytes": 33376333
+}

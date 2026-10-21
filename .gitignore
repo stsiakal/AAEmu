@@ -22,3 +22,5 @@ publish/
 /rust/crates/aaemu-*/app/Logs/
 
 __pycache__/
+# Generated area overlay paks (built from the later client; never committed)
+/rust/crates/aaemu-game/app/Data/Areas/*/*.pak

@@ -1,11 +1,22 @@
 {
-    "ZoneIds": [227, 242],
-    "ZoneKeys": [287, 286],
-    "QuestZoneIds": [227],
+    "ZoneIds": [
+        227,
+        242
+    ],
+    "ZoneKeys": [
+        287,
+        286
+    ],
+    "QuestZoneIds": [
+        227
+    ],
     "Spawns": [
         {
             "World": "main_world",
             "NpcSpawns": "Data/Areas/sunbite-wilds/npc_spawns.json"
         }
+    ],
+    "ClientSources": [
+        "Data/Areas/sunbite-wilds/sunbite-wilds.pak"
     ]
 }
