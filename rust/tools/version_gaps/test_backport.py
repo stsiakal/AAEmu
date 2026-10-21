@@ -16,6 +16,7 @@ from backport import (  # noqa: E402
     build_assets_section,
     build_backport,
     build_closure,
+    overlay_path_list,
     pak_names_to_write,
     patch_client_db,
     refuse_protected_client,
@@ -23,8 +24,10 @@ from backport import (  # noqa: E402
     resolve_item_set,
     run_backport,
     select_gear_1a,
+    select_gear_1b_costumes,
     weapons_comparison,
     write_asset_list,
+    write_overlay_list,
 )
 
 BASE_SCHEMA = """
@@ -1097,6 +1100,149 @@ class Gear1aSelectionTests(unittest.TestCase):
             finally:
                 conn.close()
             self.assertEqual(first, second)
+
+
+class Gear1bCostumeSelectionTests(unittest.TestCase):
+    def gear_1b_ref(self):
+        ref = make_db(GEAR_SCHEMA, [])
+        ref.conn.executescript(
+            """
+            INSERT INTO items VALUES (1000, 'existing', 10, 10, 0);
+            INSERT INTO skills VALUES (500, 'base skill');
+            INSERT INTO skills VALUES (9000, '3.0 use skill');
+            INSERT INTO item_categories VALUES (10, 'costume', 4);
+            INSERT INTO item_categories VALUES (173, 'synthetic costume', 4);
+            INSERT INTO item_groups VALUES (4, 'costume');
+            INSERT INTO equip_item_set_bonuses VALUES (1, 500, 3, 60, 0);
+            INSERT INTO unit_modifiers VALUES (1, 'Buff', 60, 195);
+            """
+        )
+        # Selected: a costume with half its playable art new in 3.0 (plus a
+        # Dwarf path that stays data-only) and one with all four paths new.
+        add_gear_item(ref, 2001, 10, 10, races=GEAR_RACES + ("dwarf",))
+        # All four playable paths already in 1.2: batch 1a territory.
+        add_gear_item(ref, 2002, 10, 10)
+        # One playable path is only in the 10.x pak, so it is not in 3.0.
+        add_gear_item(ref, 2003, 10, 10)
+        add_gear_item(ref, 2004, 10, 10, races=GEAR_RACES[:3])
+        add_gear_item(ref, 2005, 10, 63)
+        add_gear_item(ref, 2006, 10, 10, proc=True)
+        add_gear_item(ref, 8000001, 10, 10)
+        add_gear_item(ref, 2008, 96, 10)
+        add_gear_item(ref, 2009, 10, 10)
+        add_gear_item(ref, 2010, 10, 10)
+        add_gear_item(ref, 2011, 10, 10, set_id=500)
+        add_gear_item(ref, 2012, 10, 10, use_skill_id=9000)
+        ref.conn.commit()
+        return ref
+
+    def test_selection_rule_and_reasons(self):
+        base = gear_base()
+        base.conn.execute("INSERT INTO items VALUES (?,?,?,?,?)", (2010, "base", 10, 10, 0))
+        base.conn.commit()
+        ref = self.gear_1b_ref()
+        pak12 = {
+            "game/" + path
+            for item_id, races in ((2001, GEAR_RACES[:2]), (2002, GEAR_RACES))
+            for path in gear_paths(item_id, races)
+        }
+        pak30 = {
+            "game/" + path
+            for item_id, races in (
+                (2001, GEAR_RACES + ("dwarf",)),
+                (2002, GEAR_RACES),
+                (2003, GEAR_RACES),
+                (2004, GEAR_RACES[:3]),
+                (2005, GEAR_RACES),
+                (2006, GEAR_RACES),
+                (2008, GEAR_RACES),
+                (2009, GEAR_RACES),
+                (2010, GEAR_RACES),
+                (2011, GEAR_RACES),
+                (2012, GEAR_RACES),
+            )
+            for path in gear_paths(item_id, races)
+        }
+        pak30.remove("game/" + gear_paths(2003)[0])
+        selection = select_gear_1b_costumes(base, ref, pak12, pak30)
+        self.assertEqual(selection["items"], [2001, 2009])
+        self.assertEqual(selection["counts"], {"costume": 2, "total": 2})
+        skipped = {
+            reason: entry["count"]
+            for reason, entry in selection["skipped"].items()
+            if entry["count"]
+        }
+        self.assertEqual(skipped["custom_id_ge_8m"], 1)
+        self.assertEqual(skipped["above_eanad"], 1)
+        self.assertEqual(skipped["item_proc"], 1)
+        self.assertEqual(skipped["set_attribute_gt_186"], 1)
+        self.assertEqual(skipped["new_use_skill"], 1)
+        self.assertEqual(skipped["no_four_race_art"], 1)
+        self.assertEqual(skipped["zero_asset_in_1_2"], 1)
+        self.assertEqual(skipped["playable_art_missing_from_3_0"], 1)
+        self.assertEqual(skipped["outside_batch_family"], 1)
+        looks = selection["looks"]
+        self.assertEqual(looks["dwarf_warborn_paths"], 1)
+        self.assertEqual(len(looks["shared_playable_paths"]), 2)
+        self.assertEqual(len(looks["new_playable_paths"]), 6)
+        self.assertEqual(looks["missing_from_3_0_pak"], [])
+
+    def test_unresolved_texture_root_skips_item_and_reports_paths(self):
+        base, ref = gear_base(), self.gear_1b_ref()
+        pak12 = {
+            "game/" + path
+            for item_id, races in ((2001, GEAR_RACES[:2]), (2002, GEAR_RACES))
+            for path in gear_paths(item_id, races)
+        }
+        pak30 = {
+            "game/" + path
+            for item_id in (2001, 2002, 2003, 2009)
+            for path in gear_paths(
+                item_id, GEAR_RACES + ("dwarf",) if item_id == 2001 else GEAR_RACES
+            )
+        }
+        pak30.remove("game/" + gear_paths(2003)[0])
+        root = "game/" + gear_paths(2001)[0]
+        selection = select_gear_1b_costumes(base, ref, pak12, pak30, {root})
+        self.assertEqual(selection["items"], [2009])
+        self.assertEqual(selection["skipped"]["missing_texture_unresolved"]["count"], 1)
+        self.assertEqual(
+            selection["skipped_missing_textures"],
+            [{"item_id": 2001, "paths": [root]}],
+        )
+
+    def test_overlay_list_is_new_playable_art_only(self):
+        base, ref = gear_base(), self.gear_1b_ref()
+        pak12 = {
+            "game/" + path
+            for item_id, races in ((2001, GEAR_RACES[:2]), (2002, GEAR_RACES))
+            for path in gear_paths(item_id, races)
+        }
+        pak30 = {
+            "game/" + path
+            for item_id in (2001, 2002, 2003, 2009)
+            for path in gear_paths(
+                item_id, GEAR_RACES + ("dwarf",) if item_id == 2001 else GEAR_RACES
+            )
+        }
+        pak30.remove("game/" + gear_paths(2003)[0])
+        selection = select_gear_1b_costumes(base, ref, pak12, pak30)
+        _, _, report = build_backport(base, ref, selection["items"])
+        overlay = overlay_path_list(report["assets_needed"], pak12)
+        self.assertEqual(overlay["icons"], [])
+        self.assertEqual(len(overlay["models"]), 6)
+        for path in overlay["models"]:
+            self.assertNotIn(path, pak12)
+            self.assertNotIn("/characters/dwarf/", path)
+            self.assertNotIn("/characters/warborn/", path)
+        with tempfile.TemporaryDirectory() as tmp:
+            out = os.path.join(tmp, "overlay.list")
+            write_overlay_list(out, overlay, len(selection["items"]))
+            with open(out, encoding="utf-8") as handle:
+                lines = handle.read().splitlines()
+            body = [line for line in lines if not line.startswith("#")]
+            self.assertEqual(body, overlay["paths"])
+            self.assertEqual(len(body), 6)
 
 
 if __name__ == "__main__":

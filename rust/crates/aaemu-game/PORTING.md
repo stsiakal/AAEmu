@@ -1129,6 +1129,18 @@ is no longer mirrored (see "Known deviations", dead NPC returned and healed).
   by the `Resurrection` special effect and the free resurrection below
   `minimum_exp_loss_level`). The C# never checked, so any dead client could revive itself in
   place without an offer.
+* systems::skills (once-only death transition, 2026-10-21): the C# `ReduceCurrentHp` checked
+  `Hp <= 0`, applied the damage and called `DoDie` without a lock, so two concurrent lethal
+  hits (a skill hit and a DoT tick, fall / drowning damage, `GM /kill`, PvP, an NPC death) could
+  both run the death path: two `SCUnitDeathPacket`s, double exp / durability loss, two loot
+  generations, double quest kill credit and two respawn timers. Rust adds the Rust-only
+  `UnitBase::death_processed` claim, checked and set atomically under the unit's data lock
+  (`skills::combat::try_claim_death`); `ReduceCurrentHp` re-checks HP under the same lock that
+  applies the damage, `PostUpdateCurrentHp` claims before its kill events, and a direct `DoDie`
+  on an already-claimed life is refused with a WARN. The claim is cleared when a living unit is
+  damaged again or HP is restored (resurrection, repair, load), so a repaired tower or a
+  resurrected character still dies once per life. Tests:
+  `systems::skills::death_once_tests` (two racing hits on a player / an NPC, looped).
 * systems::skills: `Character.DoDie` is complete (exp / durability loss, escalating respawn timer,
   PvP honor / assists / kill counts, War-zone honor loss, `DropTradePackToFloor`). The PvP
   damage / heal histories are lists of (character id, unix ms) in `skill_char`.
@@ -2500,13 +2512,80 @@ the 1.2 pak. The generated patch is
   ids, of which 13 have a `crafts` row and 7,678 is an orphan, plus 5 custom ones refused). The
   19 imported `crafts` rows are those 13 plus 6 festival-coin material crafts.
 
-Next families, in order (all need the same tool; blockers in brackets): Hardy/Heartless 3-piece
+Next families, in order (all need the same tool; blockers in brackets): the batch 1b gear
+remainder (armor, weapons, accessories, cloaks; each its own audit), Hardy/Heartless 3-piece
 class sets 387-392 (proc only, no engine; 18 items, base-piece source open), Distorted Whispers 386
 (not craftable, bonuses 3/5 + proc), Hexbane/Talisman/Tempting/Enchanting Melody 414-417 (lvl 53,
 no crafts), Soulforged/Maliceforged weapons and Bane's Bolt/Bloodmist/Abyssal Destroyer 2-piece
 weapon sets 393-395 (buffs only; weapon models), Auroria class sets (no set rows), then lunagems
 (socket tables reshaped, loader check). The Dawnsdrop/Hellforged sets use emulator-custom ids
 (>= 9,000,000) and are refused by the tool. A proc engine is the prerequisite for the 57 item procs.
+
+### Batch 1b-costumes: the art-carrying costumes (2026-10-21)
+
+`python -I -B -X utf8 rust/tools/version_gaps/backport.py --items gear-1b-costumes
+--pak12-listing <1.2 pak listing> --pak30-listing <3.0.4.2 pak listing>` selects the costume
+complement of batch 1a: item id absent from 1.2/batch 1a and below 8,000,000, no Dawnsdrop
+item (set id >= 9,000,001 or item id 34,936..34,984), `items.level` <= 62, costume only
+(category 10/173 or slot 31, category not 94/96/100), no item proc, no set proc, no bonus unit
+attribute above 186, no 3.0-only use skill, a look for each of the four playable races, at least
+one playable look path absent from the 1.2 pak, and every playable look path present in the 3.0
+pak. Dwarf/Warborn look paths are imported as data-only `item_assets` rows. The patch is generated
+against the 1.2 database **with batch 1a applied** (patch order), so its synthetic ids start above
+1a's (looks 3,856..3,974, `item_assets` 22,140..23,531). Generated patch:
+`SQL/patches/compact/2026-10-21-gear-3.0-batch-1b-costumes.sql`; inserts are guarded with
+`WHERE NOT EXISTS` on the id and a second run is a no-op. Regeneration is two-pass: build a probe
+overlay with the candidate list, `--repair-missing-textures` and `--unresolved-list <roots>`, then
+pass `<roots>` to `backport.py --skip-art-paths`; the final overlay build uses the repaired list.
+
+- **300 costumes** plus **2 craft-material items**, with 19 crafts (19 products / 34 materials),
+  114 new `armor_assets` looks, 1,332 new `item_assets` rows, 1,379 `item_armor_assets` rows,
+  189 icons, 69 `dyeable_items`, 4 buffs, the craft skill/effect chain and 707 localized texts.
+  1.2 has no `item_armors.asset2_id`, so the 3.0 secondary look chain is dropped, as are the
+  3.0-only `item_assets.hide_horn`/`hide_tail` values.
+- **Overlay pak** `10-gear-3.0-costumes.pak` (TypeA/WIBO, 2,447 files, 1,011,265,024 bytes) carries
+  867 new primary playable-race look paths + 190 new icons and their closure. It only adds files:
+  `cargo xtask overlay-pak --closure --new-only --repair-missing-textures
+  --exclude-present-in <1.2 pak>`. The list and a manifest (size, SHA-256, changed-shared-file and
+  repair lists) are in `rust/tools/version_gaps/overlays/`; the pak itself is not committed.
+  Install it in Bevy in `overlays/` next to `game_pak` or through `AA_PAK_OVERLAYS`; a server
+  client-file source list can also point at it (`ClientData.Sources`, the first source wins). The
+  stock 1.2 client cannot read a second pak and needs the files merged into its own pak
+  (`patch-client`).
+- **Texture repair**: 3.0 contains materials that point at a texture path absent from the 1.2, 3.0
+  and 10.x paks (copy-paste mistakes). For a new 3.0 `.mtl`, the overlay looks for the same-role
+  suffix (`_df`, `_sp`, `_ddn`, `_mask`, `_sss`, ...) beside the material (same stem) and then
+  beside the model; an unambiguous match is rewritten into the shipped `.mtl` and its texture is
+  added. Eleven refs were repaired in the probe run; the final overlay ships five
+  (`fe_f_sk_saint001.mtl`, `fe_f_sk_saint002.mtl` and three `nu_f_sk_valentine002.mtl` refs).
+  One `fe_f_nude.mtl` opacity ref stays: that is the stock 1.2 nude body material, the overlay
+  never rewrites a 1.2 file, and the 1.2 client renders it.
+- **Changed-shared-file cases (60 files, none overlaid).** Five direct look paths exist in both paks
+  with different bytes: the four `.../sk_award001/*.chr` female files and
+  `nu_m_sk_lucius001.chr`. They stay at the 1.2 version because they are the same costume models
+  (the Lucius file is the 1.2 item 16066 art), so the imported costumes render that outfit from
+  the 1.2 file. The other 55 are closure materials/textures/models that `--new-only` skips; the new
+  models reference those same paths and use the 1.2 versions. Nine Warborn nude body textures pulled
+  by the `uniform003` materials are dropped by `--exclude-path`, so the overlay carries no
+  Dwarf/Warborn path.
+- **Skipped after the repair pass (13)**: 52470 and 53219 (necro001; only the Nuian female material
+  has replacements, elf/ferre/hari female folders have no matching textures), 49711 and 52481
+  (witcher001; `mask2.dds` has no `_mask` candidate), 41002/46752/49420 (kyprosa001),
+  35755/39482/46715/49340 (pirate002) and 53217/53601 (swimsuit015), whose `fe_f_nude_fur_df.dds`
+  fur-opacity ref has no own-folder replacement. The patch header lists each id with its unresolved
+  model paths. Other skips are unchanged: 220 costumes whose four-race art is only in the 10.x pak,
+  24 with no four-race art, 10 with a 3.0-only use skill, 5 above level 62, 2,270 emulator-custom 8M
+  items and 104 Dawnsdrop items. The 3.0 source has three duplicate `dyeable_items` rows (items
+  45490, 49412, 52301); only the first row per item is imported, since `ItemData::load` rejects a
+  duplicate dyeable item. Seven emulator-custom crafts (8M/9M ids) are refused from the craft
+  closure, and materials 40037/40383 are imported without a 1.2 craft source. The final overlay has
+  no unresolved costume texture ref; 66 closure references remain ambiguous/benign (15 duplicate
+  `.mtl` stems, 47 extension-less model refs resolving to included files, 3 textures present in 1.2,
+  and the one stock 1.2 body opacity above).
+- **Tests**: `test_backport.py` covers the selection and the new-files-only overlay list;
+  `gear_1b_costume_patch_applies_after_1a_and_loads` applies both patches twice to a copy, checks
+  the counts, the re-keyed looks, the no-duplicate text/dyeable keys and `ItemData::load`. Static
+  and offline checks only so far; the in-game check follows separately.
 
 ## Bevy-client server fixes (October 19, 2026)
 
