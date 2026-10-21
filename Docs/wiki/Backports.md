@@ -135,7 +135,7 @@ correction and the skipped rows are in `PORTING.md` under "Batch 1a").
 
 **Batch 1b-costumes is done on `feat/gear-1b-costumes`**: 300 costumes whose four playable-race art
 is not in the 1.2 pak, with 867 primary look paths and 190 icons in the overlay pak
-`gear-3.0-costumes.pak` (TypeA/WIBO, 2,447 files, 1,011,265,024 bytes), plus 2 craft-material items
+`10-gear-3.0-costumes.pak` (TypeA/WIBO, 2,447 files, 1,011,265,024 bytes), plus 2 craft-material items
 and 19 crafts. The compact patch is `SQL/patches/compact/2026-10-21-gear-3.0-batch-1b-costumes.sql`
 (generated on top of batch 1a, so the two apply in file-name order). The overlay is built with
 `--new-only`, `--repair-missing-textures` and `--exclude-path /characters/{dwarf,warborn}/`, so it
@@ -148,7 +148,7 @@ skipped because at least one race has no unambiguous replacement (52470/53219 ne
 53217/53601 swimsuit015). 220 more are skipped because their four-race art exists only in the 10.x
 pak; the rest are 24 no-four-race costumes, 10 with a 3.0-only use skill, 5 above level 62, the 8M
 emulator band and the Dawnsdrop sets. The pak is not committed. Install it in Bevy as
-`overlays/gear-3.0-costumes.pak` next to `game_pak`, or point `AA_PAK_OVERLAYS` at it; a server reads
+`overlays/10-gear-3.0-costumes.pak` next to `game_pak`, or point `AA_PAK_OVERLAYS` at it; a server reads
 it first from `ClientData.Sources`.
 
 Later batches follow the report: the rest of 1b (armor, weapons, accessories, cloaks), 2 (data-only
@@ -261,13 +261,22 @@ with no unambiguous match stay under `texture_repair_unresolved` and their direc
 written with `--unresolved-list` (pass that list to `backport.py --skip-art-paths`). A material
 present in a stock 1.2 pak is never rewritten (`texture_repair_shared_1_2`).
 
-For batch 1b-costumes the built pak is `gear-3.0-costumes.pak` (2,447 files, 1,011,265,024 bytes,
+For batch 1b-costumes the built pak is `10-gear-3.0-costumes.pak` (2,447 files, 1,011,265,024 bytes,
 SHA-256 `791c84c067ec854517759eabc4a80f54189e4332a0a4425a616ecefd7422627a`, full value in `rust/tools/version_gaps/overlays/gear-3.0-costumes.manifest.json`).
-Install it in Bevy as `overlays/gear-3.0-costumes.pak` inside the client folder next to `game_pak`,
+Install it in Bevy as `overlays/10-gear-3.0-costumes.pak` inside the client folder next to `game_pak`,
 or point `AA_PAK_OVERLAYS` at the file; the client discovers `overlays/*.pak` over the stock pak.
 For a server run, list the overlay before the 1.2 `game_pak` in `ClientData.Sources` (the first
 source wins). The 1.2 client itself cannot read a second pak through the server; it needs the files
 merged into its own pak with `patch-client`.
+
+Naming and installing overlay paks: name each pak `<NN>-<content>.pak` with a two-digit order
+prefix and the content, e.g. `10-gear-3.0-costumes.pak`, later `20-gear-3.0-armor.pak`. Bevy loads
+`overlays/*.pak` sorted by file name and a later pak wins on the same path, so the prefix is the load
+order. For play, copy the paks into `overlays/` next to `game_pak` (they load on every start; delete
+a file to remove that batch); use `AA_PAK_OVERLAYS` only for test runs that must not touch the client
+folder. Built paks are kept outside the repository in `D:/aaemu-overlays/` on this machine and are
+never committed; each has a manifest under `rust/tools/version_gaps/overlays/` (size, SHA-256, build
+command). The client log lists every loaded pak at startup (`aa-pak: overlay <path>: N files`).
 
 Verification: the xtask tests reopen the overlay with `aaemu_commons::aapak` and compare every byte
 with its source; Bevy reads the same TypeA layout through `aa-pak` (`Pak::open_with_overlays`, or

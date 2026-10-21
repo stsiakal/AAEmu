@@ -2531,7 +2531,7 @@ pass `<roots>` to `backport.py --skip-art-paths`; the final overlay build uses t
   189 icons, 69 `dyeable_items`, 4 buffs, the craft skill/effect chain and 707 localized texts.
   1.2 has no `item_armors.asset2_id`, so the 3.0 secondary look chain is dropped, as are the
   3.0-only `item_assets.hide_horn`/`hide_tail` values.
-- **Overlay pak** `gear-3.0-costumes.pak` (TypeA/WIBO, 2,447 files, 1,011,265,024 bytes) carries
+- **Overlay pak** `10-gear-3.0-costumes.pak` (TypeA/WIBO, 2,447 files, 1,011,265,024 bytes) carries
   867 new primary playable-race look paths + 190 new icons and their closure. It only adds files:
   `cargo xtask overlay-pak --closure --new-only --repair-missing-textures
   --exclude-present-in <1.2 pak>`. The list and a manifest (size, SHA-256, changed-shared-file and

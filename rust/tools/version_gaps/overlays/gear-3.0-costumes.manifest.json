@@ -9,8 +9,8 @@
   "list_sha256": "4e8436510809ab42046345c550cefe3709685840900f42271a3a28770cce8625",
   "list_paths": 1057,
   "pak": {
-    "name": "gear-3.0-costumes.pak",
-    "location": "C:\\Users\\stsiakal\\.claude\\jobs\\7860df55\\tmp\\gear1b\\gear-3.0-costumes.pak",
+    "name": "10-gear-3.0-costumes.pak",
+    "location": "D:/aaemu-overlays/10-gear-3.0-costumes.pak",
     "size": 1011265024,
     "sha256": "791c84c067ec854517759eabc4a80f54189e4332a0a4425a616ecefd7422627a",
     "file_count": 2447,
