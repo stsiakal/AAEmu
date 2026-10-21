@@ -166,6 +166,9 @@ fn load_levels(conn: &Connection) -> Result<Vec<LevelTemplate>, rusqlite::Error>
 }
 
 #[cfg(test)]
+mod gear1a_patch_tests;
+
+#[cfg(test)]
 mod level55_patch_tests;
 
 #[cfg(test)]

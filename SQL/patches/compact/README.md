@@ -60,3 +60,4 @@ guarded, so that is safe, but the record is what keeps the source of truth verif
 | `2026-10-14-fix-npc-ai-param-syntax.sql` | repairs malformed Lua in `npc_ai_params` 443, 835, 1975 | guarded by exact original text |
 | `2026-10-15-halloween-gourd-respawn.sql` | gourd doodad 7422 final row respawns | guarded by original value |
 | `2026-10-20-level-55-retail-3.0.sql` | 3.0 level 51–55 capstones, experience curve and quest supplies | guarded by original values |
+| `2026-10-21-gear-3.0-batch-1a.sql` | 3.0 gear batch 1a: 288 retail costumes/armor/cloaks (≤ Eanad) + 7 craft materials, armor looks re-keyed above the 1.2 range | inserts guarded by `NOT EXISTS` on id; replacement `UPDATE`s rewrite the same values |
