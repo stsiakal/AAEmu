@@ -1,0 +1,567 @@
+{
+  "batch": "gear-1b-costumes",
+  "items": 313,
+  "sql_patch": "SQL/patches/compact/2026-10-21-gear-3.0-batch-1b-costumes.sql",
+  "sql_sha256": "890640c82990cda5fb09cd8c8b0ef4c200b05c2b544e99a06bdb7a975ea1d693",
+  "list": "rust/tools/version_gaps/overlays/gear-3.0-costumes.list",
+  "list_sha256": "3bcf34a00ab0399bce3115ca064ba06f20c61e698e59cfdf9378928f198f1620",
+  "list_paths": 1107,
+  "pak": {
+    "name": "gear-3.0-costumes.pak",
+    "location": "C:\\Users\\stsiakal\\.claude\\jobs\\7860df55\\tmp\\gear1b\\gear-3.0-costumes.pak",
+    "size": 1076861440,
+    "sha256": "cd86cce92ee090af10c297038946f277a962323eb70f7cedb5d708f89fd492e0",
+    "file_count": 2582,
+    "total_bytes": 1075403608,
+    "header": "TypeA (WIBO)"
+  },
+  "source_pak": "C:\\Users\\stsiakal\\Downloads\\Archeage Client v.3.0.4.2 (r336598)\\game_pak",
+  "exclude_pak": "D:\\AA1.2\\game_pak",
+  "build_command": "cargo xtask overlay-pak --source <3.0.4.2 game_pak> --list rust/tools/version_gaps/overlays/gear-3.0-costumes.list --closure --new-only --exclude-path /characters/dwarf/ --exclude-path /characters/warborn/ --exclude-present-in <1.2 game_pak> --out gear-3.0-costumes.pak --report gear-3.0-costumes-report.json",
+  "summary": {
+    "changed_present_in_1_2_skipped": 56,
+    "identical_skipped": 167,
+    "included": 2582,
+    "included_changed": 0,
+    "included_new": 2582,
+    "missing_references": 93,
+    "path_excluded_skipped": 9
+  },
+  "path_excluded": [
+    {
+      "name": "game/objects/characters/warborn/male/nude/wa_m_nude_df.dds",
+      "origin": "game/objects/characters/elf/male/costume/el_m_sk_uniform003/el_m_sk_uniform003.mtl"
+    },
+    {
+      "name": "game/objects/characters/warborn/male/nude/wa_m_nude_sp.dds",
+      "origin": "game/objects/characters/elf/male/costume/el_m_sk_uniform003/el_m_sk_uniform003.mtl"
+    },
+    {
+      "name": "game/objects/characters/warborn/male/nude/wa_m_nude_sss.dds",
+      "origin": "game/objects/characters/elf/male/costume/el_m_sk_uniform003/el_m_sk_uniform003.mtl"
+    },
+    {
+      "name": "game/objects/characters/warborn/male/nude/wa_m_nude_df.dds",
+      "origin": "game/objects/characters/ferre/male/costume/fe_m_sk_uniform003/fe_m_sk_uniform003.mtl"
+    },
+    {
+      "name": "game/objects/characters/warborn/male/nude/wa_m_nude_sp.dds",
+      "origin": "game/objects/characters/ferre/male/costume/fe_m_sk_uniform003/fe_m_sk_uniform003.mtl"
+    },
+    {
+      "name": "game/objects/characters/warborn/male/nude/wa_m_nude_sss.dds",
+      "origin": "game/objects/characters/ferre/male/costume/fe_m_sk_uniform003/fe_m_sk_uniform003.mtl"
+    },
+    {
+      "name": "game/objects/characters/warborn/male/nude/wa_m_nude_df.dds",
+      "origin": "game/objects/characters/hariharan/male/costume/ha_m_sk_uniform003/ha_m_sk_uniform003.mtl"
+    },
+    {
+      "name": "game/objects/characters/warborn/male/nude/wa_m_nude_sp.dds",
+      "origin": "game/objects/characters/hariharan/male/costume/ha_m_sk_uniform003/ha_m_sk_uniform003.mtl"
+    },
+    {
+      "name": "game/objects/characters/warborn/male/nude/wa_m_nude_sss.dds",
+      "origin": "game/objects/characters/hariharan/male/costume/ha_m_sk_uniform003/ha_m_sk_uniform003.mtl"
+    }
+  ],
+  "changed_shared_files": {
+    "direct_look_kept_in_1_2": 5,
+    "closure_kept_in_1_2": 56,
+    "total": 61,
+    "files": [
+      {
+        "kind": "direct_look",
+        "name": "game/objects/characters/elf/female/costume/el_f_sk_award001/el_f_sk_award001.chr",
+        "size": 766964,
+        "kept": "1.2",
+        "reason": "same costume model path: award001 is the four female award costumes"
+      },
+      {
+        "kind": "direct_look",
+        "name": "game/objects/characters/ferre/female/costume/fe_f_sk_award001/fe_f_sk_award001.chr",
+        "size": 785060,
+        "kept": "1.2",
+        "reason": "same costume model path: award001 is the four female award costumes"
+      },
+      {
+        "kind": "direct_look",
+        "name": "game/objects/characters/hariharan/female/costume/ha_f_sk_award001/ha_f_sk_award001.chr",
+        "size": 731656,
+        "kept": "1.2",
+        "reason": "same costume model path: award001 is the four female award costumes"
+      },
+      {
+        "kind": "direct_look",
+        "name": "game/objects/characters/nuian/female/costume/nu_f_sk_award001/nu_f_sk_award001.chr",
+        "size": 768160,
+        "kept": "1.2",
+        "reason": "same costume model path: award001 is the four female award costumes"
+      },
+      {
+        "kind": "direct_look",
+        "name": "game/objects/characters/nuian/male/costume/nu_m_sk_lucius001/nu_m_sk_lucius001.chr",
+        "size": 773822,
+        "kept": "1.2",
+        "reason": "same costume model path: lucius001 is the Immortal Guardian robe whose 1.2 file is item 16066's art"
+      },
+      {
+        "kind": "closure",
+        "name": "game/objects/characters/elf/female/costume/el_f_sk_musa001/el_f_sk_musa001_v0100.mtl",
+        "size": 2791,
+        "added_by": "game/objects/characters/elf/female/costume/el_f_sk_musa001/el_f_sk_musa001_v0100.chr",
+        "kept": "1.2",
+        "reason": "material/texture/model shared with the 1.2 art; the overlay only adds files"
+      },
+      {
+        "kind": "closure",
+        "name": "game/objects/characters/elf/female/costume/el_f_sk_swimsuit005/el_f_sk_swimsuit005.chr",
+        "size": 461472,
+        "added_by": "game/objects/characters/elf/female/costume/el_f_sk_swimsuit001/el_f_sk_swimsuit001.cdf",
+        "kept": "1.2",
+        "reason": "material/texture/model shared with the 1.2 art; the overlay only adds files"
+      },
+      {
+        "kind": "closure",
+        "name": "game/objects/characters/elf/female/costume/el_f_sk_swimsuit006/el_f_sk_swimsuit006.chr",
+        "size": 439812,
+        "added_by": "game/objects/characters/elf/female/costume/el_f_sk_swimsuit002/el_f_sk_swimsuit002.cdf",
+        "kept": "1.2",
+        "reason": "material/texture/model shared with the 1.2 art; the overlay only adds files"
+      },
+      {
+        "kind": "closure",
+        "name": "game/objects/characters/elf/female/nude/el_f_nude_ddn.dds",
+        "size": 349656,
+        "added_by": "game/objects/characters/elf/female/costume/el_f_sk_abyssgate/el_f_sk_abyssgate.mtl",
+        "kept": "1.2",
+        "reason": "material/texture/model shared with the 1.2 art; the overlay only adds files"
+      },
+      {
+        "kind": "closure",
+        "name": "game/objects/characters/elf/female/nude/el_f_nude_df.dds",
+        "size": 349656,
+        "added_by": "game/objects/characters/elf/female/costume/el_f_sk_abyssgate/el_f_sk_abyssgate.mtl",
+        "kept": "1.2",
+        "reason": "material/texture/model shared with the 1.2 art; the overlay only adds files"
+      },
+      {
+        "kind": "closure",
+        "name": "game/objects/characters/elf/female/nude/el_f_nude_sp.dds",
+        "size": 87512,
+        "added_by": "game/objects/characters/elf/female/costume/el_f_sk_abyssgate/el_f_sk_abyssgate.mtl",
+        "kept": "1.2",
+        "reason": "material/texture/model shared with the 1.2 art; the overlay only adds files"
+      },
+      {
+        "kind": "closure",
+        "name": "game/objects/characters/elf/female/nude/el_f_nude_sss.dds",
+        "size": 87512,
+        "added_by": "game/objects/characters/elf/female/costume/el_f_sk_abyssgate/el_f_sk_abyssgate.mtl",
+        "kept": "1.2",
+        "reason": "material/texture/model shared with the 1.2 art; the overlay only adds files"
+      },
+      {
+        "kind": "closure",
+        "name": "game/objects/characters/elf/male/costume/el_m_sk_butler001/el_m_sk_butler001.mtl",
+        "size": 3699,
+        "added_by": "game/objects/characters/elf/male/costume/el_m_sk_valentine001/el_m_sk_valentine001.chr",
+        "kept": "1.2",
+        "reason": "material/texture/model shared with the 1.2 art; the overlay only adds files"
+      },
+      {
+        "kind": "closure",
+        "name": "game/objects/characters/elf/male/costume/el_m_sk_musa001/el_m_sk_musa001_v0100.mtl",
+        "size": 2785,
+        "added_by": "game/objects/characters/elf/male/costume/el_m_sk_musa001/el_m_sk_musa001_v0100.chr",
+        "kept": "1.2",
+        "reason": "material/texture/model shared with the 1.2 art; the overlay only adds files"
+      },
+      {
+        "kind": "closure",
+        "name": "game/objects/characters/elf/male/costume/el_m_sk_swimsuit005/el_m_sk_swimsuit005.mtl",
+        "size": 2665,
+        "added_by": "game/objects/characters/elf/male/costume/el_m_sk_swimsuit005/el_m_sk_swimsuit005.chr",
+        "kept": "1.2",
+        "reason": "material/texture/model shared with the 1.2 art; the overlay only adds files"
+      },
+      {
+        "kind": "closure",
+        "name": "game/objects/characters/ferre/female/costume/fe_f_sk_musa001/fe_f_sk_musa001_v0100.mtl",
+        "size": 2920,
+        "added_by": "game/objects/characters/ferre/female/costume/fe_f_sk_musa001/fe_f_sk_musa001_v0100.chr",
+        "kept": "1.2",
+        "reason": "material/texture/model shared with the 1.2 art; the overlay only adds files"
+      },
+      {
+        "kind": "closure",
+        "name": "game/objects/characters/ferre/female/costume/fe_f_sk_swimsuit005/fe_f_sk_swimsuit005.chr",
+        "size": 454360,
+        "added_by": "game/objects/characters/ferre/female/costume/fe_f_sk_swimsuit001/fe_f_sk_swimsuit001.cdf",
+        "kept": "1.2",
+        "reason": "material/texture/model shared with the 1.2 art; the overlay only adds files"
+      },
+      {
+        "kind": "closure",
+        "name": "game/objects/characters/ferre/female/costume/fe_f_sk_swimsuit006/fe_f_sk_swimsuit006.chr",
+        "size": 434700,
+        "added_by": "game/objects/characters/ferre/female/costume/fe_f_sk_swimsuit002/fe_f_sk_swimsuit002.cdf",
+        "kept": "1.2",
+        "reason": "material/texture/model shared with the 1.2 art; the overlay only adds files"
+      },
+      {
+        "kind": "closure",
+        "name": "game/objects/characters/ferre/female/nude/fe_f_nude_sp.dds",
+        "size": 87512,
+        "added_by": "game/objects/characters/ferre/female/costume/fe_f_sk_abyssgate/fe_f_sk_abyssgate.mtl",
+        "kept": "1.2",
+        "reason": "material/texture/model shared with the 1.2 art; the overlay only adds files"
+      },
+      {
+        "kind": "closure",
+        "name": "game/objects/characters/ferre/female/nude/fe_f_nude_yeln01_df.dds",
+        "size": 349656,
+        "added_by": "game/objects/characters/ferre/female/costume/fe_f_sk_owlpostman001/fe_f_sk_owlpostman001.mtl",
+        "kept": "1.2",
+        "reason": "material/texture/model shared with the 1.2 art; the overlay only adds files"
+      },
+      {
+        "kind": "closure",
+        "name": "game/objects/characters/ferre/female/nude/fe_f_nude_yeln01_sp.dds",
+        "size": 87512,
+        "added_by": "game/objects/characters/ferre/female/costume/fe_f_sk_owlpostman001/fe_f_sk_owlpostman001.mtl",
+        "kept": "1.2",
+        "reason": "material/texture/model shared with the 1.2 art; the overlay only adds files"
+      },
+      {
+        "kind": "closure",
+        "name": "game/objects/characters/ferre/female/nude/fe_f_nude_yeln01_sss.dds",
+        "size": 87512,
+        "added_by": "game/objects/characters/ferre/female/costume/fe_f_sk_owlpostman001/fe_f_sk_owlpostman001.mtl",
+        "kept": "1.2",
+        "reason": "material/texture/model shared with the 1.2 art; the overlay only adds files"
+      },
+      {
+        "kind": "closure",
+        "name": "game/objects/characters/ferre/female/parts/ar/obj/fe_f_1ar402.chr",
+        "size": 179360,
+        "added_by": "game/objects/characters/ferre/female/parts/ar/cloth/ar_cloth542/fe_f_ar_cloth542.cdf",
+        "kept": "1.2",
+        "reason": "material/texture/model shared with the 1.2 art; the overlay only adds files"
+      },
+      {
+        "kind": "closure",
+        "name": "game/objects/characters/ferre/male/costume/fe_m_sk_butler001/fe_m_sk_butler001.mtl",
+        "size": 3813,
+        "added_by": "game/objects/characters/ferre/male/costume/fe_m_sk_schoollook001/fe_m_sk_schoollook001.chr",
+        "kept": "1.2",
+        "reason": "material/texture/model shared with the 1.2 art; the overlay only adds files"
+      },
+      {
+        "kind": "closure",
+        "name": "game/objects/characters/ferre/male/costume/fe_m_sk_lord001/fe_m_sk_lord001.mtl",
+        "size": 3155,
+        "added_by": "game/objects/characters/ferre/male/costume/fe_m_sk_metalpriest001/fe_m_sk_metalpriest001.chr",
+        "kept": "1.2",
+        "reason": "material/texture/model shared with the 1.2 art; the overlay only adds files"
+      },
+      {
+        "kind": "closure",
+        "name": "game/objects/characters/ferre/male/costume/fe_m_sk_musa001/fe_m_sk_musa001_v0100.mtl",
+        "size": 2938,
+        "added_by": "game/objects/characters/ferre/male/costume/fe_m_sk_musa001/fe_m_sk_musa001_v0100.chr",
+        "kept": "1.2",
+        "reason": "material/texture/model shared with the 1.2 art; the overlay only adds files"
+      },
+      {
+        "kind": "closure",
+        "name": "game/objects/characters/ferre/male/costume/fe_m_sk_swimsuit005/fe_m_sk_swimsuit005.mtl",
+        "size": 2736,
+        "added_by": "game/objects/characters/ferre/male/costume/fe_m_sk_swimsuit005/fe_m_sk_swimsuit005.chr",
+        "kept": "1.2",
+        "reason": "material/texture/model shared with the 1.2 art; the overlay only adds files"
+      },
+      {
+        "kind": "closure",
+        "name": "game/objects/characters/ferre/male/nude/fe_m_nude.mtl",
+        "size": 1414,
+        "added_by": "game/objects/characters/ferre/male/costume/fe_m_sk_bluewolf001/fe_m_sk_bluewolf001.chr",
+        "kept": "1.2",
+        "reason": "material/texture/model shared with the 1.2 art; the overlay only adds files"
+      },
+      {
+        "kind": "closure",
+        "name": "game/objects/characters/ferre/male/nude/fe_m_nude_brop01_df.dds",
+        "size": 349656,
+        "added_by": "game/objects/characters/ferre/male/costume/fe_m_sk_abyssgate/fe_m_sk_abyssgate.mtl",
+        "kept": "1.2",
+        "reason": "material/texture/model shared with the 1.2 art; the overlay only adds files"
+      },
+      {
+        "kind": "closure",
+        "name": "game/objects/characters/ferre/male/nude/fe_m_nude_ddn.dds",
+        "size": 349656,
+        "added_by": "game/objects/characters/elf/female/costume/el_f_sk_necro001/el_f_sk_necro001.mtl",
+        "kept": "1.2",
+        "reason": "material/texture/model shared with the 1.2 art; the overlay only adds files"
+      },
+      {
+        "kind": "closure",
+        "name": "game/objects/characters/ferre/male/nude/fe_m_nude_grap01_df.dds",
+        "size": 349656,
+        "added_by": "game/objects/characters/elf/female/costume/el_f_sk_necro001/el_f_sk_necro001.mtl",
+        "kept": "1.2",
+        "reason": "material/texture/model shared with the 1.2 art; the overlay only adds files"
+      },
+      {
+        "kind": "closure",
+        "name": "game/objects/characters/ferre/male/nude/fe_m_nude_sp.dds",
+        "size": 87512,
+        "added_by": "game/objects/characters/elf/female/costume/el_f_sk_necro001/el_f_sk_necro001.mtl",
+        "kept": "1.2",
+        "reason": "material/texture/model shared with the 1.2 art; the overlay only adds files"
+      },
+      {
+        "kind": "closure",
+        "name": "game/objects/characters/hariharan/female/costume/ha_f_sk_musa001/ha_f_sk_musa001_v0100.mtl",
+        "size": 2855,
+        "added_by": "game/objects/characters/hariharan/female/costume/ha_f_sk_musa001/ha_f_sk_musa001_v0100.chr",
+        "kept": "1.2",
+        "reason": "material/texture/model shared with the 1.2 art; the overlay only adds files"
+      },
+      {
+        "kind": "closure",
+        "name": "game/objects/characters/hariharan/female/costume/ha_f_sk_swimsuit005/ha_f_sk_swimsuit005.chr",
+        "size": 423800,
+        "added_by": "game/objects/characters/hariharan/female/costume/ha_f_sk_swimsuit001/ha_f_sk_swimsuit001.cdf",
+        "kept": "1.2",
+        "reason": "material/texture/model shared with the 1.2 art; the overlay only adds files"
+      },
+      {
+        "kind": "closure",
+        "name": "game/objects/characters/hariharan/female/nude/ha_f_nude.mtl",
+        "size": 1517,
+        "added_by": "game/objects/characters/hariharan/female/costume/ha_f_sk_schoollook001/ha_f_sk_schoollook001.chr",
+        "kept": "1.2",
+        "reason": "material/texture/model shared with the 1.2 art; the overlay only adds files"
+      },
+      {
+        "kind": "closure",
+        "name": "game/objects/characters/hariharan/female/nude/ha_f_nude_ddn.dds",
+        "size": 349656,
+        "added_by": "game/objects/characters/hariharan/female/costume/ha_f_sk_abyssgate/ha_f_sk_abyssgate.mtl",
+        "kept": "1.2",
+        "reason": "material/texture/model shared with the 1.2 art; the overlay only adds files"
+      },
+      {
+        "kind": "closure",
+        "name": "game/objects/characters/hariharan/female/nude/ha_f_nude_df.dds",
+        "size": 349656,
+        "added_by": "game/objects/characters/hariharan/female/costume/ha_f_sk_abyssgate/ha_f_sk_abyssgate.mtl",
+        "kept": "1.2",
+        "reason": "material/texture/model shared with the 1.2 art; the overlay only adds files"
+      },
+      {
+        "kind": "closure",
+        "name": "game/objects/characters/hariharan/female/nude/ha_f_nude_sp.dds",
+        "size": 87512,
+        "added_by": "game/objects/characters/hariharan/female/costume/ha_f_sk_abyssgate/ha_f_sk_abyssgate.mtl",
+        "kept": "1.2",
+        "reason": "material/texture/model shared with the 1.2 art; the overlay only adds files"
+      },
+      {
+        "kind": "closure",
+        "name": "game/objects/characters/hariharan/female/nude/ha_f_nude_sss.dds",
+        "size": 87512,
+        "added_by": "game/objects/characters/hariharan/female/costume/ha_f_sk_abyssgate/ha_f_sk_abyssgate.mtl",
+        "kept": "1.2",
+        "reason": "material/texture/model shared with the 1.2 art; the overlay only adds files"
+      },
+      {
+        "kind": "closure",
+        "name": "game/objects/characters/hariharan/male/costume/ha_m_sk_musa001/ha_m_sk_musa001_v0100.chr",
+        "size": 791188,
+        "added_by": "game/objects/characters/hariharan/male/costume/ha_m_sk_musa001/ha_m_sk_musa001_v0104.cdf",
+        "kept": "1.2",
+        "reason": "material/texture/model shared with the 1.2 art; the overlay only adds files"
+      },
+      {
+        "kind": "closure",
+        "name": "game/objects/characters/hariharan/male/costume/ha_m_sk_musa001/ha_m_sk_musa001_v0100.mtl",
+        "size": 2823,
+        "added_by": "game/objects/characters/hariharan/male/costume/ha_m_sk_musa001/ha_m_sk_musa001_v0100.chr",
+        "kept": "1.2",
+        "reason": "material/texture/model shared with the 1.2 art; the overlay only adds files"
+      },
+      {
+        "kind": "closure",
+        "name": "game/objects/characters/hariharan/male/costume/ha_m_sk_swimsuit005/ha_m_sk_swimsuit005.chr",
+        "size": 372172,
+        "added_by": "game/objects/characters/hariharan/male/costume/ha_m_sk_swimsuit001/ha_m_sk_swimsuit001.cdf",
+        "kept": "1.2",
+        "reason": "material/texture/model shared with the 1.2 art; the overlay only adds files"
+      },
+      {
+        "kind": "closure",
+        "name": "game/objects/characters/hariharan/male/costume/ha_m_sk_swimsuit005/ha_m_sk_swimsuit005.mtl",
+        "size": 2712,
+        "added_by": "game/objects/characters/hariharan/male/costume/ha_m_sk_swimsuit002/ha_m_sk_swimsuit002.chr",
+        "kept": "1.2",
+        "reason": "material/texture/model shared with the 1.2 art; the overlay only adds files"
+      },
+      {
+        "kind": "closure",
+        "name": "game/objects/characters/hariharan/male/nude/ha_m_nude_df.dds",
+        "size": 349656,
+        "added_by": "game/objects/characters/hariharan/male/costume/ha_m_sk_death_knight001/ha_m_sk_death_knight001.mtl",
+        "kept": "1.2",
+        "reason": "material/texture/model shared with the 1.2 art; the overlay only adds files"
+      },
+      {
+        "kind": "closure",
+        "name": "game/objects/characters/hariharan/male/parts/pt/cloth/pt_cloth239/ha_m_pt_cloth239.mtl",
+        "size": 2518,
+        "added_by": "game/objects/characters/hariharan/male/parts/pt/obj/ha_m_1pt001.chr",
+        "kept": "1.2",
+        "reason": "material/texture/model shared with the 1.2 art; the overlay only adds files"
+      },
+      {
+        "kind": "closure",
+        "name": "game/objects/characters/nuian/female/costume/nu_f_sk_musa001/nu_f_sk_musa001_v0100.mtl",
+        "size": 2554,
+        "added_by": "game/objects/characters/nuian/female/costume/nu_f_sk_musa001/nu_f_sk_musa001_v0100.chr",
+        "kept": "1.2",
+        "reason": "material/texture/model shared with the 1.2 art; the overlay only adds files"
+      },
+      {
+        "kind": "closure",
+        "name": "game/objects/characters/nuian/female/costume/nu_f_sk_swimsuit005/nu_f_sk_swimsuit005.chr",
+        "size": 462136,
+        "added_by": "game/objects/characters/nuian/female/costume/nu_f_sk_swimsuit001/nu_f_sk_swimsuit001.cdf",
+        "kept": "1.2",
+        "reason": "material/texture/model shared with the 1.2 art; the overlay only adds files"
+      },
+      {
+        "kind": "closure",
+        "name": "game/objects/characters/nuian/female/costume/nu_f_sk_swimsuit005/nu_f_sk_swimsuit005_c_v_0100_df.dds",
+        "size": 1398232,
+        "added_by": "game/objects/characters/elf/female/costume/el_f_sk_swimsuit005/el_f_sk_swimsuit005.mtl",
+        "kept": "1.2",
+        "reason": "material/texture/model shared with the 1.2 art; the overlay only adds files"
+      },
+      {
+        "kind": "closure",
+        "name": "game/objects/characters/nuian/female/nude/nu_f_nude.mtl",
+        "size": 1437,
+        "added_by": "game/objects/characters/nuian/female/costume/nu_f_sk_fallevent001/nu_f_sk_fallevent001.chr",
+        "kept": "1.2",
+        "reason": "material/texture/model shared with the 1.2 art; the overlay only adds files"
+      },
+      {
+        "kind": "closure",
+        "name": "game/objects/characters/nuian/female/nude/nu_f_nude_ddn.dds",
+        "size": 349656,
+        "added_by": "game/objects/characters/elf/female/costume/el_f_sk_death_knight001/el_f_sk_death_knight001.mtl",
+        "kept": "1.2",
+        "reason": "material/texture/model shared with the 1.2 art; the overlay only adds files"
+      },
+      {
+        "kind": "closure",
+        "name": "game/objects/characters/nuian/female/nude/nu_f_nude_df.dds",
+        "size": 349656,
+        "added_by": "game/objects/characters/elf/female/costume/el_f_sk_death_knight001/el_f_sk_death_knight001.mtl",
+        "kept": "1.2",
+        "reason": "material/texture/model shared with the 1.2 art; the overlay only adds files"
+      },
+      {
+        "kind": "closure",
+        "name": "game/objects/characters/nuian/female/nude/nu_f_nude_sp.dds",
+        "size": 87512,
+        "added_by": "game/objects/characters/elf/female/costume/el_f_sk_archepunk001/el_f_sk_archepunk001.mtl",
+        "kept": "1.2",
+        "reason": "material/texture/model shared with the 1.2 art; the overlay only adds files"
+      },
+      {
+        "kind": "closure",
+        "name": "game/objects/characters/nuian/female/nude/nu_f_nude_sss.dds",
+        "size": 87512,
+        "added_by": "game/objects/characters/elf/female/costume/el_f_sk_death_knight001/el_f_sk_death_knight001.mtl",
+        "kept": "1.2",
+        "reason": "material/texture/model shared with the 1.2 art; the overlay only adds files"
+      },
+      {
+        "kind": "closure",
+        "name": "game/objects/characters/nuian/male/costume/mask/nu_sk_m_lord001_f_lord001_m_lord004_mask.dds",
+        "size": 349656,
+        "added_by": "game/objects/characters/elf/female/costume/el_f_sk_lord001/el_f_sk_lord001.mtl",
+        "kept": "1.2",
+        "reason": "material/texture/model shared with the 1.2 art; the overlay only adds files"
+      },
+      {
+        "kind": "closure",
+        "name": "game/objects/characters/nuian/male/costume/nu_m_sk_musa001/nu_m_sk_musa001_v0100.mtl",
+        "size": 2795,
+        "added_by": "game/objects/characters/nuian/male/costume/nu_m_sk_musa001/nu_m_sk_musa001_v0100.chr",
+        "kept": "1.2",
+        "reason": "material/texture/model shared with the 1.2 art; the overlay only adds files"
+      },
+      {
+        "kind": "closure",
+        "name": "game/objects/characters/nuian/male/costume/nu_m_sk_swimsuit005/nu_m_sk_swimsuit005.mtl",
+        "size": 2664,
+        "added_by": "game/objects/characters/nuian/male/costume/nu_m_sk_swimsuit005/nu_m_sk_swimsuit005.chr",
+        "kept": "1.2",
+        "reason": "material/texture/model shared with the 1.2 art; the overlay only adds files"
+      },
+      {
+        "kind": "closure",
+        "name": "game/objects/characters/nuian/male/nude/nu_m_nude_ddn.dds",
+        "size": 349656,
+        "added_by": "game/objects/characters/elf/female/costume/el_f_sk_lucius001/el_f_sk_lucius001.mtl",
+        "kept": "1.2",
+        "reason": "material/texture/model shared with the 1.2 art; the overlay only adds files"
+      },
+      {
+        "kind": "closure",
+        "name": "game/objects/characters/nuian/male/nude/nu_m_nude_df.dds",
+        "size": 349656,
+        "added_by": "game/objects/characters/elf/female/costume/el_f_sk_lucius001/el_f_sk_lucius001.mtl",
+        "kept": "1.2",
+        "reason": "material/texture/model shared with the 1.2 art; the overlay only adds files"
+      },
+      {
+        "kind": "closure",
+        "name": "game/objects/characters/nuian/male/nude/nu_m_nude_sp.dds",
+        "size": 349656,
+        "added_by": "game/objects/characters/elf/female/costume/el_f_sk_lucius001/el_f_sk_lucius001.mtl",
+        "kept": "1.2",
+        "reason": "material/texture/model shared with the 1.2 art; the overlay only adds files"
+      },
+      {
+        "kind": "closure",
+        "name": "game/objects/characters/nuian/male/nude/nu_m_nude_sss.dds",
+        "size": 87512,
+        "added_by": "game/objects/characters/elf/female/costume/el_f_sk_fullarmor001/el_f_sk_fullarmor001.mtl",
+        "kept": "1.2",
+        "reason": "material/texture/model shared with the 1.2 art; the overlay only adds files"
+      },
+      {
+        "kind": "closure",
+        "name": "game/objects/env/07_ucc/ucc_pattern19.dds",
+        "size": 699192,
+        "added_by": "game/objects/characters/elf/male/costume/el_m_sk_swimsuit013/el_m_sk_swimsuit013.mtl",
+        "kept": "1.2",
+        "reason": "material/texture/model shared with the 1.2 art; the overlay only adds files"
+      }
+    ]
+  },
+  "missing_references": {
+    "total": 93,
+    "ambiguous_mtl_stem": 15,
+    "extensionless_resolved_by_extension": 47,
+    "texture_present_in_1_2": 3,
+    "texture_absent_from_1_2_3_0_and_10x": 28,
+    "distinct_absent_textures": 11,
+    "note": "The 15 ambiguous material stems resolve to the same-directory .mtl already included by closure; the 47 extensionless references resolve to an included .chr/.cdf/.cgf; the 28 absent-texture references (11 distinct files, e.g. objects/test/wat/mask2.dds and fe_m_sk_necro_*.dds) are broken in the 3.0 source itself and are absent from the 1.2, 3.0 and 10.x paks."
+  }
+}
