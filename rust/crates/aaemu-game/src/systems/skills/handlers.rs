@@ -735,7 +735,10 @@ impl ClientPacket for CSChangeTargetPacket {
                 return Ok(());
             };
             let me = WorldObject::from(&c);
-            let previous_target = c.data().unit.current_target;
+            // Rate-limit the `[target-inspect]` log on the raw selection, so doodads (which
+            // never become `Character.current_target`) also log once per selection change.
+            let selection_changed = self.target_id != conn.last_inspect_selection;
+            conn.last_inspect_selection = self.target_id;
             let world = super::geometry::world_of(server, &me);
             // Doodads are not units: `current_target` stays 0 for them, but the GM target log
             // still gets a short line about what was clicked.
@@ -758,9 +761,9 @@ impl ClientPacket for CSChangeTargetPacket {
                 },
                 true,
             );
-            // `[target-inspect]`: once per target change, for GMs only, and only with the
+            // `[target-inspect]`: once per selection change, for GMs only, and only with the
             // `World:LogGmTargets` switch on. `is_gm` awaits, so no object data lock is held.
-            if target != previous_target && server.config.world.log_gm_targets {
+            if selection_changed && server.config.world.log_gm_targets {
                 if let Some(selected) = selected.as_ref() {
                     let gm_name = c.data().unit.name.clone();
                     if crate::systems::services::character::is_gm(server, &c).await {

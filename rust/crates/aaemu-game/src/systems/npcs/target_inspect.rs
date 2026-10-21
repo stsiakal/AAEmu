@@ -254,14 +254,40 @@ fn describe_npc(server: &GameServer, gm_name: &str, npc: &NpcRef) -> String {
                 ai.already_targeted,
                 ai.alert_end_time
             ));
-            let path_name = spawner
+            let spawner_path = spawner
                 .as_ref()
                 .map(|s| s.follow_path.as_str())
+                .filter(|s| !s.is_empty());
+            // `AiFileName` / `AiFileName2` are where the command set keeps the paths it loaded
+            // (`FollowPath <file>`); fall back to the command being executed and the spawner.
+            let current_path = ai
+                .current_command
+                .as_ref()
+                .filter(|c| c.cmd_id == AiCommandCategory::FollowPath)
+                .map(|c| c.param2.as_str())
+                .filter(|s| !s.is_empty());
+            let path_name = if !ai.ai_file_name.is_empty() {
+                ai.ai_file_name.as_str()
+            } else if !ai.ai_file_name2.is_empty() {
+                ai.ai_file_name2.as_str()
+            } else if let Some(name) = current_path {
+                name
+            } else {
+                spawner_path.unwrap_or("none")
+            };
+            let queued_paths: Vec<String> = ai
+                .commands
+                .iter()
+                .filter(|c| c.cmd_id == AiCommandCategory::FollowPath)
+                .map(|c| c.param2.as_str())
                 .filter(|s| !s.is_empty())
-                .unwrap_or("none");
+                .map(|s| format!("{s:?}"))
+                .collect();
             line(format!(
-                "path name={path_name:?} points={} remaining={} looping={} speed={} \
-                 flags={} target={}",
+                "path name={path_name:?} spawner_path={:?} queued_paths=[{}] points={} \
+                 remaining={} looping={} speed={} flags={} target={}",
+                spawner_path.unwrap_or("none"),
+                queued_paths.join(", "),
                 ai.path_points,
                 ai.path_remaining,
                 ai.path_looping,
@@ -471,6 +497,27 @@ mod tests {
         npc.data().spawner_id = 42;
     }
 
+    fn spawn_doodad(server: &GameServer, obj_id: u32, name: &str) -> crate::world::DoodadRef {
+        let mut d = crate::models::doodad::Doodad::new(777);
+        d.name = name.into();
+        d.transform.set_xyz(120.0, 200.0, 100.0);
+        d.transform.zone_id = crate::test_support::TEST_ZONE;
+        let doodad = Entity::new(obj_id, d);
+        server
+            .world
+            .world(0)
+            .unwrap()
+            .spawn(&doodad, &server.view_ctx());
+        doodad
+    }
+
+    async fn select(pc: &mut harness::Pc, server: &GameServer, target_id: u32) {
+        crate::systems::skills::handlers::CSChangeTargetPacket { target_id }
+            .handle(server, &mut pc.client.conn)
+            .await
+            .unwrap();
+    }
+
     #[tokio::test]
     async fn ai_info_matches_the_testai_fields() {
         let server = harness::server();
@@ -535,9 +582,15 @@ mod tests {
                     action: AiPathPointAction::None,
                     param: String::new(),
                 });
-            c.ai.current_command = Some(command(AiCommandCategory::FollowPath, 0, "public_farm"));
+            c.ai.ai_file_name2 = "public_farm5".into();
+            c.ai.current_command = Some(command(AiCommandCategory::FollowPath, 0, "public_farm5"));
             c.ai.commands_queue
                 .push_back(command(AiCommandCategory::UseSkill, 18324, ""));
+            c.ai.commands_queue.push_back(command(
+                AiCommandCategory::FollowPath,
+                0,
+                "public_farm6",
+            ));
         });
         npc.data().unit.buffs.effects.clear();
         npc.data()
@@ -573,9 +626,9 @@ mod tests {
             "follow_path=\"public_farm\"",
             "ai=HoldPosition",
             "current=AAEmu.Game.Models.Game.AI.v2.Behaviors.Common.TalkBehavior",
-            "path name=\"public_farm\" points=3 remaining=1",
-            "current=\"FollowPath public_farm\"",
-            "queue=[UseSkill 18324]",
+            "path name=\"public_farm5\" spawner_path=\"public_farm\" queued_paths=[\"public_farm6\"] points=3 remaining=1",
+            "current=\"FollowPath public_farm5\"",
+            "queue=[UseSkill 18324, FollowPath public_farm6]",
             "buffs=[500]",
         ] {
             assert!(block.contains(needle), "missing {needle:?} in\n{block}");
@@ -619,6 +672,46 @@ mod tests {
             .filter(|e| e.contains(LOG_PREFIX))
             .cloned()
             .collect()
+    }
+
+    #[tokio::test]
+    async fn doodad_selection_changes_log_once_each() {
+        let server = harness::server();
+        let mut gm = harness::pc(&server, 1, "Gm", 100.0, 200.0);
+        let crate_a = spawn_doodad(&server, 0x950, "Crate");
+        let crate_b = spawn_doodad(&server, 0x951, "Barrel");
+        server.config.update(|c| c.world.log_gm_targets = true);
+
+        let sink = LogSink::default();
+        let subscriber = SinkSubscriber(sink.clone());
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        // First selection of the session is a doodad: `current_target` stays 0, but the
+        // selection itself changes from "nothing".
+        select(&mut gm, &server, crate_a.obj_id).await;
+        let events = inspect_events(&sink);
+        assert_eq!(events.len(), 1, "{events:?}");
+        assert!(events[0].contains("target=Doodad"));
+        assert!(events[0].contains(&format!("obj={}", crate_a.obj_id)));
+        assert!(events[0].contains("name=\"Crate\""));
+        assert_eq!(gm.p.data().unit.current_target, 0);
+
+        // Same doodad again: no new line.
+        select(&mut gm, &server, crate_a.obj_id).await;
+        assert_eq!(inspect_events(&sink).len(), 1);
+
+        // Doodad after doodad: logs the new one.
+        select(&mut gm, &server, crate_b.obj_id).await;
+        let events = inspect_events(&sink);
+        assert_eq!(events.len(), 2, "{events:?}");
+        assert!(events[1].contains(&format!("obj={}", crate_b.obj_id)));
+        assert!(events[1].contains("name=\"Barrel\""));
+
+        // Clearing and selecting the first doodad again is another change.
+        select(&mut gm, &server, 0).await;
+        assert_eq!(inspect_events(&sink).len(), 2);
+        select(&mut gm, &server, crate_a.obj_id).await;
+        assert_eq!(inspect_events(&sink).len(), 3);
     }
 
     #[tokio::test]

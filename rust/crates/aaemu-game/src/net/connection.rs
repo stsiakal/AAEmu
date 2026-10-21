@@ -296,6 +296,10 @@ pub struct GameConnection {
     pub active_char: Option<crate::world::PlayerRef>,
     /// `LeaveTask` (+ its `CancelTokenSource`): the pending logout timer.
     pub leave_task: Option<tokio::task::JoinHandle<()>>,
+    /// Last `CSChangeTargetPacket.target_id` seen by the `[target-inspect]` GM log.
+    /// `Character.current_target` only holds units, so doodad selections need their own
+    /// per-session change tracking.
+    pub last_inspect_selection: u32,
     pub last_ping: Instant,
     writer: Outbox,
     commands: mpsc::UnboundedSender<ConnCommand>,
@@ -346,6 +350,7 @@ impl GameConnection {
             characters: Vec::new(),
             active_char: None,
             leave_task: None,
+            last_inspect_selection: 0,
             last_ping: Instant::now(),
             writer,
             commands,
