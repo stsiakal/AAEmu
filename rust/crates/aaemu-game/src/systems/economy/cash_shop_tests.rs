@@ -1257,6 +1257,7 @@ fn real_compact_db_cash_shop_item_names() {
         app_path: app,
         files: &files,
         language: "en_us",
+        areas: crate::data::Areas::none(),
     })
     .unwrap();
     let named = d.item_names.values().filter(|n| !n.is_empty()).count();

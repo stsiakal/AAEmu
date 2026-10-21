@@ -852,7 +852,13 @@ impl SpawnManager {
             return Ok(0);
         }
         if ids.is_empty() {
-            let game_data_ids = data.get_spawner_ids(b.unit_id).unwrap_or_default();
+            let mut game_data_ids = data.get_spawner_ids(b.unit_id).unwrap_or_default();
+            // An explicit `SpawnerId` pins the authored spawner template. Without this a
+            // placement would clone every template that happens to contain the NPC (some
+            // 1.2 NPCs belong to two), spawning extra copies at the same point.
+            if b.spawner_id != 0 && game_data_ids.contains(&b.spawner_id) {
+                game_data_ids.retain(|&id| id == b.spawner_id);
+            }
             let mut spawners = Vec::new();
             let mut added = 0;
             if game_data_ids.is_empty() || force_generated {
@@ -1076,9 +1082,16 @@ impl SpawnManager {
         exists: &TemplateExists<'_>,
         stats: &mut LoadStats,
     ) -> Result<(), String> {
-        let Some(mut files) = spawn_files(world_path, "npc_spawns") else {
-            return Ok(());
-        };
+        let mut files = spawn_files(world_path, "npc_spawns").unwrap_or_default();
+        // Optional area packages add their placements only while they are enabled.
+        files.extend(
+            server
+                .game_data
+                .areas
+                .npc_spawn_files(&self.world.template.name)
+                .iter()
+                .cloned(),
+        );
         files.reverse(); // ReverseSpawnFiles
                          // Positions of the entries stored in NpcSpawners, by UnitId (the duplicate
                          // filter; Z is part of the position, so cave / building floors do not collide).
@@ -1150,9 +1163,15 @@ impl SpawnManager {
         exists: &TemplateExists<'_>,
         stats: &mut LoadStats,
     ) -> Result<(), String> {
-        let Some(mut files) = spawn_files(world_path, "doodad_spawns") else {
-            return Ok(());
-        };
+        let mut files = spawn_files(world_path, "doodad_spawns").unwrap_or_default();
+        files.extend(
+            server
+                .game_data
+                .areas
+                .doodad_spawn_files(&self.world.template.name)
+                .iter()
+                .cloned(),
+        );
         files.reverse(); // ReverseSpawnFiles
         let mut stored: HashMap<u32, Vec<(f32, f32, f32)>> = HashMap::new();
         for path in files {

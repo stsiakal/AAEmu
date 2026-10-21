@@ -2085,6 +2085,7 @@ fn real_compact_db_mail_localization() {
         app_path: app,
         files: &files,
         language: "en_us",
+        areas: crate::data::Areas::none(),
     })
     .unwrap();
     eprintln!(

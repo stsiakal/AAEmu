@@ -129,6 +129,9 @@ pub struct QuestData {
     /// `quest_contexts` ids of `QUEST_CATEGORY_TUTORIAL` (skipped as quest templates, but
     /// `CSSaveTutorialPacket` may only mark real tutorial entries completed).
     pub tutorial_ids: HashSet<u32>,
+    /// Every `quest_contexts.id` -> `zone_id`, including the rows a disabled area package
+    /// filtered (the starter / sphere tables are filtered with the same package).
+    hidden_quest_zones: HashMap<u32, u32>,
     /// `_supplies` (by level).
     pub supplies: HashMap<u8, QuestSupplies>,
     /// `_componentTemplates`.
@@ -172,9 +175,20 @@ fn err(msg: impl Into<String>) -> GameDataError {
 impl QuestData {
     /// `QuestManager.Load()` + the quest parts of the game data loaders.
     pub fn load_from(conn: &Connection, files: &ClientFileManager) -> Result<Self, GameDataError> {
+        Self::load_from_with_areas(conn, files, crate::data::Areas::none())
+    }
+
+    /// [`Self::load_from`] with the optional area packages: quests whose `zone_id` belongs to a
+    /// package that is not enabled are skipped together with their components, acts and starter
+    /// bindings.
+    pub fn load_from_with_areas(
+        conn: &Connection,
+        files: &ClientFileManager,
+        areas: &crate::data::Areas,
+    ) -> Result<Self, GameDataError> {
         let mut d = QuestData::default();
         d.load_supplies(conn)?;
-        d.load_contexts(conn)?;
+        d.load_contexts(conn, areas)?;
         d.load_components(conn)?;
         d.load_base_acts(conn)?;
         d.load_detail_acts(conn)?;
@@ -257,11 +271,11 @@ impl QuestData {
             [],
             |r| {
                 let item = r.u32("item_id")?;
-                if self
-                    .starter_quests
-                    .insert(item, r.u32("quest_id")?)
-                    .is_some()
-                {
+                let quest_id = r.u32("quest_id")?;
+                if self.hidden_quest_zones.contains_key(&quest_id) {
+                    return Ok(());
+                }
+                if self.starter_quests.insert(item, quest_id).is_some() {
                     return Err(rusqlite::Error::InvalidParameterName(format!(
                         "duplicate quest starter item {item}"
                     )));
@@ -292,11 +306,23 @@ impl QuestData {
         }
     }
 
-    fn load_contexts(&mut self, conn: &Connection) -> Result<(), GameDataError> {
+    fn load_contexts(
+        &mut self,
+        conn: &Connection,
+        areas: &crate::data::Areas,
+    ) -> Result<(), GameDataError> {
         let mut dup = None;
         for_each_row(conn, "SELECT * FROM quest_contexts ORDER BY id", [], |r| {
+            let zone_id = r.u32("zone_id")?;
+            let id = r.u32("id")?;
+            if areas.quest_zone_disabled(zone_id) {
+                // Remember the filtered quest so its starter item / sphere rows are skipped too;
+                // unknown ids (synthetic tests) keep the old "load anyway" behavior.
+                self.hidden_quest_zones.insert(id, zone_id);
+                return Ok(());
+            }
             let t = QuestTemplate {
-                id: r.u32("id")?,
+                id,
                 repeatable: r.bool_str("repeatable")?,
                 level: r.u8_or("level", 0)?,
                 selective: r.bool_str("selective")?,
@@ -1466,6 +1492,9 @@ impl QuestData {
                 quest_id: r.u32("quest_id")?,
                 quest_trigger_id: r.u32("quest_trigger_id")?,
             };
+            if self.hidden_quest_zones.contains_key(&t.quest_id) {
+                return Ok(());
+            }
             if self.sphere_quests.insert(t.id, t).is_some() {
                 dup = Some(t.id);
             } else {
@@ -1802,5 +1831,64 @@ mod tests {
         assert!(g.contains(5, 3));
         assert_eq!(g.members(9), &[] as &[u32]);
         assert_eq!(g.rows(), 3);
+    }
+}
+
+#[cfg(test)]
+mod area_gate_tests {
+    use super::*;
+
+    fn areas(enabled: bool) -> crate::data::Areas {
+        let root = std::env::temp_dir().join(format!(
+            "aaemu-area-quests-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(root.join("Data/Areas")).unwrap();
+        std::fs::write(
+            root.join("Data/Areas/sunbite-wilds.json"),
+            r#"{ "ZoneIds": [2], "QuestZoneIds": [2] }"#,
+        )
+        .unwrap();
+        let names: Vec<String> = if enabled {
+            vec!["sunbite-wilds".to_string()]
+        } else {
+            Vec::new()
+        };
+        let areas = crate::data::Areas::load(&root, &names).unwrap();
+        std::fs::remove_dir_all(&root).ok();
+        areas
+    }
+
+    #[test]
+    fn quests_of_a_disabled_package_are_not_loaded() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE quest_contexts (id INT, name TEXT, category_id INT DEFAULT 0,
+                REPEATABLE NUM DEFAULT 0, LEVEL INT DEFAULT 0, selective NUM DEFAULT 0,
+                successive NUM DEFAULT 0, restart_on_fail NUM DEFAULT 0,
+                chapter_idx INT DEFAULT 0, quest_idx INT DEFAULT 0,
+                milestone_id INT DEFAULT 0, let_it_done NUM DEFAULT 0,
+                detail_id INT DEFAULT 0, zone_id INT DEFAULT 0, degree INT DEFAULT 0,
+                use_quest_camera NUM DEFAULT 0, score INT DEFAULT 0,
+                use_accept_message NUM DEFAULT 0, use_complete_message NUM DEFAULT 0,
+                grade_id INT DEFAULT 0, translate NUM DEFAULT 0);
+             INSERT INTO quest_contexts
+                (id, name, category_id, level, zone_id) VALUES (1, 'keep', 1, 10, 1),
+                (2, 'area', 1, 10, 2);",
+        )
+        .unwrap();
+        let mut on = QuestData::default();
+        on.load_contexts(&conn, &areas(true)).unwrap();
+        assert!(on.templates.contains_key(&1));
+        assert!(on.templates.contains_key(&2));
+
+        let mut off = QuestData::default();
+        off.load_contexts(&conn, &areas(false)).unwrap();
+        assert!(off.templates.contains_key(&1));
+        assert!(!off.templates.contains_key(&2));
     }
 }

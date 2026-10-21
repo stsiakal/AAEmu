@@ -99,6 +99,9 @@ pub struct AppConfig {
     /// `Events` (Rust only: seasonal event windows).
     #[serde(rename = "events")]
     pub events: EventsConfig,
+    /// `Areas` (Rust only: optional later-version area packages).
+    #[serde(rename = "areas")]
+    pub areas: AreasConfig,
     /// `CharacterNameRegex` (`None` = NameManager's default pattern).
     #[serde(rename = "characternameregex")]
     pub character_name_regex: Option<String>,
@@ -152,6 +155,7 @@ impl Default for AppConfig {
             specialty: SpecialtyConfig::default(),
             scripts: ScriptsConfig::default(),
             events: EventsConfig::default(),
+            areas: AreasConfig::default(),
             character_name_regex: None,
             default_language: "en_us".into(),
             debug_info: true,
@@ -507,6 +511,19 @@ impl Default for HalloweenConfig {
     }
 }
 
+/// `Areas` (Rust only): optional later-version area packages selected by name.
+///
+/// The shipped default is empty: every optional area is off. A package is a small JSON
+/// descriptor under `<app_path>/Data/Areas/<name>.json` listing its zone ids / keys and its
+/// spawn files; the loaders filter that package's rows out unless its name is listed here.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct AreasConfig {
+    /// `Areas:Enabled`: package names (`Data/Areas/<name>.json` without the extension).
+    #[serde(rename = "enabled")]
+    pub enabled: Vec<String>,
+}
+
 /// `ClientDataConfig`.
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
@@ -575,7 +592,7 @@ pub const USER_SECRETS_ID: &str = "426ad5c3-9a72-44e9-88f5-4b5940b98c28";
 
 /// The top-level `AppConfiguration` members (environment variables are only applied below
 /// these keys; anything else could never bind).
-const TOP_LEVEL_KEYS: [&str; 30] = [
+const TOP_LEVEL_KEYS: [&str; 31] = [
     "physics",
     "id",
     "additionalesid",
@@ -602,6 +619,7 @@ const TOP_LEVEL_KEYS: [&str; 30] = [
     "specialty",
     "scripts",
     "events",
+    "areas",
     "justice",
     "defaultlanguage",
     "debuginfo",
@@ -1241,6 +1259,17 @@ mod tests {
         let cfg = AppConfig::load_from(&dir, Some(&secrets), env, &args).unwrap();
         assert_eq!(cfg.world.exp_rate, 5.0);
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn areas_enabled_defaults_to_empty_and_binds_a_list() {
+        let cfg = AppConfig::from_value(json!({})).unwrap();
+        assert!(cfg.areas.enabled.is_empty());
+        let cfg = AppConfig::from_value(json!({
+            "Areas": { "Enabled": ["sunbite-wilds"] }
+        }))
+        .unwrap();
+        assert_eq!(cfg.areas.enabled, vec!["sunbite-wilds".to_string()]);
     }
 
     #[test]

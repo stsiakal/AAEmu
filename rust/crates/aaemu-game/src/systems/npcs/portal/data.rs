@@ -146,13 +146,22 @@ impl PortalTables {
     pub fn load(ctx: &DataLoadCtx<'_>) -> Result<Self, GameDataError> {
         let mut d = PortalTables::default();
         for recall in read_portal_file(ctx.app_path, "recalls.json")? {
+            if ctx.areas.zone_key_disabled(recall.zone_id) {
+                continue;
+            }
             d.recalls_key.entry(recall.id).or_insert(recall.sub_zone_id);
         }
         for respawn in read_portal_file(ctx.app_path, "respawns.json")? {
+            if ctx.areas.zone_key_disabled(respawn.zone_id) {
+                continue;
+            }
             d.respawns.add("respawn", respawn)?;
         }
         tracing::info!("Loaded {} Respawn Portals", d.respawns.len());
         for gate in read_portal_file(ctx.app_path, "worldgates.json")? {
+            if ctx.areas.zone_key_disabled(gate.zone_id) {
+                continue;
+            }
             d.world_gates.add("worldgate", gate)?;
         }
         tracing::info!("Loaded {} Worldgate Portals", d.world_gates.len());

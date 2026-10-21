@@ -176,6 +176,21 @@ pub struct Zone {
     pub zone_climate_id: u32,
 }
 
+/// `SubZone` (`sub_zones`; loaded so that an optional area package can hide its rows).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct SubZone {
+    pub id: u32,
+    pub idx: u32,
+    pub name: String,
+    pub x: f32,
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
+    pub linked_zone_group_id: u32,
+    pub parent_sub_zone_id: u32,
+    pub category_id: u32,
+}
+
 /// `ZoneGroup` (subset).
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ZoneGroup {
@@ -226,6 +241,8 @@ pub struct ZoneData {
     pub groups: HashMap<u32, ZoneGroup>,
     /// `_conflicts.Values` (insertion order).
     pub conflicts: Vec<ZoneConflict>,
+    /// `sub_zones` rows (in table order; not used by the C# zone manager, kept for gating).
+    pub sub_zones: Vec<SubZone>,
 }
 
 impl ZoneData {
@@ -241,8 +258,21 @@ impl ZoneData {
     /// `ZoneManager.Load`. `now` is the load time used by `SetState(Conflict)` for open conflict
     /// zones (the state timers themselves are a later phase).
     pub fn load(conn: &Connection, now: i64) -> rusqlite::Result<Self> {
+        Self::load_with_areas(conn, now, crate::data::Areas::none())
+    }
+
+    /// [`Self::load`] with the optional area packages: rows of a package that is not enabled are
+    /// skipped (zones, groups, conflicts and sub zones).
+    pub fn load_with_areas(
+        conn: &Connection,
+        now: i64,
+        areas: &crate::data::Areas,
+    ) -> rusqlite::Result<Self> {
         let mut d = ZoneData::default();
         for_each_row(conn, "SELECT * FROM zones", [], |r| {
+            if areas.zone_disabled(r.u32("id")?, r.u32("zone_key")?) {
+                return Ok(());
+            }
             let z = Zone {
                 id: r.u32("id")?,
                 name: r.string("name")?,
@@ -262,6 +292,9 @@ impl ZoneData {
         })?;
         tracing::info!("Loaded {} zones", d.zones.len());
         for_each_row(conn, "SELECT * FROM zone_groups", [], |r| {
+            if areas.zone_group_disabled(r.u32("id")?) {
+                return Ok(());
+            }
             let g = ZoneGroup {
                 id: r.u32("id")?,
                 name: r.string("name")?,
@@ -277,6 +310,9 @@ impl ZoneData {
         tracing::info!("Loaded {} groups", d.groups.len());
         for_each_row(conn, "SELECT * FROM conflict_zones", [], |r| {
             let gid = r.i16("zone_group_id")? as u16;
+            if areas.zone_group_disabled(u32::from(gid)) {
+                return Ok(());
+            }
             if !d.groups.contains_key(&u32::from(gid)) {
                 tracing::warn!("ZoneGroupId: {gid} doesn't exist for conflict");
                 return Ok(());
@@ -310,6 +346,26 @@ impl ZoneData {
             d.conflicts.push(c);
             Ok(())
         })?;
+        for_each_row(conn, "SELECT * FROM sub_zones", [], |r| {
+            let id = r.u32("id")?;
+            if areas.sub_zone_disabled(id) {
+                return Ok(());
+            }
+            d.sub_zones.push(SubZone {
+                id,
+                idx: r.u32_or("idx", 0)?,
+                name: r.string_or("name", "")?,
+                x: r.f32_or("x", 0.0)?,
+                y: r.f32_or("y", 0.0)?,
+                w: r.f32_or("w", 0.0)?,
+                h: r.f32_or("h", 0.0)?,
+                linked_zone_group_id: r.u32_or("linked_zone_group_id", 0)?,
+                parent_sub_zone_id: r.u32_or("parent_sub_zone_id", 0)?,
+                category_id: r.u32_or("category_id", 0)?,
+            });
+            Ok(())
+        })?;
+        tracing::info!("Loaded {} sub zones", d.sub_zones.len());
         Ok(d)
     }
 }
@@ -371,6 +427,17 @@ impl PortalData {
         app_path: &Path,
         loc: &Localization,
     ) -> Result<Self, super::GameDataError> {
+        Self::load_with_areas(conn, app_path, loc, crate::data::Areas::none())
+    }
+
+    /// [`Self::load`] with the optional area packages: recalls into a disabled package's zone
+    /// (the portal `ZoneId` is a client zone key) are not loaded.
+    pub fn load_with_areas(
+        conn: &Connection,
+        app_path: &Path,
+        loc: &Localization,
+        areas: &crate::data::Areas,
+    ) -> Result<Self, super::GameDataError> {
         let mut d = PortalData::default();
         let path = app_path.join("Data").join("Portal").join("recalls.json");
         let text = std::fs::read_to_string(&path).map_err(|e| {
@@ -389,6 +456,9 @@ impl PortalData {
             ))
         })?;
         for mut recall in recalls {
+            if areas.zone_key_disabled(recall.zone_id) {
+                continue;
+            }
             recall.name = loc.get("return_points", "name", i64::from(recall.id), &recall.name);
             d.recalls
                 .entry(recall.sub_zone_id)
@@ -438,5 +508,77 @@ fn pascal_keys(v: serde_json::Value) -> serde_json::Value {
         ),
         Value::Array(a) => Value::Array(a.into_iter().map(pascal_keys).collect()),
         o => o,
+    }
+}
+
+#[cfg(test)]
+mod area_gate_tests {
+    use super::*;
+
+    fn areas(enabled: bool) -> crate::data::Areas {
+        let root = std::env::temp_dir().join(format!(
+            "aaemu-area-zones-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(root.join("Data/Areas")).unwrap();
+        std::fs::write(
+            root.join("Data/Areas/sunbite-wilds.json"),
+            r#"{ "ZoneIds": [2], "ZoneKeys": [20], "ZoneGroupIds": [2], "SubZoneIds": [2] }"#,
+        )
+        .unwrap();
+        let names: Vec<String> = if enabled {
+            vec!["sunbite-wilds".to_string()]
+        } else {
+            Vec::new()
+        };
+        let areas = crate::data::Areas::load(&root, &names).unwrap();
+        std::fs::remove_dir_all(&root).ok();
+        areas
+    }
+
+    fn database() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE zones (id INT, name TEXT, zone_key INT, group_id INT, closed NUM,
+                faction_id INT, zone_climate_id INT);
+             INSERT INTO zones VALUES (1, 'a', 10, 1, 0, 0, 0), (2, 'b', 20, 2, 0, 0, 0);
+             CREATE TABLE zone_groups (id INT, name TEXT, target_id INT,
+                faction_chat_region_id INT, pirate_desperado NUM);
+             INSERT INTO zone_groups VALUES (1, 'g1', 0, 0, 0), (2, 'g2', 0, 0, 0);
+             CREATE TABLE conflict_zones (zone_group_id INT, num_kills_0 INT, num_kills_1 INT,
+                num_kills_2 INT, num_kills_3 INT, num_kills_4 INT, no_kill_min_0 INT,
+                no_kill_min_1 INT, no_kill_min_2 INT, no_kill_min_3 INT, no_kill_min_4 INT,
+                conflict_min INT, war_min INT, peace_min INT, peace_protected_faction_id INT,
+                nuia_return_point_id INT, harihara_return_point_id INT, war_tower_def_id INT,
+                closed NUM);
+             INSERT INTO conflict_zones VALUES (2, 0,0,0,0,0, 0,0,0,0,0, 1, 2, 3, 0, 0, 0, 0, 1);
+             CREATE TABLE sub_zones (id INT, idx INT, name TEXT, x REAL, y REAL, w REAL, h REAL,
+                linked_zone_group_id INT, parent_sub_zone_id INT, category_id INT);
+             INSERT INTO sub_zones VALUES (1, 0, 's1', 0,0,0,0, 1, 0, 0),
+                (2, 1, 's2', 0,0,0,0, 2, 0, 0);",
+        )
+        .unwrap();
+        conn
+    }
+
+    #[test]
+    fn disabled_package_rows_are_filtered() {
+        let conn = database();
+        let on = ZoneData::load_with_areas(&conn, 0, &areas(true)).unwrap();
+        assert_eq!(on.zones.len(), 2);
+        assert_eq!(on.groups.len(), 2);
+        assert_eq!(on.conflicts.len(), 1);
+        assert_eq!(on.sub_zones.len(), 2);
+
+        let off = ZoneData::load_with_areas(&conn, 0, &areas(false)).unwrap();
+        assert_eq!(off.zones.len(), 1);
+        assert!(off.zone_by_key(20).is_none());
+        assert_eq!(off.groups.len(), 1);
+        assert!(off.conflicts.is_empty());
+        assert_eq!(off.sub_zones.len(), 1);
     }
 }

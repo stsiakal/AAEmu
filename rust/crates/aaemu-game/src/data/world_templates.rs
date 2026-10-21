@@ -804,9 +804,20 @@ impl WorldTemplates {
     /// the client sources, reads `<app_path>/Data/Worlds/world_spawns.json` and creates a
     /// template per world. `main_world` always gets id 0; the others follow in file-list order.
     pub fn load(files: &ClientFileManager, app_path: &Path) -> Result<WorldTemplates, WorldError> {
+        Self::load_with_areas(files, app_path, crate::data::Areas::none())
+    }
+
+    /// [`Self::load`] with the optional area packages: a world directory that belongs to a
+    /// package which is not enabled is skipped (no template, so no instance can be created).
+    pub fn load_with_areas(
+        files: &ClientFileManager,
+        app_path: &Path,
+        areas: &crate::data::Areas,
+    ) -> Result<WorldTemplates, WorldError> {
         info!("Loading world data...");
 
-        let world_xml_paths = files.files_in_directory("game/worlds", "world.xml", true);
+        let mut world_xml_paths = files.files_in_directory("game/worlds", "world.xml", true);
+        world_xml_paths.retain(|path| !areas.world_disabled(&parent_directory_name(path)));
         if world_xml_paths.is_empty() {
             return Err(WorldError::NoClientWorlds);
         }
@@ -833,6 +844,17 @@ impl WorldTemplates {
                 None => error!("Error in {}.", spawn_position_file.display()),
             }
         }
+
+        // A disabled optional area also hides its `world_spawns.json` entries (a null entry is
+        // kept so the existing fatal still reports a malformed file).
+        lookups.retain(|l| match l {
+            Some(l) => {
+                !areas.world_disabled(l.name.as_deref().unwrap_or(""))
+                    && l.spawn_position
+                        .is_some_and(|p| !areas.zone_id_disabled(p.zone_id))
+            }
+            None => true,
+        });
 
         // Add all instance names to the worldNames list to generate world template Ids
         for world_xml_path in &world_xml_paths {

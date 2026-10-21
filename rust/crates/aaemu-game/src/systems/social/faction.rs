@@ -368,6 +368,7 @@ mod tests {
             app_path: std::path::Path::new("."),
             files: &files,
             language: "en_us",
+            areas: crate::data::Areas::none(),
         };
         let r = FactionRelations::load(&ctx).expect("relations");
         assert!(!r.is_empty());

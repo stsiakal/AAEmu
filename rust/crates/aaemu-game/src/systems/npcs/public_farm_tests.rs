@@ -75,6 +75,7 @@ impl CommonFarmTestData {
             app_path: Path::new("."),
             files: &files,
             language: "en_us",
+            areas: crate::data::Areas::none(),
         };
         PublicFarmData::load(&ctx).unwrap()
     }

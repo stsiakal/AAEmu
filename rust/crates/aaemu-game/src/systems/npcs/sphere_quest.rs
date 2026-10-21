@@ -1236,6 +1236,7 @@ mod real_data_tests {
             app_path: std::path::Path::new("."),
             files: &files,
             language: "en_us",
+            areas: crate::data::Areas::none(),
         };
         let d = SphereData::load(&ctx).unwrap();
         let rows = |t: &str| -> usize {

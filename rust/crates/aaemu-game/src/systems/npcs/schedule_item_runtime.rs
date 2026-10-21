@@ -1355,6 +1355,7 @@ mod tests {
             app_path: std::path::Path::new("."),
             files: &files,
             language: "en_us",
+            areas: crate::data::Areas::none(),
         };
         let data = ScheduleItemData::load(&ctx).unwrap();
         assert_eq!(data.len(), 32);

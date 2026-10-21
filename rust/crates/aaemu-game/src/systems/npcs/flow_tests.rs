@@ -37,6 +37,7 @@ fn real_server(db: &str) -> Arc<GameServer> {
         app_path: &app_path,
         files: &files,
         language: "en_us",
+        areas: crate::data::Areas::none(),
     })
     .expect("npcs data");
     data.worlds = WorldTemplates::from_templates(

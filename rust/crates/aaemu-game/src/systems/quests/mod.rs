@@ -57,7 +57,7 @@ use state::QuestHandle;
 impl Data {
     /// `QuestManager.Load` and the quest parts of the game data loaders.
     pub fn load(ctx: &DataLoadCtx<'_>) -> Result<Self, crate::data::GameDataError> {
-        Self::load_from(ctx.conn, ctx.files)
+        Self::load_from_with_areas(ctx.conn, ctx.files, ctx.areas)
     }
 }
 

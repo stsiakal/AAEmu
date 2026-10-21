@@ -398,6 +398,7 @@ mod tests {
             app_path: std::path::Path::new("."),
             files: &files,
             language: "en_us",
+            areas: crate::data::Areas::none(),
         };
         let d = FishSchoolData::load(&ctx).unwrap();
         let n: i64 = conn

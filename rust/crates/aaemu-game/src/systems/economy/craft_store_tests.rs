@@ -1481,6 +1481,7 @@ fn real_compact_db_craft_and_store_tables() {
         app_path: std::path::Path::new("."),
         files: &files,
         language: "en_us",
+        areas: crate::data::Areas::none(),
     };
     let craft = crate::systems::economy::craft_data::CraftData::load(&ctx).unwrap();
     assert_eq!(craft.crafts.len(), 7010);

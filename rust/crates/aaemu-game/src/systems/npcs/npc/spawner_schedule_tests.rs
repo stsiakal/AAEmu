@@ -668,6 +668,7 @@ fn real_compact_gourdhead_mapping_and_expired_schedule() {
         app_path: std::path::Path::new("."),
         files: &files,
         language: "en_us",
+        areas: crate::data::Areas::none(),
     };
     let schedules = ScheduleData::load(&ctx).unwrap();
     let now = spawn_manager::unix_now();

@@ -152,6 +152,7 @@ mod tests {
             app_path: std::path::Path::new("."),
             files: &files,
             language: "en_us",
+            areas: crate::data::Areas::none(),
         };
         let d = AuctionData::load(&ctx).unwrap();
         let locales: Vec<&str> = d.item_name_cache.iter().map(|(l, _)| l.as_str()).collect();

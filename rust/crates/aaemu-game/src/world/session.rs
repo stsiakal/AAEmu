@@ -30,6 +30,7 @@ use crate::packets::proxy::ChangeStatePacket;
 use crate::packets::world::*;
 use crate::server::GameServer;
 use crate::systems::skills::packets::SCCooldownsPacket;
+use crate::systems::skills::packets_special::SCTeleportUnitPacket;
 use crate::world::{broadcast, unit_state, Player, PlayerRef, WorldInstance, WorldObject};
 
 /// `LeaveWorldTargetType`.
@@ -151,8 +152,72 @@ pub fn handle_zone_changes(server: &GameServer, changes: Vec<crate::world::ZoneC
     }
 }
 
+/// Refuses entry into a zone of an optional area package that is not enabled (`Areas:Enabled`).
+///
+/// The zone rows of a disabled package are filtered at load, so the new zone is "unknown" to the
+/// rest of the server. The player is sent to the closest open respawn portal (the C# behaviour
+/// for a closed zone) and gets `SCErrorMsg(ClosedZone)` plus a system message. Returns `true`
+/// when the move was handled (the caller must not continue with the normal zone-change logic).
+fn refuse_disabled_area(server: &GameServer, p: &PlayerRef, new_zone: u32) -> bool {
+    let areas = &server.game_data.areas;
+    if !areas.zone_key_disabled(new_zone) {
+        return false;
+    }
+    let portal = crate::systems::npcs::portal::closest_return_portal(server, p);
+    let target_zone = portal.zone_id;
+    let target_disabled =
+        target_zone == 0 || target_zone == new_zone || areas.zone_key_disabled(target_zone);
+    if !target_disabled {
+        let instance_id = p.data().unit.transform.instance_id;
+        {
+            let mut c = p.data();
+            c.set_disabled_set_position(true);
+            let parent = c.unit.transform.parent_obj_id;
+            c.unit.transform.x = portal.x;
+            c.unit.transform.y = portal.y;
+            c.unit.transform.z = portal.z;
+            c.unit.transform.rot_z = portal.z_rot.to_radians();
+            c.unit.transform.zone_id = target_zone;
+            c.unit.transform.parent_obj_id = parent;
+            c.unit.transform.instance_id = instance_id;
+        }
+        p.send(SCTeleportUnitPacket {
+            reason: crate::systems::npcs::portal::packets::teleport_reason::PORTAL,
+            error_message: 0,
+            x: portal.x,
+            y: portal.y,
+            z: portal.z,
+            z2: portal.z_rot.to_radians(),
+        });
+        if let Some(world) = server.world.world(instance_id) {
+            let changes = world.add_visible_object(p, &server.view_ctx());
+            handle_zone_changes(server, changes);
+            crate::systems::npcs::portal::resend_visible_objects_to_character(server, p);
+        }
+    } else {
+        tracing::error!(
+            "{} entered disabled area zone {new_zone} and no open return portal exists",
+            p.data().unit.name
+        );
+    }
+    p.send(SCErrorMsgPacket::new(error_message::CLOSED_ZONE, 0, false));
+    send_message(
+        p,
+        chat_type::SYSTEM,
+        "This area is not enabled on this server.",
+    );
+    tracing::warn!(
+        "{} entered zone {new_zone} of a disabled optional area",
+        p.data().unit.name
+    );
+    true
+}
+
 /// `Character.OnZoneChange(lastZoneKey, newZoneKey)`.
 pub fn on_zone_change(server: &GameServer, p: &PlayerRef, last_zone: u32, new_zone: u32) {
+    if refuse_disabled_area(server, p, new_zone) {
+        return;
+    }
     crate::systems::instances::tower_def::send_zone_list(server, p);
     // base.OnZoneChange (Unit: zone group buffs) -> the skills subsystem's hook.
     if let Some(h) = server.systems.hooks.unit.get() {

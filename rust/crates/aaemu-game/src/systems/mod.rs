@@ -66,6 +66,8 @@ pub struct DataLoadCtx<'a> {
     pub files: &'a ClientFileManager,
     /// `DefaultLanguage`.
     pub language: &'a str,
+    /// The optional later-version area packages (`Areas:Enabled`).
+    pub areas: &'a crate::data::Areas,
 }
 
 /// The game-data tables of every subsystem (`server.game_data.systems`).

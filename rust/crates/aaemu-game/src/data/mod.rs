@@ -14,6 +14,7 @@
 //!
 //! As in the 1.2 C# (no tolerant loaders), a failing table aborts startup.
 
+pub mod areas;
 pub mod character_templates;
 pub mod client_files;
 pub mod experience;
@@ -30,6 +31,7 @@ use std::path::Path;
 
 use rusqlite::{Connection, OpenFlags};
 
+pub use areas::Areas;
 pub use character_templates::CharacterData;
 pub use experience::{ExperienceError, ExperienceTable, LevelTemplate};
 pub use features::{Feature, FeatureSet};
@@ -69,6 +71,8 @@ pub struct GameData {
     pub portals: PortalData,
     pub formulas: FormulaManager,
     pub worlds: WorldTemplates,
+    /// The optional later-version area packages (`Areas:Enabled`; empty = all off).
+    pub areas: Areas,
     /// The phase-3 subsystems' tables (`systems::SystemsData`).
     pub systems: crate::systems::SystemsData,
 }
@@ -80,20 +84,22 @@ impl GameData {
         app_path: &Path,
         client_sources: &[String],
         language: &str,
+        areas_config: &crate::config::AreasConfig,
     ) -> Result<Self, GameDataError> {
         let path = app_path.join("Data").join("compact.sqlite3");
         let conn = Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        let areas = Areas::load(app_path, &areas_config.enabled)?;
 
         let experience = ExperienceTable::from_templates(load_levels(&conn)?)?;
         let items = ItemData::load(&conn)?;
         let localization = Localization::load(&conn, language)?;
         let factions = FactionData::load(&conn, &localization)?;
-        let zones = ZoneData::load(&conn, chrono::Utc::now().timestamp())?;
+        let zones = ZoneData::load_with_areas(&conn, chrono::Utc::now().timestamp(), &areas)?;
         let skills = SkillData::load(&conn)?;
         let formulas = FormulaManager::load(&conn)?;
 
         let files = client_files::ClientFileManager::from_sources(client_sources, app_path);
-        let worlds = WorldTemplates::load(&files, app_path)?;
+        let worlds = WorldTemplates::load_with_areas(&files, app_path, &areas)?;
         let main_world = worlds.get_world_template_by_name("main_world");
         let characters = CharacterData::load(
             &conn,
@@ -101,12 +107,13 @@ impl GameData {
             |x, y| worlds.get_zone_id(main_world, x, y),
             worlds.default_world_template_id(),
         )?;
-        let portals = PortalData::load(&conn, app_path, &localization)?;
+        let portals = PortalData::load_with_areas(&conn, app_path, &localization, &areas)?;
         let systems = crate::systems::SystemsData::load(&crate::systems::DataLoadCtx {
             conn: &conn,
             app_path,
             files: &files,
             language,
+            areas: &areas,
         })?;
 
         let data = GameData {
@@ -123,6 +130,7 @@ impl GameData {
             portals,
             formulas,
             worlds,
+            areas,
             systems,
         };
         tracing::info!(
@@ -166,6 +174,8 @@ fn load_levels(conn: &Connection) -> Result<Vec<LevelTemplate>, rusqlite::Error>
 }
 
 #[cfg(test)]
+mod areas_real_data_tests;
+#[cfg(test)]
 mod level55_patch_tests;
 
 #[cfg(test)]
@@ -185,12 +195,12 @@ mod real_db_tests {
         let items = ItemData::load(&conn).unwrap();
         let loc = Localization::load(&conn, "en_us").unwrap();
         let factions = FactionData::load(&conn, &loc).unwrap();
-        let zones = ZoneData::load(&conn, 0).unwrap();
+        let zones = ZoneData::load_with_areas(&conn, 0, Areas::none()).unwrap();
         let skills = SkillData::load(&conn).unwrap();
         let formulas = FormulaManager::load(&conn).unwrap();
         let app = Path::new(&path).parent().unwrap().parent().unwrap();
         let chars = CharacterData::load(&conn, app, |_, _| 0, 0).unwrap();
-        let portals = PortalData::load(&conn, app, &loc).unwrap();
+        let portals = PortalData::load_with_areas(&conn, app, &loc, Areas::none()).unwrap();
         // Every phase-3 subsystem's loaders (client files: none here).
         let files = client_files::ClientFileManager::from_sources(&[], app);
         let _systems = crate::systems::SystemsData::load(&crate::systems::DataLoadCtx {
@@ -198,6 +208,7 @@ mod real_db_tests {
             app_path: app,
             files: &files,
             language: "en_us",
+            areas: Areas::none(),
         })
         .unwrap();
         let stats = crate::models::stats::CharacterStats::compute(&formulas, 1);

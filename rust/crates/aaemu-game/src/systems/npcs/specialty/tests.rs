@@ -456,6 +456,7 @@ fn real_compact_db_specialties() {
         app_path: std::path::Path::new("."),
         files: &files,
         language: "en_us",
+        areas: crate::data::Areas::none(),
     };
     let d = SpecialtyData::load(&ctx).unwrap();
     let count =

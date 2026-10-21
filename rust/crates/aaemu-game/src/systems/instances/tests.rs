@@ -709,6 +709,7 @@ fn real_instances_data() {
         app_path: app,
         files: &files,
         language: "en_us",
+        areas: crate::data::Areas::none(),
     })
     .unwrap();
     let indun = &d.indun;

@@ -1851,6 +1851,7 @@ async fn real_dungeon_spawns_load_and_leave_returns_to_main_world() {
         app_path: &app_path,
         files: &files,
         language: "en_us",
+        areas: crate::data::Areas::none(),
     };
     let mut data = GameData::empty();
     data.zones = ZoneData::load(&conn, 0).expect("zones");

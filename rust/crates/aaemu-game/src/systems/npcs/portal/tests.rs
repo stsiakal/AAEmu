@@ -735,6 +735,7 @@ fn real_compact_db_portal_tables() {
         app_path: app,
         files: &files,
         language: "en_us",
+        areas: crate::data::Areas::none(),
     };
     let t = PortalTables::load(&ctx).unwrap();
     let count = |table: &str| -> usize {

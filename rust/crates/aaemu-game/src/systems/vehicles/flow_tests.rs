@@ -2834,6 +2834,7 @@ fn load_real(db: &str, sources: &[String]) -> super::Data {
         app_path: &app,
         files: &files,
         language: "en_us",
+        areas: crate::data::Areas::none(),
     })
     .expect("vehicles data")
 }

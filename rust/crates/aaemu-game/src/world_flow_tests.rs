@@ -691,3 +691,78 @@ async fn disconnect_after_quit_does_not_save_the_character_again() {
         "the stale connection saved the departed character again"
     );
 }
+
+/// A disabled optional-area zone must refuse entry: the player is sent to the closest open
+/// respawn portal and receives `SCErrorMsg(ClosedZone)`.
+#[tokio::test]
+async fn disabled_area_zone_entry_is_refused() {
+    use crate::data::world_data::{Portal, Zone, ZoneData};
+    use crate::systems::npcs::portal::data::PortalTables;
+    use crate::test_support::{
+        spawn_player, test_character, test_server_with, TestClient, TEST_ZONE,
+    };
+
+    let root = std::env::temp_dir().join(format!(
+        "aaemu-area-gate-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(root.join("Data/Areas")).unwrap();
+    std::fs::write(
+        root.join("Data/Areas/sunbite-wilds.json"),
+        r#"{ "ZoneKeys": [287] }"#,
+    )
+    .unwrap();
+    let areas = crate::data::Areas::load(&root, &[]).unwrap();
+    std::fs::remove_dir_all(&root).ok();
+
+    let mut data = GameData::empty();
+    data.areas = areas;
+    data.zones = ZoneData::default();
+    data.zones.zones.insert(
+        TEST_ZONE,
+        Zone {
+            id: 1,
+            name: "test".into(),
+            zone_key: TEST_ZONE,
+            ..Zone::default()
+        },
+    );
+    data.zones.zone_id_to_key.insert(1, TEST_ZONE);
+    data.systems.npcs.portal = PortalTables::from_parts(
+        vec![Portal {
+            id: 1,
+            name: "respawn".into(),
+            zone_id: TEST_ZONE,
+            x: 300.0,
+            y: 300.0,
+            z: 100.0,
+            z_rot: 0.0,
+            sub_zone_id: 1,
+            ..Portal::default()
+        }],
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+    )
+    .expect("portal tables");
+
+    let server = test_server_with(data);
+    let mut client = TestClient::new(&server, 1, 1);
+    let player = spawn_player(
+        &server,
+        &client,
+        test_character(1, "Gate", 100.0, 100.0),
+        0x500,
+    );
+    session::on_zone_change(&server, &player, TEST_ZONE, 287);
+    let ops = client.drain_ops();
+    assert!(ops.contains(&sc::SCErrorMsgPacket), "ops: {ops:?}");
+    assert!(ops.contains(&sc::SCTeleportUnitPacket), "ops: {ops:?}");
+    let t = player.data().unit.transform;
+    assert_eq!(t.zone_id, TEST_ZONE);
+    assert_eq!((t.x, t.y, t.z), (300.0, 300.0, 100.0));
+}

@@ -168,6 +168,7 @@ mod tests {
             app_path: std::path::Path::new("."),
             files: &files,
             language: "en_us",
+            areas: crate::data::Areas::none(),
         };
         let d = GimmickData::load(&ctx).unwrap();
         let t = d.get_gimmick_template(37).unwrap();
@@ -205,6 +206,7 @@ mod real_data_tests {
             app_path: std::path::Path::new("."),
             files: &files,
             language: "en_us",
+            areas: crate::data::Areas::none(),
         };
         let d = GimmickData::load(&ctx).unwrap();
         let rows: i64 = conn

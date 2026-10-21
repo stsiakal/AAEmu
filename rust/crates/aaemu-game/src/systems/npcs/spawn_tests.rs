@@ -3324,3 +3324,74 @@ fn real_data_ronbann_mine_npcs_are_on_the_mine_floor() {
         "Ronbann middle-cave placements found: {middle}"
     );
 }
+
+// ---------------------------------------------------------------------------------------------
+// Optional area packages (`Areas:Enabled`)
+// ---------------------------------------------------------------------------------------------
+
+fn area_package_dir(name: &str, spawn_json: &str) -> std::path::PathBuf {
+    let root = std::env::temp_dir().join(format!(
+        "aaemu-area-spawn-{name}-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(root.join("Data/Areas/sunbite-wilds")).unwrap();
+    std::fs::write(
+        root.join(format!("Data/Areas/{name}.json")),
+        r#"{ "Spawns": [{ "World": "main_world", "NpcSpawns": "Data/Areas/sunbite-wilds/npc_spawns.json" }] }"#,
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("Data/Areas/sunbite-wilds/npc_spawns.json"),
+        spawn_json,
+    )
+    .unwrap();
+    root
+}
+
+#[tokio::test]
+async fn area_package_spawn_file_loads_only_when_enabled() {
+    let root = area_package_dir(
+        "sunbite-wilds",
+        r#"[{ "UnitId": 500, "SpawnerId": 19798, "Position": { "X": 100.0, "Y": 100.0, "Z": 100.0 } }]"#,
+    );
+    let enabled = crate::data::Areas::load(&root, &["sunbite-wilds".into()]).unwrap();
+    let disabled = crate::data::Areas::load(&root, &[]).unwrap();
+    let world_path = root.join("Data/Worlds/main_world");
+    std::fs::create_dir_all(&world_path).unwrap();
+    let npc = |id| id == 500;
+    let no = |_: u32| false;
+    let exists = TemplateExists {
+        npc: &npc,
+        doodad: &no,
+        transfer: &no,
+        gimmick: &no,
+        slave: &no,
+    };
+
+    for (areas, expected) in [(enabled, 1), (disabled, 0)] {
+        let mut data = GameData::empty();
+        data.areas = areas;
+        data.systems.npcs.npc.templates.insert(
+            500,
+            NpcTemplate {
+                id: 500,
+                ..NpcTemplate::default()
+            },
+        );
+        data.systems.npcs.npc_spawners = NpcSpawnerData::from_parts(
+            vec![NpcSpawnerTemplate::with_member(19798, 500)],
+            vec![NpcSpawnerNpc::with_member(19798, 500)],
+        )
+        .unwrap();
+        let server = Arc::new(test_server_with(data));
+        let m = manager(&server);
+        let stats = m.load_spawn_files(&server, &world_path, &exists).unwrap();
+        assert_eq!(stats.npc_entries, expected, "area package spawn entries");
+        assert_eq!(stats.npc_spawners, expected, "area package spawners");
+    }
+    std::fs::remove_dir_all(&root).ok();
+}

@@ -205,14 +205,14 @@ impl SubZoneData {
     /// again from `ctx` (the subsystem loaders do not see the other game data); no client worlds
     /// → nothing (C#: `GetAllWorldTemplates()` empty).
     pub fn load(ctx: &DataLoadCtx<'_>) -> std::result::Result<Self, crate::data::GameDataError> {
-        let worlds = match WorldTemplates::load(ctx.files, ctx.app_path) {
+        let worlds = match WorldTemplates::load_with_areas(ctx.files, ctx.app_path, ctx.areas) {
             Ok(w) => w,
             Err(e) => {
                 debug!("SubZoneManager: no world templates ({e})");
                 return Ok(Self::default());
             }
         };
-        let zones = ZoneData::load(ctx.conn, 0)?;
+        let zones = ZoneData::load_with_areas(ctx.conn, 0, ctx.areas)?;
         Self::load_from(ctx.files, &worlds, &zones).map_err(crate::data::GameDataError::File)
     }
 
@@ -565,6 +565,7 @@ mod real_data_tests {
             app_path: &app,
             files: &files,
             language: "en_us",
+            areas: crate::data::Areas::none(),
         };
         let mut data = GameData::empty();
         data.worlds = WorldTemplates::load(&files, &app).unwrap();
@@ -608,6 +609,7 @@ mod real_data_tests {
             app_path: &app,
             files: &files,
             language: "en_us",
+            areas: crate::data::Areas::none(),
         };
         let started = std::time::Instant::now();
         let d = SubZoneData::load(&ctx).unwrap();
