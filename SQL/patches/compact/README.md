@@ -60,3 +60,8 @@ guarded, so that is safe, but the record is what keeps the source of truth verif
 | `2026-10-14-fix-npc-ai-param-syntax.sql` | repairs malformed Lua in `npc_ai_params` 443, 835, 1975 | guarded by exact original text |
 | `2026-10-15-halloween-gourd-respawn.sql` | gourd doodad 7422 final row respawns | guarded by original value |
 | `2026-10-20-level-55-retail-3.0.sql` | 3.0 level 51–55 capstones, experience curve and quest supplies | guarded by original values |
+| `2026-10-21-sunbite-wilds-1-zones.sql` | optional area package: zones 242/227 (`zone_key` 286/287) | `NOT EXISTS` id guard |
+| `2026-10-21-sunbite-wilds-2-npcs.sql` | Sunbite NPC templates, spawner templates and placements | `NOT EXISTS` row guards |
+| `2026-10-21-sunbite-wilds-3-items.sql` | Sunbite item / icon templates used by quests | `NOT EXISTS` id guard |
+| `2026-10-21-sunbite-wilds-4-quests.sql` | 81 Sunbite quests (level 2-30), components, acts and rewards | `NOT EXISTS` row guards |
+| `2026-10-21-sunbite-wilds-6-doodads.sql` | Sunbite quest doodad templates | `NOT EXISTS` id guard |

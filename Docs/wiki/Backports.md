@@ -219,3 +219,50 @@ Server paths are under `rust/crates/aaemu-game/src/` unless stated otherwise; Be
 - [Dungeons](Dungeons)
 - [Classes](Classes)
 - [Documentation Maintenance](Documentation-Maintenance)
+
+## Sunbite Wilds pilot (optional area)
+
+The first optional-area package makes the 1.2 client's dormant Sunbite Wilds 3+4 terrain live
+without a client pak: `zone_key` 286 and 287 already exist in the 1.2 `world.xml`, but 1.2 has no
+`zones` rows or content for them (`Areas` inventory §3.4). It is server-only, opt-in through
+`Areas:Enabled` (see [Working with the Config files](Working-with-the-Config.json-files-and-server-listings#optional-later-version-areas-areas)),
+and every row is a compact patch that never overwrites a 1.2 id.
+
+| Content | Count | Source |
+| --- | ---: | --- |
+| Zones (`e_sunny_wilderness_3` / `_4`) | 2 | 3.0.4.2 `zones` (ids 242 / 227, keys 286 / 287; group 13 already exists in 1.2) |
+| Quests at level <= 55 | 81 | 3.0 `quest_contexts.zone_id = 227` (levels 2-30), with 350 components and 482 acts |
+| NPC templates (new ids) | 111 | 3.0 `npcs` (levels 10-50); 3.0 `npc_initial_buffs`, postures, AI params and nicknames |
+| Item templates (new ids) | 105 | 3.0 `items`; all levels <= 62, no new id >= 8,000,000 |
+| Doodad templates (new ids) | 36 | 3.0 `doodad_almighties` referenced by the quests (no placements exist in the pak) |
+| NPC spawner templates | 28 reused + 78 imported | 28 ids and their members already exist in 1.2 and match 3.0; the other 78 are 10.x-only templates |
+| NPC spawn placements | 322 | 10.x `level_design/zone/{286,287}/zone_server/npc_spawners.g`, mapped into the 1.2 zone's owned sectors |
+
+Regenerate with `rust/tools/area_package/build_sunbite.py`; its header carries the exact command.
+The compact patches are `SQL/patches/compact/2026-10-21-sunbite-wilds-*.sql` and are rerun-safe
+(`NOT EXISTS` guards, including the tables without a primary key).
+
+**Deliberate limits and guesses**
+
+- **Placements are a 10.x guess.** 3.0 ships the spawner tables but no placement files for these
+  zones, so the only placement source is the 10.x client. The 10.x zones moved to origin
+  (21, 4) while 1.2 keeps (18, 4) / (18, 5), and the cell shapes differ; the tool maps each 10.x
+  cell proportionally onto the 1.2 zone's sector-owning cells. 250 of 322 points still fell in a
+  neighbouring 1.2 zone's sector and were moved to the nearest sector Sunbite owns, so their
+  positions are a guess. The authored 10.x Z is kept (the 1.2 heightmap is not read; re-snap with
+  the `dump_terrain_heights` test if the live check reveals floating or buried NPCs).
+- **1.2 boundary kept.** The 1.2 `world.xml` sector ownership is unchanged; the package does not
+  ship a client overlay.
+- **One quest skipped.** Quest 8155 references NPC 17156, whose 3.0 model (2136) does not exist in
+  1.2; 81 of 82 candidates remain. Every imported NPC uses a 1.2 model.
+- **No loot.** Neither 3.0 nor 10.x links the new Sunbite NPCs to a loot pack
+  (`loot_pack_dropping_npcs` has no rows for them), so the package has no loot patch; quest rewards
+  are the source of items.
+- **Doodads are templates only.** The 10.x pak has no `main_world` doodad placement file, so the 36
+  quest doodad templates exist but no doodads are placed.
+- **Quest text is client-side.** The server sends ids; the 1.2 client shows only text it already
+  has, so some new quest names/descriptions may be blank or Korean.
+
+`cargo xtask compact-patches` applies the patches twice in the ignored
+`sunbite_area_package_real_data` test and then loads the zone, quest and full subsystem data with
+`Areas:Enabled` on and off.

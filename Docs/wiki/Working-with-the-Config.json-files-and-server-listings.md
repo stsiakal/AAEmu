@@ -261,3 +261,44 @@ Use login `GameServers` configuration instead.
 - [Local Development Guide](Local-Development-Guide)
 - [Mini troubleshoot guide](Mini-troubleshoot-guide)
 - [FAQ](FAQ)
+
+## Optional later-version areas (`Areas`)
+
+The fork can ship server-only areas whose rows a 1.2 `compact.sqlite3` does not have. Each area is
+a package: a descriptor in the game application directory at `Data/Areas/<name>.json` plus its
+compact patch under `SQL/patches/compact/` and, for NPC placements, a spawn file. **Every package
+is off by default**; the 1.2 world is unchanged until it is listed.
+
+Enable one in `Configurations/Areas.json` (or `Config.Local.json`, which wins):
+
+```json
+{
+    "Areas": {
+        "Enabled": ["sunbite-wilds"]
+    }
+}
+```
+
+- `Enabled` is an ordered list of package names (the descriptor file name without `.json`). An
+  unknown name or a missing spawn file aborts startup instead of silently disabling the package.
+- A disabled package is filtered at load: its `zones` / `zone_groups` / `sub_zones` rows, quests
+  by `quest_contexts.zone_id`, recall / respawn / worldgate portals into its zone keys and its
+  spawn files are not loaded. Entering one of its zones anyway (walking over the border or a GM
+  teleport) sends the player to the closest open respawn portal with `SCErrorMsg(ClosedZone)`.
+- A descriptor lists its zone ids and client zone keys, optional group / sub zone ids, quest zone
+  ids (default: the zone ids), worlds, and spawn files:
+
+```json
+{
+    "ZoneIds": [227, 242],
+    "ZoneKeys": [287, 286],
+    "QuestZoneIds": [227],
+    "Worlds": ["main_world"],
+    "Spawns": [
+        { "World": "main_world", "NpcSpawns": "Data/Areas/sunbite-wilds/npc_spawns.json" }
+    ]
+}
+```
+
+The shipped pilot is `sunbite-wilds` (Sunbite Wilds 3+4, `zone_key` 286/287); its contents, data
+sources and limits are documented in [Backports](Backports#sunbite-wilds-pilot).
