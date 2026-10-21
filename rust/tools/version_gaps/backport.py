@@ -122,6 +122,21 @@ ITEM_SCOPED_TABLES = (
     ("item_backpacks", "item_id", None),
 )
 
+# Child tables the server keys by item_id (one row per item; a second row either
+# errors as a duplicate dictionary/template entry or is silently ignored). When
+# the 1.2 database already has a row for an imported item id, the 3.0 values
+# must replace it. `unit_modifiers` is deliberately absent: several rows per
+# owner are meaningful there. The class tables are handled by `plan_class_row`.
+ITEM_KEYED_TABLES = {
+    "item_grade_enchanting_supports",
+    "item_enchanting_gems",
+    "dyeable_items",
+    "item_body_parts",
+    "item_summon_mates",
+    "item_summon_slaves",
+    "item_backpacks",
+}
+
 OBSIDIAN_WEAPON_RECIPE_IDS = (
     30565,
     30566,
@@ -467,6 +482,7 @@ class Borrower:
         }
         self._buff_effect_buff_ids = set()
         self.seen_sets = set()
+        self.seen_localized_keys = set()
         self.replacements = defaultdict(list)
         self._max_unit_attribute = None
         self.armor_asset_map = {}
@@ -740,6 +756,42 @@ class Borrower:
                 planned["asset_id"] = self.borrow_armor_look(asset_id)
         return planned
 
+    def plan_item_keyed_row(self, table, ref_row):
+        """Plan a child row the server keys by `item_id` (one row per item).
+
+        `dyeable_items` errors on a duplicate item id; `item_grade_enchanting_supports`
+        keeps the first row; the body-part / summon / backpack rows are templates and
+        reject a duplicate item template. A 1.2 orphan row for an imported item is
+        therefore updated in place instead of inserting a second row.
+        """
+        item_id = ref_row.get("item_id")
+        base_row = None
+        if item_id is not None and self.base.has(table):
+            candidates = self.base.rows(
+                f'select * from "{table}" where item_id = ? order by id', (item_id,)
+            )
+            if candidates:
+                base_row = next(
+                    (row for row in candidates if row.get("id") == ref_row.get("id")),
+                    candidates[0],
+                )
+        if base_row is not None:
+            values = self._row_values(table, ref_row, record=False)
+            if self._class_row_matches(base_row, values):
+                self.report["already_present"].append(
+                    {"table": table, "id": base_row["id"]}
+                )
+                return None
+            values = self._row_values(table, ref_row)
+            return self._plan_replacement(
+                table, ref_row, base_row["id"], values=values
+            )
+        rid = ref_row.get("id")
+        if rid is not None and rid in self.base.ids(table):
+            ref_row = dict(ref_row)
+            ref_row["id"] = self.next_synth_id(table)
+        return self.plan_row(table, ref_row)
+
     # -- closure borrowing ------------------------------------------------
 
     def _base_item_assets_by_path(self):
@@ -926,7 +978,10 @@ class Borrower:
             for row in self.ref.rows(
                 f'select * from "{table}" where {where} order by rowid', (item_id,)
             ):
-                self.plan_row(table, row)
+                if table in ITEM_KEYED_TABLES:
+                    self.plan_item_keyed_row(table, row)
+                else:
+                    self.plan_row(table, row)
         for table in ITEM_CLASS_TABLES:
             class_rows = list(self.rows.get(table, []))
             class_rows += list(self.replacements.get(table, []))
@@ -1374,10 +1429,67 @@ class Borrower:
                 return candidate
         return None
 
+    def plan_localized_text(self, tbl_name, column, idx, ko, en_us):
+        """Insert a localized text, or update the existing `(tbl, column, idx)` row.
+
+        `LocalizationManager` keys `localized_texts` by `(tbl_name, tbl_column_name,
+        idx)` and keeps the first row, so inserting a second row for a key the 1.2
+        database already has only logs a duplicate and leaves the placeholder in
+        place. Existing rows get the new `ko`/`en_us` values; their other locale
+        columns are kept.
+        """
+        key = (tbl_name, column, idx)
+        if key in self.seen_localized_keys:
+            return
+        self.seen_localized_keys.add(key)
+        base_row = None
+        if self.base.has("localized_texts"):
+            base_row = self.base.row(
+                "select * from localized_texts where tbl_name = ?"
+                " and tbl_column_name = ? and idx = ? order by id limit 1",
+                (tbl_name, column, idx),
+            )
+        if base_row is not None:
+            values = dict(base_row)
+            if (
+                (values.get("ko") or "") == (ko or "")
+                and (values.get("en_us") or "") == (en_us or "")
+                and (values.get("ko_ver") or 0) == 0
+                and (values.get("en_us_ver") or 0) == 0
+            ):
+                self.report["already_present"].append(
+                    {"table": "localized_texts", "id": base_row["id"]}
+                )
+                return
+            values["ko"] = ko or ""
+            values["ko_ver"] = 0
+            values["en_us"] = en_us or ""
+            values["en_us_ver"] = 0
+            self._plan_replacement(
+                "localized_texts", {}, base_row["id"], values=values
+            )
+            return
+        row = {
+            "id": self.next_synth_id("localized_texts"),
+            "tbl_name": tbl_name,
+            "tbl_column_name": column,
+            "idx": idx,
+            "ko": ko or "",
+            "ko_ver": 0,
+            "en_us": en_us or "",
+            "en_us_ver": 0,
+        }
+        for locale in ("zh_cn", "ja", "ru", "zh_tw", "de", "fr"):
+            row[locale] = ""
+            row[locale + "_ver"] = 0
+        self.rows.setdefault("localized_texts", []).append(row)
+        self.seen_ids.setdefault("localized_texts", set()).add(row["id"])
+        self.report["borrowed_rows"]["localized_texts"] += 1
+
     def borrow_localized_items(self, item_ids, item_names):
         if not self.ref.has("localized_texts"):
             return 0
-        borrowed = 0
+        before = len(self.rows.get("localized_texts", []))
         for item_id in sorted(item_ids):
             rows = self.ref.rows(
                 "select * from localized_texts where tbl_name = 'items'"
@@ -1388,24 +1500,14 @@ class Borrower:
             )
             for ref_row in rows:
                 column = ref_row.get("tbl_column_name")
-                row = {
-                    "id": self.next_synth_id("localized_texts"),
-                    "tbl_name": "items",
-                    "tbl_column_name": column,
-                    "idx": item_id,
-                    "ko": item_names.get(item_id, "") if column == "name" else "",
-                    "ko_ver": 0,
-                    "en_us": ref_row.get("en_us") or "",
-                    "en_us_ver": 0,
-                }
-                for locale in ("zh_cn", "ja", "ru", "zh_tw", "de", "fr"):
-                    row[locale] = ""
-                    row[locale + "_ver"] = 0
-                self.rows.setdefault("localized_texts", []).append(row)
-                self.seen_ids.setdefault("localized_texts", set()).add(row["id"])
-                self.report["borrowed_rows"]["localized_texts"] += 1
-                borrowed += 1
-        return borrowed
+                self.plan_localized_text(
+                    "items",
+                    column,
+                    item_id,
+                    item_names.get(item_id, "") if column == "name" else "",
+                    ref_row.get("en_us") or "",
+                )
+        return len(self.rows.get("localized_texts", [])) - before
 
     EXTRA_LOCALIZED = (
         ("buffs", ("name", "desc")),
@@ -1423,7 +1525,7 @@ class Borrower:
         """
         if not self.ref.has("localized_texts"):
             return 0
-        borrowed = 0
+        before = len(self.rows.get("localized_texts", []))
         missing = self.report.setdefault("localized_missing", [])
         for table, columns in self.EXTRA_LOCALIZED:
             for source in sorted(self.rows.get(table, []), key=lambda r: r["id"]):
@@ -1443,24 +1545,14 @@ class Borrower:
                     if "DO NOT TRANSLATE" in ref_row["en_us"]:
                         missing.append([table, column, row_id, "3.0 placeholder text"])
                         continue
-                    row = {
-                        "id": self.next_synth_id("localized_texts"),
-                        "tbl_name": table,
-                        "tbl_column_name": column,
-                        "idx": row_id,
-                        "ko": source.get(column) or "",
-                        "ko_ver": 0,
-                        "en_us": ref_row["en_us"],
-                        "en_us_ver": 0,
-                    }
-                    for locale in ("zh_cn", "ja", "ru", "zh_tw", "de", "fr"):
-                        row[locale] = ""
-                        row[locale + "_ver"] = 0
-                    self.rows.setdefault("localized_texts", []).append(row)
-                    self.seen_ids.setdefault("localized_texts", set()).add(row["id"])
-                    self.report["borrowed_rows"]["localized_texts"] += 1
-                    borrowed += 1
-        return borrowed
+                    self.plan_localized_text(
+                        table,
+                        column,
+                        row_id,
+                        source.get(column) or "",
+                        ref_row["en_us"],
+                    )
+        return len(self.rows.get("localized_texts", [])) - before
 
 
 def build_closure(base, ref, start_ids):
@@ -1651,9 +1743,9 @@ def render_patch(
     for line in extra_header or ():
         lines.append(f"-- {line}" if line else "--")
     lines.append(
-        "-- Idempotent: every INSERT is guarded by NOT EXISTS on its id, every class-row"
-        " UPDATE is guarded by item_id and writes the same values again, so a rerun is a"
-        " no-op."
+        "-- Idempotent: every INSERT is guarded by NOT EXISTS on its id, every UPDATE is"
+        " guarded by the row's natural key (item_id or the localized_texts key) and"
+        " writes the same values again, so a rerun is a no-op."
     )
     lines.append("BEGIN;")
     replacements = replacements or {}
@@ -1685,7 +1777,13 @@ def render_patch(
                 f'"{c}" = {sql_literal(row.get(c))}' for c in columns
             )
             guard = ""
-            if "item_id" in row:
+            if table == "localized_texts":
+                guard = (
+                    f' AND "tbl_name" = {sql_literal(row.get("tbl_name"))}'
+                    f' AND "tbl_column_name" = {sql_literal(row.get("tbl_column_name"))}'
+                    f' AND "idx" = {sql_literal(row.get("idx"))}'
+                )
+            elif "item_id" in row:
                 guard = f' AND "item_id" = {sql_literal(row["item_id"])}'
             lines.append(
                 f'UPDATE "{table}" SET {assignments}'
@@ -1964,10 +2062,21 @@ def selection_header(selection, borrowed_rows, report):
     }
     if replaced:
         lines.append(
-            "Rows replaced (orphan 1.2 class rows of the imported items): "
+            "Rows replaced (existing-key rows updated in place, not duplicated): "
             + ", ".join(f"{table} {count}" for table, count in sorted(replaced.items()))
             + "."
         )
+    lines.append(
+        "Keyed-child checks: localized_texts by (tbl_name, tbl_column_name, idx);"
+        " item_armors/item_weapons/item_accessories and item_grade_enchanting_supports,"
+        " item_enchanting_gems, dyeable_items, item_body_parts, item_summon_mates,"
+        " item_summon_slaves, item_backpacks by item_id."
+    )
+    lines.append(
+        "  unit_modifiers (owner_id), craft_products/craft_materials (craft_id),"
+        " tagged_buffs, skill_modifiers and equip_item_set_bonuses are multi-row"
+        " children; checked, none had an existing row for the imported parents."
+    )
     if report.get("orphan_crafts_in_3_0"):
         lines.append(
             "3.0 orphan crafts (products without a crafts row): "

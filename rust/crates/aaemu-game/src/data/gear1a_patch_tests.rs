@@ -45,7 +45,10 @@ const INSERTED_ICONS: i64 = 31;
 const INSERTED_CRAFTS: i64 = 19;
 const INSERTED_CRAFT_PRODUCTS: i64 = 19;
 const INSERTED_CRAFT_MATERIALS: i64 = 55;
-const INSERTED_TEXTS: i64 = 865;
+/// 865 text rows are generated; the 16 `(tbl, column, idx)` keys the 1.2 database
+/// already has (name/description of the eight orphan items) update those rows instead.
+const INSERTED_TEXTS: i64 = 849;
+const REPLACED_TEXTS: i64 = 16;
 const INSERTED_TAGS: i64 = 2;
 
 /// A private copy of the real database, removed when the test ends (also on panic).
@@ -187,6 +190,22 @@ fn gear_1a_patch_applies_to_a_copy_and_loads() {
         "SELECT COUNT(*) FROM item_armors WHERE eiset_id >= 9000001",
         &[],
     );
+    // The eight orphan items already have name/description text keys in 1.2 with
+    // placeholder Korean; the patch must update those 16 rows, not insert a second
+    // row for the same (tbl, column, idx) key (the localization loader keeps the
+    // first row and logs the duplicate).
+    assert_eq!(
+        row_i64(
+            &conn,
+            concat!(
+                "SELECT COUNT(*) FROM localized_texts WHERE tbl_name = 'items'",
+                " AND idx IN (3006, 3007, 3008, 3009, 34303, 34304, 34305, 34306)",
+                " AND tbl_column_name IN ('name', 'description')",
+            ),
+            &[],
+        ),
+        REPLACED_TEXTS
+    );
     let before_data = ItemData::load(&conn).expect("load pristine items");
     let before_templates = before_data.templates.len();
     let before_sets = before_data.equip_item_sets.len();
@@ -227,6 +246,34 @@ fn gear_1a_patch_applies_to_a_copy_and_loads() {
         after.localized_texts - before.localized_texts,
         INSERTED_TEXTS
     );
+    assert_eq!(
+        row_i64(
+            &conn,
+            concat!(
+                "SELECT COUNT(*) FROM (SELECT 1 FROM localized_texts",
+                " GROUP BY tbl_name, tbl_column_name, idx HAVING COUNT(*) > 1)",
+            ),
+            &[],
+        ),
+        0,
+        "no duplicate localized_texts keys after the patch"
+    );
+    for item_id in [SAMPLE_CLOAK, SAMPLE_COSTUME, SAMPLE_ARMOR] {
+        let (keys, updated): (i64, i64) = conn
+            .query_row(
+                concat!(
+                    "SELECT COUNT(*), COALESCE(SUM(CASE WHEN lt.ko = i.name",
+                    " THEN 1 ELSE 0 END), 0) FROM localized_texts lt",
+                    " JOIN items i ON i.id = lt.idx WHERE lt.tbl_name = 'items'",
+                    " AND lt.tbl_column_name = 'name' AND lt.idx = ?1",
+                ),
+                [item_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap_or_else(|e| panic!("localized name {item_id}: {e}"));
+        assert_eq!(keys, 1, "item {item_id} has one name key");
+        assert_eq!(updated, 1, "item {item_id} name key was updated");
+    }
     assert_eq!(after.dyeable_items - before.dyeable_items, 25);
     assert_eq!(
         after.equip_item_attr_modifiers - before.equip_item_attr_modifiers,

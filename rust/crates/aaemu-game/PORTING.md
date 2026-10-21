@@ -2483,7 +2483,9 @@ the 1.2 pak. The generated patch is
   second template for the same item id makes `ItemData::load` fail.
 - **Support rows**: `item_categories` 173 (synthetic costume), tags 1,626 and 2,480, mod sets
   81/83/99, 31 icons, 25 `dyeable_items`, 11 buffs (two from craft effects), and 865 localized
-  texts (item names/descriptions and the borrowed buff/craft/skill texts).
+  text rows (item names/descriptions and the borrowed buff/craft/skill texts): 849 new keys are
+  inserted and the 16 `(tbl, column, idx)` keys the 1.2 database already has for the eight
+  orphan items are updated in place, so `LocalizationManager` logs no duplicate.
 - **Skipped**: 7 custom crafts (5 Dawnsdrop, 2 items in the 8M band) and 2 custom tags
   (9000007 on two emulator buffs); 10 3.0 orphan crafts without a `crafts` row (7,514, 7,534,
   7,678, 8,259, 8,435, 8,439, 8,443-8,446); 9 money `craft_materials` rows; 27

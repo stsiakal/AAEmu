@@ -713,6 +713,13 @@ CREATE TABLE craft_products (id INTEGER PRIMARY KEY, craft_id INTEGER,
     item_id INTEGER, amount INTEGER);
 CREATE TABLE craft_materials (id INTEGER PRIMARY KEY, craft_id INTEGER,
     item_id INTEGER, amount INTEGER);
+CREATE TABLE localized_texts (id INTEGER PRIMARY KEY, tbl_name TEXT,
+    tbl_column_name TEXT, idx INTEGER, ko TEXT, ko_ver INTEGER, en_us TEXT,
+    en_us_ver INTEGER, zh_cn TEXT, zh_cn_ver INTEGER, ja TEXT, ja_ver INTEGER,
+    ru TEXT, ru_ver INTEGER, zh_tw TEXT, zh_tw_ver INTEGER, de TEXT, de_ver INTEGER,
+    fr TEXT, fr_ver INTEGER);
+CREATE TABLE dyeable_items (id INTEGER PRIMARY KEY, item_id INTEGER,
+    default_dyeing_item_id INTEGER);
 """
 
 GEAR_RACES = ("nuian", "elf", "hariharan", "ferre")
@@ -733,6 +740,12 @@ def gear_base():
             ("INSERT INTO skills VALUES (?,?)", (500, "base skill")),
             ("INSERT INTO item_categories VALUES (?,?,?)", (10, "costume", 4)),
             ("INSERT INTO item_groups VALUES (?,?)", (4, "costume")),
+            (
+                "INSERT INTO localized_texts"
+                " (id,tbl_name,tbl_column_name,idx,ko,ko_ver,en_us,en_us_ver)"
+                " VALUES (?,?,?,?,?,?,?,?)",
+                (999, "items", "name", 1001, "placeholder", 0, "", 0),
+            ),
         ],
     )
 
@@ -887,6 +900,79 @@ class Gear1aSelectionTests(unittest.TestCase):
         self.assertEqual(len(rows["item_assets"]), 16)
         self.assertEqual(len(rows["item_armor_assets"]), 16)
         self.assertEqual(report["replaced_rows"], {})
+
+    def test_existing_localized_key_is_updated_not_duplicated(self):
+        base, ref = gear_base(), gear_ref()
+        ref.conn.execute(
+            "INSERT INTO localized_texts"
+            " (id,tbl_name,tbl_column_name,idx,ko,ko_ver,en_us,en_us_ver)"
+            " VALUES (?,?,?,?,?,?,?,?)",
+            (1, "items", "name", 1001, "", 0, "Item 1001 EN", 0),
+        )
+        ref.conn.commit()
+        _, rows, report = build_backport(base, ref, [1001])
+        self.assertEqual(report["replaced_rows"], {"localized_texts": 1})
+        self.assertFalse(
+            [
+                row
+                for row in rows.get("localized_texts", [])
+                if row["tbl_name"] == "items"
+                and row["tbl_column_name"] == "name"
+                and row["idx"] == 1001
+            ]
+        )
+        replacement = report["_replacements"]["localized_texts"][0]
+        self.assertEqual(replacement["id"], 999)
+        self.assertEqual(replacement["ko"], "item1001")
+        self.assertEqual(replacement["en_us"], "Item 1001 EN")
+        sql = render_patch(
+            rows,
+            "b",
+            "r",
+            "cmd",
+            "s1",
+            "s2",
+            replacements=report["_replacements"],
+        )
+        self.assertIn('UPDATE "localized_texts"', sql)
+        self.assertIn('"tbl_column_name" = \'name\'', sql)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "base.sqlite3")
+            base.conn.commit()
+            target = sqlite3.connect(path)
+            base.conn.backup(target)
+            target.close()
+            conn = sqlite3.connect(path)
+            try:
+                conn.executescript(sql)
+                conn.executescript(sql)
+                keys = conn.execute(
+                    "SELECT id, ko, en_us FROM localized_texts"
+                    " WHERE tbl_name = 'items' AND tbl_column_name = 'name'"
+                    " AND idx = 1001"
+                ).fetchall()
+                duplicates = conn.execute(
+                    "SELECT COUNT(*) FROM (SELECT 1 FROM localized_texts"
+                    " GROUP BY tbl_name, tbl_column_name, idx HAVING COUNT(*) > 1)"
+                ).fetchone()[0]
+            finally:
+                conn.close()
+            self.assertEqual(keys, [(999, "item1001", "Item 1001 EN")])
+            self.assertEqual(duplicates, 0)
+
+    def test_existing_item_keyed_child_row_is_updated(self):
+        base, ref = gear_base(), gear_ref()
+        base.conn.execute("INSERT INTO dyeable_items VALUES (?,?,?)", (77, 1001, 1))
+        base.conn.commit()
+        ref.conn.execute("INSERT INTO dyeable_items VALUES (?,?,?)", (78, 1001, 2))
+        ref.conn.commit()
+        _, rows, report = build_backport(base, ref, [1001])
+        self.assertNotIn("dyeable_items", rows)
+        self.assertEqual(report["replaced_rows"], {"dyeable_items": 1})
+        replacement = report["_replacements"]["dyeable_items"][0]
+        self.assertEqual(replacement["id"], 77)
+        self.assertEqual(replacement["item_id"], 1001)
+        self.assertEqual(replacement["default_dyeing_item_id"], 2)
 
     def test_synth_ids_stay_below_the_custom_band(self):
         base, ref = gear_base(), gear_ref()
