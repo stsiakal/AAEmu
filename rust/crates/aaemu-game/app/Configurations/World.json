@@ -31,6 +31,7 @@
         "NpcSpawnsPerTick": 64,
         "NpcWarmRetentionSeconds": 60,
         "NpcResidentServiceNpcs": true,
-        "AiWorkerThreads": 1
+        "AiWorkerThreads": 1,
+        "LogGmTargets": false
     }
 }

@@ -43,6 +43,7 @@ pub mod spawn_manager;
 pub mod specialty;
 pub mod sphere_quest;
 pub mod subzone;
+pub mod target_inspect;
 
 use std::sync::Arc;
 
