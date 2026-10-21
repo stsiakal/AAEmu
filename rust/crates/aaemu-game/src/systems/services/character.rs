@@ -42,6 +42,24 @@ pub fn effective_access_level_of(character_access_level: i32, details: &AccountD
     character_access_level.max(details.access_level)
 }
 
+/// The access level the command system treats as GM: `testai` and the other admin commands
+/// default to 100 when `AccessLevels.json` does not list them.
+pub const GM_ACCESS_LEVEL: i32 = 100;
+
+/// Whether `player` is a GM by the command system's check (`GetEffectiveAccessLevel` >= 100).
+/// The account lookup is skipped when the character's own access level already decides it.
+pub async fn is_gm(server: &GameServer, player: &PlayerRef) -> bool {
+    let (access, account) = {
+        let c = player.data();
+        (c.access_level, c.account_id)
+    };
+    if access >= GM_ACCESS_LEVEL {
+        return true;
+    }
+    let details = super::accounts::get_account_details(server, account).await;
+    effective_access_level_of(access, &details) >= GM_ACCESS_LEVEL
+}
+
 /// `SCDiceValuePacket(name, max, value)`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SCDiceValuePacket {

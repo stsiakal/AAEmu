@@ -376,6 +376,11 @@ pub struct WorldConfig {
     /// over independent NPC AI updates and relax strict ordering.
     #[serde(rename = "aiworkerthreads", deserialize_with = "lenient")]
     pub ai_worker_threads: u32,
+    /// `LogGmTargets`: write a `[target-inspect]` block about the selected NPC to the log when
+    /// a GM (effective access level >= 100) changes target. Off by default; see
+    /// `Docs/wiki/Local-Development-Guide.md` § "GM target inspection".
+    #[serde(rename = "loggmtargets", deserialize_with = "lenient")]
+    pub log_gm_targets: bool,
 }
 
 impl Default for WorldConfig {
@@ -413,6 +418,7 @@ impl Default for WorldConfig {
             npc_warm_retention_seconds: 60,
             npc_resident_service_npcs: true,
             ai_worker_threads: 1,
+            log_gm_targets: false,
         }
     }
 }

@@ -109,6 +109,20 @@ For automated end-to-end checks against the running servers, see
 [`rust/LIVE-TESTING.md`](https://github.com/AAEmu/AAEmu/blob/develop/rust/LIVE-TESTING.md)
 (the `aaemu-testclient` bot).
 
+### GM target inspection
+
+Set `World:LogGmTargets` to `true` (in `app/Configurations/World.json`, or a
+local `Config.Local.json` override; the default is `false`) to make the game
+server log a `[target-inspect]` block whenever a GM (effective access level
+100 or higher) changes target. NPCs get name, template/model/faction/level,
+HP/MP, position and distance from the spawner, spawner details, AI kind and
+current behavior, stance/alertness, path state, the AI command queue, aggro
+target, active buff ids and whether the position differs from the AI home.
+Players, doodads, mates and slaves get a one-line summary.
+
+The block is built by the same code as the `/testai info` GM command, so both
+show the same AI state. Repeats of the same target are not logged.
+
 ## Starting the client
 
 Start the 1.2 client against the local servers with AAEmu's own launcher
