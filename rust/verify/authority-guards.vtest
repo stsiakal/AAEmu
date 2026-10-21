@@ -1,5 +1,8 @@
 # Authority guards (commit "validate loot range, resurrection offers, tutorial ids and UI data"):
 #
+# Needs PR #25 (branch origin/fix/authority-upstream, not merged yet): the fixes this suite
+# guards are on that branch.
+#
 #   looter    GM: with quest 251 active a Solzreed boar (3475) drops item 4058 every time. A kill
 #             at melee range is looted normally; the same loot taken from ~20 m is refused
 #             (systems/economy/looting.rs LOOT_TAKE_RANGE, SCLootItemFailed + WARN) and still

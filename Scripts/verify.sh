@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Live verification suites for one lane: build + start the lane stack, provision the bot
-# accounts the suites declare, run every rust/verify/*.vtest and write a report.
+# Optional tooling, not part of CI: live verification suites for one lane. It builds + starts the
+# lane stack, provisions the bot accounts the suites declare, runs every rust/verify/*.vtest and
+# writes a report.
 #
 #   Scripts/verify.sh                         # all suites
 #   Scripts/verify.sh --only guild            # suites whose name contains "guild"
@@ -70,11 +71,11 @@ if [ ${#suites[@]} -eq 0 ]; then
 fi
 
 echo "== lane $LANE: ${#suites[@]} suite(s), stack $LIVE, login $LOGIN"
-Scripts/live-stack.sh build
+"$REPO/Scripts/live-stack.sh" build
 (cd "$REPO/rust" && cargo build --profile "$PROFILE" -p aaemu-testclient)
 [ -x "$TC" ] || { echo "verify: missing $TC" >&2; exit 1; }
 
-Scripts/live-stack.sh sync
+"$REPO/Scripts/live-stack.sh" sync
 # Minimal guild-creation requirements in the lane's RUNTIME config only (never in app/):
 # the suite creates a two-member guild without gold or leveling.
 STAGE="$LIVE/rs-game/Configurations/Expedition.json"
@@ -94,7 +95,7 @@ fi
 # The spoof check reads a debug line from the express-text handler; give the game log filter
 # that module, then restart this lane's stack so the filter and the patched config apply.
 export RUST_LOG="${RUST_LOG:-info},aaemu_game::systems::services::express_text=debug"
-Scripts/live-stack.sh stop
+"$REPO/Scripts/live-stack.sh" stop
 
 export AAEMU_VERIFY_GAME_LOG="$GAME_LOG"
 MYSQL_EXE=$(cygpath -m "$MYSQL_BIN/mysql.exe" 2>/dev/null || echo "$MYSQL_BIN/mysql.exe")
@@ -117,8 +118,8 @@ if ! mysql_up; then
   # The private MySQL is shared and normally up; on a fresh machine this brings it up (the
   # stack is restarted below so the game loads the cleaned state).
   echo "== starting the stack once to bring MySQL up"
-  Scripts/live-stack.sh start
-  Scripts/live-stack.sh stop
+  "$REPO/Scripts/live-stack.sh" start
+  "$REPO/Scripts/live-stack.sh" stop
 fi
 if "${MYSQL[@]}" -N -e "SHOW DATABASES LIKE '$DB_GAME'" | grep -q .; then
   # A rerun starts from clean guild state for these accounts (the restart clears teams; this
@@ -136,7 +137,7 @@ if "${MYSQL[@]}" -N -e "SHOW DATABASES LIKE '$DB_GAME'" | grep -q .; then
     UPDATE characters SET expedition_id=0 WHERE name IN ($names);"
 fi
 
-Scripts/live-stack.sh start
+"$REPO/Scripts/live-stack.sh" start
 
 # AutoAccount login creates each account; the GM flag is set in THIS lane's game database.
 echo "== provisioning ${#accounts[@]} bot account(s)"
