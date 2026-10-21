@@ -2526,8 +2526,8 @@ against the 1.2 database **with batch 1a applied** (patch order), so its synthet
 - **313 costumes** plus **2 craft-material items**, with 19 crafts (19 products / 34 materials),
   119 new `armor_assets` looks, 1,392 new `item_assets` rows, 1,439 `item_armor_assets` rows,
   199 icons, 76 `dyeable_items`, 4 buffs, the craft skill/effect chain and 735 localized texts.
-  1.2 has no `item_armors.asset2_id`, so the 3.0 secondary look chain (308 paths on 132 rows) is
-  dropped, as are the 3.0-only `item_assets.hide_horn`/`hide_tail` values.
+  1.2 has no `item_armors.asset2_id`, so the 3.0 secondary look chain (132 rows, 308 new
+  playable paths) is dropped, as are the 3.0-only `item_assets.hide_horn`/`hide_tail` values.
 - **Overlay pak** `gear-3.0-costumes.pak` (TypeA/WIBO, 2,582 files, 1,076,861,440 bytes) carries
   907 new primary playable-race look paths + 200 new icons and their closure. It only adds files:
   `cargo xtask overlay-pak --closure --new-only --exclude-present-in <1.2 pak>`. The list and a
