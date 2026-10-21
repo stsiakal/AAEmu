@@ -182,6 +182,8 @@ pub fn blink(server: &GameServer, args: &EffectArgs<'_>, v: [i32; 4]) {
             .ext
             .npcs()
             .unmount_active_mates(server, p);
+        p.data()
+            .mark_expected_position(new_pos.x, new_pos.y, new_pos.z);
         p.send(SCBlinkUnitPacket {
             obj_id: caster.obj_id(),
             distance: v[0] as f32,
@@ -280,6 +282,7 @@ pub fn teleport_to_unit(server: &GameServer, args: &EffectArgs<'_>, v: [i32; 4])
         || target_position.z,
     );
     if let Some(p) = caster.as_player() {
+        p.data().mark_expected_position(end_x, end_y, end_z);
         p.send(SCBlinkUnitPacket {
             obj_id: caster.obj_id(),
             distance: 0.0,
@@ -356,7 +359,13 @@ pub fn knock_back(server: &GameServer, args: &EffectArgs<'_>, v: [i32; 4]) {
         target_pos.y + dir.1 * knock_dist,
         target_pos.z + v[2] as f32 / 1000.0,
     );
-    if target.as_player().is_some() {
+    if let Some(p) = target.as_player() {
+        // The client plays the displacement itself (a server packet doubles it). Mark it so the
+        // movement guard allows the knockback speed for its short window.
+        let until = crate::world::now_ms() + 600;
+        let mut c = p.data();
+        c.unit.displaced_until_ms = Some(until);
+        c.unit.skill_state.displaced_until_ms = until;
         return;
     }
 
@@ -401,6 +410,7 @@ pub fn move_to_ground(server: &GameServer, args: &EffectArgs<'_>, v: [i32; 4]) {
     if let Some(p) = caster.as_player() {
         // As `Blink`: only `SCBlinkUnitPacket`; the client moves itself and its movement report
         // carries the new position back to the server.
+        p.data().mark_expected_position(x, y, z);
         p.send(SCBlinkUnitPacket {
             obj_id: caster.obj_id(),
             distance: 0.0,
@@ -454,6 +464,7 @@ pub fn escape(server: &GameServer, args: &EffectArgs<'_>, v: [i32; 4]) {
             }
         }
     };
+    p.data().mark_expected_position(x, y, z);
     broadcast(
         server,
         caster,
@@ -576,6 +587,7 @@ pub fn return_(server: &GameServer, args: &EffectArgs<'_>, v: [i32; 4]) {
             ang_z: m.pos.rot_z,
         });
         set_character_transform(p, m.instance_id, m.zone_id, m.pos);
+        p.data().mark_expected_position(m.pos.x, m.pos.y, m.pos.z);
         p.send(SCTeleportUnitPacket {
             reason: TELEPORT_REASON_MOVE_TO_LOCATION,
             error_message: 0,
@@ -602,7 +614,11 @@ pub fn return_(server: &GameServer, args: &EffectArgs<'_>, v: [i32; 4]) {
         );
         return;
     };
-    p.data().set_disabled_set_position(true);
+    {
+        let mut c = p.data();
+        c.set_disabled_set_position(true);
+        c.mark_expected_position(t.x, t.y, t.z);
+    }
     p.send(SCTeleportUnitPacket {
         reason: TELEPORT_REASON_MOVE_TO_LOCATION,
         error_message: 0,

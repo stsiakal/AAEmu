@@ -201,6 +201,8 @@ pub fn resurrect_character(server: &GameServer, p: &PlayerRef, in_place: bool) {
             z_rot: 0.0,
         }
     };
+    p.data()
+        .mark_expected_position(packet.x, packet.y, packet.z);
     super::broadcast(server, &me, &packet, true);
     let (hp, mp) = {
         let c = p.data();

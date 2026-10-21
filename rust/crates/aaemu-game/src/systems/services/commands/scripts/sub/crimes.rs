@@ -543,6 +543,7 @@ impl SubCommand for CrimeCourtSubCommand {
                 }
                 crate::systems::dispatch_buff_events(server, &WorldObject::from(&target));
                 let jail = &court_room.jail;
+                target.data().mark_expected_position(jail.x, jail.y, jail.z);
                 target.send(SCTeleportUnitPacket {
                     reason: 0,
                     error_message: 0,

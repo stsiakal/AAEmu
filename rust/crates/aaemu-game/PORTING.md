@@ -465,8 +465,16 @@ the x2game / cry3dengine decompiles (addresses below). Config `Physics` (`Config
 `Enable` (true), `Geometry` (`Terrain` / `Brushes` / `Full`), `LoadRadiusCells` (1), `LoadOnQuery`
 (true), `UnloadAfterSeconds` (600), `SyncPeriodMs` (1000), `DoodadColliders` (true),
 `PreloadAllCells` (false), `MovementVerifyEnable` (false = `movement_verify_enable 0`),
+`MoveVerifyEnable` (true), `MoveVerifyTolerance` (1.35), `MoveVerifyWindowSeconds` (2),
+`MoveVerifyTeleportDistance` (50 m), `MoveVerifyExpectedRadius` (20 m),
+`MoveVerifyExpectedTimeoutMs` (30000), `MoveVerifySkillGraceMs` (2000),
+`MoveVerifySkillSpeed` (50 m/s), `MoveVerifyFallSpeed` (60 m/s),
+`MoveVerifyDefaultSpeed` (12 m/s), `MoveVerifyGmExempt` (true),
+`MoveVerifyGmAccessLevel` (100), `MoveVerifyExemptBots` (true),
 `FallDamageZoneCap` (true), `CryPhysicsShips` (true). The service is off without client data
-(`HeightMapsEnable`); every caller then keeps its previous (C# / heightmap) answer.
+(`HeightMapsEnable`); every caller then keeps its previous (C# / heightmap) answer. The
+`MoveVerify*` guard needs only the SQLite tables (`actor_models`, `game_stances`, `buffs`,
+`vehicle_models`), not the client files.
 
 * **World per instance** (`collision::world::PhysWorld`): entity grid over the world (at most 1024
   cells per axis, z origin −256), terrain heightfield from the `heightmap.dat` samples (2 m step;
@@ -1823,6 +1831,25 @@ servers (see `rust/LIVE-TESTING.md`). Fixed porting bugs are in the git history 
   spawn, as pets). The riding / slave-bound / `disabled_set_position` early returns of the move
   handler, mate spawn / delete and leaving the world reset the baseline explicitly
   (`CharacterMates.CreateNewMate` reset it too). Thresholds (25 / 27.5 m/s) are unchanged.
+* Server-side movement guard (`systems::ai::collision::move_verify::MoveSpeedGuard`,
+  `Physics.MoveVerify*`, on by default for players): a Rust-only deviation. The 1.2 C# trusted
+  every client position; `SusManager` only logged flat speeds above 25 / 27.5 m/s. A move is now
+  judged against the unit's real max speed (`actor_models` -> `game_stances.max_speed` of the
+  packet's stance, times `MoveSpeedMul`; an active glider buff uses its
+  `gliding_move_speed_fast`; mates their own model; `VehicleMoveType` the slave's
+  `vehicle_models.velocity`) over a travel-budget window (`MoveVerifyTolerance` 1.35,
+  `MoveVerifyWindowSeconds` 2 s), not a single packet. Falling
+  (`ActorFlags.Flag8` / `fallVel`, bounded by `MoveVerifyFallSpeed` 60 m/s) and recent skill
+  displacements (`MoveVerifySkillGraceMs` 2 s, `MoveVerifySkillSpeed` 50 m/s) are bounded
+  exemptions. A single move over `MoveVerifyTeleportDistance` (50 m) is refused unless the
+  server sent the client there: every server teleport (all `SCTeleportUnit` senders, blink,
+  resurrection, navi teleport, instance loads) records `Character.expected_position`, and
+  `CSTeleportEnded` / `CSInstanceLoaded` now adopt the server-known position (the C# ignored
+  `CSTeleportEnded`'s coordinates). A violation is refused before any apply / broadcast, the
+  player is sent back to the last valid position with `SCTeleportUnit(MoveToLocation)`, one WARN
+  names the character and reason, and `SusManager.move_violations` counts it. GMs
+  (`MoveVerifyGmAccessLevel` 100) and in-server bots are exempt; sparse data without an actor
+  model or vehicle model fails open. Tests: `systems::ai::collision::speed_guard_tests`.
 * `CSMoveUnitPacket` for an object the world no longer holds (a mount the server just
   despawned: summon toggle, dungeon entry, death) logs `Invalid target` at debug, not warn: the
   client keeps sending a few moves after the despawn.

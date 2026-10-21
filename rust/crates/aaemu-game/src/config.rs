@@ -1164,6 +1164,11 @@ mod tests {
         assert_eq!(cfg.world.wind_model, WindModelType::Official);
         assert_eq!(cfg.world.exp_loss_rate_at_death, 0.05);
         assert_eq!(cfg.world.minimum_exp_loss_level, 10);
+        // Physics.json: the player movement guard is on, the zone verifier stays off.
+        assert!(cfg.physics.move_verify_enable);
+        assert_eq!(cfg.physics.move_verify_tolerance, 1.35);
+        assert_eq!(cfg.physics.move_verify_teleport_distance, 50.0);
+        assert!(!cfg.physics.movement_verify_enable);
         // Dungeons.json
         assert_eq!(cfg.dungeons.auto_team_disband_kick_time, 15);
         assert_eq!(

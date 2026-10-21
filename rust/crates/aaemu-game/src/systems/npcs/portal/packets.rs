@@ -227,7 +227,51 @@ impl ClientPacket for CSTeleportEndedPacket {
             let Some(me) = conn.active_char.clone() else {
                 return Ok(());
             };
-            me.data().set_disabled_set_position(false);
+            let cfg = &server.config.physics;
+            let now = crate::world::now_ms();
+            // The client only gets to place itself after a server teleport. Its reported
+            // position is accepted when it is the destination the server sent (or when the
+            // server sent no explicit destination, as the 1.2 C# always trusted it); otherwise
+            // the server-known destination wins and the next move is validated from there.
+            let (was_disabled, mut server_pos, accept_reported) = {
+                let c = me.data();
+                let expected = c.expected_position;
+                let fresh = expected.is_some_and(|e| {
+                    e.instance_id == c.unit.transform.instance_id
+                        && now >= e.sent_ms
+                        && now - e.sent_ms <= cfg.move_verify_expected_timeout_ms
+                });
+                let at_destination = expected.is_some_and(|e| {
+                    let (dx, dy, dz) = (self.x - e.x, self.y - e.y, self.z - e.z);
+                    dx * dx + dy * dy + dz * dz
+                        <= cfg.move_verify_expected_radius * cfg.move_verify_expected_radius
+                });
+                let fallback = expected.map(|e| (e.x, e.y, e.z));
+                (c.disabled_set_position, fallback, fresh && at_destination)
+            };
+            if !was_disabled && !accept_reported {
+                tracing::debug!(
+                    "TeleportEnded without a server teleport, X: {}, Y: {}, Z: {} ignored",
+                    self.x,
+                    self.y,
+                    self.z
+                );
+                return Ok(());
+            }
+            {
+                let mut c = me.data();
+                let (x, y, z) = if accept_reported || server_pos.is_none() {
+                    (self.x, self.y, self.z)
+                } else {
+                    server_pos.take().unwrap_or((self.x, self.y, self.z))
+                };
+                c.unit.transform.set_xyz(x, y, z);
+                // The first move after the teleport must start from where the server left the
+                // player (a client that reappears elsewhere is corrected).
+                c.mark_expected_position_at(x, y, z, now);
+                c.set_disabled_set_position(false);
+            }
+            server.systems.ai.collision.move_speed.reset(me.obj_id);
             tracing::warn!("TeleportEnded, X: {}, Y: {}, Z: {}", self.x, self.y, self.z);
             super::resend_visible_objects_to_character(server, &me);
             Ok(())

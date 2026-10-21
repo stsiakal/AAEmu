@@ -29,7 +29,11 @@ use crate::net::connection::{ConnCommand, GameConnection, GameState};
 use crate::packets::proxy::ChangeStatePacket;
 use crate::packets::world::*;
 use crate::server::GameServer;
+use crate::systems::ai::collision::move_verify::MoveDecision;
 use crate::systems::skills::packets::SCCooldownsPacket;
+use crate::systems::skills::packets_special::{
+    SCTeleportUnitPacket, TELEPORT_REASON_MOVE_TO_LOCATION,
+};
 use crate::world::{broadcast, unit_state, Player, PlayerRef, WorldInstance, WorldObject};
 
 /// `LeaveWorldTargetType`.
@@ -798,6 +802,7 @@ pub async fn move_unit(server: &GameServer, conn: &mut GameConnection, obj_id: u
                 .services
                 .sus
                 .reset_analyze_player_delta_movement(c.id);
+            server.systems.ai.collision.move_speed.reset(me.obj_id);
             return;
         }
     }
@@ -847,6 +852,68 @@ pub async fn move_unit(server: &GameServer, conn: &mut GameConnection, obj_id: u
     }
 }
 
+/// The server-side movement guard (`Physics.MoveVerifyEnable`): returns `false` when the move
+/// must be dropped. A player-owned unit is corrected (last valid position via
+/// `SCTeleportUnitPacket`); a mate the player is mounted on is only refused. The violation is
+/// logged once and counted by `SusManager`.
+fn check_movement_guard(
+    server: &GameServer,
+    me: &PlayerRef,
+    target: &WorldObject,
+    u: &crate::models::movement::UnitMove,
+) -> bool {
+    let decision = server
+        .systems
+        .ai
+        .collision
+        .move_speed
+        .check_unit(server, target, u);
+    let correct = match decision {
+        MoveDecision::Accept => return true,
+        MoveDecision::Correct(reason) => {
+            let name = me.data().unit.name.clone();
+            server
+                .systems
+                .services
+                .sus
+                .note_move_violation(&name, me.character_id, &reason);
+            true
+        }
+        MoveDecision::Refuse(reason) => {
+            let name = me.data().unit.name.clone();
+            server
+                .systems
+                .services
+                .sus
+                .note_move_violation(&name, me.character_id, &reason);
+            false
+        }
+    };
+    if correct {
+        if let Some(player) = target.as_player() {
+            let (x, y, z, rz) = {
+                let t = player.data().unit.transform;
+                (t.x, t.y, t.z, t.rot_z)
+            };
+            {
+                let mut c = player.data();
+                // The server sends the client back: the client's recovery move is whitelisted.
+                c.mark_expected_position(x, y, z);
+                c.set_disabled_set_position(true);
+            }
+            player.send(SCTeleportUnitPacket {
+                reason: TELEPORT_REASON_MOVE_TO_LOCATION,
+                error_message: 0,
+                x,
+                y,
+                z,
+                z2: rz,
+            });
+        }
+    }
+    false
+}
+
 /// The world part of a `MoveKind::Unit` move (`CSMoveUnitPacket.Execute` after the authority
 /// check): transform, broadcast, region visibility, the collision service and the skill /
 /// vehicle hooks. Shared by the client handler and the in-server bot mover, so a bot move is
@@ -858,6 +925,9 @@ pub fn apply_unit_move(server: &GameServer, me: &PlayerRef, target: &WorldObject
     let Some(world) = parent_world(server, me) else {
         return;
     };
+    if !check_movement_guard(server, me, target, u) {
+        return;
+    }
     let obj_id = target.obj_id();
     // Its moving Pets, handle Pet XP for moving
     if let Some(mate) = target.as_mate() {
@@ -1216,6 +1286,7 @@ pub async fn leave_world_player(server: &GameServer, p: &PlayerRef) {
         let mut c = p.data();
         c.set_disabled_set_position(true);
     }
+    server.systems.ai.collision.move_speed.reset(p.obj_id);
     set_online(server, p, false);
     p.data().leave_time = Utc::now().timestamp();
     crate::systems::quests::on_leave_world(server, p.character_id);

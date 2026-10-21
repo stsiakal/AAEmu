@@ -211,9 +211,29 @@ targets, falls, NPC movement and ships. Settings in the `Physics` section
 | `SyncPeriodMs` | `1000` | Period of the cell residency / doodad collider sync |
 | `DoodadColliders` | `true` | Colliders for doodads and houses from their models |
 | `PreloadAllCells` | `false` | Load every cell at startup (slow; for measurements) |
-| `MovementVerifyEnable` | `false` | The zone server's movement-hack checks |
+| `MovementVerifyEnable` | `false` | The zone server's own `ZWReportMoveHack` checks (logging only) |
+| `MoveVerifyEnable` | `true` | Server-side player movement guard: speed over a window, teleport refusal and correction |
+| `MoveVerifyTolerance` | `1.35` | Speed slack for latency / packet bunching (1.35 = +35 %) |
+| `MoveVerifyWindowSeconds` | `2` | Travel-budget window: bursts up to this many seconds are allowed, sustained speed stays capped |
+| `MoveVerifyTeleportDistance` | `50` | A single move longer than this (m) is a teleport unless the server sent the client there |
+| `MoveVerifyExpectedRadius` | `20` | How close (m) the client's catch-up move must land to a server teleport / blink destination |
+| `MoveVerifyExpectedTimeoutMs` | `30000` | How long a server teleport destination stays valid |
+| `MoveVerifySkillGraceMs` | `2000` | Grace after a skill for knockback / dash displacements |
+| `MoveVerifySkillSpeed` | `50` | Speed cap (m/s) during that grace |
+| `MoveVerifyFallSpeed` | `60` | Speed cap (m/s) for falling moves |
+| `MoveVerifyDefaultSpeed` | `12` | Speed used when a stance has no `max_speed` in the data |
+| `MoveVerifyGmExempt` | `true` | Exempt characters at or above `MoveVerifyGmAccessLevel` |
+| `MoveVerifyGmAccessLevel` | `100` | GM access level for the exemption |
+| `MoveVerifyExemptBots` | `true` | Exempt in-server `/bot` characters (server-driven, not a client) |
 | `FallDamageZoneCap` | `true` | Cap fall damage like the zone server |
 | `CryPhysicsShips` | `true` | Simulate ships on the CryPhysics port |
+
+The movement guard reads the real speeds from `compact.sqlite3`: `game_stances.max_speed`
+for the character / mount model and stance (e.g. 5.4 m/s for the Nuian actor model 10; mounts
+9-10 m/s), the active glider buff's `gliding_move_speed_fast` (6-16 m/s in the 1.2 rows) and,
+for land vehicles, `vehicle_models.velocity`. Characters without an actor model row are left
+alone (fail open). A refused move is not applied; a player is sent back to the last valid
+position, the refusal is logged once and counted (`systems/services/sus.rs`).
 
 Physics needs client data (`game_pak`); without it the server falls back to
 the heightmap. Lower `Geometry` or `LoadRadiusCells` to save memory on small

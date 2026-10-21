@@ -45,6 +45,8 @@ mod flow_tests;
 #[cfg(test)]
 mod real_data_tests;
 #[cfg(test)]
+mod speed_guard_tests;
+#[cfg(test)]
 mod tests;
 
 use std::collections::HashMap;
@@ -74,6 +76,8 @@ pub struct CollisionSystem {
     pub fall: fall::FallTracker,
     /// ZWReportMoveHack verifiers.
     pub move_verify: move_verify::MoveVerifier,
+    /// Player movement guard (speed over a time window, teleport whitelist).
+    pub move_speed: move_verify::MoveSpeedGuard,
     /// Resolved doodad model shapes (by model reference).
     shapes: std::sync::Mutex<HashMap<String, Option<objects::ColliderShape>>>,
     /// Tests: force the service on (without `Physics.Enable` / client data checks).

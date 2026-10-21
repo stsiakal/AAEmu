@@ -632,7 +632,11 @@ fn teleport(server: &GameServer, p: &PlayerRef, pos: SpawnPosition, reason: u8, 
             ang_z: destination.rot_z,
         });
     }
-    p.data().set_disabled_set_position(true);
+    {
+        let mut c = p.data();
+        c.set_disabled_set_position(true);
+        c.mark_expected_position(pos.x, pos.y, pos.z);
+    }
     p.send(SCTeleportUnitPacket {
         reason,
         error_message: 0,
@@ -667,6 +671,7 @@ fn enter_court_jail(server: &GameServer, t: &mut TrialData, room: &CourtRoom, fx
     };
     let pr = world_pos_rot(server, &WorldObject::from(&d));
     if let Some(w) = server.world.world(inst) {
+        d.data().mark_expected_position(pr.x, pr.y, pr.z);
         broadcast(
             &w,
             &d,

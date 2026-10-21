@@ -1144,6 +1144,9 @@ fn respawn_after_kill(
         return;
     };
     let vobj = WorldObject::from(victim);
+    victim
+        .data()
+        .mark_expected_position(spawn.x, spawn.y, spawn.z);
     crate::systems::skills::broadcast(
         server,
         &vobj,
@@ -1171,6 +1174,9 @@ fn respawn_after_kill(
     let dead = killer.data().unit.hp == 0;
     if dead {
         // Killer somehow died
+        killer
+            .data()
+            .mark_expected_position(spawn.x, spawn.y, spawn.z);
         crate::systems::skills::broadcast(
             server,
             &kobj,
@@ -1184,6 +1190,9 @@ fn respawn_after_kill(
             true,
         );
     } else {
+        killer
+            .data()
+            .mark_expected_position(spawn.x, spawn.y, spawn.z);
         killer.send(SCTeleportUnitPacket {
             reason: 0,
             error_message: 0,

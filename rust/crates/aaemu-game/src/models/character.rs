@@ -108,6 +108,19 @@ impl Inventory {
     }
 }
 
+/// A position the server itself asked the client to move to (`SCTeleportUnitPacket`,
+/// `SCBlinkUnitPacket`, `SCCharacterResurrectedPacket`): the movement guard accepts the client's
+/// next move when it lands near it instead of treating the jump as a speed hack.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ExpectedPosition {
+    pub x: f32,
+    pub y: f32,
+    pub z: f32,
+    pub instance_id: u32,
+    /// Server time (unix ms) the destination was sent.
+    pub sent_ms: i64,
+}
+
 /// `Character`.
 #[derive(Debug, Clone)]
 pub struct Character {
@@ -213,6 +226,9 @@ pub struct Character {
     /// `SusManager.ResetAnalyze*DeltaMovement` side effect, as a counter the movement analysis
     /// compares against its baseline.
     pub teleport_seq: u32,
+    /// The destination of the last server-initiated teleport / blink / resurrection (movement
+    /// guard whitelist; Rust only).
+    pub expected_position: Option<ExpectedPosition>,
     pub breath: u32,
     /// `SubZoneId` (last `CSNotifySubZonePacket`, for the Memory Tome recall points).
     pub sub_zone_id: u32,
@@ -267,6 +283,37 @@ impl Character {
         self.disabled_set_position = value;
         if value {
             self.teleport_seq = self.teleport_seq.wrapping_add(1);
+        }
+    }
+
+    /// Records where the server just told the client to move (movement guard whitelist).
+    pub fn mark_expected_position(&mut self, x: f32, y: f32, z: f32) {
+        self.mark_expected_position_at(x, y, z, crate::world::now_ms());
+    }
+
+    /// [`Self::mark_expected_position`] with an explicit server time (tests).
+    pub fn mark_expected_position_at(&mut self, x: f32, y: f32, z: f32, now_ms: i64) {
+        self.expected_position = Some(ExpectedPosition {
+            x,
+            y,
+            z,
+            instance_id: self.unit.transform.instance_id,
+            sent_ms: now_ms,
+        });
+    }
+
+    /// Consumes the whitelist marker when `(x, y, z)` is within `radius` of it; returns whether
+    /// it was (the marker is kept when it is not, until it expires).
+    pub fn take_expected_position(&mut self, x: f32, y: f32, z: f32, radius: f32) -> bool {
+        let Some(e) = self.expected_position else {
+            return false;
+        };
+        let (dx, dy, dz) = (x - e.x, y - e.y, z - e.z);
+        if dx * dx + dy * dy + dz * dz <= radius * radius {
+            self.expected_position = None;
+            true
+        } else {
+            false
         }
     }
 
@@ -360,6 +407,7 @@ impl Character {
             finished_loading: false,
             disabled_set_position: false,
             teleport_seq: 0,
+            expected_position: None,
             breath: 60_000,
             sub_zone_id: 0,
             // ---- phase 3 / skills ----

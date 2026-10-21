@@ -60,6 +60,50 @@ pub struct PhysicsConfig {
     /// `movement_verify_enable` (zone CVar, default 0): the ZWReportMoveHack checks.
     #[serde(rename = "movementverifyenable", deserialize_with = "lenient")]
     pub movement_verify_enable: bool,
+    /// Server-side movement guard for player-controlled moves (speed over a time window,
+    /// teleport-distance jumps, correction). On by default; see the `move_verify_*` fields.
+    #[serde(rename = "moveverifyenable", deserialize_with = "lenient")]
+    pub move_verify_enable: bool,
+    /// Multiplier on the character's real max speed to absorb latency, packet bunching and
+    /// client-side animation overshoot (1.35 = 35 % slack).
+    #[serde(rename = "moveverifytolerance", deserialize_with = "lenient")]
+    pub move_verify_tolerance: f32,
+    /// Length of the travel budget window (seconds): a burst of up to this many seconds of
+    /// movement is allowed, but the sustained speed is still capped.
+    #[serde(rename = "moveverifywindowseconds", deserialize_with = "lenient")]
+    pub move_verify_window_seconds: f32,
+    /// A single move longer than this (metres) is treated as a teleport and refused
+    /// unless the server initiated it.
+    #[serde(rename = "moveverifyteleportdistance", deserialize_with = "lenient")]
+    pub move_verify_teleport_distance: f32,
+    /// How close (metres) a move must land to a server teleport / blink destination to be
+    /// accepted as the client's catch-up move.
+    #[serde(rename = "moveverifyexpectedradius", deserialize_with = "lenient")]
+    pub move_verify_expected_radius: f32,
+    /// How long (milliseconds) a server teleport destination stays valid for the catch-up move.
+    #[serde(rename = "moveverifyexpectedtimeoutms", deserialize_with = "lenient")]
+    pub move_verify_expected_timeout_ms: i64,
+    /// Grace after the character used a skill (milliseconds) for knockback / dash / blink
+    /// displacements that the client plays.
+    #[serde(rename = "moveverifyskillgracems", deserialize_with = "lenient")]
+    pub move_verify_skill_grace_ms: i64,
+    /// Speed cap (m/s) during the skill grace window.
+    #[serde(rename = "moveverifyskillspeed", deserialize_with = "lenient")]
+    pub move_verify_skill_speed: f32,
+    /// Speed cap (m/s) for falling moves (`ActorFlags.Flag8` / `fallVel`).
+    #[serde(rename = "moveverifyfallspeed", deserialize_with = "lenient")]
+    pub move_verify_fall_speed: f32,
+    /// Speed used when the actor model / stance is missing (custom servers, sparse data).
+    #[serde(rename = "moveverifydefaultspeed", deserialize_with = "lenient")]
+    pub move_verify_default_speed: f32,
+    /// Exempt characters with an access level of at least `move_verify_gm_access_level` (GMs).
+    #[serde(rename = "moveverifygmexempt", deserialize_with = "lenient")]
+    pub move_verify_gm_exempt: bool,
+    #[serde(rename = "moveverifygmaccesslevel", deserialize_with = "lenient")]
+    pub move_verify_gm_access_level: i32,
+    /// Exempt server-side bots (`/bot`), which are driven by the server, not a client.
+    #[serde(rename = "moveverifyexemptbots", deserialize_with = "lenient")]
+    pub move_verify_exempt_bots: bool,
     /// Zone fall damage cap `min(fallVel, √(40·Δh))` (ZWUnitFell 0x3935C850).
     #[serde(rename = "falldamagezonecap", deserialize_with = "lenient")]
     pub fall_damage_zone_cap: bool,
@@ -80,8 +124,52 @@ impl Default for PhysicsConfig {
             doodad_colliders: true,
             preload_all_cells: false,
             movement_verify_enable: false,
+            move_verify_enable: true,
+            move_verify_tolerance: 1.35,
+            move_verify_window_seconds: 2.0,
+            move_verify_teleport_distance: 50.0,
+            move_verify_expected_radius: 20.0,
+            move_verify_expected_timeout_ms: 30_000,
+            move_verify_skill_grace_ms: 2_000,
+            move_verify_skill_speed: 50.0,
+            move_verify_fall_speed: 60.0,
+            move_verify_default_speed: 12.0,
+            move_verify_gm_exempt: true,
+            move_verify_gm_access_level: 100,
+            move_verify_exempt_bots: true,
             fall_damage_zone_cap: true,
             cryphysics_ships: true,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn movement_verify_defaults_are_on_with_generous_thresholds() {
+        let c = PhysicsConfig::default();
+        assert!(c.move_verify_enable);
+        assert_eq!(c.move_verify_tolerance, 1.35);
+        assert_eq!(c.move_verify_window_seconds, 2.0);
+        assert_eq!(c.move_verify_teleport_distance, 50.0);
+        assert_eq!(c.move_verify_expected_timeout_ms, 30_000);
+        assert!(c.move_verify_gm_exempt);
+        assert_eq!(c.move_verify_gm_access_level, 100);
+        // The collision verifier keeps its own (off) zone switch.
+        assert!(!c.movement_verify_enable);
+    }
+
+    #[test]
+    fn movement_verify_keys_bind_leniently() {
+        // `AppConfig::from_value` lowercases the keys before binding (as the loader does).
+        let c: PhysicsConfig = serde_json::from_str(
+            r#"{"moveverifyenable":"false","moveverifytolerance":"2.0","moveverifyteleportdistance":"80"}"#,
+        )
+        .unwrap();
+        assert!(!c.move_verify_enable);
+        assert_eq!(c.move_verify_tolerance, 2.0);
+        assert_eq!(c.move_verify_teleport_distance, 80.0);
     }
 }

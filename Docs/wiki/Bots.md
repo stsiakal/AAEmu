@@ -259,10 +259,11 @@ cast); their status and limits are in [Player Bots](Player-Bots). The bot-relate
 - **ReportBot**, the retail feature that lets players report suspected bots:
   `systems/social/crime.rs` (a "prime suspect" buff past a threshold) and the `ReportBot` skill
   effect.
-- **A speed check**, `systems/services/sus.rs`. It flags movement above 25 m/s and only writes an
-  audit row.
-  - The server barely validates movement, and `move_verify.rs` is off by default. A walking bot
-    must therefore avoid obstacles itself.
+- **Movement validation**: `systems/ai/collision/move_verify.rs` (`Physics.MoveVerify*`, on by
+  default) bounds player / mount / vehicle speed over a time window, whitelists server
+  teleports and corrects a client-side teleport; `systems/services/sus.rs` still writes the
+  over-25-m/s audit rows and counts the guard refusals. In-server `/bot` characters are exempt.
+  A walking bot must still avoid obstacles itself (the guard does not collide).
 - **What the bots rely on**:
   - GM commands: `/item add`, `/spawn npc`, `/spawn doodad`, `/move`, `/setfaction` and godmode.
   - The `Account.PremiumForAll` test switch.

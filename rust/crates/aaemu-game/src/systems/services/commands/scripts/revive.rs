@@ -44,6 +44,9 @@ impl Command for Revive {
                 Some(w) => w.world_pos_rot(&obj),
                 None => obj.transform().local(),
             };
+            target
+                .data()
+                .mark_expected_position(world_pos.x, world_pos.y, world_pos.z);
             crate::systems::skills::broadcast(
                 server,
                 &obj,

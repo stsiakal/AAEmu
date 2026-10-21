@@ -24,6 +24,13 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use dashmap::DashMap;
 
+use crate::models::movement::{GameStanceType, MoveTypeActorFlags, UnitMove};
+use crate::models::unit::UnitAttribute;
+use crate::server::GameServer;
+use crate::world::WorldObject;
+
+use super::config::PhysicsConfig;
+
 /// `movement_verify_min_z_pos`.
 pub const MIN_Z_POS: f32 = -1.0;
 /// Under-terrain tolerance (`terrainZ − z > 0.1`).
@@ -202,6 +209,491 @@ impl MoveVerifier {
     pub fn reset(&self, obj_id: u32) {
         self.units.remove(&obj_id);
     }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Player movement guard (Rust only)
+// ---------------------------------------------------------------------------------------------
+
+/// What the movement guard decided about one player-controlled move.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MoveDecision {
+    /// Apply and broadcast the move.
+    Accept,
+    /// Refuse the move and send the last valid position back to the player.
+    Correct(String),
+    /// Refuse the move without a correction packet (the client does not own this unit's
+    /// position directly, e.g. a mount seat).
+    Refuse(String),
+}
+
+/// The accepted-movement anchor and travel budget of one unit.
+#[derive(Debug, Clone, Copy)]
+struct SpeedState {
+    x: f32,
+    y: f32,
+    z: f32,
+    last_ms: i64,
+    /// Distance the unit may still travel (metres); refilled at the real max speed.
+    budget: f32,
+    instance_id: u32,
+    /// `Character.teleport_seq` at the anchor (players; 0 for other units).
+    teleport_seq: u32,
+}
+
+/// The action snapshot of a unit for one move.
+struct UnitSnapshot {
+    model_id: u32,
+    speed_mul: f32,
+    x: f32,
+    y: f32,
+    z: f32,
+    instance_id: u32,
+    parent_obj_id: u32,
+    buff_ids: Vec<u32>,
+    skill_last_used_ms: i64,
+    displaced_until_ms: i64,
+}
+
+/// Server-side movement validation for player-controlled units (`CSMoveUnit` /
+/// `VehicleMoveType`). Rust only: the 1.2 C# trusted every client position (`SusManager` only
+/// logged speeds above a flat 25 m/s).
+///
+/// The check is a travel budget over a time window, not a per-packet speed: every move refills
+/// the unit's budget with `max_speed * tolerance * dt` (capped at the window's worth), so packet
+/// bunching / latency bursts are accepted while the sustained speed stays bounded. A single move
+/// longer than `move_verify_teleport_distance` is always refused unless the server itself sent
+/// the client there (portals, GM `/move`, resurrection, instance moves, blink) and the move
+/// lands within `move_verify_expected_radius` of that destination.
+#[derive(Debug, Default)]
+pub struct MoveSpeedGuard {
+    units: DashMap<u32, SpeedState>,
+}
+
+impl MoveSpeedGuard {
+    /// Forgets a unit (logout / teleport / despawn).
+    pub fn reset(&self, obj_id: u32) {
+        self.units.remove(&obj_id);
+    }
+
+    /// Verifies a unit move of `target` (a player or the mate it controls) at `now_ms`.
+    pub fn check_unit_at(
+        &self,
+        server: &GameServer,
+        target: &WorldObject,
+        u: &UnitMove,
+        now_ms: i64,
+    ) -> MoveDecision {
+        let cfg = &server.config.physics;
+        if !cfg.move_verify_enable {
+            self.reset(target.obj_id());
+            return MoveDecision::Accept;
+        }
+        let Some(snap) = snapshot(target, now_ms) else {
+            return MoveDecision::Accept;
+        };
+        let obj_id = target.obj_id();
+        // Deck / climb moves carry coordinates in the supporting object's frame: the vehicle
+        // itself is validated separately, so the rider's local offsets are not world motion.
+        if snap.parent_obj_id != 0
+            || u.actor_flags
+                .contains(MoveTypeActorFlags::STANDING_ON_OBJECT)
+            || u.actor_flags
+                .contains(MoveTypeActorFlags::HANGING_FROM_OBJECT)
+        {
+            self.reset(obj_id);
+            return MoveDecision::Accept;
+        }
+        // Sparse / custom data: without the actor model there is no real max speed to judge
+        // against, so the guard stays out of the way instead of guessing.
+        if server
+            .game_data
+            .systems
+            .ai
+            .ai
+            .actor_model(snap.model_id)
+            .is_none()
+        {
+            self.reset(obj_id);
+            return MoveDecision::Accept;
+        }
+        let pos = [u.x, u.y, u.z];
+        let falling = u.actor_flags.contains(MoveTypeActorFlags::FLAG8) || u.fall_vel > 0;
+
+        let mut teleport_seq = 0;
+        let mut is_player = false;
+        if let Some(p) = target.as_player() {
+            is_player = true;
+            let (access_level, seq, character_id, expected_ok) = {
+                let mut c = p.data();
+                teleport_seq = c.teleport_seq;
+                let access = c.access_level;
+                let character_id = c.id;
+                let expected = c.expected_position;
+                let fresh = expected.is_some_and(|e| {
+                    e.instance_id == snap.instance_id
+                        && now_ms >= e.sent_ms
+                        && now_ms - e.sent_ms <= cfg.move_verify_expected_timeout_ms
+                });
+                let ok = fresh
+                    && c.take_expected_position(
+                        pos[0],
+                        pos[1],
+                        pos[2],
+                        cfg.move_verify_expected_radius,
+                    );
+                (access, c.teleport_seq, character_id, ok)
+            };
+            if cfg.move_verify_gm_exempt && access_level >= cfg.move_verify_gm_access_level {
+                self.reset(obj_id);
+                return MoveDecision::Accept;
+            }
+            if cfg.move_verify_exempt_bots && server.systems.bots.is_bot(character_id) {
+                self.reset(obj_id);
+                return MoveDecision::Accept;
+            }
+            if expected_ok {
+                // The client's catch-up move after a server teleport: accept it as the anchor.
+                self.seed(obj_id, pos, now_ms, snap.instance_id, seq);
+                return MoveDecision::Accept;
+            }
+        }
+        if self.units.get(&obj_id).is_none() {
+            // Nothing accepted yet: judge the first move from the server's own position (the
+            // last accepted transform), with 200 ms of budget for the login / landing burst.
+            // Seeding at the packet position would accept one arbitrary teleport.
+            self.units.insert(
+                obj_id,
+                SpeedState {
+                    x: snap.x,
+                    y: snap.y,
+                    z: snap.z,
+                    last_ms: now_ms - 200,
+                    budget: 0.0,
+                    instance_id: snap.instance_id,
+                    teleport_seq,
+                },
+            );
+        }
+        let max_speed = self.max_speed(server, &snap, u, is_player, falling, now_ms, cfg);
+        self.check(
+            obj_id,
+            pos,
+            now_ms,
+            snap.instance_id,
+            teleport_seq,
+            max_speed,
+            cfg,
+            is_player,
+        )
+    }
+
+    /// Verifies a client-driven land vehicle move (`VehicleMoveType`) at `now_ms`.
+    pub fn check_vehicle_at(
+        &self,
+        server: &GameServer,
+        slave: &crate::world::SlaveRef,
+        pos: [f32; 3],
+        now_ms: i64,
+    ) -> MoveDecision {
+        let cfg = &server.config.physics;
+        if !cfg.move_verify_enable {
+            self.reset(slave.obj_id);
+            return MoveDecision::Accept;
+        }
+        let (model_id, speed_mul, instance_id, tx, ty, tz) = {
+            let d = slave.data();
+            let t = d.unit.transform;
+            (
+                d.unit.model_id,
+                (d.unit
+                    .calculate_with_bonuses(1000.0, UnitAttribute::MoveSpeedMul, now_ms)
+                    as f32)
+                    / 1000.0,
+                t.instance_id,
+                t.x,
+                t.y,
+                t.z,
+            )
+        };
+        let Some(base) = server
+            .game_data
+            .systems
+            .vehicles
+            .vehicle_model(model_id)
+            .map(|m| m.velocity)
+            .filter(|v| *v > 0.0)
+        else {
+            self.reset(slave.obj_id);
+            return MoveDecision::Accept;
+        };
+        let max_speed = (base * speed_mul).max(0.1);
+        if self.units.get(&slave.obj_id).is_none() {
+            self.units.insert(
+                slave.obj_id,
+                SpeedState {
+                    x: tx,
+                    y: ty,
+                    z: tz,
+                    last_ms: now_ms - 200,
+                    budget: 0.0,
+                    instance_id,
+                    teleport_seq: 0,
+                },
+            );
+        }
+        self.check(
+            slave.obj_id,
+            pos,
+            now_ms,
+            instance_id,
+            0,
+            max_speed,
+            cfg,
+            false,
+        )
+    }
+
+    /// [`Self::check_unit_at`] with the server clock.
+    pub fn check_unit(
+        &self,
+        server: &GameServer,
+        target: &WorldObject,
+        u: &UnitMove,
+    ) -> MoveDecision {
+        self.check_unit_at(server, target, u, crate::world::now_ms())
+    }
+
+    /// [`Self::check_vehicle_at`] with the server clock.
+    pub fn check_vehicle(
+        &self,
+        server: &GameServer,
+        slave: &crate::world::SlaveRef,
+        pos: [f32; 3],
+    ) -> MoveDecision {
+        self.check_vehicle_at(server, slave, pos, crate::world::now_ms())
+    }
+
+    fn seed(&self, obj_id: u32, pos: [f32; 3], now_ms: i64, instance_id: u32, teleport_seq: u32) {
+        self.units.insert(
+            obj_id,
+            SpeedState {
+                x: pos[0],
+                y: pos[1],
+                z: pos[2],
+                last_ms: now_ms,
+                budget: 0.0,
+                instance_id,
+                teleport_seq,
+            },
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn check(
+        &self,
+        obj_id: u32,
+        pos: [f32; 3],
+        now_ms: i64,
+        instance_id: u32,
+        teleport_seq: u32,
+        max_speed: f32,
+        cfg: &PhysicsConfig,
+        player: bool,
+    ) -> MoveDecision {
+        let reason = |text: String| {
+            if player {
+                MoveDecision::Correct(text)
+            } else {
+                MoveDecision::Refuse(text)
+            }
+        };
+        let capacity =
+            (max_speed * cfg.move_verify_tolerance * cfg.move_verify_window_seconds).max(1.0);
+        let Some(prev) = self.units.get(&obj_id).map(|r| *r) else {
+            self.units.insert(
+                obj_id,
+                SpeedState {
+                    x: pos[0],
+                    y: pos[1],
+                    z: pos[2],
+                    last_ms: now_ms,
+                    budget: 0.0,
+                    instance_id,
+                    teleport_seq,
+                },
+            );
+            return MoveDecision::Accept;
+        };
+        let dist = distance([prev.x, prev.y, prev.z], pos);
+        if prev.instance_id != instance_id || prev.teleport_seq != teleport_seq {
+            // A server-initiated teleport without a destination marker (or an instance move):
+            // re-anchor, but still bound the jump so it cannot be used as a free teleport.
+            if dist > cfg.move_verify_teleport_distance {
+                return reason(format!(
+                    "teleport {dist:.1} m (max single move {:.1} m)",
+                    cfg.move_verify_teleport_distance
+                ));
+            }
+            self.units.insert(
+                obj_id,
+                SpeedState {
+                    x: pos[0],
+                    y: pos[1],
+                    z: pos[2],
+                    last_ms: now_ms,
+                    budget: 0.0,
+                    instance_id,
+                    teleport_seq,
+                },
+            );
+            return MoveDecision::Accept;
+        }
+        let dt = (now_ms - prev.last_ms) as f32 / 1000.0;
+        if !(0.0..=10.0).contains(&dt) {
+            if dist > cfg.move_verify_teleport_distance {
+                return reason(format!(
+                    "teleport {dist:.1} m (max single move {:.1} m)",
+                    cfg.move_verify_teleport_distance
+                ));
+            }
+            self.units.insert(
+                obj_id,
+                SpeedState {
+                    x: pos[0],
+                    y: pos[1],
+                    z: pos[2],
+                    last_ms: now_ms,
+                    budget: 0.0,
+                    instance_id,
+                    teleport_seq,
+                },
+            );
+            return MoveDecision::Accept;
+        }
+        if dist > cfg.move_verify_teleport_distance {
+            return reason(format!(
+                "teleport {dist:.1} m (max single move {:.1} m)",
+                cfg.move_verify_teleport_distance
+            ));
+        }
+        let rate = max_speed * cfg.move_verify_tolerance;
+        let budget = (prev.budget + rate * dt).min(capacity);
+        if dist > budget {
+            let speed = if dt > 0.0 { dist / dt } else { f32::INFINITY };
+            return reason(format!(
+                "moved {dist:.2} m in {dt:.3} s ({speed:.1} m/s, max {max_speed:.1} m/s)"
+            ));
+        }
+        self.units.insert(
+            obj_id,
+            SpeedState {
+                x: pos[0],
+                y: pos[1],
+                z: pos[2],
+                last_ms: now_ms,
+                budget: budget - dist,
+                instance_id,
+                teleport_seq,
+            },
+        );
+        MoveDecision::Accept
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn max_speed(
+        &self,
+        server: &GameServer,
+        snap: &UnitSnapshot,
+        u: &UnitMove,
+        player: bool,
+        falling: bool,
+        now_ms: i64,
+        cfg: &PhysicsConfig,
+    ) -> f32 {
+        let glider = player
+            .then(|| glider_speed(server, &snap.buff_ids))
+            .flatten();
+        let base = glider
+            .or_else(|| stance_speed(server, snap.model_id, u.stance, player))
+            .unwrap_or(cfg.move_verify_default_speed);
+        let mut max_speed = (base * snap.speed_mul).max(0.1);
+        if falling {
+            max_speed = max_speed.max(cfg.move_verify_fall_speed);
+        }
+        let in_skill_grace = snap.displaced_until_ms >= now_ms
+            || (snap.skill_last_used_ms > 0
+                && now_ms - snap.skill_last_used_ms >= 0
+                && now_ms - snap.skill_last_used_ms <= cfg.move_verify_skill_grace_ms);
+        if in_skill_grace {
+            max_speed = max_speed.max(cfg.move_verify_skill_speed);
+        }
+        max_speed
+    }
+}
+
+/// The stance speed of an actor model. A player may not claim the fly stance without a glider
+/// buff; mates keep the model's own fly speed (flying mounts).
+fn stance_speed(
+    server: &GameServer,
+    model_id: u32,
+    stance: GameStanceType,
+    player: bool,
+) -> Option<f32> {
+    let model = server.game_data.systems.ai.ai.actor_model(model_id)?;
+    if player && stance == GameStanceType::FLY {
+        return model
+            .stance(GameStanceType::RELAXED)
+            .or_else(|| model.stance(GameStanceType::COMBAT))
+            .map(|s| s.max_speed)
+            .filter(|v| *v > 0.0);
+    }
+    model
+        .stance(stance)
+        .map(|s| s.max_speed)
+        .filter(|v| *v > 0.0)
+}
+
+/// The fastest glider speed of the active gliding buffs (m/s).
+fn glider_speed(server: &GameServer, buff_ids: &[u32]) -> Option<f32> {
+    buff_ids
+        .iter()
+        .filter_map(|id| server.game_data.systems.skills.buff(*id))
+        .filter(|t| t.gliding)
+        .map(|t| {
+            t.gliding_move_speed_fast
+                .max(t.gliding_move_speed_normal)
+                .max(t.gliding_move_speed_slow)
+        })
+        .filter(|v| *v > 0.0)
+        .reduce(f32::max)
+}
+
+fn snapshot(target: &WorldObject, now_ms: i64) -> Option<UnitSnapshot> {
+    target.with_unit(|d| {
+        let u = d.unit();
+        UnitSnapshot {
+            model_id: u.model_id,
+            speed_mul: (u.calculate_with_bonuses(1000.0, UnitAttribute::MoveSpeedMul, now_ms)
+                as f32)
+                / 1000.0,
+            x: u.transform.x,
+            y: u.transform.y,
+            z: u.transform.z,
+            instance_id: u.transform.instance_id,
+            parent_obj_id: u.transform.parent_obj_id,
+            buff_ids: d.buffs().effects.iter().map(|e| e.template.id).collect(),
+            skill_last_used_ms: u.skill_last_used_ms,
+            displaced_until_ms: u
+                .displaced_until_ms
+                .unwrap_or(0)
+                .max(u.skill_state.displaced_until_ms),
+        }
+    })
+}
+
+fn distance(a: [f32; 3], b: [f32; 3]) -> f32 {
+    ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt()
 }
 
 #[cfg(test)]

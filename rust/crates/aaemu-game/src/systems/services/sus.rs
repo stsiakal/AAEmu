@@ -3,6 +3,7 @@
 //! ([`SusManager::finalize_transform`], called by the unit movement handler).
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
 use crate::server::GameServer;
@@ -79,9 +80,22 @@ pub struct SusManager {
     last_pet_positions: Baselines,
     /// `Transform._lastFinalizeTime` (unix ms) / `_skipCheckTime` (s) per object.
     finalize_checks: Mutex<HashMap<u32, (i64, f32)>>,
+    /// Refused player moves of the server-side movement guard (`Physics.MoveVerifyEnable`).
+    move_violations: AtomicU64,
 }
 
 impl SusManager {
+    /// Counts a move the movement guard refused and logs the one WARN for it.
+    pub fn note_move_violation(&self, name: &str, character_id: u32, reason: &str) {
+        self.move_violations.fetch_add(1, Ordering::Relaxed);
+        tracing::warn!("MoveVerify refused move of {name} ({character_id}): {reason}");
+    }
+
+    /// The number of moves the movement guard refused since startup.
+    pub fn move_violations(&self) -> u64 {
+        self.move_violations.load(Ordering::Relaxed)
+    }
+
     /// The `_skipCheckTime` part of `Transform.FinalizeTransform` for an object whose world
     /// position changed: `true` once every 5 s (the first finalize of an object included).
     pub fn finalize_check(&self, obj_id: u32, now_ms: i64) -> bool {
@@ -533,6 +547,15 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn movement_guard_violations_are_counted() {
+        let s = SusManager::default();
+        assert_eq!(s.move_violations(), 0);
+        s.note_move_violation("Alice", 7, "moved 20 m in 0.1 s");
+        s.note_move_violation("Bob", 8, "teleport 100 m");
+        assert_eq!(s.move_violations(), 2);
+    }
 
     #[test]
     fn movement_report_keeps_the_baseline_used_for_the_check() {

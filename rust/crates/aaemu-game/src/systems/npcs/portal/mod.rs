@@ -942,6 +942,9 @@ pub fn use_portal_with_preference(
     } else {
         player.data().set_disabled_set_position(true);
     }
+    player
+        .data()
+        .mark_expected_position(teleport.x, teleport.y, teleport.z);
     player.send(SCTeleportUnitPacket {
         reason: packets::teleport_reason::PORTAL,
         error_message: 0,
@@ -1079,7 +1082,11 @@ pub fn navi_teleport(server: &GameServer, player: &PlayerRef, obj_id: u32) {
     };
     let pos = world.world_pos_rot(&WorldObject::from(&doodad));
     run_navi_func(server, &doodad, player, &func);
-    player.data().set_disabled_set_position(true);
+    {
+        let mut c = player.data();
+        c.set_disabled_set_position(true);
+        c.mark_expected_position(pos.x, pos.y, pos.z);
+    }
     player.send(packets::SCNaviTeleportPacket {
         x: pos.x,
         y: pos.y,
@@ -1184,7 +1191,11 @@ pub fn use_teleport(
             return; // NotEnoughMoney is sent by ChangeMoney
         }
     }
-    player.data().set_disabled_set_position(true);
+    {
+        let mut c = player.data();
+        c.set_disabled_set_position(true);
+        c.mark_expected_position(dest.x, dest.y, dest.z);
+    }
     player.send(SCTeleportUnitPacket {
         reason: crate::systems::skills::packets_special::TELEPORT_REASON_MOVE_TO_LOCATION,
         error_message: 0,

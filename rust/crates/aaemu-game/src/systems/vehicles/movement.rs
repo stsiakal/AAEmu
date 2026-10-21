@@ -88,6 +88,21 @@ pub fn vehicle_move(
     if !controls_slave(character, car) {
         return;
     }
+    if let crate::systems::ai::collision::move_verify::MoveDecision::Refuse(reason) = server
+        .systems
+        .ai
+        .collision
+        .move_speed
+        .check_vehicle(server, car, [v.x, v.y, v.z])
+    {
+        let name = character.data().unit.name.clone();
+        server
+            .systems
+            .services
+            .sus
+            .note_move_violation(&name, character.character_id, &reason);
+        return;
+    }
     let (rx, ry, rz) = get_slave_rotation_in_degrees(v.rotation_x, v.rotation_y, v.rotation_z);
     attach_if_needed(server, character, target);
     car.data()

@@ -444,6 +444,7 @@ pub mod sphere_util {
                     let p = sphere.position.ok_or_else(|| {
                         anyhow::anyhow!("Object reference not set to an instance of an object.")
                     })?;
+                    player.data().mark_expected_position(p.x, p.y, p.z);
                     player.send(SCTeleportUnitPacket {
                         reason: 0,
                         error_message: 0,

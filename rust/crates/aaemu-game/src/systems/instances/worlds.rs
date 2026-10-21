@@ -393,7 +393,13 @@ pub fn instance_loaded(server: &GameServer, p: &PlayerRef) {
     crate::systems::dispatch_buff_events(server, &WorldObject::from(p));
     p.send(packet);
     p.send(SCDetailedTimeOfDayPacket { time: 12.0 });
-    p.data().set_disabled_set_position(false);
+    {
+        let mut c = p.data();
+        let t = c.unit.transform;
+        c.mark_expected_position(t.x, t.y, t.z);
+        c.set_disabled_set_position(false);
+    }
+    server.systems.ai.collision.move_speed.reset(p.obj_id);
     let instance_id = p.data().unit.transform.instance_id;
     if let Some(world) = server.world.world(instance_id) {
         // The C# `FinalizeTransform()` after `DisabledSetPosition = false`.
