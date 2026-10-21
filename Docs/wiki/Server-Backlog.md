@@ -92,12 +92,19 @@ Confirmed in code unless marked SUSPECT.
   overlapping background saves of one account failed with `Duplicate entry` and could store an
   older snapshot; saves now run one at a time under the account lock and each writes the newest
   cache.
+- **Death transition** (reproduced, fixed in `5828e35d6`): two concurrent lethal hits (a skill
+  and a DoT tick, fall / drowning damage, `GM /kill`, PvP, an NPC death) could both run the death
+  path after passing the unlocked HP check: two `SCUnitDeathPacket`s, double exp / durability
+  loss, two loot generations, double quest kill credit and respawn timers. The alive-to-dead
+  transition is now claimed atomically under the unit data lock, the damage write re-checks HP,
+  and a second `DoDie` for the same life is refused. Restored HP (resurrection, repair) starts a
+  new life. Test: `systems::skills::death_once_tests` (two racing hits on a player and an NPC,
+  looped); it failed before the fix.
 
 Static revalidation of the remaining rows.
 
 | Item | Severity | What is wrong | Where | Fix direction |
 | --- | --- | --- | --- | --- |
-| Death transition | MED | Not once-only under concurrent lethal hits | `systems/skills/combat.rs:215`, `:246` | Make the transition atomic |
 | Enter world | MED | Ignores `try_add_character`; no per-account atomic reservation | `world/session.rs:369` | Check the result; reserve per account |
 | Disconnect cleanup | MED | No unwind guard if cleanup panics | `net/listener.rs:95` | Add a guard |
 | ID loader | MED | Fails open on a DB error | `managers/id.rs:244` | Fail startup |
