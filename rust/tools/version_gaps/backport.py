@@ -23,6 +23,12 @@ Usage:
         --ref <3.0.4.2 compact.sqlite3> --items obsidian-armor \
         --out-sql obsidian-armor.sql --out-db compact-obsidian.sqlite3 \
         --report obsidian-armor-report.json
+
+    # Batch selection (the 1.2 pak listing provides the look-availability check):
+    python -I -B -X utf8 backport.py --base <1.2 compact.sqlite3> \
+        --ref <3.0.4.2 compact.sqlite3> --items gear-1a \
+        --pak12-listing <1.2 pak listing> --out-sql gear-1a.sql \
+        --out-db compact-gear-1a.sqlite3 --report gear-1a-report.json
 """
 
 import argparse
@@ -50,9 +56,23 @@ NAMED_SETS = {
     "crazed-sets": list(range(38877, 38898)),
 }
 
+# Named families that are selected from the two databases instead of an id list.
+# `gear-1a` is the zero-asset first batch of the 3.0 gear backport: costumes,
+# armor and cloaks below the Eanad power line whose four playable-race looks are
+# already in the 1.2 pak.
+GEAR_FAMILIES = ("gear-1a",)
+GEAR_1A_MAX_ITEM_LEVEL = 62
+PLAYABLE_RACES = ("nuian", "elf", "hariharan", "ferre")
+# The 3.0.4.2 export carries emulator-custom Dawnsdrop sets above this id; their
+# items are refused even where the item id itself is below CUSTOM_ID_MIN.
+DAWNSDROP_SET_MIN = 9_000_001
+DAWNSDROP_ITEM_IDS = range(34936, 34985)
+
 TABLE_ORDER = (
+    "item_categories",
     "items",
     "icons",
+    "tags",
     "armor_assets",
     "item_assets",
     "item_armor_assets",
@@ -137,6 +157,242 @@ def resolve_item_set(spec):
     return sorted(set(ids))
 
 
+def _pak_asset_name(path):
+    """Normalize an item_assets / pak listing path to the lowercase `game/...` form."""
+    path = (path or "").replace("\\", "/").strip().lower()
+    if not path:
+        return ""
+    return path if path.startswith("game/") else "game/" + path
+
+
+def _playable_race_of_path(path):
+    lowered = (path or "").replace("\\", "/").lower()
+    for race in PLAYABLE_RACES:
+        if f"/characters/{race}/" in lowered:
+            return race
+    return None
+
+
+def _armor_look_asset_ids(db, item_id):
+    """`item_armors.asset_id` / `asset2_id` of an item, in row order."""
+    ids = []
+    if not db.has("item_armors"):
+        return ids
+    for row in db.rows(
+        "select asset_id, asset2_id from item_armors where item_id = ? order by id",
+        (item_id,),
+    ):
+        for column in ("asset_id", "asset2_id"):
+            value = row.get(column) or 0
+            if value and value not in ids:
+                ids.append(value)
+    return ids
+
+
+def armor_look_paths(db, item_id):
+    """Every `item_assets.path` reachable from the item's `item_armors` look chain."""
+    paths = []
+    if not (db.has("item_armor_assets") and db.has("item_assets")):
+        return paths
+    for armor_asset_id in _armor_look_asset_ids(db, item_id):
+        for row in db.rows(
+            "select ia.path from item_armor_assets iaa"
+            " join item_assets ia on ia.id = iaa.asset_id"
+            " where iaa.armor_asset_id = ? order by iaa.id",
+            (armor_asset_id,),
+        ):
+            path = row.get("path")
+            if path and path not in paths:
+                paths.append(path)
+    return paths
+
+
+def _item_class_ids(ref):
+    """Item id -> referenced equip set ids from the three class tables."""
+    sets = defaultdict(set)
+    for table in ITEM_CLASS_TABLES:
+        if not ref.has(table):
+            continue
+        for row in ref.rows(
+            f'select item_id, eiset_id from "{table}" where eiset_id > 0'
+        ):
+            sets[row["item_id"]].add(row["eiset_id"])
+    return sets
+
+
+def _set_ids_with_high_attributes(ref):
+    if not (ref.has("equip_item_set_bonuses") and ref.has("unit_modifiers")):
+        return set()
+    return {
+        row["equip_item_set_id"]
+        for row in ref.rows(
+            "select distinct b.equip_item_set_id from equip_item_set_bonuses b"
+            " join unit_modifiers um on um.owner_id = b.buff_id"
+            " and um.owner_type = 'Buff'"
+            " where um.unit_attribute_id > 186"
+        )
+    }
+
+
+def _set_ids_with_procs(ref):
+    if not ref.has("equip_item_set_bonuses"):
+        return set()
+    return {
+        row["equip_item_set_id"]
+        for row in ref.rows(
+            "select distinct equip_item_set_id from equip_item_set_bonuses"
+            " where proc_id > 0"
+        )
+    }
+
+
+def select_gear_1a(base, ref, pak_paths):
+    """Select the report's 3.0 gear batch 1a, minus the owner's custom families.
+
+    Selection rule (documented in the generated patch header):
+
+    * item id absent from the 1.2 database and below `CUSTOM_ID_MIN` (8,000,000);
+    * not an emulator-custom Dawnsdrop item: no `eiset_id` >= 9,000,001 and no
+      item id in 34,936..34,984;
+    * `items.level` <= 62 (the Eanad power line);
+    * costume (category 10/173 or armor slot 31, category not 94/96/100), armor
+      (category 83/84/85) or cloak (category 121);
+    * no `item_proc_bindings`, no equip set with a proc or a bonus buff unit
+      attribute above 186, no `use_skill_id` missing from 1.2;
+    * every one of the four playable races (Nuian, Elf, Hariharan, Ferre) has at
+      least one look path, and every playable-race path is already in the 1.2
+      pak. Dwarf/Warborn-only paths are not required to exist (they are not
+      playable in 1.2) and are reported.
+
+    `pak_paths` is the parsed 1.2 pak listing (paths only, any case, with or
+    without the `game/` prefix).
+    """
+    pak = {_pak_asset_name(path) for path in pak_paths or () if path}
+    base_items = base.ids("items")
+    base_skills = base.ids("skills")
+    sets = _item_class_ids(ref)
+    high_attribute_sets = _set_ids_with_high_attributes(ref)
+    proc_sets = _set_ids_with_procs(ref)
+    proc_items = (
+        {row["item_id"] for row in ref.rows("select distinct item_id from item_proc_bindings")}
+        if ref.has("item_proc_bindings")
+        else set()
+    )
+    item_columns = set(ref.columns("items"))
+
+    skipped = defaultdict(lambda: {"count": 0, "examples": []})
+
+    def skip(reason, item_id):
+        entry = skipped[reason]
+        entry["count"] += 1
+        if len(entry["examples"]) < 20:
+            entry["examples"].append(item_id)
+
+    def classify(item_id, category_id):
+        if not ref.has("item_armors"):
+            return None
+        has_armor = ref.row(
+            "select 1 from item_armors where item_id = ? limit 1", (item_id,)
+        )
+        if (
+            has_armor
+            and category_id not in (94, 96, 100)
+            and (
+                category_id in (10, 173)
+                or ref.row(
+                    "select 1 from item_armors where item_id = ? and slot_type_id = 31"
+                    " limit 1",
+                    (item_id,),
+                )
+            )
+        ):
+            return "costume"
+        if category_id in (83, 84, 85):
+            return "armor"
+        if category_id == 121:
+            return "cloak"
+        return None
+
+    selected = []
+    counts = defaultdict(int)
+    all_paths = set()
+    armor_asset_ids = set()
+    for item in ref.rows("select * from items order by id"):
+        item_id = item["id"]
+        if item_id in base_items:
+            continue
+        if item_id >= CUSTOM_ID_MIN:
+            skip("custom_id_ge_8m", item_id)
+            continue
+        set_ids = sets.get(item_id, set())
+        if any(set_id >= DAWNSDROP_SET_MIN for set_id in set_ids):
+            skip("custom_dawnsdrop_set", item_id)
+            continue
+        if item_id in DAWNSDROP_ITEM_IDS:
+            skip("custom_dawnsdrop_item", item_id)
+            continue
+        category_id = item.get("category_id") or 0
+        kind = classify(item_id, category_id)
+        if kind is None:
+            skip("outside_batch_family", item_id)
+            continue
+        level = item.get("level", item.get("LEVEL")) or 0
+        if level > GEAR_1A_MAX_ITEM_LEVEL:
+            skip("above_eanad", item_id)
+            continue
+        if item_id in proc_items:
+            skip("item_proc", item_id)
+            continue
+        if set_ids & high_attribute_sets:
+            skip("set_attribute_gt_186", item_id)
+            continue
+        if set_ids & proc_sets:
+            skip("set_proc", item_id)
+            continue
+        use_skill_id = (item.get("use_skill_id") if "use_skill_id" in item_columns else 0) or 0
+        if use_skill_id and use_skill_id not in base_skills:
+            skip("new_use_skill", item_id)
+            continue
+        paths = armor_look_paths(ref, item_id)
+        races = {_playable_race_of_path(path) for path in paths}
+        races.discard(None)
+        if len(races) != len(PLAYABLE_RACES):
+            skip("no_four_race_art", item_id)
+            continue
+        playable_paths = [
+            path for path in paths if _playable_race_of_path(path) is not None
+        ]
+        if not playable_paths or any(
+            _pak_asset_name(path) not in pak for path in playable_paths
+        ):
+            skip("playable_art_missing_from_1_2_pak", item_id)
+            continue
+        selected.append(item_id)
+        counts[kind] += 1
+        all_paths.update(paths)
+        armor_asset_ids.update(_armor_look_asset_ids(ref, item_id))
+
+    missing_paths = sorted(
+        path for path in all_paths if _pak_asset_name(path) not in pak
+    )
+    return {
+        "family": "gear-1a",
+        "items": selected,
+        "counts": {
+            "costume": counts["costume"],
+            "armor": counts["armor"],
+            "cloak": counts["cloak"],
+            "total": len(selected),
+        },
+        "skipped": {reason: dict(entry) for reason, entry in sorted(skipped.items())},
+        "looks": {
+            "distinct_paths": len(all_paths),
+            "armor_asset_ids": sorted(armor_asset_ids),
+            "missing_from_1_2_pak": missing_paths,
+        },
+    }
+
+
 def sha256_file(path):
     digest = hashlib.sha256()
     with open(path, "rb") as handle:
@@ -176,9 +432,10 @@ class ColumnInfo:
 
 
 class Borrower:
-    def __init__(self, base, ref):
+    def __init__(self, base, ref, skip_craft_pack_crafts=False):
         self.base = base
         self.ref = ref
+        self.skip_craft_pack_crafts = skip_craft_pack_crafts
         self.rows = OrderedDict()
         self.seen_ids = {}
         self.synth_next = {}
@@ -201,6 +458,7 @@ class Borrower:
             },
             "already_present": [],
             "borrowed_rows": defaultdict(int),
+            "replaced_rows": defaultdict(int),
             "boolean_value_conversions": defaultdict(lambda: defaultdict(int)),
             "materials_without_1_2_source": [],
             "icons_missing_in_1_2": [],
@@ -209,6 +467,7 @@ class Borrower:
         }
         self._buff_effect_buff_ids = set()
         self.seen_sets = set()
+        self.replacements = defaultdict(list)
         self._max_unit_attribute = None
         self.armor_asset_map = {}
         self.item_asset_map = {}
@@ -254,6 +513,15 @@ class Borrower:
         return self._colmap[table]
 
     def base_max_id(self, table):
+        """Highest retail (below `CUSTOM_ID_MIN`) id of a table."""
+        if not self.base.has(table):
+            return 0
+        row = self.base.row(
+            f'select max(id) as m from "{table}" where id < ?', (CUSTOM_ID_MIN,)
+        )
+        return (row["m"] if row else 0) or 0
+
+    def base_max_all_id(self, table):
         if not self.base.has(table):
             return 0
         row = self.base.row(f'select max(id) as m from "{table}"')
@@ -265,7 +533,8 @@ class Borrower:
             self.synth_next[table] = base_max
             entry = self.report["synthesized_ids"][table]
             entry["base_max"] = base_max
-            entry["above_custom_min"] = base_max >= CUSTOM_ID_MIN
+            entry["base_max_all"] = self.base_max_all_id(table)
+            entry["above_custom_min"] = entry["base_max_all"] >= CUSTOM_ID_MIN
         while True:
             self.synth_next[table] += 1
             candidate = self.synth_next[table]
@@ -347,29 +616,42 @@ class Borrower:
 
     # -- row planning -----------------------------------------------------
 
-    def _plan_row(self, table, ref_row, id_value):
+    def _row_values(self, table, ref_row, id_value=None, record=True):
         base_cols, mapped, defaults = self.colmap(table)
         row = {}
         for base_col in base_cols:
             ref_col = mapped.get(base_col)
             if ref_col is None:
                 row[base_col] = self.default_value(table, base_col)
-                self.report["columns_filled_with_1_2_defaults"][table][base_col] += 1
+                if record:
+                    self.report["columns_filled_with_1_2_defaults"][table][
+                        base_col
+                    ] += 1
             else:
                 row[base_col] = self._normalize_value(
                     table, base_col, ref_row.get(ref_col)
                 )
-        row["id"] = id_value
-        ref_only = [
-            c for c in self.ref.columns(table) if c.lower() not in {b.lower() for b in base_cols}
-        ]
-        for col in ref_only:
-            value = ref_row.get(col)
-            if not is_default_value(value):
-                entry = self.report["columns_dropped_from_3_0"][table][col]
-                entry["count"] += 1
-                if len(entry["examples"]) < 20:
-                    entry["examples"].append({"id": id_value, "value": value})
+        if id_value is not None:
+            row["id"] = id_value
+        if record:
+            ref_only = [
+                c
+                for c in self.ref.columns(table)
+                if c.lower() not in {b.lower() for b in base_cols}
+            ]
+            for col in ref_only:
+                value = ref_row.get(col)
+                if not is_default_value(value):
+                    entry = self.report["columns_dropped_from_3_0"][table][col]
+                    entry["count"] += 1
+                    if len(entry["examples"]) < 20:
+                        entry["examples"].append(
+                            {"id": id_value, "value": value}
+                        )
+        return row
+
+    def _plan_row(self, table, ref_row, id_value):
+        row = self._row_values(table, ref_row, id_value)
         self.rows.setdefault(table, []).append(row)
         self.seen_ids.setdefault(table, set()).add(id_value)
         self.report["borrowed_rows"][table] += 1
@@ -377,6 +659,8 @@ class Borrower:
 
     def plan_row(self, table, ref_row):
         rid = ref_row.get("id")
+        if rid is not None and rid in self.seen_ids.get(table, set()):
+            return None
         if rid is not None and rid in self.base.ids(table):
             self.report["refused"]["collisions"].append(
                 {"table": table, "id": rid}
@@ -385,6 +669,76 @@ class Borrower:
         if rid is None:
             rid = self.next_synth_id(table)
         return self._plan_row(table, ref_row, rid)
+
+    def _class_row_matches(self, base_row, values):
+        for column, value in values.items():
+            if column == "id":
+                continue
+            base_value = base_row.get(column)
+            if base_value == value:
+                continue
+            if base_value in (None, 0, "") and value in (None, 0, ""):
+                continue
+            return False
+        return True
+
+    def _plan_replacement(self, table, ref_row, id_value, values=None):
+        row = dict(values) if values is not None else self._row_values(table, ref_row)
+        row["id"] = id_value
+        self.replacements[table].append(row)
+        self.seen_ids.setdefault(table, set()).add(id_value)
+        self.report["replaced_rows"][table] += 1
+        return row
+
+    def plan_class_row(self, table, ref_row):
+        """Plan an `item_armors` / `item_weapons` / `item_accessories` row.
+
+        The class-table `id` is a surrogate key the server never references: it
+        is re-keyed above the 1.2 range when it collides with a row of another
+        item. The 1.2 database also carries orphan class rows for items its
+        `items` table does not have; when the imported item already has such a
+        row, the 3.0 values replace it (`UPDATE`) instead of adding a second
+        template (the loader rejects duplicate item templates).
+        """
+        item_id = ref_row.get("item_id")
+        base_row = None
+        if item_id is not None and self.base.has(table):
+            candidates = self.base.rows(
+                f'select * from "{table}" where item_id = ? order by id', (item_id,)
+            )
+            if candidates:
+                base_row = next(
+                    (row for row in candidates if row.get("id") == ref_row.get("id")),
+                    candidates[0],
+                )
+        values = self._row_values(table, ref_row, record=False)
+        if table == "item_armors":
+            asset_id = ref_row.get("asset_id") or 0
+            if asset_id:
+                values["asset_id"] = self.borrow_armor_look(asset_id)
+        if base_row is not None:
+            if self._class_row_matches(base_row, values):
+                self.report["already_present"].append(
+                    {"table": table, "id": base_row["id"]}
+                )
+                return None
+            values = self._row_values(table, ref_row)
+            if table == "item_armors":
+                asset_id = ref_row.get("asset_id") or 0
+                if asset_id:
+                    values["asset_id"] = self.borrow_armor_look(asset_id)
+            return self._plan_replacement(
+                table, ref_row, base_row["id"], values=values
+            )
+        rid = ref_row.get("id")
+        if rid is None or rid in self.base.ids(table):
+            rid = self.next_synth_id(table)
+        planned = self._plan_row(table, ref_row, rid)
+        if table == "item_armors":
+            asset_id = ref_row.get("asset_id") or 0
+            if asset_id:
+                planned["asset_id"] = self.borrow_armor_look(asset_id)
+        return planned
 
     # -- closure borrowing ------------------------------------------------
 
@@ -455,20 +809,23 @@ class Borrower:
         ref_paths = self._chain_paths(self.ref, armor_asset_id)
         same_meaning = bool(ref_paths) and set(base_paths) == set(ref_paths)
         if same_meaning:
-            new_id = armor_asset_id
+            # The 1.2 look has the same path chain: reuse its id and leave its
+            # item_armor_assets rows alone (adding the 3.0 rows again would
+            # duplicate every path under a new set of ids).
+            self.armor_asset_map[armor_asset_id] = armor_asset_id
             self.report["look_borrows"]["armor_assets"]["reused_ids"].append(
                 {"id": armor_asset_id, "reason": "identical item_armor_assets chain"}
             )
-        else:
-            new_id = self.next_synth_id("armor_assets")
-            planned = self._plan_row("armor_assets", ref_row, new_id)
-            default_asset = ref_row.get("default_asset_id") or 0
-            if default_asset:
-                planned["default_asset_id"] = self._asset_id_for_path(default_asset)
-            self.report["look_borrows"]["armor_assets"]["new_ids"].append(new_id)
-            self.report["look_borrows"]["item_armors_asset_id_remap"][
-                str(armor_asset_id)
-            ] = new_id
+            return armor_asset_id
+        new_id = self.next_synth_id("armor_assets")
+        planned = self._plan_row("armor_assets", ref_row, new_id)
+        default_asset = ref_row.get("default_asset_id") or 0
+        if default_asset:
+            planned["default_asset_id"] = self._asset_id_for_path(default_asset)
+        self.report["look_borrows"]["armor_assets"]["new_ids"].append(new_id)
+        self.report["look_borrows"]["item_armors_asset_id_remap"][
+            str(armor_asset_id)
+        ] = new_id
         self.armor_asset_map[armor_asset_id] = new_id
         for iaa_row in self.ref.rows(
             "select * from item_armor_assets where armor_asset_id = ? order by id",
@@ -551,6 +908,7 @@ class Borrower:
                 {"table": "items", "id": item_id}
             )
             return
+        self.borrow_item_category(ref_row.get("category_id") or 0)
         item_row = self._plan_row("items", ref_row, item_id)
         for table in ITEM_CLASS_TABLES:
             if not self.ref.has(table):
@@ -558,12 +916,8 @@ class Borrower:
             for row in self.ref.rows(
                 f'select * from "{table}" where item_id = ? order by id', (item_id,)
             ):
-                planned = self.plan_row(table, row)
-                if table == "item_armors":
-                    if planned is not None:
-                        asset_id = row.get("asset_id") or 0
-                        if asset_id:
-                            planned["asset_id"] = self.borrow_armor_look(asset_id)
+                planned = self.plan_class_row(table, row)
+                if table == "item_armors" and planned is not None:
                     self._check_armor_references(row)
         for table, key, condition in ITEM_SCOPED_TABLES:
             if not self.ref.has(table):
@@ -574,7 +928,9 @@ class Borrower:
             ):
                 self.plan_row(table, row)
         for table in ITEM_CLASS_TABLES:
-            for row in self.rows.get(table, []):
+            class_rows = list(self.rows.get(table, []))
+            class_rows += list(self.replacements.get(table, []))
+            for row in class_rows:
                 if row.get("item_id") != item_id:
                     continue
                 set_id = row.get("eiset_id") or 0
@@ -598,6 +954,56 @@ class Borrower:
                     {"item_id": item_id, "icon_id": icon_id, "column": column}
                 )
             item_row[column] = self.borrow_icon(icon_id)
+
+    def borrow_item_category(self, category_id):
+        if not category_id or not self.base.has("item_categories"):
+            return
+        if category_id in self.base.ids("item_categories"):
+            return
+        if category_id in self.seen_ids.get("item_categories", set()):
+            return
+        if category_id >= CUSTOM_ID_MIN:
+            self.report["refused"]["custom_items"].append(
+                {"table": "item_categories", "id": category_id}
+            )
+            return
+        ref_row = self.ref.row(
+            "select * from item_categories where id = ?", (category_id,)
+        )
+        if ref_row is None:
+            self.report["refused"]["missing_references"].append(
+                {"table": "item_categories", "id": category_id}
+            )
+            return
+        self._plan_row("item_categories", ref_row, category_id)
+        group_id = ref_row.get("item_group_id") or 0
+        if (
+            group_id
+            and self.base.has("item_groups")
+            and not self.base.row("select 1 from item_groups where id = ?", (group_id,))
+        ):
+            self.report["refused"]["missing_references"].append(
+                {"table": "item_groups", "id": group_id, "needed_by": "item_categories"}
+            )
+
+    def borrow_tag(self, tag_id):
+        """Plan a missing tag row; `True` when the tag exists (base or planned)."""
+        if not tag_id:
+            return True
+        if tag_id in self.base.ids("tags") or tag_id in self.seen_ids.get("tags", set()):
+            return True
+        if not (self.base.has("tags") and self.ref.has("tags")):
+            return False
+        if tag_id >= CUSTOM_ID_MIN:
+            self.report["refused"]["custom_items"].append(
+                {"table": "tags", "id": tag_id}
+            )
+            return False
+        ref_row = self.ref.row("select * from tags where id = ?", (tag_id,))
+        if ref_row is None:
+            return False
+        self._plan_row("tags", ref_row, tag_id)
+        return True
 
     def _check_armor_references(self, row):
         mod_set_id = row.get("mod_set_id") or 0
@@ -662,13 +1068,30 @@ class Borrower:
                 " order by rowid",
                 (buff_id,),
             ):
-                self._check_skill_modifier_refs(row)
+                if not self._check_skill_modifier_refs(row):
+                    self.report.setdefault("skill_modifiers_skipped", []).append(
+                        {
+                            "buff_id": buff_id,
+                            "skill_id": row.get("skill_id"),
+                            "tag_id": row.get("tag_id"),
+                            "reason": "skill or tag missing from 1.2",
+                        }
+                    )
+                    continue
                 self.plan_row("skill_modifiers", row)
         if self.ref.has("tagged_buffs") and self.base.has("tagged_buffs"):
             for row in self.ref.rows(
                 "select * from tagged_buffs where buff_id = ? order by rowid", (buff_id,)
             ):
-                self._check_tag(row.get("tag_id"), "tagged_buffs", buff_id)
+                if not self._check_tag(row.get("tag_id"), "tagged_buffs", buff_id):
+                    self.report.setdefault("tagged_buffs_skipped", []).append(
+                        {
+                            "buff_id": buff_id,
+                            "tag_id": row.get("tag_id"),
+                            "reason": "tag missing from 1.2 and not borrowable",
+                        }
+                    )
+                    continue
                 self.plan_row("tagged_buffs", row)
         if self.ref.has("buff_tick_effects"):
             for row in self.ref.rows(
@@ -721,14 +1144,18 @@ class Borrower:
 
     def _check_tag(self, tag_id, table, owner_id):
         if not tag_id or not self.base.has("tags"):
-            return
-        if tag_id not in self.base.ids("tags"):
-            self.report["refused"]["missing_references"].append(
-                {"table": "tags", "id": tag_id, "needed_by": f"{table}:{owner_id}"}
-            )
+            return True
+        if self.borrow_tag(tag_id):
+            return True
+        self.report["refused"]["missing_references"].append(
+            {"table": "tags", "id": tag_id, "needed_by": f"{table}:{owner_id}"}
+        )
+        return False
 
     def _check_skill_modifier_refs(self, row):
-        self._check_tag(row.get("tag_id"), "skill_modifiers", row.get("owner_id"))
+        tag_ok = self._check_tag(
+            row.get("tag_id"), "skill_modifiers", row.get("owner_id")
+        )
         skill_id = row.get("skill_id") or 0
         if skill_id and skill_id not in self.base.ids("skills"):
             self.report["refused"]["missing_references"].append(
@@ -738,6 +1165,8 @@ class Borrower:
                     "needed_by": f"skill_modifiers:buff {row.get('owner_id')}",
                 }
             )
+            return False
+        return tag_ok
 
     def borrow_equip_set(self, set_id):
         """equip_item_sets row, its bonuses, bonus buffs and bonus procs."""
@@ -834,8 +1263,18 @@ class Borrower:
                         {"craft_id": craft_id, "amount": row.get("amount")}
                     )
                     continue
+                if table == "craft_pack_crafts" and self.skip_craft_pack_crafts:
+                    # 1.2 reads this table as "the craft is a pack"; 3.0 uses it for
+                    # craft-pack membership. Importing it would change the craft kind.
+                    self.report.setdefault("craft_pack_crafts_skipped", []).append(
+                        {
+                            "craft_id": craft_id,
+                            "craft_pack_id": row.get("craft_pack_id"),
+                        }
+                    )
+                    continue
                 self.plan_row(table, row)
-        if self.ref.has("craft_pack_crafts"):
+        if self.ref.has("craft_pack_crafts") and not self.skip_craft_pack_crafts:
             count = len(
                 self.ref.rows(
                     "select id from craft_pack_crafts where craft_id = ?", (craft_id,)
@@ -1074,9 +1513,11 @@ def build_closure(base, ref, start_ids):
     }
 
 
-def build_backport(base, ref, item_ids):
+def build_backport(base, ref, item_ids, skip_craft_pack_crafts=False):
     closure = build_closure(base, ref, item_ids)
-    borrower = Borrower(base, ref)
+    borrower = Borrower(
+        base, ref, skip_craft_pack_crafts=skip_craft_pack_crafts
+    )
     for item_id in closure["items"]:
         borrower.borrow_item(item_id, start=item_id in set(item_ids))
     for craft_id in closure["crafts"]:
@@ -1182,19 +1623,44 @@ def build_backport(base, ref, item_ids):
         t: {col: dict(entry) for col, entry in cols.items()}
         for t, cols in report["columns_dropped_from_3_0"].items()
     }
+    report["replaced_rows"] = dict(report["replaced_rows"])
+    report["_replacements"] = {
+        table: list(rows) for table, rows in borrower.replacements.items()
+    }
     return closure, borrower.rows, report
 
 
-def render_patch(rows, base_path, ref_path, command, base_sha, ref_sha):
+def render_patch(
+    rows,
+    base_path,
+    ref_path,
+    command,
+    base_sha,
+    ref_sha,
+    extra_header=None,
+    title="version_gaps backport: borrowed gear",
+    replacements=None,
+):
     lines = [
-        "-- version_gaps backport: borrowed gear",
+        f"-- {title}",
         f"-- base: {base_path} (sha256 {base_sha})",
         f"-- source: {ref_path} (sha256 {ref_sha})",
         f"-- command: {command}",
         "-- documented guess: borrowed from 3.0.4.2",
-        "BEGIN;",
     ]
-    for table in list(TABLE_ORDER) + [t for t in rows if t not in TABLE_ORDER]:
+    for line in extra_header or ():
+        lines.append(f"-- {line}" if line else "--")
+    lines.append(
+        "-- Idempotent: every INSERT is guarded by NOT EXISTS on its id, every class-row"
+        " UPDATE is guarded by item_id and writes the same values again, so a rerun is a"
+        " no-op."
+    )
+    lines.append("BEGIN;")
+    replacements = replacements or {}
+    extra_tables = [
+        t for t in list(rows) + list(replacements) if t not in TABLE_ORDER
+    ]
+    for table in list(TABLE_ORDER) + extra_tables:
         table_rows = rows.get(table)
         if not table_rows:
             continue
@@ -1202,7 +1668,29 @@ def render_patch(rows, base_path, ref_path, command, base_sha, ref_sha):
         column_sql = ", ".join(f'"{c}"' for c in columns)
         for row in sorted(table_rows, key=lambda r: (r.get("id", 0),)):
             values = ", ".join(sql_literal(row.get(c)) for c in columns)
-            lines.append(f'INSERT INTO "{table}" ({column_sql}) VALUES ({values});')
+            lines.append(
+                f'INSERT INTO "{table}" ({column_sql}) SELECT {values}'
+                f' WHERE NOT EXISTS (SELECT 1 FROM "{table}" WHERE "id" ='
+                f" {sql_literal(row.get('id'))});"
+            )
+    for table in list(TABLE_ORDER) + [
+        t for t in replacements if t not in TABLE_ORDER
+    ]:
+        table_rows = replacements.get(table)
+        if not table_rows:
+            continue
+        for row in sorted(table_rows, key=lambda r: (r.get("id", 0),)):
+            columns = [c for c in row if c != "id"]
+            assignments = ", ".join(
+                f'"{c}" = {sql_literal(row.get(c))}' for c in columns
+            )
+            guard = ""
+            if "item_id" in row:
+                guard = f' AND "item_id" = {sql_literal(row["item_id"])}'
+            lines.append(
+                f'UPDATE "{table}" SET {assignments}'
+                f' WHERE "id" = {sql_literal(row["id"])}{guard};'
+            )
     lines.append("COMMIT;")
     lines.append("")
     return "\n".join(lines)
@@ -1371,7 +1859,8 @@ def read_listing(path):
     lines = set()
     with open(path, encoding="utf-8", errors="replace") as handle:
         for line in handle:
-            line = line.strip().lower()
+            # Pak listings are either bare paths or `path;size` rows.
+            line = line.strip().lower().split(";", 1)[0].strip()
             if line:
                 lines.add(line)
     return lines
@@ -1434,6 +1923,60 @@ def write_asset_list(out_path, section):
     Path(out_path).write_text("\n".join(section["paths"]) + "\n", encoding="utf-8")
 
 
+def selection_header(selection, borrowed_rows, report):
+    counts = selection["counts"]
+    lines = [
+        "3.0 gear batch 1a (inventory report section 7). Retail 3.0 content only.",
+        "Selection: item id absent from 1.2 and below 8,000,000; not an emulator-custom",
+        "  Dawnsdrop item (set id >= 9,000,001 or item id 34936..34984); item level <= 62",
+        "  (the Eanad power line); costume, armor or cloak; no item proc, no set proc, no",
+        "  set bonus unit attribute above 186, no 3.0-only use skill; a look for each of",
+        "  the four playable races, all already in the 1.2 pak.",
+        f"Selected: {counts['costume']} costumes + {counts['armor']} armor +"
+        f" {counts['cloak']} cloaks = {counts['total']} items.",
+    ]
+    skipped = [
+        f"{reason} {entry['count']}"
+        for reason, entry in selection["skipped"].items()
+        if entry["count"]
+    ]
+    if skipped:
+        lines.append("Skipped candidates: " + ", ".join(skipped) + ".")
+    missing = selection["looks"]["missing_from_1_2_pak"]
+    if missing:
+        lines.append(
+            f"{len(missing)} non-playable (Dwarf/Warborn) look paths have no 1.2 pak"
+            " file; their item_assets rows are data-only and no playable-race file is"
+            " needed."
+        )
+    if borrowed_rows:
+        lines.append(
+            "Rows inserted: "
+            + ", ".join(
+                f"{table} {count}" for table, count in sorted(borrowed_rows.items())
+            )
+            + "."
+        )
+    replaced = {
+        table: count
+        for table, count in (report.get("replaced_rows") or {}).items()
+        if count
+    }
+    if replaced:
+        lines.append(
+            "Rows replaced (orphan 1.2 class rows of the imported items): "
+            + ", ".join(f"{table} {count}" for table, count in sorted(replaced.items()))
+            + "."
+        )
+    if report.get("orphan_crafts_in_3_0"):
+        lines.append(
+            "3.0 orphan crafts (products without a crafts row): "
+            + ", ".join(str(c) for c in report["orphan_crafts_in_3_0"])
+            + "."
+        )
+    return lines
+
+
 def run_backport(
     base_path,
     ref_path,
@@ -1450,17 +1993,49 @@ def run_backport(
     base = Db(path=base_path)
     ref = Db(path=ref_path)
     try:
-        item_ids = resolve_item_set(items_spec)
-        closure, rows, report = build_backport(base, ref, item_ids)
+        selection = None
+        if items_spec in GEAR_FAMILIES:
+            if not pak12_listing:
+                raise SystemExit(
+                    f"--items {items_spec} needs --pak12-listing (the 1.2 pak paths)"
+                )
+            pak_paths = read_listing(pak12_listing)
+            selection = select_gear_1a(base, ref, pak_paths or ())
+            item_ids = selection["items"]
+            if not item_ids:
+                raise SystemExit(f"--items {items_spec} selected no items")
+        else:
+            item_ids = resolve_item_set(items_spec)
+        closure, rows, report = build_backport(
+            base, ref, item_ids, skip_craft_pack_crafts=selection is not None
+        )
         base_sha = sha256_file(base_path)
         ref_sha = sha256_file(ref_path)
         if command is None:
             command = (
                 "python -I -B -X utf8 backport.py"
                 f" --base {base_path} --ref {ref_path} --items {items_spec}"
-                f" --out-sql {out_sql} --out-db {out_db}"
             )
-        sql = render_patch(rows, base_path, ref_path, command, base_sha, ref_sha)
+            if items_spec in GEAR_FAMILIES:
+                command += f" --pak12-listing {pak12_listing}"
+            command += f" --out-sql {out_sql} --out-db {out_db}"
+        replacements = report.pop("_replacements", {})
+        extra_header = None
+        title = "version_gaps backport: borrowed gear"
+        if selection is not None:
+            extra_header = selection_header(selection, report["borrowed_rows"], report)
+            title = "version_gaps backport: 3.0 gear batch 1a"
+        sql = render_patch(
+            rows,
+            base_path,
+            ref_path,
+            command,
+            base_sha,
+            ref_sha,
+            extra_header=extra_header,
+            title=title,
+            replacements=replacements,
+        )
         Path(out_sql).write_text(sql, encoding="utf-8")
         integrity = apply_patch(base_path, out_db, sql)
         report["inputs"] = {
@@ -1468,6 +2043,8 @@ def run_backport(
             "ref": str(ref_path),
             "items": items_spec,
         }
+        if selection is not None:
+            report["selection"] = selection
         report["title"] = f"gear backport: {items_spec}"
         report["sha256"] = {"base": base_sha, "ref": ref_sha}
         report["closure"] = {
@@ -1500,10 +2077,25 @@ def run_backport(
 
 def print_summary(report):
     print("=" * 72)
-    print("Obsidian armor backport (3.0.4.2 -> 1.2 copy, off by default)")
+    print("Gear backport (3.0.4.2 -> 1.2 copy, off by default)")
     print("=" * 72)
     print(f"elapsed: {report['elapsed_seconds']}s")
     print(f"items: {report['closure']['item_count']}, crafts: {report['closure']['craft_count']}")
+    selection = report.get("selection")
+    if selection:
+        counts = selection["counts"]
+        print(
+            f"selection {selection['family']}: {counts['costume']} costumes +"
+            f" {counts['armor']} armor + {counts['cloak']} cloaks ="
+            f" {counts['total']} items"
+        )
+        for reason, entry in selection["skipped"].items():
+            if entry["count"]:
+                print(f"  skipped {reason}: {entry['count']}")
+        print(
+            "  look paths not in the 1.2 pak (non-playable races):"
+            f" {len(selection['looks']['missing_from_1_2_pak'])}"
+        )
     print("borrowed rows per table:")
     for table, count in sorted(report["borrowed_rows"].items()):
         print(f"  {table}: {count}")
@@ -1843,6 +2435,10 @@ def main(argv=None):
     )
     parser.add_argument("--pak10-listing", help="10.x pak listing (one path per line)")
     parser.add_argument("--pak12-listing", help="1.2 pak listing (one path per line)")
+    parser.add_argument(
+        "--command",
+        help="command line recorded in the SQL header (default: this invocation)",
+    )
     args = parser.parse_args(argv)
 
     report = run_backport(
@@ -1851,6 +2447,7 @@ def main(argv=None):
         args.items,
         args.out_sql,
         args.out_db,
+        command=args.command,
         assets_out=args.assets_out,
         assets_extract_dir=args.assets_extract_dir,
         pak10_listing=args.pak10_listing,

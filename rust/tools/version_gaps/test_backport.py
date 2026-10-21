@@ -22,6 +22,7 @@ from backport import (  # noqa: E402
     render_patch,
     resolve_item_set,
     run_backport,
+    select_gear_1a,
     weapons_comparison,
     write_asset_list,
 )
@@ -680,6 +681,336 @@ class ClientNullNormalizationTest(unittest.TestCase):
             again = patch_client_db(paths["client"], paths["base"], paths["patched"])
             self.assertEqual(sum(again["inserted"].values()), 0)
             self.assertEqual(again["conflicts"], {})
+
+
+GEAR_SCHEMA = """
+CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT, category_id INTEGER,
+    level INTEGER, use_skill_id INTEGER);
+CREATE TABLE item_armors (id INTEGER PRIMARY KEY, item_id INTEGER,
+    slot_type_id INTEGER, type_id INTEGER, mod_set_id INTEGER, asset_id INTEGER,
+    asset2_id INTEGER, eiset_id INTEGER);
+CREATE TABLE item_weapons (id INTEGER PRIMARY KEY, item_id INTEGER,
+    mod_set_id INTEGER, eiset_id INTEGER);
+CREATE TABLE item_accessories (id INTEGER PRIMARY KEY, item_id INTEGER,
+    eiset_id INTEGER);
+CREATE TABLE item_proc_bindings (id INTEGER PRIMARY KEY, item_id INTEGER,
+    proc_id INTEGER);
+CREATE TABLE equip_item_set_bonuses (id INTEGER PRIMARY KEY,
+    equip_item_set_id INTEGER, num_pieces INTEGER, buff_id INTEGER, proc_id INTEGER);
+CREATE TABLE unit_modifiers (id INTEGER PRIMARY KEY, owner_type TEXT,
+    owner_id INTEGER, unit_attribute_id INTEGER);
+CREATE TABLE skills (id INTEGER PRIMARY KEY, name TEXT);
+CREATE TABLE armor_assets (id INTEGER PRIMARY KEY, slot_type_id INTEGER,
+    default_asset_id INTEGER);
+CREATE TABLE item_armor_assets (id INTEGER PRIMARY KEY,
+    armor_asset_id INTEGER, asset_id INTEGER);
+CREATE TABLE item_assets (id INTEGER PRIMARY KEY, path TEXT);
+CREATE TABLE item_categories (id INTEGER PRIMARY KEY, name TEXT,
+    item_group_id INTEGER);
+CREATE TABLE item_groups (id INTEGER PRIMARY KEY, name TEXT);
+CREATE TABLE crafts (id INTEGER PRIMARY KEY, title TEXT, skill_id INTEGER);
+CREATE TABLE craft_products (id INTEGER PRIMARY KEY, craft_id INTEGER,
+    item_id INTEGER, amount INTEGER);
+CREATE TABLE craft_materials (id INTEGER PRIMARY KEY, craft_id INTEGER,
+    item_id INTEGER, amount INTEGER);
+"""
+
+GEAR_RACES = ("nuian", "elf", "hariharan", "ferre")
+
+
+def gear_paths(item_id, races=GEAR_RACES):
+    return [
+        f"objects/characters/{race}/female/parts/test/{item_id}.cdf"
+        for race in races
+    ]
+
+
+def gear_base():
+    return make_db(
+        GEAR_SCHEMA,
+        [
+            ("INSERT INTO items VALUES (?,?,?,?,?)", (1000, "existing", 10, 10, 0)),
+            ("INSERT INTO skills VALUES (?,?)", (500, "base skill")),
+            ("INSERT INTO item_categories VALUES (?,?,?)", (10, "costume", 4)),
+            ("INSERT INTO item_groups VALUES (?,?)", (4, "costume")),
+        ],
+    )
+
+
+def add_gear_item(
+    ref,
+    item_id,
+    category,
+    level,
+    *,
+    races=GEAR_RACES,
+    set_id=0,
+    use_skill_id=0,
+    proc=False,
+    slot=None,
+    asset_id=None,
+):
+    ref.conn.execute(
+        "INSERT INTO items VALUES (?,?,?,?,?)",
+        (item_id, f"item{item_id}", category, level, use_skill_id),
+    )
+    if category in (10, 173, 83, 84, 85, 121):
+        asset = asset_id if asset_id is not None else item_id
+        slot_id = slot
+        if slot_id is None:
+            slot_id = 31 if category in (10, 173) else (9 if category == 121 else 1)
+        ref.conn.execute(
+            "INSERT INTO item_armors VALUES (?,?,?,?,?,?,?,?)",
+            (item_id, item_id, slot_id, 1, 0, asset, 0, set_id),
+        )
+        ref.conn.execute(
+            "INSERT INTO armor_assets VALUES (?,?,?)", (asset, slot_id, 0)
+        )
+        for index, path in enumerate(gear_paths(item_id, races)):
+            ref.conn.execute(
+                "INSERT INTO item_assets VALUES (?,?)", (item_id * 100 + index, path)
+            )
+            ref.conn.execute(
+                "INSERT INTO item_armor_assets VALUES (?,?,?)",
+                (item_id * 1000 + index, asset, item_id * 100 + index),
+            )
+    if proc:
+        ref.conn.execute(
+            "INSERT INTO item_proc_bindings VALUES (?,?,?)", (item_id, item_id, 77)
+        )
+
+
+def gear_ref():
+    ref = make_db(GEAR_SCHEMA, [])
+    ref.conn.executescript(
+        """
+        INSERT INTO items VALUES (1000, 'existing', 10, 10, 0);
+        INSERT INTO skills VALUES (500, 'base skill');
+        INSERT INTO item_categories VALUES (10, 'costume', 4);
+        INSERT INTO item_categories VALUES (173, 'synthetic costume', 4);
+        INSERT INTO item_groups VALUES (4, 'costume');
+        INSERT INTO equip_item_set_bonuses VALUES (1, 500, 3, 0, 77);
+        INSERT INTO equip_item_set_bonuses VALUES (2, 501, 3, 60, 0);
+        INSERT INTO equip_item_set_bonuses VALUES (3, 502, 3, 61, 0);
+        INSERT INTO unit_modifiers VALUES (1, 'Buff', 60, 195);
+        INSERT INTO unit_modifiers VALUES (2, 'Buff', 61, 100);
+        INSERT INTO skills VALUES (9000, '3.0 use skill');
+        """
+    )
+    add_gear_item(ref, 1001, 173, 10)
+    add_gear_item(ref, 1002, 83, 20)
+    add_gear_item(ref, 1003, 121, 30)
+    add_gear_item(ref, 1004, 83, 63)
+    add_gear_item(ref, 1005, 83, 20)
+    add_gear_item(ref, 1006, 83, 20, races=GEAR_RACES[:3])
+    add_gear_item(ref, 1007, 83, 20, proc=True)
+    add_gear_item(ref, 1008, 83, 20, set_id=500)
+    add_gear_item(ref, 1009, 83, 20, set_id=501)
+    add_gear_item(ref, 1010, 83, 20, use_skill_id=9000)
+    add_gear_item(ref, 8000001, 10, 10)
+    add_gear_item(ref, 35315, 83, 20, set_id=9000005)
+    add_gear_item(ref, 34964, 83, 55)
+    add_gear_item(ref, 1011, 83, 20, set_id=502)
+    ref.conn.execute("INSERT INTO items VALUES (1012, 'weapon', 70, 20, 0)")
+    ref.conn.execute("INSERT INTO item_weapons VALUES (1012, 1012, 5, 0)")
+    add_gear_item(ref, 1014, 96, 10)
+    ref.conn.commit()
+    return ref
+
+
+class Gear1aSelectionTests(unittest.TestCase):
+    def test_selection_rule_and_reasons(self):
+        base, ref = gear_base(), gear_ref()
+        pak = {
+            "game/" + path
+            for item_id in (
+                1001,
+                1002,
+                1003,
+                1004,
+                1005,
+                1006,
+                1007,
+                1008,
+                1009,
+                1010,
+                1011,
+                1014,
+                35315,
+                34964,
+                8000001,
+            )
+            for path in gear_paths(
+                item_id, GEAR_RACES[:3] if item_id == 1006 else GEAR_RACES
+            )
+        }
+        pak.remove("game/" + gear_paths(1005)[2])
+        selection = select_gear_1a(base, ref, pak)
+        self.assertEqual(selection["items"], [1001, 1002, 1003, 1011])
+        self.assertEqual(
+            selection["counts"],
+            {"costume": 1, "armor": 2, "cloak": 1, "total": 4},
+        )
+        skipped = {
+            reason: entry["count"]
+            for reason, entry in selection["skipped"].items()
+            if entry["count"]
+        }
+        self.assertEqual(skipped["custom_id_ge_8m"], 1)
+        self.assertEqual(skipped["custom_dawnsdrop_set"], 1)
+        self.assertEqual(skipped["custom_dawnsdrop_item"], 1)
+        self.assertEqual(skipped["above_eanad"], 1)
+        self.assertEqual(skipped["item_proc"], 1)
+        self.assertEqual(skipped["set_proc"], 1)
+        self.assertEqual(skipped["set_attribute_gt_186"], 1)
+        self.assertEqual(skipped["new_use_skill"], 1)
+        self.assertEqual(skipped["no_four_race_art"], 1)
+        self.assertEqual(skipped["playable_art_missing_from_1_2_pak"], 1)
+        self.assertEqual(skipped["outside_batch_family"], 2)
+        self.assertEqual(selection["looks"]["missing_from_1_2_pak"], [])
+
+    def test_item_category_and_look_closure(self):
+        base, ref = gear_base(), gear_ref()
+        selection = select_gear_1a(
+            base,
+            ref,
+            {
+                "game/" + path
+                for item_id in (1001, 1002, 1003, 1011)
+                for path in gear_paths(item_id)
+            },
+        )
+        _, rows, report = build_backport(base, ref, selection["items"])
+        self.assertEqual([row["id"] for row in rows["item_categories"]], [173])
+        self.assertEqual(len(rows["item_armors"]), 4)
+        self.assertEqual(len(rows["armor_assets"]), 4)
+        self.assertEqual(len(rows["item_assets"]), 16)
+        self.assertEqual(len(rows["item_armor_assets"]), 16)
+        self.assertEqual(report["replaced_rows"], {})
+
+    def test_synth_ids_stay_below_the_custom_band(self):
+        base, ref = gear_base(), gear_ref()
+        base.conn.execute("INSERT INTO armor_assets VALUES (?,?,?)", (8000001, 1, 0))
+        base.conn.commit()
+        add_gear_item(ref, 1016, 83, 20)
+        ref.conn.commit()
+        _, rows, _ = build_backport(base, ref, [1016])
+        new_ids = sorted(row["id"] for row in rows["armor_assets"])
+        self.assertTrue(new_ids)
+        self.assertLess(new_ids[0], 8000000)
+        self.assertNotEqual(new_ids[0], 8_000_002)
+
+    def test_identical_look_chain_is_reused_without_duplicate_rows(self):
+        base, ref = gear_base(), gear_ref()
+        base.conn.executescript(
+            """
+            INSERT INTO armor_assets VALUES (7, 1, 0);
+            INSERT INTO item_assets VALUES (70, 'objects/characters/test/shared.cdf');
+            INSERT INTO item_armor_assets VALUES (700, 7, 70);
+            """
+        )
+        base.conn.commit()
+        ref.conn.executescript(
+            """
+            INSERT INTO armor_assets VALUES (7, 1, 0);
+            INSERT INTO item_assets VALUES (71, 'objects/characters/test/shared.cdf');
+            INSERT INTO item_armor_assets VALUES (701, 7, 71);
+            """
+        )
+        ref.conn.execute(
+            "INSERT INTO items VALUES (?,?,?,?,?)", (1015, "shared", 83, 20, 0)
+        )
+        ref.conn.execute(
+            "INSERT INTO item_armors VALUES (?,?,?,?,?,?,?,?)",
+            (1015, 1015, 1, 1, 0, 7, 0, 0),
+        )
+        ref.conn.commit()
+        _, rows, report = build_backport(base, ref, [1015])
+        self.assertNotIn("armor_assets", rows)
+        self.assertNotIn("item_armor_assets", rows)
+        self.assertEqual(rows["item_armors"][0]["asset_id"], 7)
+        self.assertEqual(
+            report["look_borrows"]["armor_assets"]["reused_ids"][0]["id"], 7
+        )
+
+    def test_orphan_1_2_class_row_is_replaced_not_duplicated(self):
+        base, ref = gear_base(), gear_ref()
+        base.conn.execute(
+            "INSERT INTO item_armors VALUES (?,?,?,?,?,?,?,?)",
+            (1100, 1017, 0, 0, 0, 0, 0, 0),
+        )
+        base.conn.commit()
+        ref.conn.execute(
+            "INSERT INTO items VALUES (?,?,?,?,?)", (1017, "orphan", 83, 20, 0)
+        )
+        ref.conn.execute(
+            "INSERT INTO armor_assets VALUES (?,?,?)", (1100, 1, 0)
+        )
+        for index, path in enumerate(gear_paths(1017)):
+            ref.conn.execute(
+                "INSERT INTO item_assets VALUES (?,?)", (1017 * 100 + index, path)
+            )
+            ref.conn.execute(
+                "INSERT INTO item_armor_assets VALUES (?,?,?)",
+                (1017 * 1000 + index, 1100, 1017 * 100 + index),
+            )
+        ref.conn.execute(
+            "INSERT INTO item_armors VALUES (?,?,?,?,?,?,?,?)",
+            (1100, 1017, 1, 1, 0, 1100, 0, 0),
+        )
+        ref.conn.commit()
+        _, rows, report = build_backport(base, ref, [1017])
+        self.assertNotIn("item_armors", rows)
+        self.assertEqual(report["replaced_rows"], {"item_armors": 1})
+        replacement = report["_replacements"]["item_armors"][0]
+        self.assertEqual(replacement["id"], 1100)
+        self.assertEqual(replacement["item_id"], 1017)
+        self.assertNotEqual(replacement["asset_id"], 1100)
+        sql = render_patch(
+            rows,
+            "b",
+            "r",
+            "cmd",
+            "s1",
+            "s2",
+            replacements=report["_replacements"],
+        )
+        self.assertIn('UPDATE "item_armors"', sql)
+
+    def test_guarded_inserts_make_the_patch_a_no_op(self):
+        base, ref = gear_base(), gear_ref()
+        _, rows, report = build_backport(base, ref, [1001, 1002])
+        sql = render_patch(
+            rows,
+            "b",
+            "r",
+            "cmd",
+            "s1",
+            "s2",
+            replacements=report["_replacements"],
+        )
+        self.assertIn("WHERE NOT EXISTS", sql)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "base.sqlite3")
+            base.conn.commit()
+            target = sqlite3.connect(path)
+            base.conn.backup(target)
+            target.close()
+            conn = sqlite3.connect(path)
+            try:
+                conn.executescript(sql)
+                first = {
+                    table: conn.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone()[0]
+                    for table in ("items", "item_armors", "item_assets")
+                }
+                conn.executescript(sql)
+                second = {
+                    table: conn.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone()[0]
+                    for table in ("items", "item_armors", "item_assets")
+                }
+            finally:
+                conn.close()
+            self.assertEqual(first, second)
 
 
 if __name__ == "__main__":
