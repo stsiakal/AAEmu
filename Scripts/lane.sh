@@ -31,6 +31,7 @@ JOBS=${AAEMU_LANE_JOBS:-4}                          # cargo jobs per lane (RAM, 
 MYSQL_BIN=${AAEMU_MYSQL_BIN:-/c/Program Files/MySQL/MySQL Server 8.0/bin}
 MYSQL_PORT=${AAEMU_MYSQL_PORT:-3317}                # private instance; NEVER the user's 3306
 PORT_PREFIXES=(24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39)  # 21-23 belong to older stacks
+NEW_RESERVED=""                                     # port block held by a `new` in progress
 
 REPO=$(cd "$(dirname "$0")/.." && pwd)
 MYSQL=("$MYSQL_BIN/mysql.exe" -h127.0.0.1 -P"$MYSQL_PORT" -uroot)
@@ -75,6 +76,29 @@ clients_on() {
   powershell -NoProfile -Command "Get-CimInstance Win32_Process -Filter \"Name='archeage.exe'\" | Where-Object { \$_.CommandLine -match '-auth_port $1( |$)' } | ForEach-Object { '{0} archeage' -f \$_.ProcessId }" 2>/dev/null | tr -d '\r'
 }
 port_free() { ! netstat -ano 2>/dev/null | grep LISTENING | grep -q ":$1 "; }
+# A block is taken while a lane registry entry names it (CRLF-safe) or a `new` holds its
+# reservation; the reservation is the atomic token two sessions race for.
+prefix_used() {
+  local p=$1 f
+  [ -d "$LANES/.port-$p" ] && return 0
+  for f in "$LANES"/*.env; do
+    [ -f "$f" ] || continue
+    tr -d '\r' < "$f" | grep -qx "PORT_PREFIX=$p" && return 0
+  done
+  return 1
+}
+# First free block, atomically reserved as $LANES/.port-<prefix> and left in NEW_RESERVED.
+pick_prefix() {
+  local p
+  for p in "${PORT_PREFIXES[@]}"; do
+    prefix_used "$p" && continue
+    port_free "${p}237" && port_free "${p}239" && port_free "${p}234" || continue
+    mkdir "$LANES/.port-$p" 2>/dev/null || continue
+    NEW_RESERVED=$p
+    return 0
+  done
+  return 1
+}
 base_checkout() { # base_checkout <base>: the worktree that has the base branch checked out
   git -C "$REPO" worktree list --porcelain | awk -v b="refs/heads/$1" '/^worktree /{w=substr($0,10)} $0=="branch " b {print w}'
 }
@@ -116,14 +140,10 @@ cmd_new() {
   [ -e "$wt" ] && die "$wt already exists"
   [ -e "$target" ] && die "$target already exists (Scripts/lane.sh gc)"
   mkdir -p "$LANES"
-
-  local prefix=""
-  for p in "${PORT_PREFIXES[@]}"; do
-    grep -qs "^PORT_PREFIX=$p$" "$LANES"/*.env && continue
-    port_free "${p}237" && port_free "${p}239" && port_free "${p}234" || continue
-    prefix=$p; break
-  done
-  [ -n "$prefix" ] || die "no free port block (24xxx-39xxx); finish old lanes first"
+  NEW_RESERVED=""
+  trap '[ -z "$NEW_RESERVED" ] || rmdir "$LANES/.port-$NEW_RESERVED" 2>/dev/null || true' EXIT
+  pick_prefix || die "no free port block (24xxx-39xxx); finish old lanes first"
+  local prefix=$NEW_RESERVED
 
   pull_base "$base"
   git -C "$REPO" worktree add -q "$wt" -b "$branch" "$base"
@@ -158,6 +178,8 @@ DB_LOGIN=lane_${db}_login
 CREATED=$(date +%Y-%m-%dT%H:%M:%S)
 CHECKED=
 EOF
+  rmdir "$LANES/.port-$prefix" 2>/dev/null || true
+  NEW_RESERVED=""
   echo "lane '$name' ready"
   cmd_info "$name"
 }
@@ -262,6 +284,7 @@ cmd_done() {
   if [ $keep_branch = 0 ]; then git -C "$REPO" branch -D "$BRANCH" >/dev/null 2>&1 || true
   else echo "kept branch $BRANCH"; fi
   rm -f "$(reg "$n")"
+  rmdir "$LANES/.port-${PORT_PREFIX%$'\r'}" 2>/dev/null || true
   [ -d "$WT" ] && echo "note: $WT is still open in some process (a shell's cwd?); gc removes the empty folder later"
   echo "lane $n removed (worktree, target dir, runtime dir, databases$( [ $keep_branch = 1 ] || echo ', branch'))"
 }
@@ -292,6 +315,13 @@ cmd_gc() {
     found=1; echo "  $(du -sh "$d" 2>/dev/null | cut -f1)	$d"
     [ $apply = 0 ] || rm -rf "$d"
   done
+  # Port reservations left by `new` runs killed before they wrote their registry entry.
+  for d in "$LANES"/.port-*/; do
+    [ -d "$d" ] || continue; d=${d%/}
+    young "$d" && continue
+    found=1; echo "  stale port reservation ${d##*/} (no new in progress)"
+    [ $apply = 0 ] || rmdir "$d" 2>/dev/null || true
+  done
   for f in "$LANES"/*.env; do
     [ -f "$f" ] || continue
     [ -d "$(grep '^WT=' "$f" | cut -d= -f2-)" ] || { found=1; echo "  stale lane entry $(basename "$f" .env) (worktree gone): Scripts/lane.sh done $(basename "$f" .env) --force"; }
@@ -311,9 +341,12 @@ cmd_gc() {
   [ $apply = 1 ] || echo "(dry run: add --apply to delete the candidates above)"
 }
 
-case "${1:-}" in
-  new) shift; cmd_new "$@" ;; list) cmd_list ;; info) shift; cmd_info "${1:-}" ;;
-  sync) shift; cmd_sync "${1:-}" ;; check) shift; cmd_check "${1:-}" ;; land) shift; cmd_land "${1:-}" ;;
-  done) shift; cmd_done "$@" ;; gc) shift; cmd_gc "$@" ;;
-  *) sed -n '2,15p' "$0"; exit 1 ;;
-esac
+# Scripts/tests/lane-port-race.sh sources the functions; run the CLI only when executed.
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then
+  case "${1:-}" in
+    new) shift; cmd_new "$@" ;; list) cmd_list ;; info) shift; cmd_info "${1:-}" ;;
+    sync) shift; cmd_sync "${1:-}" ;; check) shift; cmd_check "${1:-}" ;; land) shift; cmd_land "${1:-}" ;;
+    done) shift; cmd_done "$@" ;; gc) shift; cmd_gc "$@" ;;
+    *) sed -n '2,15p' "$0"; exit 1 ;;
+  esac
+fi
