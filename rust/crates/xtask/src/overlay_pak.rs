@@ -883,7 +883,9 @@ fn build(options: &Options) -> Result<BuildSummary> {
                 continue;
             };
             status = "changed";
-            present_in = Some(exclude.path.display().to_string());
+            if present_in.is_none() {
+                present_in = Some(exclude.path.display().to_string());
+            }
             let other = exclude.pak.read_file(&exclude_name)?;
             if other.as_deref() == Some(data.as_slice()) {
                 status = "identical";
