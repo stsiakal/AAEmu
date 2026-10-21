@@ -1,6 +1,11 @@
 //! `cargo xtask overlay-pak`: build a small overlay pak for the Bevy client (and server client-file
 //! sources) from later-version `game_pak` archives.
 //!
+//! `--exclude-present-in` skips files identical to a stock pak; `--new-only` skips every file the
+//! stock pak already has, so the overlay only adds paths and cannot change existing art.
+//! `--exclude-path` drops matching paths from the list and the reference closure (e.g. the
+//! Dwarf/Warborn race trees a four-race batch does not carry).
+//!
 //! The overlay is written as a standard TypeA (`WIBO`) pak with the XLGames key, the same variant
 //! the 1.2 `game_pak` uses and what [`aaemu_commons::aapak::AAPak::create`] writes by default.
 
@@ -24,7 +29,9 @@ struct Options {
     list: PathBuf,
     closure: bool,
     closure_anim: bool,
+    new_only: bool,
     excludes: Vec<PathBuf>,
+    exclude_paths: Vec<String>,
     out: PathBuf,
     report: Option<PathBuf>,
 }
@@ -33,11 +40,13 @@ impl Options {
     fn parse(args: &[String]) -> Result<Self> {
         let mut sources = Vec::new();
         let mut excludes = Vec::new();
+        let mut exclude_paths = Vec::new();
         let mut list = None;
         let mut out = None;
         let mut report = None;
         let mut closure = false;
         let mut closure_anim = false;
+        let mut new_only = false;
         let mut it = args.iter();
         while let Some(arg) = it.next() {
             let mut value = |name: &str| -> Result<PathBuf> {
@@ -49,6 +58,12 @@ impl Options {
             match arg.as_str() {
                 "--source" => sources.push(value("--source")?),
                 "--exclude-present-in" => excludes.push(value("--exclude-present-in")?),
+                "--exclude-path" => exclude_paths.push(
+                    value("--exclude-path")?
+                        .to_string_lossy()
+                        .replace('\\', "/")
+                        .to_ascii_lowercase(),
+                ),
                 "--list" => list = Some(value("--list")?),
                 "--out" => out = Some(value("--out")?),
                 "--report" => report = Some(value("--report")?),
@@ -57,6 +72,7 @@ impl Options {
                     closure = true;
                     closure_anim = true;
                 }
+                "--new-only" => new_only = true,
                 other => bail!("unknown option `{other}`"),
             }
         }
@@ -77,7 +93,9 @@ impl Options {
             list,
             closure,
             closure_anim,
+            new_only,
             excludes,
+            exclude_paths,
             out,
             report,
         })
@@ -111,6 +129,18 @@ pub fn run(args: &[String]) -> Result<()> {
         "Included: {} new, {} changed; skipped {} identical",
         summary.new, summary.changed, summary.skipped_identical
     );
+    if summary.changed_skipped > 0 {
+        println!(
+            "Skipped {} files that exist in an exclude pak with different bytes (--new-only)",
+            summary.changed_skipped
+        );
+    }
+    if summary.path_excluded > 0 {
+        println!(
+            "Skipped {} files matching --exclude-path",
+            summary.path_excluded
+        );
+    }
     if !summary.missing.is_empty() {
         println!(
             "Missing/ambiguous references: {} (written to the report)",
@@ -764,8 +794,20 @@ struct BuildSummary {
     new: usize,
     changed: usize,
     skipped_identical: usize,
+    changed_skipped: usize,
+    path_excluded: usize,
     missing: Vec<MissingRef>,
     report: Value,
+}
+
+/// A path the batch must not carry (e.g. the Dwarf/Warborn race trees); matched
+/// case-insensitively as a substring against the pak path.
+fn path_excluded(options: &Options, name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    options
+        .exclude_paths
+        .iter()
+        .any(|excluded| lower.contains(excluded))
 }
 
 fn build(options: &Options) -> Result<BuildSummary> {
@@ -783,6 +825,7 @@ fn build(options: &Options) -> Result<BuildSummary> {
     let mut processed = HashSet::new();
     let mut missing = Vec::new();
     let mut warnings = Vec::new();
+    let mut path_excluded_files = Vec::new();
 
     for raw in listed {
         let (source, name) = sources
@@ -793,6 +836,10 @@ fn build(options: &Options) -> Result<BuildSummary> {
                     options.sources.len()
                 )
             })?;
+        if path_excluded(options, &name) {
+            path_excluded_files.push(json!({"name": name, "origin": "list"}));
+            continue;
+        }
         let key = name.to_ascii_lowercase();
         if selected.contains_key(&key) {
             continue;
@@ -832,6 +879,13 @@ fn build(options: &Options) -> Result<BuildSummary> {
             warnings.extend(collected.warnings);
             missing.extend(collected.missing);
             for resolved in collected.resolved {
+                if path_excluded(options, &resolved.name) {
+                    path_excluded_files.push(json!({
+                        "name": resolved.name,
+                        "origin": item.name,
+                    }));
+                    continue;
+                }
                 let key = resolved.name.to_ascii_lowercase();
                 if selected.contains_key(&key) {
                     continue;
@@ -868,6 +922,7 @@ fn build(options: &Options) -> Result<BuildSummary> {
 
     let mut files_report = Vec::new();
     let mut skipped = Vec::new();
+    let mut changed_skipped = Vec::new();
     let mut written = 0usize;
     let mut written_bytes = 0u64;
     let mut new = 0usize;
@@ -898,6 +953,16 @@ fn build(options: &Options) -> Result<BuildSummary> {
                 "size": size,
                 "source": sources.paks[selected.source].path.display().to_string(),
                 "present_in": present_in,
+            }));
+            continue;
+        }
+        if status == "changed" && options.new_only {
+            changed_skipped.push(json!({
+                "name": selected.name,
+                "size": size,
+                "source": sources.paks[selected.source].path.display().to_string(),
+                "present_in": present_in,
+                "added_by": selected.added_by,
             }));
             continue;
         }
@@ -946,6 +1011,8 @@ fn build(options: &Options) -> Result<BuildSummary> {
             "included_new": new,
             "included_changed": changed,
             "identical_skipped": skipped.len(),
+            "changed_present_in_1_2_skipped": changed_skipped.len(),
+            "path_excluded_skipped": path_excluded_files.len(),
             "missing_references": missing.len(),
         },
         "sources": sources.paks.iter().map(|pak| json!({
@@ -960,6 +1027,8 @@ fn build(options: &Options) -> Result<BuildSummary> {
         })).collect::<Vec<_>>(),
         "files": files_report,
         "skipped": skipped,
+        "changed_present_in_1_2": changed_skipped,
+        "path_excluded": path_excluded_files,
         "missing_references": missing.iter().map(|item| json!({
             "referenced_by": item.referenced_by,
             "reference": item.reference,
@@ -974,6 +1043,8 @@ fn build(options: &Options) -> Result<BuildSummary> {
         new,
         changed,
         skipped_identical: skipped.len(),
+        changed_skipped: changed_skipped.len(),
+        path_excluded: path_excluded_files.len(),
         missing,
         report,
     })
@@ -1062,7 +1133,9 @@ mod tests {
             list,
             closure,
             closure_anim,
+            new_only: false,
             excludes: Vec::new(),
+            exclude_paths: Vec::new(),
             out,
             report: None,
         }
@@ -1318,6 +1391,76 @@ mod tests {
             pak.read_file("game/a/changed.dds").unwrap().unwrap(),
             b"new-data"
         );
+    }
+
+    #[test]
+    fn new_only_skips_changed_files() {
+        let dir = TempDir::new("new-only");
+        let source = dir.path().join("source.pak");
+        let exclude = dir.path().join("stock.pak");
+        write_pak(
+            &source,
+            &[
+                ("game/a/same.dds", b"same"),
+                ("game/a/changed.dds", b"new-data"),
+                ("game/a/new.dds", b"new"),
+            ],
+        );
+        write_pak(
+            &exclude,
+            &[("game/a/same.dds", b"same"), ("game/a/changed.dds", b"old")],
+        );
+        let list = list_file(
+            &dir,
+            &["game/a/same.dds", "game/a/changed.dds", "game/a/new.dds"],
+        );
+        let out = dir.path().join("overlay.pak");
+        let mut options = options(vec![source], list, out.clone(), false, false);
+        options.excludes = vec![exclude];
+        options.new_only = true;
+        let summary = build(&options).unwrap();
+        assert_eq!(summary.written, 1);
+        assert_eq!(summary.new, 1);
+        assert_eq!(summary.changed, 0);
+        assert_eq!(summary.skipped_identical, 1);
+        assert_eq!(summary.changed_skipped, 1);
+        assert_eq!(overlay_names(&out), vec!["game/a/new.dds"]);
+        assert_eq!(
+            summary.report["summary"]["changed_present_in_1_2_skipped"],
+            1
+        );
+        assert_eq!(
+            summary.report["changed_present_in_1_2"][0]["name"],
+            "game/a/changed.dds"
+        );
+    }
+
+    #[test]
+    fn exclude_path_filters_closure_files() {
+        let dir = TempDir::new("exclude-path");
+        let source = dir.path().join("source.pak");
+        write_pak(
+            &source,
+            &[
+                (
+                    "game/objects/a.cdf",
+                    br#"<CharacterDefinition>
+                        <Model File="objects/characters/warborn/male/x.chr"/>
+                    </CharacterDefinition>"#,
+                ),
+                ("game/objects/characters/warborn/male/x.chr", b"x"),
+                ("game/objects/characters/warborn/male/x.mtl", b"<Material/>"),
+            ],
+        );
+        let list = list_file(&dir, &["game/objects/a.cdf"]);
+        let out = dir.path().join("overlay.pak");
+        let mut options = options(vec![source], list, out.clone(), true, false);
+        options.exclude_paths = vec!["/characters/warborn/".into()];
+        let summary = build(&options).unwrap();
+        assert_eq!(overlay_names(&out), vec!["game/objects/a.cdf"]);
+        assert_eq!(summary.written, 1);
+        assert_eq!(summary.path_excluded, 1);
+        assert_eq!(summary.report["path_excluded"].as_array().unwrap().len(), 1);
     }
 
     #[test]
