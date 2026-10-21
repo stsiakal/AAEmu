@@ -97,6 +97,15 @@ Confirmed in code unless marked SUSPECT.
   overlapping background saves of one account failed with `Duplicate entry` and could store an
   older snapshot; saves now run one at a time under the account lock and each writes the newest
   cache.
+- **Enter world** (fixed in `5c2c376eb`): the `WorldManager.TryAddCharacter` result is checked and
+  driven by a per-character reservation taken before the select's MySQL load and released only
+  after the departure save finished, so two concurrent enters of one character leave exactly one
+  player and a second login of the account is refused atomically at `X2EnterWorld` (the existing
+  `GLPlayerEnter` result 1 / `ACEnterWorldDenied` path). Refusals log one WARN with the character
+  and the reason.
+- **Disconnect cleanup** (fixed in `5c2c376eb`): the game-connection task runs `on_disconnect`
+  under an unwind guard that still releases the session reservation, removes a half-left world
+  entry and frees the account when the cleanup panics.
 - **Death transition** (reproduced, fixed in `5828e35d6`): two concurrent lethal hits (a skill
   and a DoT tick, fall / drowning damage, `GM /kill`, PvP, an NPC death) could both run the death
   path after passing the unlocked HP check: two `SCUnitDeathPacket`s, double exp / durability
@@ -110,8 +119,6 @@ Static revalidation of the remaining rows.
 
 | Item | Severity | What is wrong | Where | Fix direction |
 | --- | --- | --- | --- | --- |
-| Enter world | MED | Ignores `try_add_character`; no per-account atomic reservation | `world/session.rs:369` | Check the result; reserve per account |
-| Disconnect cleanup | MED | No unwind guard if cleanup panics | `net/listener.rs:95` | Add a guard |
 | ID loader | MED | Fails open on a DB error | `managers/id.rs:244` | Fail startup |
 | Summon effects | MED | Reference missing event spawner ids (data gap) | summon effect data | Fix the data or the loader |
 | Doodad funcs | LOW | `EvidenceItemLoot`, `AreaTrigger` and `Bubble` only log | `systems/npcs/doodad/funcs/mod.rs:165-170` | Implement per retail |
