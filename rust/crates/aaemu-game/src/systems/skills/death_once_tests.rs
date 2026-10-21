@@ -173,7 +173,6 @@ async fn concurrent_lethal_hits_kill_a_player_once() {
             c.unit.mp = 50;
             c.experience = 20_500;
             c.recoverable_exp = 0;
-            c.skill_char.resurrect_offer = false;
         }
         // A restored HP pool starts a new life (the resurrection / repair path).
         crate::systems::skills::combat::post_update_current_hp(

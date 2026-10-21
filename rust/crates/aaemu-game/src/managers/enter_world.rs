@@ -75,8 +75,7 @@ impl EnterWorldManager {
 
     /// Atomically reserves `character_id` for `connection_id`. `Err(owner)` means another
     /// connection is entering or playing the character; `Ok(false)` that this connection already
-    /// owns it (the select reserves before the load, `enter_world` once more before the world
-    /// registration), `Ok(true)` that the reservation was just taken.
+    /// owns it, `Ok(true)` that the reservation was just taken.
     pub fn reserve_character(&self, character_id: u32, connection_id: u32) -> Result<bool, u32> {
         let mut characters = self
             .characters
@@ -195,7 +194,8 @@ mod tests {
         assert_eq!(m.reserve_character(50, 1), Ok(true));
         assert_eq!(m.reserve_character(51, 1), Ok(true));
         assert_eq!(m.reserve_character(52, 2), Ok(true));
-        // Detached bots share connection id 0: only the dying connection's entries go.
+        // Connection id 0 is not a live client session (the detached bots share it): only the
+        // dying connection's entries go.
         assert_eq!(m.reserve_character(53, 0), Ok(true));
         let mut released = m.release_connection(1);
         released.sort_unstable();

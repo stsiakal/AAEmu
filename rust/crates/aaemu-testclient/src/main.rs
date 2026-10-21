@@ -78,6 +78,26 @@ struct Args {
 
 impl Args {
     fn parse() -> anyhow::Result<Self> {
+        const SWITCHES: &[&str] = &[
+            "all",
+            "all-ok",
+            "force-blocked",
+            "keep-npcs",
+            "keep-products",
+            "list-bots",
+            "new-character",
+            "no-force",
+            "pak-info",
+            "plan-route",
+            "player",
+            "profile",
+            "resume",
+            "strict-order",
+            "summary",
+            "temple-resurrect",
+            "trace",
+            "with-prereqs",
+        ];
         let argv: Vec<String> = std::env::args().skip(1).collect();
         let cmd = argv.first().cloned().unwrap_or_else(|| "help".into());
         let mut flags: HashMap<String, Vec<String>> = HashMap::new();
@@ -87,14 +107,16 @@ impl Args {
             let Some(k) = a.strip_prefix("--") else {
                 bail!("unexpected argument '{a}'");
             };
-            i += 1;
-            // A flag followed by another flag (or the end) is a boolean switch (`--all-ok`).
-            let v = if i < argv.len() && !argv[i].starts_with("--") {
-                let v = argv[i].clone();
+            // Boolean switches take no value; every other flag needs one.
+            let v = if SWITCHES.contains(&k) {
                 i += 1;
-                v
-            } else {
                 String::new()
+            } else {
+                let v = argv
+                    .get(i + 1)
+                    .with_context(|| format!("--{k} needs a value"))?;
+                i += 2;
+                v.clone()
             };
             flags.entry(k.to_string()).or_default().push(v);
         }

@@ -6,7 +6,8 @@
 
 ## Overview
 
-`Scripts/verify.sh` checks server fixes end to end on a live lane stack. A suite is one
+`Scripts/verify.sh` checks server fixes end to end on a live lane stack. It is optional tooling,
+not part of `cargo xtask ci`. A suite is one
 `rust/verify/*.vtest` file: it declares a few bots, gives each bot a script section, and runs the
 sections concurrently. Bots log in through the real login and game protocols, so a suite can
 assert server-to-client packets, game-server log lines and game-database rows.
@@ -57,12 +58,11 @@ bot logwatch
 
 # a section per bot; its lines are script commands (see below)
 [sender]
-waitpeer 120 ${watcher}
+sync start 3
 pump 2
-rawcs 0ad SELF00000001000000
 
 [watcher]
-waitpeer 120 ${sender}
+sync start 3
 expectpkt SCEmotionExpressedPacket 15
 ```
 
@@ -75,8 +75,8 @@ Rules:
 - The account and character name is `v` + the first eight alphanumerics of the file stem + the
   bot id, for example `vguildgualeader`. It stays within the server's 18-character
   character-name limit. Keep bot ids short.
-- All bots are started at the same time and meet at the character spawn point. Use `waitpeer`
-  to wait until another bot is in sight, and `sync` for later rendezvous.
+- All bots are started at the same time and meet at the character spawn point. Use `sync` to
+  rendezvous before an action another bot must observe.
 - Bots run the normal login, character list/create, select and spawn flow first; their script
   starts in the world.
 
@@ -95,11 +95,11 @@ verification commands are:
 | `lootexpect took\|failed [npc obj]` | Loot the last killed NPC and fail unless `SCLootItemTook` (took) / `SCLootItemFailed` (failed) arrives |
 | `rezexpect inplace\|temple ok\|refused` | Send `CSResurrectCharacter` and fail unless `SCCharacterResurrected` for the bot's own unit does (ok) / does not (refused) arrive |
 
-Useful companions: `rawcs <opcode> <body hex>` sends an arbitrary client packet; `SELF` and
-`PEER` in the body stand for the bot's own and the first other player's object id. `waitpeer
-[secs] [name]` waits for another player, `await <Event> [secs]` waits for a decoded social event
-(`TeamJoined`, `GuildInvite`, ...), and `greply <faction id> <0|1>` answers a guild
-invitation without waiting for one.
+Useful companions: `waitpeer [secs] [name]` waits until another player is in sight, `await
+<Event> [secs]` waits for a party / guild event (`TeamJoined`, `GuildInvite`, ...), `rawcs
+<opcode> <body hex>` sends an arbitrary client packet (`SELF` and `PEER` in the body stand for
+the bot's own and the first other player's object id), and `greply <faction id> <0|1>` answers
+a guild invitation without waiting for one.
 
 A failed expectation prints a `FAIL` line like
 
@@ -118,8 +118,8 @@ starts, start it before the action that should log (usually from another bot, af
    previous run could have left behind. `Scripts/verify.sh` clears guild rows for suite accounts
    but nothing else.
 1. Run `Scripts/verify.sh --only <name>`, then `Scripts/verify.sh` before `lane.sh check`.
-1. Add the suite in the same change as the fix it guards against, so the regression stays
-   covered.
+1. Consider adding the suite in the same change as the fix it guards against, so the regression
+   stays covered.
 
 The seed suites:
 

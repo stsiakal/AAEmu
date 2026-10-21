@@ -1144,18 +1144,6 @@ is no longer mirrored (see "Known deviations", dead NPC returned and healed).
   by the `Resurrection` special effect and the free resurrection below
   `minimum_exp_loss_level`). The C# never checked, so any dead client could revive itself in
   place without an offer.
-* systems::skills (once-only death transition, 2026-10-21): the C# `ReduceCurrentHp` checked
-  `Hp <= 0`, applied the damage and called `DoDie` without a lock, so two concurrent lethal
-  hits (a skill hit and a DoT tick, fall / drowning damage, `GM /kill`, PvP, an NPC death) could
-  both run the death path: two `SCUnitDeathPacket`s, double exp / durability loss, two loot
-  generations, double quest kill credit and two respawn timers. Rust adds the Rust-only
-  `UnitBase::death_processed` claim, checked and set atomically under the unit's data lock
-  (`skills::combat::try_claim_death`); `ReduceCurrentHp` re-checks HP under the same lock that
-  applies the damage, `PostUpdateCurrentHp` claims before its kill events, and a direct `DoDie`
-  on an already-claimed life is refused with a WARN. The claim is cleared when a living unit is
-  damaged again or HP is restored (resurrection, repair, load), so a repaired tower or a
-  resurrected character still dies once per life. Tests:
-  `systems::skills::death_once_tests` (two racing hits on a player / an NPC, looped).
 * systems::skills: `Character.DoDie` is complete (exp / durability loss, escalating respawn timer,
   PvP honor / assists / kill counts, War-zone honor loss, `DropTradePackToFloor`). The PvP
   damage / heal histories are lists of (character id, unix ms) in `skill_char`.
@@ -1232,7 +1220,7 @@ is no longer mirrored (see "Known deviations", dead NPC returned and healed).
 * systems::instances / systems::social (RPA-09 temporary factions): duel Red / Blue team and battlefield corps factions are temporary. `UnitBase::faction_temporary` marks them, `SCUnitFactionChangedPacket.temp` is `true`, and they skip `Character.SetFaction`'s housing update, guild kick and party removal. `db_character::persisted_faction` writes the origin faction, so an autosave, logout or crash during a duel / battlefield never stores the temporary faction; the faction is also restored on duel end, battlefield leave and departure/save (`world::session::save_and_remove_from_world`). Tested by `duel::tests::temporary_team_factions_keep_guild_and_restore`, `disconnect_during_a_duel_restores_the_origin_faction`, `instances::flow_tests::battlefield_entered_requires_actual_instance_and_subscribes_kills_once` and `db_character::tests::a_temporary_faction_is_never_persisted`.
 * systems::instances (tower defense): the C# command only sent packets to its caller and hard-coded zone group 5. The Rust runtime reserves controller positions from the existing NPC JSON by compact spawner membership; these controllers no longer spawn permanently. Manual controls affect the caller's instance/group. Automatic schedules are disabled by default and validate every selected event at startup. Orphan waves/targets no longer truncate later valid rows. Kill notifications use only `DoDie`, deduplicate the NPC handle and retain id-reuse semantics. Timers use monotonic real seconds; `tod` uses the accelerated game clock and day intervals count from scheduler startup. Spawn effects carry explicit event ownership for cleanup even when Unit.OwnerId is zero. Unsupported `DoodadAlmighty` targets, NPC groups without authored controller positions and reward/victory chains remain unavailable rather than being synthesized.
 * systems::instances (dungeons/mentoring): replaces the mirrored double entry-item charge and unsafe dungeon destruction below. Each character pays once per run; re-entry is free, capacity counts pending admissions, and creation obeys `World.MaxInstances` including concurrent requests. Empty owner/leader resets remove the whole run binding; destruction cancels its loader and returns occupants before removing their world. Party join grants access without inserting a player into another world's object table. Mentor eligibility is captured at boss death for nearby living party members with complementary active quests, rechecked during interactions, and bound to selected chest participants. Four explicit 1.2 quest/chest bindings are verified by a gated real-data test. Missing reward chests use the authored templates at the boss position (two metres apart for the two-chest dungeons); this placement fallback and qualification policy are emulator extensions, not claimed native-server execution parity. Authored phases grant seal items through existing inventory/quest hooks and daily persistence; Gilda is not issued directly by mentoring.
-* systems::instances (2026-10-21, `CSInstanceLoaded` re-file): the reference 1.2 C# had the same gap - `LeaveDungeonInstance` / `LeaveSystemInstance` changed the transform and sent `SCLoadInstancePacket`, but `CSInstanceLoadedPacket` only sent `SCUnitStatePacket` and the time of day, so the client's emptied world stayed bare until the next move ran `Transform.FinalizeTransform` -> `AddVisibleObject`. Rust's `worlds::instance_loaded` now leaves the old instance's region grid (keeping the stale removal of its objects) and adds the character to the arrival instance's visibility grid, which sends the units / doodads / players in view and shows the character to them at once. A later C# commit (`ef0d41982`) fixed the same gap with `Transform.FinalizeTransform()` plus `ResendVisibleObjectsToCharacter(me, clientDroppedVisibility: true)`; that unconditional repaint could resend states, so Rust only re-files when the region instance differs (a repeated `CSInstanceLoaded` or the next move sends nothing new). Tested by `instances::flow_tests::instance_return_refiles_character_and_sends_main_world_objects_without_movement`.
+* systems::instances (2026-10-21, `CSInstanceLoaded` re-file): the reference 1.2 C# had the same gap - `LeaveDungeonInstance` / `LeaveSystemInstance` changed the transform and sent `SCLoadInstancePacket`, but `CSInstanceLoadedPacket` only sent `SCUnitStatePacket` and the time of day, so the client's emptied world stayed bare until the next move ran `Transform.FinalizeTransform` -> `AddVisibleObject`. Rust's `worlds::instance_loaded` now leaves the old instance's region grid (keeping the stale removal of its objects) and adds the character to the arrival instance's visibility grid, which sends the units / doodads / players in view and shows the character to them at once. A later C# commit (`ef0d41982`) fixed the same gap with `Transform.FinalizeTransform()` plus `ResendVisibleObjectsToCharacter(me, clientDroppedVisibility: true)`; that unconditional repaint could resend states, so Rust re-files through `add_visible_object`, which does nothing when the character is already filed in that region (a repeated `CSInstanceLoaded` or the next move sends nothing new). Tested by `instances::flow_tests::instance_return_refiles_character_and_sends_main_world_objects_without_movement`.
 
 * systems::vehicles: supersedes the phase-2 `CSMoveUnit` and `LeaveWorldTask` bullets above:
   slave / vehicle / mate moves, riding, standing on objects, the mate / slave logout handling
@@ -1306,6 +1294,18 @@ is no longer mirrored (see "Known deviations", dead NPC returned and healed).
   `server.ids.object` in tests that spawn many objects.
 * systems::services: the Discord bot runs in the background (the C# `StartAsync` never returns
   when a token is set, blocking the host start).
+* systems::skills (once-only death transition, 2026-10-21): the C# `ReduceCurrentHp` checked
+  `Hp <= 0`, applied the damage and called `DoDie` without a lock, so two concurrent lethal
+  hits (a skill hit and a DoT tick, fall / drowning damage, `GM /kill`, PvP, an NPC death) could
+  both run the death path: two `SCUnitDeathPacket`s, double exp / durability loss, two loot
+  generations, double quest kill credit and two respawn timers. Rust adds the Rust-only
+  `UnitBase::death_processed` claim, checked and set atomically under the unit's data lock
+  (`skills::combat::try_claim_death`); `ReduceCurrentHp` re-checks HP under the same lock that
+  applies the damage, `PostUpdateCurrentHp` claims before its kill events, and a direct `DoDie`
+  on an already-claimed life is refused with a WARN. The claim is cleared when a living unit is
+  damaged again or HP is restored (resurrection, repair, load), so a repaired tower or a
+  resurrected character still dies once per life. Tests:
+  `systems::skills::death_once_tests` (two racing hits on a player / an NPC, looped).
 * systems::ai: calls into an NPC's AI from outside its tick (skills, aggro, npcs hooks) are queued and run right after the current AI step instead of re-entering it (`manager::post`); the AI tick runs on a blocking thread every ~100 ms; behaviour instances are kept per AI and accessed by kind. `UpdateAggroHelp` reaching a helper NPC without an AI logs and continues (the C# throws a `NullReferenceException` that cuts the whole behaviour tick short). `Npc.OnDamageReceived` on an AI-less NPC does nothing (C# NRE).
 * systems::ai: deletion marks an AI removed without waiting for its state mutex; the current holder detaches its owner and discards queued callbacks. This permits an NPC skill to delete its own caster and avoids the spawn-lock / AI-lock inversion during despawn. The global tick skips an AI whose state mutex is busy and retries on the next tick, so one external AI call cannot freeze movement and combat for every NPC.
 * systems::ai physics: Jitter's narrow phase (`MprEpa`) and contact solver are replaced by a box-vs-heightmap-triangle SAT with one contact per triangle and sequential impulses (Jitter's default friction / bias); the integration itself is exact. One physics world per instance is created with the first ship (C# starts a thread per instance at boot). Add / remove / helm / driver changes go through the pending queue (next tick); hull damage, movement packets and transform writes are applied after the tick; readers use per-tick snapshots. Water is kept per world template and a cell's `object.dat` is ingested when the physics or a water query sees the cell loaded. A height lookup error counts as height 0 (the C# exception skips the rest of that ship's tick). A ship whose game object is gone is skipped. Ship–ship harpoon tow resolves an explicit hook basis among the ships simulated this tick.
@@ -1917,7 +1917,7 @@ feature-audit/deviation note before porting one as-is.
 * systems::quests: `QuestActObjZoneMonsterHunt` (non-score) needs `count > Count` but the
   objective is capped at `Count`: never completes.
 * `systems::npcs`: the "spawn all" schedule check is inverted; `DoRandomSpawn` leaks an obj id and spawns twice; a doodad despawn may release its obj id twice; gimmick spawn rotations are not converted from degrees; scheduled doodad spawns stack cron tasks; the player-in-radius check scans every player; NPCs are not despawned when players leave.
-* `systems::npcs`: dated game schedules compare `StartTime` / `EndTime` (usually 0) instead of the start / end hours (a one-day event counts as ended at 00:00); the cron builder tests the captured day of week instead of its parameter, and undated schedules produce day / month 0 (rejected by the cron parser); `VendorExist` reads the `id` column; deleting a portal sent no packet (now `SCPortalDeleted`, see the portal gaps entry at the end); `NotifySubZone` re-sends the portal book once per recall portal of the sub zone; the exit portal's yaw is the book rotation in degrees.
+* `systems::npcs`: dated game schedules compare `StartTime` / `EndTime` (usually 0) instead of the start / end hours (a one-day event counts as ended at 00:00); the cron builder tests the captured day of week instead of its parameter, and undated schedules produce day / month 0 (rejected by the cron parser); `VendorExist` reads the `id` column; deleting a portal sends no packet; `NotifySubZone` re-sends the portal book once per recall portal of the sub zone; the exit portal's yaw is the book rotation in degrees.
 * `systems::npcs`: corrected coin double credit and failed trade-pack acquisition; `BuyFish` uses the checked economy sale. Phase operations reserve live object identity, honor interaction counts, enter functions on time-of-day changes, and cancel superseded timers. Saves/deletes use a FIFO writer drained by the save lifecycle; partial interaction counts use the doodad-interactions SQL update. Scheduled spawns recreate deleted doodads, deduplicate cron callbacks, and retain original world identity. Logic links/families route matching true/false pulses with per-object state and cycle guards; client-created wires require ownership and reach. Immediate gates are supported; delay descriptors 2/3 need reference behavior. `SpawnGimmick` creates the authored object with offsets/faction/kinematic motion; `SpawnMgmt` requires explicit authored `SpawnGroupId` membership. Prefab flow graphs are client-owned. `CheckGrowth` still runs funcs with `nextPhase = 0`; child metadata templates (e.g. `DoodadFuncBuyFishItem`) remain in the phase dictionary.
 * systems::economy: `CSWithdrawMoneyPacket` reports `ItemTaskType.WithdrawMoney` (84; the C#
   handler called `ChangeMoney` without a task type, so it defaulted to `DepositMoney`) and
@@ -2729,7 +2729,7 @@ Doc-only items:
   rename needs 0), **M23** (actability downgrade clamp): per Bevy RE notes, not re-verified and not
   changed; each needs a reproduction against the real client before a fix.
 
-## Portal gaps (2026-10-20)
+## Portal use range (2026-10-21)
 
 Oracles: the 1.2 localized texts of `compact.sqlite3` (skill 11216 `desc`: "Worldgates remain open
 for 30 seconds (or 60 seconds for characters Lv20+ in Occultism)"; `ui_texts` 1291: "Opens a
@@ -2746,15 +2746,15 @@ unit id up in the client's objects and plays an effect (`FUN_393558e0`) on it wh
 * Portal lifetime: 30 s, or 60 s when the owner's Occultism (`AbilityType.Death` = 5) level, read
   from the ability exp like the quest requirements do, is 20 or more (C# and upstream: fixed
   30 s).
-* Portal and navi teleport use range (2026-10-21): `CSUsePortal` needs the character within
-  `World.PortalUseRange` (default 5 m) of the gate NPC and `CSNaviTeleport` within the same range
-  of the navi doodad, measured like `GetDistanceTo` (2D, minus the model radii). The C#
-  `PortalManager.UsePortal` and the `CSNaviTeleport` handler checked nothing. The default covers
-  the gate placement (`open_portal_effects.distance` = 3 m; the 1.2 `ui_texts` 1291 tooltip says
-  5 m) and matches `portal::NAVI_USE_RANGE`; the 1.2 client's only interaction-range CVar,
-  `max_interaction_doodad_distance`, defaults to 2.1 m for doodads (Ghidra `proj-aa12u`,
-  `FUN_390f7b40`), so 5 m is the server's slack for movement and latency. Refusals answer
-  `SCErrorMsg(TooFarAway, 154)` and log one WARN with the character and distance.
+* `CSUsePortal` needs the character within `World.PortalUseRange` (default 5 m) of the gate NPC
+  and `CSNaviTeleport` within the same range of the navi doodad, measured like `GetDistanceTo`
+  (2D, minus the model radii). The C# `PortalManager.UsePortal` and the `CSNaviTeleport` handler
+  checked nothing. The default covers the gate placement (`open_portal_effects.distance` = 3 m;
+  the 1.2 `ui_texts` 1291 tooltip says 5 m) and matches `portal::NAVI_USE_RANGE`; the 1.2
+  client's only interaction-range CVar, `max_interaction_doodad_distance`, defaults to 2.1 m for
+  doodads (Ghidra `proj-aa12u`, `FUN_390f7b40`), so 5 m is the server's slack for movement and
+  latency. Refusals answer `SCErrorMsg(TooFarAway, 154)` and log one WARN with the character and
+  distance.
 * `CSUseTeleport` still charges the fare the client sends: every 1.2 `npcs.teleporter` row is
   false and no fare column or table exists, so there is nothing to compute the amount from.
 
@@ -2905,7 +2905,7 @@ Public Farm Manager 11545 (`ai_file_id=15`, hold position) fires command set 146
 `public_farm@182.path` starts 0.4 m from the spawner and its second point is authored 1.4 m above
 the terrain the walker follows. The NPC stayed in `FollowPathBehavior` with "0 points (1 remaining
 in queue)" and emitted a movement packet every 100 ms without advancing (the client animates
-running in place). Three mirrored C# bugs and one missing safeguard:
+running in place). Four mirrored C# bugs and one missing safeguard:
 
 * `RunCommandSetBehavior.TickCurrentAiCommand` called `Ai.LoadAiPathPoints(Ai.AiFileName, ...)`
   before assigning `AiFileName = Param2`: the first FollowPath of a set loaded nothing (the NPC
