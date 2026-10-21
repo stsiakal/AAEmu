@@ -1,41 +1,51 @@
 # area_package
 
 Builds the fork's optional later-version area packages. The first package is `sunbite-wilds`
-(Sunbite Wilds 3+4, `zone_key` 286/287): server data only, enabled with `Areas:Enabled`.
+(Sunbite Wilds 3+4, `zone_key` 286/287), enabled with `Areas:Enabled`.
 
 | Script | Purpose |
 | --- | --- |
-| `build_sunbite.py` | Reads the 1.2 / 3.0.4.2 / 10.x databases and the 10.x spawner placements, then writes the compact patches and `app/Data/Areas/sunbite-wilds/npc_spawns.json` |
-| `test_build_sunbite.py` | Unit tests for SQL escaping, id allocation, frame translation and the patch renderer |
+| `build_sunbite.py` | Reads the 3.0.4.2 client pak and DBs plus the 1.2 pak, writes the compact patches, `npc_spawns.json`, the overlay manifest and (optionally) the terrain overlay pak |
+| `client_pak.py` | Minimal read-only reader / overlay writer for the `game_pak` (AAPak type A) format |
+| `test_build_sunbite.py` | Unit tests (SQL, ids, world merge, npc_map records, pak round-trip, renderer) |
 
 ```sh
 python -I rust/tools/area_package/build_sunbite.py \
+    --pak30 "C:/Users/stsiakal/Downloads/Archeage Client v.3.0.4.2 (r336598)/game_pak" \
+    --pak12 D:/AA1.2/game_pak \
     --db12 <1.2 compact.sqlite3> \
     --db30 D:/aa-re/db-references/3.0.4.2-20240828/compact.sqlite3 \
     --db30s D:/aa-re/db-references/3.0.4.2-20240828/compact.server.table.sqlite3 \
-    --db10 D:/aa-re/db-references/server-db-probe-20261019/extracted/aa10x__game_db_game.sqlite3.decrypted.sqlite3 \
-    --pak10 D:/aaemu-audits/research/spawns/pak10 \
-    --w10 D:/aaemu-audits/research/spawns/w10 \
-    --w12 D:/aaemu-audits/research/spawns/w12
+    --overlay-dir <scratch dir>
+#   -> writes <scratch>/query.json; run the height sampler:
+AAEMU_GAME_PAK=<scratch dir> AAEMU_HEIGHT_QUERY=<scratch>/query.json \
+AAEMU_HEIGHT_OUT=<scratch>/heights.json \
+    cargo test -p aaemu-game dump_terrain_heights -- --ignored
+#   -> rerun with --heights <scratch>/heights.json and build the overlay:
+python -I rust/tools/area_package/build_sunbite.py ... \
+    --heights <scratch>/heights.json \
+    --build-overlay rust/crates/aaemu-game/app/Data/Areas/sunbite-wilds/sunbite-wilds.pak
 python -I -m unittest discover -s rust/tools/area_package -p "test_*.py"
 ```
 
-`--check` compares the outputs without writing them. The script never writes a database.
+`--check` compares the outputs without writing them. The script never writes a database or a source
+pak. The overlay pak is generated locally and ignored by git.
 
 ## Sources and rules
 
-- Zones, NPCs, items, quests and doodad templates: 3.0.4.2 (the closest retail generation). 1.2
-  ids are never overwritten: an id that already exists is skipped, and a colliding quest detail /
-  component / act id is remapped into a free range above the 1.2 maximum.
-- NPC spawner placements: the 10.x client `level_design/zone/{286,287}/zone_server/npc_spawners.g`.
-  3.0 has no placement files for these zones, so this is a documented guess. The 10.x zone origin
-  is translated to the 1.2 `world.xml` origin (`(21,4)` -> `(18,4)` / `(18,5)`), and the authored
-  Z is kept unless `--heights` (from `aaemu-game`'s ignored `dump_terrain_heights` test) has a 1.2
-  terrain height within 5 m.
-- Spawner templates: the 28 ids already in 1.2 (same members as 3.0) are reused; the 78 missing
-  ids are imported from 10.x.
-- Quests: `quest_contexts.zone_id = 227` and level <= 55. A quest whose direct NPC (model must
-  exist in 1.2), item or doodad reference cannot be resolved is skipped and listed in the summary.
-- Items: 3.0 rows, level <= 62; ids >= 8,000,000 are remapped below the cap (the owner rule).
-- Loot: only for the newly imported NPCs; neither source links these NPCs to a pack, so the
-  current package emits none.
+- 3.0 `game/worlds/main_world/map_data/npc_map/e_sunny_wilderness.dat`: retail NPC placements
+  (`u32 npc id`, `f32 x/y/z`). The 3.0 pak has no `zone_server/npc_spawners.g` for these zones.
+- 3.0 `world.xml`: zone sector ownership; zone nodes 286/287 and 157/190 are merged into the 1.2
+  `world.xml`. 157/190 are needed for the early quest givers; their terrain stays 1.2.
+- 3.0 `compact.sqlite3` / `compact.server.table.sqlite3`: NPCs (levels/stats), quests, items,
+  doodads, loot and the spawner templates used as parameter donors.
+- 3.0 terrain: the six 286/287 cells are copied into the overlay. 3.0 and 1.2 terrain differ (up
+  to ~200 m), so no 1.2-only package can place this content.
+- 1.2 ids are never overwritten: a colliding 3.0 NPC id with a different name/level is remapped
+  to `30000000+`; quest component/act/detail ids are allocated above the 1.2 maxima.
+- Every placement is pinned to a one-member spawner template. 7 safe 1.2 templates are reused;
+  141 one-member synthetic templates (`100000000+`) are added for the rest.
+- Z is snapped to the terrain sampled by the server; `--heights` also reports authored-vs-terrain
+  (on-ground within 3 m), water and slope counts.
+- Quests: `zone_id = 227`, level <= 55, and every accept/report NPC has a 3.0 `npc_map` record.
+  Items are capped at level 62 and no new item id is >= 8,000,000.
