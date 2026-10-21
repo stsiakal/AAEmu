@@ -6,6 +6,7 @@ use crate::systems::ai::framework::BehaviorKind;
 use crate::systems::ai::manager::{has_ai, run_now};
 use crate::systems::ai::params::{AiCommandCategory, AiCommands};
 use crate::systems::npcs::npc::packets::SCUnitModelPostureChangedPacket;
+use crate::systems::npcs::target_inspect::{ai_info, behavior_type_name, spawner_info};
 
 /// `BehaviorKind` members in declaration order (value = index).
 const BEHAVIOR_KINDS: [BehaviorKind; 21] = [
@@ -39,18 +40,6 @@ const GAME_STANCE_NAMES: [&str; 9] = [
 
 fn behavior_names() -> Vec<String> {
     BEHAVIOR_KINDS.iter().map(|k| format!("{k:?}")).collect()
-}
-
-/// The full type name of the behavior class of a kind (`behavior.ToString()`).
-fn behavior_type_name(kind: BehaviorKind) -> String {
-    let folder = match kind {
-        BehaviorKind::ArcherAttack => "Archer",
-        BehaviorKind::BigMonsterAttack => "BigMonster",
-        BehaviorKind::FlytrapAlert | BehaviorKind::FlytrapAttack => "Flytrap",
-        BehaviorKind::WildBoarAttack => "WildBoar",
-        _ => "Common",
-    };
-    format!("AAEmu.Game.Models.Game.AI.v2.Behaviors.{folder}.{kind:?}Behavior")
 }
 
 /// `TestAI`.
@@ -177,49 +166,44 @@ impl Command for TestAI {
                 }
             }
             "info" => {
-                let (ai_kind, current, points, remaining, commands, follow) =
-                    run_now(server, id, |c| {
-                        (
-                            c.ai.kind,
-                            c.ai.current_behavior(),
-                            c.ai.path_handler.ai_path_points.len(),
-                            c.ai.path_handler.ai_path_points_remaining.len(),
-                            c.ai.commands_queue.len(),
-                            c.ai.follow_unit.clone(),
-                        )
-                    })
-                    .ok_or_else(nre)?;
+                let info = ai_info(server, id).ok_or_else(nre)?;
                 // C#: `GetCurrentBehavior().ToString()` throws without a current behavior
-                let current = current.ok_or_else(nre)?;
+                let current = info.current_behavior.ok_or_else(nre)?;
                 CommandManager::send_normal_text(
                     self,
                     out,
                     &format!(
                         "Using AI: {}, CurrentBehavior: {}",
-                        ai_kind.class_name().replace("AiCharacter", ""),
+                        info.kind.class_name().replace("AiCharacter", ""),
                         behavior_type_name(current).replace("AAEmu.Game.Models.Game.AI.", "")
                     ),
                 );
                 CommandManager::send_normal_text(
                     self,
                     out,
-                    &format!("AI Path has {points} points ({remaining} remaining in queue)"),
+                    &format!(
+                        "AI Path has {} points ({} remaining in queue)",
+                        info.path_points, info.path_remaining
+                    ),
                 );
                 CommandManager::send_normal_text(
                     self,
                     out,
-                    &format!("AI Commands has {commands} actions in queue"),
+                    &format!(
+                        "AI Commands has {} actions in queue",
+                        info.commands_in_queue
+                    ),
                 );
-                if let Some(spawner) = server.systems.npcs.spawns.npc_spawner_of(id) {
-                    let template = spawner.template().ok_or_else(nre)?;
+                if let Some(spawner) = spawner_info(server, id) {
+                    let template_id = spawner.template_id.ok_or_else(nre)?;
                     CommandManager::send_normal_text(
                         self,
                         out,
                         &format!(
                             "SpawnerId {}, SpawnerTemplateId {} @ {}",
                             spawner.id,
-                            template.id,
-                            world_spawn_position_string(&spawner.position())
+                            template_id,
+                            world_spawn_position_string(&spawner.position)
                         ),
                     );
                     if spawner.follow_npc > 0 {
@@ -234,7 +218,7 @@ impl Command for TestAI {
                     }
                 }
 
-                if let Some(WorldObject::Npc(following)) = &follow {
+                if let Some(WorldObject::Npc(following)) = &info.follow_unit {
                     let tid = following.data().unit.template_id;
                     CommandManager::send_normal_text(
                         self,
@@ -249,7 +233,10 @@ impl Command for TestAI {
                 CommandManager::send_normal_text(
                     self,
                     out,
-                    &format!("AI Commands has {commands} actions in queue"),
+                    &format!(
+                        "AI Commands has {} actions in queue",
+                        info.commands_in_queue
+                    ),
                 );
             }
             "load_path" => {
