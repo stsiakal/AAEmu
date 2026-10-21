@@ -102,7 +102,7 @@ impl GameData {
         // be the first source so `ClientFileManager` resolves those files from it.
         let mut sources = areas.client_sources().to_vec();
         for source in &sources {
-            if !Path::new(source).is_file() {
+            if !Path::new(source).exists() {
                 return Err(GameDataError::File(format!(
                     "Areas: enabled package client source {} does not exist",
                     source
