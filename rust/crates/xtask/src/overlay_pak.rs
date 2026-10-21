@@ -1,6 +1,14 @@
 //! `cargo xtask overlay-pak`: build a small overlay pak for the Bevy client (and server client-file
 //! sources) from later-version `game_pak` archives.
 //!
+//! `--exclude-present-in` skips files identical to a stock pak; `--new-only` skips every file the
+//! stock pak already has, so the overlay only adds paths and cannot change existing art.
+//! `--exclude-path` drops matching paths from the list and the reference closure (e.g. the
+//! Dwarf/Warborn race trees a four-race batch does not carry). `--repair-missing-textures`
+//! rewrites a missing texture reference in a new 3.0 `.mtl` to the unambiguous same-role-suffix
+//! texture beside the material or model; `--unresolved-list` writes the direct roots that still
+//! have an unrepaired reference.
+//!
 //! The overlay is written as a standard TypeA (`WIBO`) pak with the XLGames key, the same variant
 //! the 1.2 `game_pak` uses and what [`aaemu_commons::aapak::AAPak::create`] writes by default.
 
@@ -24,7 +32,11 @@ struct Options {
     list: PathBuf,
     closure: bool,
     closure_anim: bool,
+    new_only: bool,
     excludes: Vec<PathBuf>,
+    exclude_paths: Vec<String>,
+    repair_textures: bool,
+    unresolved_list: Option<PathBuf>,
     out: PathBuf,
     report: Option<PathBuf>,
 }
@@ -33,11 +45,15 @@ impl Options {
     fn parse(args: &[String]) -> Result<Self> {
         let mut sources = Vec::new();
         let mut excludes = Vec::new();
+        let mut exclude_paths = Vec::new();
+        let mut repair_textures = false;
+        let mut unresolved_list = None;
         let mut list = None;
         let mut out = None;
         let mut report = None;
         let mut closure = false;
         let mut closure_anim = false;
+        let mut new_only = false;
         let mut it = args.iter();
         while let Some(arg) = it.next() {
             let mut value = |name: &str| -> Result<PathBuf> {
@@ -49,6 +65,14 @@ impl Options {
             match arg.as_str() {
                 "--source" => sources.push(value("--source")?),
                 "--exclude-present-in" => excludes.push(value("--exclude-present-in")?),
+                "--exclude-path" => exclude_paths.push(
+                    value("--exclude-path")?
+                        .to_string_lossy()
+                        .replace('\\', "/")
+                        .to_ascii_lowercase(),
+                ),
+                "--repair-missing-textures" => repair_textures = true,
+                "--unresolved-list" => unresolved_list = Some(value("--unresolved-list")?),
                 "--list" => list = Some(value("--list")?),
                 "--out" => out = Some(value("--out")?),
                 "--report" => report = Some(value("--report")?),
@@ -57,6 +81,7 @@ impl Options {
                     closure = true;
                     closure_anim = true;
                 }
+                "--new-only" => new_only = true,
                 other => bail!("unknown option `{other}`"),
             }
         }
@@ -77,7 +102,11 @@ impl Options {
             list,
             closure,
             closure_anim,
+            new_only,
             excludes,
+            exclude_paths,
+            repair_textures,
+            unresolved_list,
             out,
             report,
         })
@@ -111,6 +140,24 @@ pub fn run(args: &[String]) -> Result<()> {
         "Included: {} new, {} changed; skipped {} identical",
         summary.new, summary.changed, summary.skipped_identical
     );
+    if summary.changed_skipped > 0 {
+        println!(
+            "Skipped {} files that exist in an exclude pak with different bytes (--new-only)",
+            summary.changed_skipped
+        );
+    }
+    if summary.path_excluded > 0 {
+        println!(
+            "Skipped {} files matching --exclude-path",
+            summary.path_excluded
+        );
+    }
+    if summary.texture_repairs > 0 || summary.texture_repair_unresolved > 0 {
+        println!(
+            "Texture refs: {} repaired, {} unresolved",
+            summary.texture_repairs, summary.texture_repair_unresolved
+        );
+    }
     if !summary.missing.is_empty() {
         println!(
             "Missing/ambiguous references: {} (written to the report)",
@@ -764,8 +811,209 @@ struct BuildSummary {
     new: usize,
     changed: usize,
     skipped_identical: usize,
+    changed_skipped: usize,
+    path_excluded: usize,
+    texture_repairs: usize,
+    texture_repair_unresolved: usize,
     missing: Vec<MissingRef>,
     report: Value,
+}
+
+/// A path the batch must not carry (e.g. the Dwarf/Warborn race trees); matched
+/// case-insensitively as a substring against the pak path.
+fn path_excluded(options: &Options, name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    options
+        .exclude_paths
+        .iter()
+        .any(|excluded| lower.contains(excluded))
+}
+
+#[derive(Default)]
+struct RepairState {
+    repairs: Vec<Value>,
+    unresolved: Vec<Value>,
+    shared_1_2: Vec<Value>,
+    overrides: HashMap<String, Vec<u8>>,
+}
+
+fn texture_suffix(path: &str, role: &str) -> Option<String> {
+    let file = path.rsplit('/').next()?;
+    let (stem, ext) = file.rsplit_once('.')?;
+    if let Some((_, suffix)) = stem.rsplit_once('_') {
+        return Some(format!("_{suffix}.{ext}"));
+    }
+    let suffix = match role.to_ascii_lowercase().as_str() {
+        "diffuse" => "_df",
+        "specular" => "_sp",
+        "normalmap" => "_ddn",
+        "opacity" => "_mask",
+        "subsurface" => "_sss",
+        "detail" => "_mask",
+        _ => return None,
+    };
+    Some(format!("{suffix}.{ext}"))
+}
+
+fn repair_candidates(material: &str, model: Option<&str>, suffix: &str) -> Vec<String> {
+    let mdir = parent_dir(material).unwrap_or("");
+    let mstem = file_stem(material).unwrap_or("");
+    let (model_dir, model_stem) = match model {
+        Some(model) => (
+            parent_dir(model).unwrap_or(mdir),
+            file_stem(model).unwrap_or(mstem),
+        ),
+        None => (mdir, mstem),
+    };
+    let mut extensions = vec![suffix.to_string()];
+    if suffix.ends_with(".tif") || suffix.ends_with(".tga") || suffix.ends_with(".png") {
+        let stem = suffix.rsplit_once('.').map(|(s, _)| s).unwrap_or(suffix);
+        extensions.push(format!("{stem}.dds"));
+    }
+    let mut candidates = Vec::new();
+    for dir in [mdir, model_dir] {
+        for stem in [mstem, model_stem] {
+            for extension in &extensions {
+                let candidate = if dir.is_empty() {
+                    format!("{stem}{extension}")
+                } else {
+                    format!("{dir}/{stem}{extension}")
+                };
+                if !candidates
+                    .iter()
+                    .any(|c: &String| c.eq_ignore_ascii_case(&candidate))
+                {
+                    candidates.push(candidate);
+                }
+            }
+        }
+    }
+    candidates
+}
+
+fn resolve_repair(sources: &SourcePaks, excludes: &SourcePaks, candidate: &str) -> Option<String> {
+    if let Some((_, name)) = sources.resolve(std::slice::from_ref(&candidate.to_string())) {
+        return Some(name.to_ascii_lowercase());
+    }
+    for exclude in &excludes.paks {
+        if let Some(name) = resolve_in_pak(exclude, candidate) {
+            return Some(name.to_ascii_lowercase());
+        }
+    }
+    None
+}
+
+/// Rewrite a `.mtl` whose texture references exist in no source pak. The
+/// replacement is the same-role-suffix texture next to the material (same stem)
+/// or next to the model, and only an unambiguous match is accepted. Only files
+/// that are new in the source (not in a stock exclude pak) are rewritten.
+fn repair_mtl(
+    name: &str,
+    data: &[u8],
+    model: Option<&str>,
+    sources: &SourcePaks,
+    excludes: &SourcePaks,
+    state: &mut RepairState,
+) -> Vec<u8> {
+    let shared_1_2 = excludes
+        .paks
+        .iter()
+        .any(|pak| resolve_in_pak(pak, name).is_some());
+    let Ok(mut text) = std::str::from_utf8(data).map(str::to_string) else {
+        return data.to_vec();
+    };
+    let Ok(doc) = Document::parse(&text) else {
+        return data.to_vec();
+    };
+    let mut pending = Vec::new();
+    for node in doc.descendants() {
+        let role = node.attribute("Map").unwrap_or("");
+        for attribute in node.attributes() {
+            if !attribute.name().eq_ignore_ascii_case("File") {
+                continue;
+            }
+            let reference = attribute.value().trim();
+            let Some(normalized) = normalize_ref(reference) else {
+                continue;
+            };
+            if sources.resolve_path(&normalized).is_some()
+                || excludes
+                    .paks
+                    .iter()
+                    .any(|pak| resolve_in_pak(pak, &normalized).is_some())
+            {
+                continue;
+            }
+            if shared_1_2 {
+                state.shared_1_2.push(json!({
+                    "material": name,
+                    "reference": reference,
+                    "role": role,
+                }));
+                continue;
+            }
+            let Some(suffix) = texture_suffix(&normalized, role) else {
+                state.unresolved.push(json!({
+                    "material": name,
+                    "model": model,
+                    "reference": reference,
+                    "role": role,
+                    "suffix": null,
+                    "candidates": [],
+                }));
+                continue;
+            };
+            let candidates = repair_candidates(name, model, &suffix);
+            let found: std::collections::BTreeSet<String> = candidates
+                .iter()
+                .filter_map(|candidate| resolve_repair(sources, excludes, candidate))
+                .collect();
+            if found.len() != 1 {
+                state.unresolved.push(json!({
+                    "material": name,
+                    "model": model,
+                    "reference": reference,
+                    "role": role,
+                    "suffix": suffix,
+                    "candidates": found,
+                }));
+                continue;
+            }
+            let replacement = found.into_iter().next().unwrap();
+            if text.contains(reference)
+                && !pending
+                    .iter()
+                    .any(|(old, _): &(String, String)| old == reference)
+            {
+                pending.push((reference.to_string(), replacement.clone()));
+                state.repairs.push(json!({
+                    "material": name,
+                    "model": model,
+                    "old": reference,
+                    "new": replacement,
+                    "role": role,
+                    "suffix": suffix,
+                }));
+            }
+        }
+    }
+    for (old, new) in pending {
+        text = text.replace(&old, &new);
+    }
+    text.into_bytes()
+}
+
+fn root_of(name: &str, selected: &BTreeMap<String, Selected>) -> Option<String> {
+    let mut current = name.to_ascii_lowercase();
+    let mut seen = HashSet::new();
+    while seen.insert(current.clone()) {
+        let item = selected.get(&current)?;
+        match &item.added_by {
+            Some(parent) => current = parent.to_ascii_lowercase(),
+            None => return Some(item.name.clone()),
+        }
+    }
+    None
 }
 
 fn build(options: &Options) -> Result<BuildSummary> {
@@ -783,6 +1031,8 @@ fn build(options: &Options) -> Result<BuildSummary> {
     let mut processed = HashSet::new();
     let mut missing = Vec::new();
     let mut warnings = Vec::new();
+    let mut path_excluded_files = Vec::new();
+    let mut repairs = RepairState::default();
 
     for raw in listed {
         let (source, name) = sources
@@ -793,6 +1043,10 @@ fn build(options: &Options) -> Result<BuildSummary> {
                     options.sources.len()
                 )
             })?;
+        if path_excluded(options, &name) {
+            path_excluded_files.push(json!({"name": name, "origin": "list"}));
+            continue;
+        }
         let key = name.to_ascii_lowercase();
         if selected.contains_key(&key) {
             continue;
@@ -827,11 +1081,34 @@ fn build(options: &Options) -> Result<BuildSummary> {
             if matches!(ext.as_str(), "cal" | "chrparams") && !options.closure_anim {
                 continue;
             }
-            let data = sources.read(item.source, &item.name)?;
+            let mut data = sources.read(item.source, &item.name)?;
+            if options.repair_textures && ext == "mtl" {
+                let repaired = repair_mtl(
+                    &item.name,
+                    &data,
+                    item.added_by.as_deref(),
+                    &sources,
+                    &excludes,
+                    &mut repairs,
+                );
+                if repaired != data {
+                    repairs
+                        .overrides
+                        .insert(item.name.to_ascii_lowercase(), repaired.clone());
+                    data = repaired;
+                }
+            }
             let collected = collect_references(&item.name, &data, &sources, options.closure_anim);
             warnings.extend(collected.warnings);
             missing.extend(collected.missing);
             for resolved in collected.resolved {
+                if path_excluded(options, &resolved.name) {
+                    path_excluded_files.push(json!({
+                        "name": resolved.name,
+                        "origin": item.name,
+                    }));
+                    continue;
+                }
                 let key = resolved.name.to_ascii_lowercase();
                 if selected.contains_key(&key) {
                     continue;
@@ -868,13 +1145,19 @@ fn build(options: &Options) -> Result<BuildSummary> {
 
     let mut files_report = Vec::new();
     let mut skipped = Vec::new();
+    let mut changed_skipped = Vec::new();
     let mut written = 0usize;
     let mut written_bytes = 0u64;
     let mut new = 0usize;
     let mut changed = 0usize;
 
     for selected in selected.values() {
-        let data = sources.read(selected.source, &selected.name)?;
+        let data =
+            if let Some(repaired) = repairs.overrides.get(&selected.name.to_ascii_lowercase()) {
+                repaired.clone()
+            } else {
+                sources.read(selected.source, &selected.name)?
+            };
         let size = data.len() as u64;
         let mut status = "new";
         let mut present_in: Option<String> = None;
@@ -898,6 +1181,16 @@ fn build(options: &Options) -> Result<BuildSummary> {
                 "size": size,
                 "source": sources.paks[selected.source].path.display().to_string(),
                 "present_in": present_in,
+            }));
+            continue;
+        }
+        if status == "changed" && options.new_only {
+            changed_skipped.push(json!({
+                "name": selected.name,
+                "size": size,
+                "source": sources.paks[selected.source].path.display().to_string(),
+                "present_in": present_in,
+                "added_by": selected.added_by,
             }));
             continue;
         }
@@ -934,6 +1227,39 @@ fn build(options: &Options) -> Result<BuildSummary> {
     out_pak.close()?;
     let out_size = fs::metadata(&options.out)?.len();
 
+    let RepairState {
+        repairs: texture_repairs,
+        mut unresolved,
+        shared_1_2,
+        overrides: _,
+    } = repairs;
+    for entry in &mut unresolved {
+        let root = entry
+            .get("model")
+            .and_then(Value::as_str)
+            .and_then(|model| root_of(model, &selected));
+        entry["root"] = json!(root);
+    }
+    let unresolved_roots: std::collections::BTreeSet<String> = unresolved
+        .iter()
+        .filter_map(|entry| entry["root"].as_str().map(str::to_string))
+        .collect();
+    let texture_repair_count = texture_repairs.len();
+    let texture_unresolved_count = unresolved.len();
+    if let Some(path) = &options.unresolved_list {
+        if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+            fs::create_dir_all(parent)?;
+        }
+        let mut text = unresolved_roots
+            .iter()
+            .cloned()
+            .collect::<Vec<_>>()
+            .join("\n");
+        text.push('\n');
+        fs::write(path, text)
+            .with_context(|| format!("writing unresolved list {}", path.display()))?;
+    }
+
     let report = json!({
         "tool": "cargo xtask overlay-pak",
         "out": options.out.display().to_string(),
@@ -946,6 +1272,11 @@ fn build(options: &Options) -> Result<BuildSummary> {
             "included_new": new,
             "included_changed": changed,
             "identical_skipped": skipped.len(),
+            "changed_present_in_1_2_skipped": changed_skipped.len(),
+            "path_excluded_skipped": path_excluded_files.len(),
+            "texture_repairs": texture_repairs.len(),
+            "texture_repair_unresolved": unresolved.len(),
+            "texture_repair_shared_1_2": shared_1_2.len(),
             "missing_references": missing.len(),
         },
         "sources": sources.paks.iter().map(|pak| json!({
@@ -960,6 +1291,11 @@ fn build(options: &Options) -> Result<BuildSummary> {
         })).collect::<Vec<_>>(),
         "files": files_report,
         "skipped": skipped,
+        "changed_present_in_1_2": changed_skipped,
+        "path_excluded": path_excluded_files,
+        "texture_repairs": texture_repairs,
+        "texture_repair_unresolved": unresolved,
+        "texture_repair_shared_1_2": shared_1_2,
         "missing_references": missing.iter().map(|item| json!({
             "referenced_by": item.referenced_by,
             "reference": item.reference,
@@ -974,6 +1310,10 @@ fn build(options: &Options) -> Result<BuildSummary> {
         new,
         changed,
         skipped_identical: skipped.len(),
+        changed_skipped: changed_skipped.len(),
+        path_excluded: path_excluded_files.len(),
+        texture_repairs: texture_repair_count,
+        texture_repair_unresolved: texture_unresolved_count,
         missing,
         report,
     })
@@ -1062,7 +1402,11 @@ mod tests {
             list,
             closure,
             closure_anim,
+            new_only: false,
             excludes: Vec::new(),
+            exclude_paths: Vec::new(),
+            repair_textures: false,
+            unresolved_list: None,
             out,
             report: None,
         }
@@ -1318,6 +1662,149 @@ mod tests {
             pak.read_file("game/a/changed.dds").unwrap().unwrap(),
             b"new-data"
         );
+    }
+
+    fn synthetic_repair_pak(path: &Path) {
+        let cdf = br#"<CharacterDefinition>
+            <Model File="objects/test/repair.chr"/>
+        </CharacterDefinition>"#;
+        let mtl = br#"<Material><SubMaterials><Material Name="SubMtl1">
+            <Textures>
+              <Texture Map="Diffuse" File="objects/test/missing_df.dds"/>
+              <Texture Map="Specular" File="objects/test/missing_sp.dds"/>
+              <Texture Map="Opacity" File="objects/test/missing_mask.dds"/>
+            </Textures>
+          </Material></SubMaterials></Material>"#;
+        write_pak(
+            path,
+            &[
+                ("game/objects/test/repair.cdf", cdf),
+                ("game/objects/test/repair.chr", b"\0"),
+                ("game/objects/test/repair.mtl", mtl),
+                ("game/objects/test/repair_df.dds", b"df"),
+                ("game/objects/test/repair_sp.dds", b"sp"),
+            ],
+        );
+    }
+
+    #[test]
+    fn repair_missing_textures_rewrites_mtl_and_adds_replacements() {
+        let dir = TempDir::new("repair");
+        let source = dir.path().join("source.pak");
+        synthetic_repair_pak(&source);
+        let list = list_file(&dir, &["game/objects/test/repair.cdf"]);
+        let out = dir.path().join("overlay.pak");
+        let mut options = options(vec![source], list, out.clone(), true, false);
+        options.repair_textures = true;
+        let summary = build(&options).unwrap();
+        let names = overlay_names(&out);
+        assert!(names.iter().any(|n| n == "game/objects/test/repair_df.dds"));
+        assert!(names.iter().any(|n| n == "game/objects/test/repair_sp.dds"));
+        let pak = AAPak::open(&out, true).unwrap();
+        let mtl = String::from_utf8(
+            pak.read_file("game/objects/test/repair.mtl")
+                .unwrap()
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(!mtl.contains("missing_df.dds"), "{mtl}");
+        assert!(!mtl.contains("missing_sp.dds"), "{mtl}");
+        assert!(mtl.contains("repair_df.dds"), "{mtl}");
+        assert!(mtl.contains("repair_sp.dds"), "{mtl}");
+        // The missing opacity map has no _mask replacement.
+        assert_eq!(summary.texture_repairs, 2);
+        assert_eq!(summary.texture_repair_unresolved, 1);
+        assert_eq!(
+            summary.report["texture_repairs"].as_array().unwrap().len(),
+            2
+        );
+    }
+
+    #[test]
+    fn unresolved_missing_texture_writes_root_list() {
+        let dir = TempDir::new("unresolved");
+        let source = dir.path().join("source.pak");
+        synthetic_repair_pak(&source);
+        let list = list_file(&dir, &["game/objects/test/repair.cdf"]);
+        let out = dir.path().join("overlay.pak");
+        let unresolved = dir.path().join("unresolved.txt");
+        let mut options = options(vec![source], list, out, true, false);
+        options.repair_textures = true;
+        options.unresolved_list = Some(unresolved.clone());
+        let summary = build(&options).unwrap();
+        assert_eq!(summary.texture_repair_unresolved, 1);
+        let roots = fs::read_to_string(&unresolved).unwrap();
+        assert_eq!(roots.trim(), "game/objects/test/repair.cdf");
+    }
+
+    #[test]
+    fn new_only_skips_changed_files() {
+        let dir = TempDir::new("new-only");
+        let source = dir.path().join("source.pak");
+        let exclude = dir.path().join("stock.pak");
+        write_pak(
+            &source,
+            &[
+                ("game/a/same.dds", b"same"),
+                ("game/a/changed.dds", b"new-data"),
+                ("game/a/new.dds", b"new"),
+            ],
+        );
+        write_pak(
+            &exclude,
+            &[("game/a/same.dds", b"same"), ("game/a/changed.dds", b"old")],
+        );
+        let list = list_file(
+            &dir,
+            &["game/a/same.dds", "game/a/changed.dds", "game/a/new.dds"],
+        );
+        let out = dir.path().join("overlay.pak");
+        let mut options = options(vec![source], list, out.clone(), false, false);
+        options.excludes = vec![exclude];
+        options.new_only = true;
+        let summary = build(&options).unwrap();
+        assert_eq!(summary.written, 1);
+        assert_eq!(summary.new, 1);
+        assert_eq!(summary.changed, 0);
+        assert_eq!(summary.skipped_identical, 1);
+        assert_eq!(summary.changed_skipped, 1);
+        assert_eq!(overlay_names(&out), vec!["game/a/new.dds"]);
+        assert_eq!(
+            summary.report["summary"]["changed_present_in_1_2_skipped"],
+            1
+        );
+        assert_eq!(
+            summary.report["changed_present_in_1_2"][0]["name"],
+            "game/a/changed.dds"
+        );
+    }
+
+    #[test]
+    fn exclude_path_filters_closure_files() {
+        let dir = TempDir::new("exclude-path");
+        let source = dir.path().join("source.pak");
+        write_pak(
+            &source,
+            &[
+                (
+                    "game/objects/a.cdf",
+                    br#"<CharacterDefinition>
+                        <Model File="objects/characters/warborn/male/x.chr"/>
+                    </CharacterDefinition>"#,
+                ),
+                ("game/objects/characters/warborn/male/x.chr", b"x"),
+                ("game/objects/characters/warborn/male/x.mtl", b"<Material/>"),
+            ],
+        );
+        let list = list_file(&dir, &["game/objects/a.cdf"]);
+        let out = dir.path().join("overlay.pak");
+        let mut options = options(vec![source], list, out.clone(), true, false);
+        options.exclude_paths = vec!["/characters/warborn/".into()];
+        let summary = build(&options).unwrap();
+        assert_eq!(overlay_names(&out), vec!["game/objects/a.cdf"]);
+        assert_eq!(summary.written, 1);
+        assert_eq!(summary.path_excluded, 1);
+        assert_eq!(summary.report["path_excluded"].as_array().unwrap().len(), 1);
     }
 
     #[test]

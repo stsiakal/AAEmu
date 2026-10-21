@@ -59,16 +59,21 @@ Confirmed in code unless marked SUSPECT.
   real tutorial entries (`quest_contexts.category_id = 45`), at most 256.
 - **`CSSaveUIData`** (reproduced, fixed in `1a27e69f6`, upstream PR NickMesser/AAEmu#25): keys
   0..=16 and values up to 16 KiB (the 1.2 client's largest observed payload is 4,708 bytes).
+- **Portal and navi teleport use range** (fixed in `1f06f399f`): `CSUsePortal` and
+  `CSNaviTeleport` need the character within `World.PortalUseRange` (default 5 m) of the gate NPC
+  / navi doodad, measured like `GetDistanceTo` (2D, minus the model radii). The default covers the
+  gate placement (`open_portal_effects.distance` 3 m; the 1.2 tooltip says 5 m) and matches
+  `NAVI_USE_RANGE`. Refusals send `SCErrorMsg(TooFarAway, 154)` and log one WARN; the refused navi
+  func and teleport do not run.
 
 ### Open
 
 | Item | Severity | What is wrong | Where | Fix direction |
 | --- | --- | --- | --- | --- |
 | Movement fully trusted | MED | `MoveVerifier` is off by default; `sus.rs` only logs above 25 m/s | `world/session.rs:753-905`, `app/Configurations/Physics.json`, `systems/services/sus.rs` | Enable and tune the verifier; needs retail speeds |
-| Portal and navi teleport | MED | `CSUsePortal` and `CSNaviTeleport` still skip the distance check; `14cfd990f` added only the OpenPortalEffect gate-point and `CSNaviOpenPortal` ranges | `systems/npcs/portal/mod.rs:843-953`, `:1069-1088`, `:1095-1116` | Check distance to the gate |
 | Mount seat | LOW | A passenger boards a stranger's mount seat from any distance | `systems/vehicles/mates.rs:312` | Check distance |
 | `CSChangeDoodadData` | LOW | No range check | `systems/npcs/doodad/manager.rs:670` | Check distance |
-| `CSUseTeleport` | LOW | Fare is sent by the client; unreachable on stock data | `systems/npcs/portal/mod.rs:1123-1186` | Compute the fare server side |
+| `CSUseTeleport` | LOW | Fare is sent by the client; no 1.2 fare data exists (every `npcs.teleporter` row is false and there is no fare table) | `systems/npcs/portal/mod.rs` | Needs retail fare evidence |
 | `CSBuyItems` quantity | LOW, SUSPECT | Per-item quantity cap | `systems/economy/store.rs` | Confirm, then cap |
 
 ## B. Gameplay and integrity
@@ -101,12 +106,19 @@ Confirmed in code unless marked SUSPECT.
 - **Disconnect cleanup** (fixed in `5c2c376eb`): the game-connection task runs `on_disconnect`
   under an unwind guard that still releases the session reservation, removes a half-left world
   entry and frees the account when the cleanup panics.
+- **Death transition** (reproduced, fixed in `5828e35d6`): two concurrent lethal hits (a skill
+  and a DoT tick, fall / drowning damage, `GM /kill`, PvP, an NPC death) could both run the death
+  path after passing the unlocked HP check: two `SCUnitDeathPacket`s, double exp / durability
+  loss, two loot generations, double quest kill credit and respawn timers. The alive-to-dead
+  transition is now claimed atomically under the unit data lock, the damage write re-checks HP,
+  and a second `DoDie` for the same life is refused. Restored HP (resurrection, repair) starts a
+  new life. Test: `systems::skills::death_once_tests` (two racing hits on a player and an NPC,
+  looped); it failed before the fix.
 
 Static revalidation of the remaining rows.
 
 | Item | Severity | What is wrong | Where | Fix direction |
 | --- | --- | --- | --- | --- |
-| Death transition | MED | Not once-only under concurrent lethal hits | `systems/skills/combat.rs:215`, `:246` | Make the transition atomic |
 | ID loader | MED | Fails open on a DB error | `managers/id.rs:244` | Fail startup |
 | Summon effects | MED | Reference missing event spawner ids (data gap) | summon effect data | Fix the data or the loader |
 | Doodad funcs | LOW | `EvidenceItemLoot`, `AreaTrigger` and `Bubble` only log | `systems/npcs/doodad/funcs/mod.rs:165-170` | Implement per retail |
