@@ -178,6 +178,60 @@ Later-only QoL:
 - **Licensing and disk.** Assets belong to XL Games/Kakao; the repo license covers code only, and pak
   redistribution is a separate decision. Never copy the 68 GB pak; extract only the audited closure.
 
+### Overlay paks: building one
+
+`cargo xtask overlay-pak` writes an overlay `game_pak` that carries only the later-version files a
+batch needs. Read it over the stock 1.2 `game_pak` in Bevy (`overlays/*.pak` next to the pak, or
+`AA_PAK_OVERLAYS`), or list it first in the server's `ClientData.Sources` (the first source wins).
+The output is the standard encrypted TypeA (`WIBO`) layout with the XLGames key, the same kind the
+1.2 pak uses and what `aaemu_commons::aapak::AAPak::create` writes.
+
+```powershell
+# one pak path per line; `game/` is optional and matching is case-insensitive
+@'
+# first 3.0 costume batch
+game/objects/characters/dwarf/female/parts/hm/cloth/hm_cloth220/dw_f_hm_cloth220.cdf
+objects/characters/nuian/male/costume/nu_m_sk_land_of_sunlights/nu_m_sk_land_of_sunlights.chr
+'@ | Set-Content overlay-list.txt
+
+cargo xtask overlay-pak `
+  --source "C:/Users/me/Downloads/Archeage Client v.3.0.4.2 (r336598)/game_pak" `
+  --list overlay-list.txt `
+  --closure `
+  --exclude-present-in D:/AA1.2/game_pak `
+  --out overlays/costume-batch1.pak `
+  --report overlays/costume-batch1.json
+```
+
+`--source` is repeatable and ordered: the first source that has a file wins. `--closure` follows
+references recursively:
+
+- `.cdf`: `Model File=`, `Material=` and any other `File=`/`Model=` attribute (`.chr`, `.cgf`,
+  `.skin`, `.mtl`).
+- `.chr`/`.cgf`/`.skin`: the same-stem sibling `.mtl`, any embedded full material/texture path
+  (ASCII strings with `/`/`\` and a known extension), and bare material names when exactly one
+  `.mtl` in the sources has that stem and the name shares the model's first `_` component (the
+  race/creature prefix, e.g. `fe_m_...`). Character models often carry material names for several
+  races, so cross-prefix names are ignored; ambiguous stems are reported.
+- `.mtl` (XML): every `<Texture File=...>` (`.dds`, including `_df`/`_ddn`/`_sp`/`_mask` names as
+  written); sub-materials are inline and need no extra file.
+- `.cal`/`.chrparams` animation lists: `.caf`/`.dba` values and `$Include` lists are followed only
+  with `--closure-anim`, which also implies `--closure`.
+
+Unresolvable or ambiguous references are written to the report, not treated as fatal. Limits: the
+binary `.chr`/`.cgf`/`.skin` scan does not parse engine chunks, so it only trusts the sibling,
+full-path strings and the unique-stem/family heuristic above; `.animevents`, `.lmg`, `.dbh` and
+prefab/effect XML are not followed.
+
+`--exclude-present-in` (repeatable) byte-compares each candidate with the same path in the given
+pak: identical files are skipped, changed ones stay in the overlay. The report lists every written
+file with its size and source, the skipped identical files, missing/ambiguous references, warnings
+and the `included_new` / `included_changed` / `identical_skipped` counts.
+
+Verification: the xtask tests reopen the overlay with `aaemu_commons::aapak` and compare every byte
+with its source; Bevy reads the same TypeA layout through `aa-pak` (`Pak::open_with_overlays`, or
+the client's `overlays/*.pak` discovery).
+
 ## Order of work
 
 1. **Level 55** (S): flip the ten `SHOW` flags, patch the 3.0 51-55 XP and quest exp, sync Bevy's
