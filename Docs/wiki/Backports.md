@@ -1,7 +1,7 @@
 # Backports
 
 - Audience: Contributors
-- Last verified against: `rust-rewrite-bots` on October 20, 2026 (static research; no backport landed yet)
+- Last verified against: `rust-rewrite-bots` on October 21, 2026 (static research; gear batch 1a is on `feat/gear-1a`, offline-verified, no live run yet)
 - Target: ArcheAge 1.2 (`r208022`)
 
 ## Goal
@@ -120,6 +120,21 @@ The decision takes **all** later-version costumes, wider than the earlier curate
 recommendation. Batches follow the gear chain (items -> `item_armors` -> `armor_assets` ->
 `item_armor_assets` -> `item_assets` -> icons) plus 10.x assets, with an audit per batch; S-M per
 batch, cosmetic only.
+
+### 3.0 gear batches
+
+The later-version gear is delivered in audited batches from the 2026-10-21 inventory report
+(section 7 "Recommended batches"). **Batch 1a is done on `feat/gear-1a`**: 288 retail 3.0
+costumes, armor and cloaks with item level <= 62 (the Eanad power line) whose four playable-race
+look paths already exist in the 1.2 pak, plus 7 craft-material items and their 19 crafts. It is
+the compact-data patch `SQL/patches/compact/2026-10-21-gear-3.0-batch-1a.sql`; it needs no pak
+change and adds no new art file. The 8M emulator band and the custom Dawnsdrop sets are excluded,
+as are item procs, set procs and set bonuses above unit attribute 186. The inventory report's
+"333 retail" rows still contained 45 Dawnsdrop items, so the retail-only batch is 288 (the count
+correction and the skipped rows are in `PORTING.md` under "Batch 1a"). Later batches follow the
+report: 1b (the art-carrying costume/gear remainder), 2 (data-only set bonuses), then 3-8
+(high-attribute sets, proc families, 3.0 use skills, lunagems, pet armor, above-Eanad). Static and
+offline checks only so far; the live check follows separately.
 
 ### Other QoL
 

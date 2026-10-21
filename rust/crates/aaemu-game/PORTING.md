@@ -2459,6 +2459,44 @@ icons, upgrade crafts, materials and English texts. Deviations:
 - Client side: `patch-client` into a client copy; a client reading the server `compact.sqlite3`
   (Bevy client) needs only the patched server db plus a pak containing the 185 new files.
 
+### Batch 1a: zero-asset costumes, armor and cloaks (2026-10-21)
+
+`python -I -B -X utf8 rust/tools/version_gaps/backport.py --items gear-1a
+--pak12-listing <1.2 pak listing>` selects the inventory report's batch 1a with the owner's
+retail-only rule: item id absent from 1.2 and below 8,000,000, not an emulator-custom Dawnsdrop
+item (no `eiset_id` >= 9,000,001 and no item id 34,936..34,984), `items.level` <= 62, costume /
+armor / cloak only, no item proc, no set proc, no set bonus unit attribute above 186, no
+3.0-only use skill, and a look for each of the four playable races whose paths are already in
+the 1.2 pak. The generated patch is
+`SQL/patches/compact/2026-10-21-gear-3.0-batch-1a.sql`; inserts are guarded with
+`WHERE NOT EXISTS` on the id and the eight orphan class-row fixes are value-for-value
+`UPDATE`s, so a second run is a no-op.
+
+- **288 gear items** (166 costumes, 117 armor, 5 cloaks) plus **7 craft-material items**, with
+  19 crafts (`craft_products`/`craft_materials`), 3 craft skills and their effects. Every
+  playable-race look path is already in the 1.2 pak, so **no new client file is needed**; the
+  463 Dwarf/Warborn-only paths that are absent are imported as data-only `item_assets` rows.
+- **Looks are re-keyed**: 118 new `armor_assets` ids (3,738..3,855, all above the 1.2 retail
+  range and below 8M), 465 new `item_assets` rows (paths reused by name where present) and
+  1,419 `item_armor_assets` rows. The 1.2 database had orphan `item_armors` rows for eight of
+  the imported items (3,006-3,009 and 34,303-34,306); they are updated in place, because a
+  second template for the same item id makes `ItemData::load` fail.
+- **Support rows**: `item_categories` 173 (synthetic costume), tags 1,626 and 2,480, mod sets
+  81/83/99, 31 icons, 25 `dyeable_items`, 11 buffs (two from craft effects), and 865 localized
+  texts (item names/descriptions and the borrowed buff/craft/skill texts).
+- **Skipped**: 7 custom crafts (5 Dawnsdrop, 2 items in the 8M band) and 2 custom tags
+  (9000007 on two emulator buffs); 10 3.0 orphan crafts without a `crafts` row (7,514, 7,534,
+  7,678, 8,259, 8,435, 8,439, 8,443-8,446); 9 money `craft_materials` rows; 27
+  `craft_pack_crafts` rows (1.2 reads that table as "this craft is a pack", 3.0 as craft-pack
+  membership); and `item_proc_bindings`, set procs and >186 attributes are excluded by the
+  selection rule, not imported.
+- **Count correction.** The inventory report's "333 retail" rows still contain 45 Dawnsdrop
+  items (40 in sets 9000005-9000012 and 5 orphan Radiant leather pieces 34,964-34,968), so the
+  retail-only batch is 288, not 333. The report's 60 "crafts" are the 60 `craft_products` rows
+  of the 363-item (8M-inclusive) set; the selected gear has 19 product rows (14 retail craft
+  ids, of which 13 have a `crafts` row and 7,678 is an orphan, plus 5 custom ones refused). The
+  19 imported `crafts` rows are those 13 plus 6 festival-coin material crafts.
+
 Next families, in order (all need the same tool; blockers in brackets): Hardy/Heartless 3-piece
 class sets 387-392 (proc only, no engine; 18 items, base-piece source open), Distorted Whispers 386
 (not craftable, bonuses 3/5 + proc), Hexbane/Talisman/Tempting/Enchanting Melody 414-417 (lvl 53,
