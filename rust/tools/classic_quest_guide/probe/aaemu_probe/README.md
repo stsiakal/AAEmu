@@ -19,7 +19,7 @@ The loader (`game/scripts/x2ui/addons/addons.lua`, read from `game_pak`) looks i
    aaemu_probe
    ```
 3. Start the game and log in. A small "AAEmu probe" window appears (top left);
-   the chat shows "AAEmu probe 0.1.0 loaded". If it does not, check the addon
+   the chat shows "AAEmu probe 0.1.1 loaded". If it does not, check the addon
    list in the game options (addons may need enabling there) and the log
    `Documents\AAClassic\ArcheAge.log` for `[Lua Error]` lines.
 4. Play about 10 minutes: take and turn in a quest, kill and loot, use a
@@ -27,6 +27,15 @@ The loader (`game/scripts/x2ui/addons/addons.lua`, read from `game_pak`) looks i
 5. Collect `Documents\AAClassic\Addon\aaemu_probe\observations\probe_*.lua`
    (the path is `api.File:Write`-relative to the addons folder; if the files
    land elsewhere, search for `probe_0001_001.lua`).
+
+## Updating from 0.1.0
+
+0.1.0 never started: it used `_G`/`getfenv`/`setmetatable`/`select`, which the
+Classic addon sandbox does not provide. To update, close the game and copy the
+new `aaemu_probe` folder over the old one (keep `addons.txt`; `addon_settings`
+already enables it). Then check `observations/boot_0.lua` ... `boot_4.lua`:
+each step writes its own file with `ok` and any `err`, so a failure is visible
+even if no window appears. Chat also shows "AAEmu probe 0.1.1: main.lua read".
 
 ## What it records
 
@@ -72,9 +81,11 @@ names). Read them before sharing and delete what you do not want to send.
 
 ## Limits
 
-- The loader blocks some events (its source has a blocklist and sanitising
-  filters for combat events); `RegisterEvent` does not report that, so an event
-  that never fires may be blocked rather than quiet.
+- The loader may block some events; `RegisterEvent` does not report that, so
+  an event that never fires may be blocked rather than quiet. COMBAT_MSG,
+  COMBAT_TEXT, UNIT_DEAD and TARGET_CHANGED are used by working addons.
+- The sandbox has no `_G`, `getfenv`, `setmetatable`, `select`, `error`, `os`
+  or `io`; the probe uses none of them.
 - There is no API for the active quest list: quest functions need a
   `questTypeId`, so no quest count is recorded; quest events are logged.
 - Undocumented getters are called by name (`UnitLevel`, `GetNpcInfo`, ...); if

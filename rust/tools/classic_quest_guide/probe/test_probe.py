@@ -67,8 +67,11 @@ class Probe:
     def probe(self):
         return self.h["probe"](self.h)
 
-    def files(self):
+    def all_files(self):
         return list(self.mock["file_order"].values())
+
+    def files(self):
+        return [p for p in self.all_files() if "/boot_" not in p]
 
     def payload(self, path):
         return to_py(self.mock["files"][path])
@@ -99,15 +102,14 @@ class ProbeTests(unittest.TestCase):
             lua_path(HERE) + "/?.lua",
         ])
         lua.execute("package.path = %r" % path)
-        lua.execute("package.loaded['api'] = nil")
         if reject:
             rejected = "{" + ",".join("%s=true" % name for name in reject) + "}"
         else:
             rejected = "nil"
         harness = lua.execute(
             "local H = require('harness'); "
-            "return H.new({main_path=%r, reject=%s})"
-            % (lua_path(ADDON / "main.lua"), rejected))
+            "return H.new({main_path=%r, base_dir=%r, reject=%s})"
+            % (lua_path(ADDON / "main.lua"), lua_path(HERE), rejected))
         probe = Probe(lua, harness)
         probe.set_unit("player", id=1, name="Hero", x=10.5, y=20.5, z=30.5,
                        hp=100, max_hp=100, info={"level": 5})
@@ -227,7 +229,7 @@ class ProbeTests(unittest.TestCase):
         probe.emit("LOOT_DICE", 2)
         probe.h["unload"](probe.h)
         self.assertEqual(len(probe.files()), 2)
-        self.assertIsNone(probe.probe())
+        self.assertFalse(probe.probe()["alive"])
         probe.h["load"](probe.h)
         probe.advance(15000)
         self.assertTrue(probe.files()[-1].startswith("aaemu_probe/observations/probe_0002_"))
@@ -300,8 +302,8 @@ class ProbeTests(unittest.TestCase):
         probe.advance(1000, 2)
         probe.advance(15000)
         bags = probe.records_of("bag")
-        self.assertEqual([b["reason"] for b in bags], ["load", "bag_event"])
-        self.assertTrue(bags[1]["unchanged"])
+        self.assertEqual([b["reason"] for b in bags], ["load", "delayed_10s", "bag_event"])
+        self.assertTrue(bags[2]["unchanged"])
         # A real change is stored in full by the 60 s periodic snapshot.
         probe.mock["bag"][2] = probe.lua.table_from({"id": 12})
         probe.advance(15000, 4)
@@ -392,6 +394,38 @@ class ProbeTests(unittest.TestCase):
             self.assertFalse(guard["is_read_only"](name), name)
         for name in ("GetUnitId", "UnitInfo", "GetBagItemInfo", "Capacity"):
             self.assertTrue(guard["is_read_only"](name), name)
+
+    def test_sandbox_env_mirrors_real_globals(self):
+        # The real addon env has none of these; the stub must not either.
+        probe = self.make(load=False)
+        sandbox = probe.h["sandbox"]
+        for name in ("_G", "getfenv", "setfenv", "setmetatable", "select",
+                     "error", "assert", "rawget", "next", "os", "io",
+                     "loadstring", "loadfile", "package", "debug", "X2Chat"):
+            self.assertIsNone(sandbox[name], name)
+
+    def test_boot_trail_written_on_load(self):
+        probe = self.make()
+        steps = {}
+        for path in probe.all_files():
+            if "/boot_" in path:
+                steps[path.rsplit("boot_", 1)[1][:-4]] = probe.payload(path)
+        self.assertEqual(sorted(steps), ["0", "1", "2", "3", "4"])
+        self.assertTrue(steps["0"]["ok"])
+        self.assertEqual(steps["0"]["extra"]["sandbox"]["setmetatable"], "nil")
+        self.assertEqual(steps["0"]["extra"]["globals"]["UI_EVENTS"], "table")
+        self.assertEqual(steps["3"]["extra"]["registered_ok"], 206)
+        self.assertTrue(steps["2"]["extra"]["window"])
+        infos = [m for m in probe.mock["logs"].values() if "boot_0" in m[2]]
+        self.assertEqual(len(infos), 1)
+
+    def test_boot_reports_failure_not_silence(self):
+        probe = self.make(load=False)
+        probe.mock["settings_fail"] = True
+        probe.h["sandbox"]["UI_EVENTS"] = None
+        probe.h["load"](probe.h)
+        # Window/event setup still ran with the built-in list.
+        self.assertEqual(probe.mock["calls"]["RegisterEvent"], 206)
 
     def test_reload_replaces_previous_instance(self):
         probe = self.make()

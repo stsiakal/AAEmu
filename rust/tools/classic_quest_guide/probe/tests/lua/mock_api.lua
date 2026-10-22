@@ -58,6 +58,7 @@ function Mock.new(opts)
   function Widget.methods:SetStyle() end
   function Widget.methods:SetTitleText() end
   function Widget.methods:EnableDrag() return true end
+  function Widget.methods:ReleaseHandler(action) self._handlers[action] = nil end
   function Widget.methods:StartMoving() end
   function Widget.methods:StopMovingOrSizing() end
   function Widget.methods:SetHandler(action, handler)

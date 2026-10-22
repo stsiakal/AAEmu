@@ -9,7 +9,7 @@ local EVENT_NAMES = require("aaemu_probe/events")
 local Probe = {}
 Probe.__index = Probe
 
-local VERSION = "0.1.0"
+local VERSION = "0.1.1"
 local SCHEMA = "aaemu_probe.records"
 local FLUSH_MS = 15000
 local TARGET_POLL_MS = 1000
@@ -36,17 +36,31 @@ local function lib(api, name)
   return nil
 end
 
-local function global_env()
-  if _G then return _G end
-  if getfenv then
-    local ok, env = pcall(getfenv, 0)
-    if ok then return env end
+-- The addon sandbox has no setmetatable, select, _G, getfenv, error or os.
+-- Objects are plain tables with the class methods copied in.
+local function adopt(object, class)
+  for key, value in pairs(class) do
+    if object[key] == nil then object[key] = value end
   end
-  return nil
+  return object
+end
+
+-- Number of arguments up to the last non-nil one (no select in the sandbox).
+local function arg_count(args)
+  local top = 0
+  for key in pairs(args) do
+    if type(key) == "number" and key > top then top = key end
+  end
+  return top
+end
+
+function Probe:_boot(step, err, extra)
+  local hook = self.helpers and self.helpers.boot
+  if type(hook) == "function" then pcall(hook, step, err, extra) end
 end
 
 function Probe.new(api, helpers)
-  local self = setmetatable({
+  local self = adopt({
     api = api,
     helpers = helpers or {},
     alive = true,
@@ -78,10 +92,14 @@ function Probe.new(api, helpers)
     in_world_inventory_done = false,
     session = "0000",
     ui = nil,
+    since_delayed = 0,
+    delayed_done = false,
   }, Probe)
   self:_open_session()
   self:_record_start()
   self:_register_events()
+  self:_boot("3", self.last_error, {
+    registered_ok = self.registered_ok, registered_fail = self.registered_fail})
   self:_register_api_on()
   self:_run_inventory("load")
   self:_snapshot_bag("load")
@@ -265,12 +283,12 @@ function Probe:on_event(source, name, ...)
   end
   local now = self:_now()
   if not self:_rate_ok(name, now) then return end
-  local count = select("#", ...)
+  local raw = {...}
+  local count = arg_count(raw)
   local budget = {nodes = EVENT_LIMITS.max_nodes}
   local args = {}
   for index = 1, count do
-    local value = select(index, ...)
-    args[index] = U.sanitize(value, EVENT_LIMITS, 0, nil, budget)
+    args[index] = U.sanitize(raw[index], EVENT_LIMITS, 0, nil, budget)
   end
   local ctx = self:_context()
   self:_add("event", {
@@ -281,13 +299,12 @@ function Probe:on_event(source, name, ...)
 end
 
 local function make_widget_handler(self)
-  return function(...)
-    local a, b = ...
+  return function(a, b, ...)
     -- Handlers receive (widget, event, ...); tolerate (event, ...) too.
     if type(a) == "string" then
-      self:on_event("widget", a, select(2, ...))
+      self:on_event("widget", a, b, ...)
     else
-      self:on_event("widget", b, select(3, ...))
+      self:on_event("widget", b, ...)
     end
   end
 end
@@ -297,7 +314,8 @@ function Probe:_register_events()
   local iface = lib(api, "Interface")
   local made, window = false, nil
   if iface then
-    made, window = pcall(iface.CreateEmptyWindow, iface, "aaemu_probe_events")
+    made, window = pcall(iface.CreateEmptyWindow, iface,
+      "aaemu_probe_events", "UIParent")
   end
   if not made or type(window) ~= "table" then
     self:_set_error("event window unavailable: " .. tostring(window))
@@ -305,10 +323,11 @@ function Probe:_register_events()
     return
   end
   self.event_window = window
-  pcall(window.Show, window, true)
+  -- Same shape as AACstats: 1x1 hidden sink anchored at the screen corner.
+  pcall(window.SetExtent, window, 1, 1)
+  pcall(window.AddAnchor, window, "TOPLEFT", "UIParent", 0, 0)
   local names, seen = {}, {}
-  local env = global_env()
-  local runtime = env and env.UI_EVENTS
+  local runtime = self.helpers.ui_events
   local runtime_count = 0
   if type(runtime) == "table" then
     for key, value in pairs(runtime) do
@@ -340,6 +359,7 @@ function Probe:_register_events()
       self.registered_fail = self.registered_fail + 1
     end
   end
+  pcall(window.Show, window, false)
   self:_add("registrations", {
     mechanism = "widget RegisterEvent + SetHandler(OnEvent)",
     handler_ok = handler_ok,
@@ -408,17 +428,8 @@ function Probe:_surface_records()
       if type(key) == "string" then names[key] = type(value) end
     end
   end)
-  local env = global_env()
   local globals = {}
-  for _, name in ipairs(G.GLOBALS) do
-    local value = env and env[name]
-    globals[name] = value == nil and "nil" or type(value)
-  end
-  if env then
-    local count = 0
-    pcall(function() for _ in pairs(env) do count = count + 1 end end)
-    globals._global_count = count
-  end
+  for key, value in pairs(self.helpers.globals or {}) do globals[key] = value end
   return libs, names, globals
 end
 
@@ -562,6 +573,15 @@ function Probe:update(dt)
   self.since_poll = self.since_poll + dt
   self.since_flush = self.since_flush + dt
   self.since_bag = self.since_bag + dt
+  if not self.delayed_done then
+    self.since_delayed = self.since_delayed + dt
+    if self.since_delayed >= 10000 then
+      -- OnLoad can run before the character is in the world: repeat once.
+      self.delayed_done = true
+      self:_run_inventory("delayed_10s")
+      self:_snapshot_bag("delayed_10s")
+    end
+  end
   if self.bag_dirty_in then
     self.bag_dirty_in = self.bag_dirty_in - dt
     if self.bag_dirty_in <= 0 then
@@ -629,11 +649,11 @@ function Probe:refresh_ui()
 end
 
 function Probe:_record_start()
-  local env = global_env()
   self:_add("meta", {
     probe_version = VERSION, session = self.session,
     ui_ms = self:_now(), lt = self:_local_time(),
-    has_global_UI_EVENTS = (env and env.UI_EVENTS ~= nil) or false,
+    has_global_UI_EVENTS = self.helpers.ui_events ~= nil,
+    sandbox_globals = self.helpers.sandbox_globals,
     flush_ms = FLUSH_MS, max_buffer = MAX_BUFFER, rate_max = RATE_MAX,
     rate_window_ms = RATE_WINDOW_MS, context_ttl_ms = CONTEXT_TTL_MS,
     quest_count_available = false,
@@ -648,7 +668,7 @@ function Probe:destroy()
   if self.ui and self.ui.destroy then pcall(self.ui.destroy, self.ui) end
   local window = self.event_window
   if window then
-    pcall(window.Show, window, false)
+    pcall(window.ReleaseHandler, window, "OnEvent")
     local iface = lib(self.api, "Interface")
     if iface then pcall(iface.Free, iface, window) end
   end

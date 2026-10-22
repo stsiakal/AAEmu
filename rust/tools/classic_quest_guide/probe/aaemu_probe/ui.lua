@@ -4,7 +4,6 @@
 local U = require("aaemu_probe/util")
 
 local UI = {}
-UI.__index = UI
 
 local HINT_1 = "Play about 10 minutes: take and turn in a quest, kill and loot,"
 local HINT_2 = "use a doodad, open a merchant, mount. Then press Save."
@@ -18,7 +17,8 @@ local function safe(object, name, ...)
 end
 
 function UI.new(api, probe)
-  local self = setmetatable({api = api, probe = probe, labels = {}}, UI)
+  local self = {api = api, probe = probe, labels = {}}
+  for key, value in pairs(UI) do self[key] = value end
   self:build()
   return self
 end
@@ -35,7 +35,7 @@ function UI:_label(id, text, y)
   local label = self:_child(self.main, "label", id)
   if not label then return nil end
   safe(label, "SetExtent", 400, 16)
-  safe(label, "AddAnchor", "TOPLEFT", self.main, "TOPLEFT", 12, y)
+  safe(label, "AddAnchor", "TOPLEFT", self.main, 12, y)
   safe(label, "SetText", text)
   safe(label, "Show", true)
   return label
@@ -45,7 +45,7 @@ function UI:_button(id, text, x, y, handler)
   local button = self:_child(self.main, "button", id)
   if not button then return nil end
   safe(button, "SetExtent", 90, 22)
-  safe(button, "AddAnchor", "TOPLEFT", self.main, "TOPLEFT", x, y)
+  safe(button, "AddAnchor", "TOPLEFT", self.main, x, y)
   safe(button, "SetText", text)
   local basic = self.probe.helpers.button_basic
   local skinned = false
@@ -69,7 +69,8 @@ function UI:build()
   if not main then return end
   self.main = main
   safe(main, "SetExtent", 440, 190)
-  safe(main, "AddAnchor", "TOPLEFT", "UIParent", "TOPLEFT", 40, 160)
+  safe(main, "AddAnchor", "TOPLEFT", "UIParent", 40, 160)
+  safe(main, "SetTitle", "AAEmu probe")
   safe(main, "SetTitleText", "AAEmu probe")
   if safe(main, "EnableDrag", true) then
     safe(main, "SetHandler", "OnDragStart", function(widget)
