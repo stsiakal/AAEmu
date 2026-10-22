@@ -128,6 +128,7 @@ The seed suites:
 | `emote-spoof` | `CSExpressEmotionPacket` for another object is ignored (`systems/services/express_text.rs`), while the sender's own emote is announced |
 | `guild-guards` | A guild-invitation reply without a pending invite is refused (`systems/social/expedition.rs`); a normal invite + accept joins |
 | `authority-guards` | A loot take from 5+ m is refused while a melee-range take works (`systems/economy/looting.rs`); an in-place resurrection without an offer is refused, with a scroll offer (item 18456) it works once, and the resurrection point always works (`systems/skills/resurrect.rs`) |
+| `ship-shallow` | A ship summoned on a spot whose water is shallower than the hull draft (clipper in the 1 m Desireen pond) is refused with a WARN, while open sea works (`systems/vehicles/slaves.rs`) |
 
 ## Reports
 

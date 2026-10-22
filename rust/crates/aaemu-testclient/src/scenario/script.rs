@@ -106,6 +106,8 @@
 //! ginvite [name]                     CSInviteToExpedition to the peer (or the named character)
 //! gaccept                            wait for the guild invitation and join
 //! grole <role> <character id>        CSChangeExpeditionMemberRole (255 owner, 2 officer)
+//! scast <skill> <item template> <x> <y> <z> [rot]
+//!                                    summon-item cast on a spot (`SkillCastPositionTarget`)
 //! useitem <template> <stack id>     use an existing bag stack with `icast`
 //! slavekill                         `/kill` the slave summoned by the last `icast` (GM)
 //! drop                               end the script without logging out (a disconnect)
@@ -814,6 +816,43 @@ async fn run_lines(
                     if p.is_sc(sc::SCSkillEndedPacket) {
                         println!("    SCSkillEnded");
                     }
+                    if p.is_sc(sc::SCSlaveCreatedPacket) {
+                        let mut st = p.stream();
+                        st.read_bc()?; // owner
+                        st.read_u16()?; // tl id
+                        last_slave = st.read_bc()?;
+                        println!("    SCSlaveCreated slave obj {last_slave}");
+                    }
+                    if p.is_sc(sc::SCErrorMsgPacket) {
+                        println!("    SCErrorMsg {:?}", p.stream().read_i16());
+                    }
+                    if let Ok(res) = skill_response_result(p) {
+                        println!("    {} result {res}", p.name());
+                    }
+                }
+                show(&got);
+            }
+            "scast" => {
+                // scast <skill> <item template> <x> <y> <z> [rot]: summon item cast on a spot.
+                let skill: u32 = num(&parts, 0)?;
+                let item_tpl: u32 = num(&parts, 1)?;
+                let item = *items
+                    .get(&item_tpl)
+                    .with_context(|| format!("item {item_tpl} not added with `item`"))?;
+                let x: f32 = num(&parts, 2)?;
+                let y: f32 = num(&parts, 3)?;
+                let z: f32 = num(&parts, 4)?;
+                let rot: f32 = if parts.len() > 5 {
+                    num(&parts, 5)?
+                } else {
+                    0.0
+                };
+                game.start_item_skill_at(skill, item, item_tpl, (x, y, z), rot)
+                    .await?;
+                let got = game
+                    .drain(Duration::from_millis(2000), Duration::from_secs(10))
+                    .await?;
+                for p in &got {
                     if p.is_sc(sc::SCSlaveCreatedPacket) {
                         let mut st = p.stream();
                         st.read_bc()?; // owner

@@ -1,0 +1,29 @@
+# Ship summon depth guard (systems/vehicles/slaves.rs `validated_summon_placement`, `hull_draft`):
+#
+#   sailor    GM with a Clipper summon item (5223, skill 15802, hull model 393): summoning it on the
+#             1 m deep pond at (15578, 15382) near Desireen is refused (the hull would be buried in
+#             the bed and thrown up to ~14 m above the water); summoning it on open sea at
+#             (13505, 12500), 27 m deep, creates the slave.
+#   watcher   expects the refusal WARN in the game log
+
+suite ship-shallow
+bot sailor gm
+bot watcher
+
+[sailor]
+item 5223 1
+tp 15578 15382 126.5
+sync pond 2
+pump 1
+scast 15802 5223 15578 15382 126.9
+sync sea 2
+tp 13500 12500 100
+scast 15802 5223 13505 12500 99.9
+pump 1
+slavekill
+
+[watcher]
+sync pond 2
+expectlog too.shallow.for.the.hull 15
+sync sea 2
+pump 8
