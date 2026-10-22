@@ -10,6 +10,8 @@ pub fn tools(pid: Value) -> Vec<Value> {
     vec![
         tool("client_perf", "Record DXGI frame intervals (profile resets and enables, off disables, status reads). Reports FPS, mean, p95, p99 and maximum for the latest 2048 rendered frames. Screenshot readback can affect timings; capture after profiling.",json!({"pid":pid,"action":{"type":"string","enum":["profile","status","off"]}}), &["action"], false),
         tool("client_input", "Press a keyboard key or number-row chord through the client's CryInput on its main thread. Optional ctrl/shift/alt modifiers are pressed before the key and released after it. Works with hidden rendering, without desktop keystrokes. Automatic release after 1..10000 ms survives MCP disconnect. release clears all test keys.",json!({"pid":pid,"key":{"type":"string","enum":["w","a","s","d","q","e","r","t","y","u","i","o","p","space","f","g","1","2","3","4","5","6","7","8","9","0","release"]},"modifiers":{"type":"array","maxItems":3,"uniqueItems":true,"items":{"type":"string","enum":["ctrl","shift","alt"]}},"duration_ms":{"type":"integer","minimum":1,"maximum":10000}}), &["key"], false),
+        tool("client_wheel", "Turn the mouse wheel by signed notches (positive up, negative down, magnitude 1..50) through the client's CryInput on its main thread. Optional ctrl/shift/alt modifiers are held for the wheel events. The release follows on the client's next input tick. Works with hidden rendering, without desktop input.",json!({"pid":pid,"notches":{"type":"integer","minimum":-50,"maximum":50},"modifiers":{"type":"array","maxItems":3,"uniqueItems":true,"items":{"type":"string","enum":["ctrl","shift","alt"]}}}), &["notches"], false),
+        tool("client_mouse_look", "Turn the camera or character by a relative mouse delta (dx, dy in client pixels, each -4095..4095, not both zero) with the right mouse button held through the client's CryInput on its main thread. The button is released by the client's next input ticks. Works with hidden rendering, without desktop input.",json!({"pid":pid,"dx":{"type":"integer","minimum":-4095,"maximum":4095},"dy":{"type":"integer","minimum":-4095,"maximum":4095}}), &["dx","dy"], false),
         tool("client_pointer", "Move, left-click (click), or right-click (right_click) through the supported 1.2 client's native mouse handler on its main thread. Coordinates are client pixels, bounded to 0..4095. Hidden rendering is supported. Rejects native mouse-lock mode before movement to preserve the desktop cursor. A click holds for 100 ms with automatic release independent of MCP; verify the resulting UI or gameplay action.",json!({"pid":pid,"action":{"type":"string","enum":["move","click","right_click"]},"x":{"type":"integer","minimum":0,"maximum":4095},"y":{"type":"integer","minimum":0,"maximum":4095}}), &["action","x","y"], false),
         tool("client_action", "Execute a valid 1.2 UI hotkey action, such as do_interaction_1, cycle_hostile_forward or toggle_bag. Continuous movement uses client_input.",json!({"pid":pid,"action":{"type":"string","minLength":1,"maxLength":96}}), &["action"], false),
         tool("client_inventory", "Read inventory slots, item templates, names, counts and use skills from the live client. bag_id defaults to 1 (inventory).",json!({"pid":pid,"bag_id":{"type":"integer","minimum":1,"maximum":2}}), &[], true),
@@ -114,8 +116,7 @@ end
 "#;
 
 #[cfg(any(windows, test))]
-pub fn input_command(args: &Value) -> anyhow::Result<String> {
-    let key = args["key"].as_str().context("missing key")?;
+fn modifier_prefix(args: &Value) -> anyhow::Result<String> {
     let mut prefix = String::new();
     if let Some(modifiers) = args.get("modifiers") {
         let modifiers = modifiers.as_array().context("modifiers must be an array")?;
@@ -137,6 +138,38 @@ pub fn input_command(args: &Value) -> anyhow::Result<String> {
             }
         }
     }
+    Ok(prefix)
+}
+
+#[cfg(any(windows, test))]
+pub fn wheel_command(args: &Value) -> anyhow::Result<String> {
+    let notches = args["notches"]
+        .as_i64()
+        .context("notches must be an integer")?;
+    if notches == 0 || notches.unsigned_abs() > 50 {
+        bail!("notches must be nonzero with an absolute value of at most 50");
+    }
+    let prefix = modifier_prefix(args)?;
+    Ok(format!("{prefix}wheel {notches}"))
+}
+
+#[cfg(any(windows, test))]
+pub fn mouse_look_command(args: &Value) -> anyhow::Result<String> {
+    let dx = args["dx"].as_i64().context("dx must be an integer")?;
+    let dy = args["dy"].as_i64().context("dy must be an integer")?;
+    if dx.unsigned_abs() > 4095 || dy.unsigned_abs() > 4095 {
+        bail!("dx and dy must be within -4095..4095 client pixels");
+    }
+    if dx == 0 && dy == 0 {
+        bail!("dx and dy cannot both be zero");
+    }
+    Ok(format!("mouse_look {dx} {dy}"))
+}
+
+#[cfg(any(windows, test))]
+pub fn input_command(args: &Value) -> anyhow::Result<String> {
+    let key = args["key"].as_str().context("missing key")?;
+    let prefix = modifier_prefix(args)?;
     if key == "release" {
         if !prefix.is_empty() {
             bail!("release cannot have modifiers");
@@ -601,6 +634,14 @@ mod tests {
                 "client_input",
                 json!({"key":"1","modifiers":["ctrl","shift","alt","ctrl"]}),
             ),
+            ("client_wheel", json!({"notches":51})),
+            ("client_wheel", json!({"notches":-51})),
+            (
+                "client_wheel",
+                json!({"notches":1,"modifiers":["ctrl","ctrl"]}),
+            ),
+            ("client_mouse_look", json!({"dx":4096,"dy":0})),
+            ("client_mouse_look", json!({"dx":0,"dy":-4096})),
             ("client_entities", json!({"limit":201})),
             ("client_use_item", json!({"item_template_id":0})),
             ("client_chat", json!({"message":""})),
@@ -639,6 +680,84 @@ mod tests {
         assert!(input_command(&json!({"key":"release","modifiers":["ctrl"]})).is_err());
         assert!(input_command(&json!({"key":"1","modifiers":["ctrl","ctrl"]})).is_err());
     }
+    #[test]
+    fn wheel_commands_apply_modifiers_and_reject_invalid_notches() {
+        let schema = tools(json!({}))
+            .into_iter()
+            .find(|t| t["name"] == "client_wheel")
+            .unwrap();
+        assert_eq!(schema["annotations"]["readOnlyHint"], false);
+        for (args, expected) in [
+            (json!({"notches":3}), "wheel 3"),
+            (json!({"notches":-2}), "wheel -2"),
+            (
+                json!({"notches":50,"modifiers":["alt","ctrl"]}),
+                "ctrl+alt+wheel 50",
+            ),
+            (
+                json!({"notches":-50,"modifiers":["shift"]}),
+                "shift+wheel -50",
+            ),
+        ] {
+            super::super::validate(&schema["inputSchema"], &args).unwrap();
+            assert_eq!(wheel_command(&args).unwrap(), expected);
+        }
+        for args in [
+            json!({}),
+            json!({"notches":0}),
+            json!({"notches":51}),
+            json!({"notches":-51}),
+            json!({"notches":1.5}),
+            json!({"notches":"3"}),
+            json!({"notches":1,"modifiers":["meta"]}),
+            json!({"notches":1,"modifiers":["ctrl","ctrl"]}),
+        ] {
+            assert!(wheel_command(&args).is_err());
+        }
+        for args in [
+            json!({"notches":51}),
+            json!({"notches":-51}),
+            json!({"notches":1.5}),
+            json!({"notches":1,"modifiers":["meta"]}),
+        ] {
+            assert!(super::super::validate(&schema["inputSchema"], &args).is_err());
+        }
+    }
+
+    #[test]
+    fn mouse_look_commands_are_bounded_relative_deltas() {
+        let schema = tools(json!({}))
+            .into_iter()
+            .find(|t| t["name"] == "client_mouse_look")
+            .unwrap();
+        assert_eq!(schema["annotations"]["readOnlyHint"], false);
+        for (args, expected) in [
+            (json!({"dx":100,"dy":-40}), "mouse_look 100 -40"),
+            (json!({"dx":-4095,"dy":4095}), "mouse_look -4095 4095"),
+            (json!({"dx":0,"dy":1}), "mouse_look 0 1"),
+        ] {
+            super::super::validate(&schema["inputSchema"], &args).unwrap();
+            assert_eq!(mouse_look_command(&args).unwrap(), expected);
+        }
+        for args in [
+            json!({}),
+            json!({"dx":0,"dy":0}),
+            json!({"dx":4096,"dy":0}),
+            json!({"dx":0,"dy":-4096}),
+            json!({"dx":1.5,"dy":0}),
+            json!({"dx":"1","dy":0}),
+        ] {
+            assert!(mouse_look_command(&args).is_err());
+        }
+        for args in [
+            json!({"dx":4096,"dy":0}),
+            json!({"dx":0,"dy":-4096}),
+            json!({"dx":1.5,"dy":0}),
+        ] {
+            assert!(super::super::validate(&schema["inputSchema"], &args).is_err());
+        }
+    }
+
     #[test]
     fn pointer_commands_preserve_exact_coordinates_and_reject_invalid_requests() {
         assert_eq!(

@@ -34,6 +34,13 @@ static bool mouse_pending=false;
 static ULONGLONG mouse_until=0;
 static int mouse_button=256;
 static const char* mouse_button_name() { return mouse_button==257?"mouse2":"mouse1"; }
+// r208022 mouse symbols from the CMouse constructor sub_3350465A (RVAs below):
+// mouse1..8 = 256..263, mwheel_up/down = 264/265, maxis_x/y = 266/267 (state 8).
+static const int wheel_up_id=264,wheel_down_id=265,axis_x_id=266,axis_y_id=267;
+static bool wheel_held=false;
+static ULONGLONG wheel_until=0;
+static int wheel_id=264;
+static const char* wheel_name="mwheel_up";
 // SInputEvent from CryInput.dll sub_3350439C: 32 bytes, value at +24.
 struct Event { int device, state; const char* name; int id, unicode, modifiers;
     float value; void* symbol; };
@@ -132,6 +139,31 @@ static int held_modifiers() {
     for(size_t i=0;i<held.size();++i) mask|=held[i].modifiers;
     return mask;
 }
+// Native CMouse::Update (sub_33504DE2) emits wheel and axis events through
+// CMessageInput::PostInputEvent (slot 8, RVA 14D6). Dispatch our synthetic events
+// through the same slot so listeners see identical event fields.
+static bool dispatch(void* env,const Event& event) {
+    if(!checked(env)) return false;
+    try {
+        ModifierShadow shadow(env,event.modifiers);
+#ifdef AADRIVER_INPUT_TEST
+        extern bool record_mouse(const Event&);
+        return record_mouse(event);
+#else
+        void* object=checked(env);
+        EnabledInput enabled(object);
+        typedef void (__thiscall *Post)(void*,const Event&);
+        ((Post)(*(void***)object)[8])(object,event);
+        return true;
+#endif
+    } catch(...) { return false; }
+}
+static void release_wheel(void* env) {
+    if(!wheel_held) return;
+    wheel_held=false;
+    // The native Update releases with the current physical modifier state.
+    dispatch(env,Event{1,2,wheel_name,wheel_id,0,physical_modifiers(env)|held_modifiers(),0.f,NULL});
+}
 static bool mouse_slots_supported(void** slots,BYTE* module) {
     // CMessageInput vtable RVA C850, forwarding to the owned mouse device.
     return slots[26]==module+0x4564 && slots[28]==module+0x457C;
@@ -204,6 +236,11 @@ static void tick_mouse(void* env,ULONGLONG now) {
     if(!mouse_event(env,mouse_button,1,mouse_button_name(),1.f)) { release_mouse(env);return; }
     mouse_until=now+100;
 }
+// Hold a wheel press for a few frames; the native Update also presses and releases
+// mwheel_up/down on consecutive frames instead of both in one dispatch.
+static void tick_wheel(void* env,ULONGLONG now) {
+    if(wheel_held && now>=wheel_until) release_wheel(env);
+}
 static std::string mouse_control(void* env,const std::string& command,int button,ULONGLONG now) {
     bool click=button!=0;
     const char* expected_name=button==257?"mouse_right_click":click?"mouse_click":"mouse_move";
@@ -253,12 +290,14 @@ void release(void* env) {
     // All primary keys leave before any chord modifiers.
     for(size_t i=0;i<held.size();++i) post(env,*held[i].key,false,physical_modifiers(env)|mask);
     release_mouse(env);
+    release_wheel(env);
     held.clear();
     release_modifiers(env,mask,0);
 }
 static void tick_at(void* env,ULONGLONG now) {
     // Release before same-deadline keyboard modifiers, with no dependency on the pipe.
     tick_mouse(env,now);
+    tick_wheel(env,now);
     for(size_t i=0;i<held.size();) {
         if(now>=held[i].until) {
             int mask=held_modifiers();
@@ -271,8 +310,123 @@ static void tick_at(void* env,ULONGLONG now) {
     }
 }
 void tick(void* env) { tick_at(env,GetTickCount64()); }
+static bool split_modifiers(char* name,int& mask) {
+    mask=0;
+    char* primary=name;
+    while(char* plus=strchr(primary,'+')) {
+        *plus=0;
+        int part=0;
+        for(size_t i=0;i<3;++i) if(!strcmp(primary,modifier_names[i])) part=modifiers[i].modifier;
+        if(!part || (mask&part)!=0) return false;
+        mask|=part;
+        primary=plus+1;
+    }
+    memmove(name,primary,strlen(primary)+1);
+    return true;
+}
+static bool parse_signed(const std::string& text,int& value,int limit) {
+    if(text.empty()) return false;
+    size_t i=0;bool negative=false;
+    if(text[0]=='-') { negative=true;i=1; }
+    if(i==text.size()) return false;
+    int magnitude=0;
+    for(;i<text.size();++i) {
+        if(text[i]<'0' || text[i]>'9') return false;
+        magnitude=magnitude*10+(text[i]-'0');
+        if(magnitude>limit) return false;
+    }
+    value=negative?-magnitude:magnitude;
+    return true;
+}
+static bool is_wheel_command(const std::string& command) {
+    size_t end=command.find(' ');
+    std::string first=command.substr(0,end);
+    size_t plus=first.rfind('+');
+    return first.substr(plus==std::string::npos?0:plus+1)=="wheel";
+}
+static std::string wheel_control(void* env,const std::string& command,ULONGLONG now) {
+    std::istringstream words(command);
+    std::string name,count_text,extra;
+    if(!(words>>name>>count_text) || (words>>extra))
+        return "2wheel expects <modifiers+>wheel <notches>";
+    if(name.size()>=32) return "2unsupported or duplicate modifier";
+    char token[32]={0};
+    memcpy(token,name.data(),name.size());
+    int mask=0;
+    if(!split_modifiers(token,mask)) return "2unsupported or duplicate modifier";
+    if(strcmp(token,"wheel")) return "2wheel expects <modifiers+>wheel <notches>";
+    int notches=0;
+    if(!parse_signed(count_text,notches,50) || notches==0)
+        return "2wheel notches must be nonzero with an absolute value of at most 50";
+    if(!checked(env)) return "2CryInput is not the supported r208022 build";
+    if(mask!=0 && !modifier_state_supported(env))
+        return "2CryInput modifier state is not the supported r208022 build";
+    // Complete any previous press before starting a new one.
+    release_wheel(env);
+    int before=held_modifiers(),down=before;
+    for(size_t i=0;i<3;++i) {
+        const Key& mod=modifiers[i];
+        if((mask&mod.modifier)!=0 && (down&mod.modifier)==0) {
+            down|=mod.modifier;
+            if(!post(env,mod,true,physical_modifiers(env)|down)) {
+                release_modifiers(env,down&~mod.modifier,before);
+                return "2wheel input unavailable";
+            }
+        }
+    }
+    bool up=notches>0;
+    int id=up?wheel_up_id:wheel_down_id;
+    const char* symbol=up?"mwheel_up":"mwheel_down";
+    if(!dispatch(env,Event{1,1,symbol,id,0,physical_modifiers(env)|down,(float)notches,NULL})) {
+        release_modifiers(env,down,before);
+        return "2wheel input unavailable";
+    }
+    release_modifiers(env,down,before);
+    wheel_held=true;
+    wheel_until=now+50;
+    wheel_id=id;
+    wheel_name=symbol;
+    return "0wheel notch press queued (release follows on the next client tick)";
+}
+static std::string mouse_look_control(void* env,const std::string& command,ULONGLONG now) {
+    std::istringstream words(command);
+    std::string name,x_text,y_text,extra;
+    if(!(words>>name>>x_text>>y_text) || (words>>extra) || name!="mouse_look")
+        return "2mouse look expects dx dy within -4095..4095";
+    int dx=0,dy=0;
+    if(!parse_signed(x_text,dx,4095) || !parse_signed(y_text,dy,4095) || (dx==0 && dy==0))
+        return "2mouse look expects dx dy within -4095..4095 (not both zero)";
+    if(mouse_held) return "2mouse button already held; release first";
+    if(!checked_mouse(env)) return "2CryInput mouse is not the supported r208022 build";
+    if(!mouse_event(env,257,1,"mouse2",1.f)) return "2mouse look unavailable";
+    int mask=physical_modifiers(env)|held_modifiers();
+    int span_x=dx<0?-dx:dx,span_y=dy<0?-dy:dy;
+    int span=span_x>span_y?span_x:span_y;
+    int steps=(span+99)/100;
+    if(steps<1) steps=1;
+    int sent_x=0,sent_y=0;
+    for(int i=1;i<=steps;++i) {
+        int next_x=dx*i/steps,next_y=dy*i/steps;
+        int step_x=next_x-sent_x,step_y=next_y-sent_y;
+        bool ok=true;
+        if(step_x) ok=dispatch(env,Event{1,8,"maxis_x",axis_x_id,0,mask,(float)step_x,NULL});
+        if(ok && step_y) ok=dispatch(env,Event{1,8,"maxis_y",axis_y_id,0,mask,(float)step_y,NULL});
+        if(!ok) {
+            mouse_event(env,257,2,"mouse2",0.f);
+            return "2mouse look unavailable";
+        }
+        sent_x=next_x;sent_y=next_y;
+    }
+    mouse_held=true;
+    mouse_pending=false;
+    mouse_button=257;
+    mouse_until=now+100;
+    return "0mouse look applied (right button released after 100 ms)";
+}
 static std::string control_at(void* env,const std::string& command,ULONGLONG now) {
     if(command=="release") { release(env);return "0released"; }
+    if(is_wheel_command(command)) return wheel_control(env,command,now);
+    if(command.compare(0,10,"mouse_look")==0) return mouse_look_control(env,command,now);
     if(command.compare(0,10,"mouse_move")==0) return mouse_control(env,command,0,now);
     if(command.compare(0,11,"mouse_click")==0) return mouse_control(env,command,256,now);
     if(command.compare(0,17,"mouse_right_click")==0) return mouse_control(env,command,257,now);
@@ -280,17 +434,9 @@ static std::string control_at(void* env,const std::string& command,ULONGLONG now
     if(sscanf_s(command.c_str(),"%31s %u %c",name,(unsigned)sizeof(name),&duration,&extra,1)!=2
         || duration<1 || duration>10000) return "2input expects a supported key and duration 1..10000 ms";
     int mask=0;
-    char* primary=name;
-    while(char* plus=strchr(primary,'+')) {
-        *plus=0;
-        int part=0;
-        for(size_t i=0;i<3;++i) if(!strcmp(primary,modifier_names[i])) part=modifiers[i].modifier;
-        if(!part || (mask&part)!=0) return "2unsupported or duplicate modifier";
-        mask|=part;
-        primary=plus+1;
-    }
+    if(!split_modifiers(name,mask)) return "2unsupported or duplicate modifier";
     const Key* key=NULL;
-    for(size_t i=0;i<sizeof(keys)/sizeof(keys[0]);++i) if(!strcmp(primary,keys[i].name)) key=&keys[i];
+    for(size_t i=0;i<sizeof(keys)/sizeof(keys[0]);++i) if(!strcmp(name,keys[i].name)) key=&keys[i];
     if(!key) return "2unsupported key";
     if(!checked(env)) return "2CryInput is not the supported r208022 build";
     if((mask|held_modifiers())!=0 && !modifier_state_supported(env))

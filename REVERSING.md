@@ -138,6 +138,7 @@ any of this inside the client folders; outputs go to `D:\aa-re\`.
 | `rust/crates/aaemu-game/PORTING.md` | Per-subsystem status, deviations, C# and engine bugs mirrored; "systems::ai collision" = how physics is wired into the game server |
 | `rust/crates/aaemu-game/CONTRIBUTING-PORT.md` | Game-crate module layout, object model, locking, test conventions |
 | `rust/docs/client/LUA-DRIVER.md` | Running Lua inside the 1.2 client (addresses, design, usage) |
+| `D:\aa-re\aac\RE-MAP-30.md` | 3.0.4.2 client RE map: 1.2 -> 3.0 function matches (`map30\map30.csv`, `m12_<addr>` names in `proj-aa30u`), subsystem coverage, 3.0-only clusters. Note: the 1.2 project's "18,961 named" are almost all `Unwind@`/`Catch_All@` labels (99 real names) |
 | `rust/LIVE-TESTING.md` | Private MySQL, live servers, headless test client, C#-vs-Rust parity method |
 | `rust/PORT-AUDIT.md` (+ `rust/tools/port_audit/`) | Every former C# file mapped to its Rust counterpart |
 | `rust/CLIENT-DB-GAP-AUDIT.md` | Server vs. 1.2 client + databases gap audit (packets, unused tables, hardcoded values, quests, Ghidra unpack evidence); supersedes `rust/CLIENT-FEATURE-GAPS.md` |
