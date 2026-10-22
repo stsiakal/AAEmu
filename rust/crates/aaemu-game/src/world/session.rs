@@ -867,6 +867,8 @@ pub fn notify_in_game_completed_player(server: &GameServer, p: &PlayerRef) {
     crate::systems::social::session::on_player_join(server, p);
     // Quest evaluations parked since the select (the client can handle them now).
     crate::systems::quests::on_in_game_completed(server, p.character_id);
+    // A summoned vehicle that outlived the previous session: tell the owner it is theirs.
+    crate::systems::vehicles::on_player_join(server, p);
     let c = p.data();
     tracing::info!(
         "NotifyInGameCompleted SubZoneId {}, {} ({})",

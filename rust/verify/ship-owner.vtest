@@ -1,0 +1,49 @@
+# A summoned ship belongs to its owner across a relog: the server tells the returning owner which
+# slave is theirs (SCSlaveCreated naming the owner, the Bevy client's "own slave") and the owner
+# can board it again; another player's leftover ship does not stop a fresh account from
+# summoning and boarding its own.
+suite ship-owner
+bot own gm
+bot own2 again own
+bot oth gm
+bot rm gm
+
+[own]
+tp 13500 12500 100
+item 5223 1
+icast 15802 5223 self
+ownslave 8
+sync summoned 2
+drop
+
+[own2]
+ownslave 12
+rawcs 31 TLID
+attached
+
+[oth]
+tp 13500 12535 100
+item 5223 1
+sync summoned 2
+icast 15802 5223 self
+ownslave 8
+rawcs 31 TLID
+attached
+
+[rm]
+tp 13500 12465 100
+item 5223 1
+icast 15802 5223 self
+ownslave 8
+gm slave info id SLAVEOBJ
+expectreply ObjId:
+gm slave remove id SLAVEOBJ
+expectreply removed successfully
+pump 2
+noownslave
+gm slave info id SLAVEOBJ
+expectreply does not exist
+# one row per summoning item: the summon again reuses the saved row
+icast 15802 5223 self
+ownslave 8
+expectdb "SELECT COUNT(*) FROM slaves s JOIN characters c ON c.id=s.owner_id WHERE c.name='${rm}' AND s.owner_type=0" 1 5
