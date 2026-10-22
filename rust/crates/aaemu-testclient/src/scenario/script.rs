@@ -514,12 +514,10 @@ async fn run_lines(
             "gm" => {
                 let line = rest.replace("SLAVEOBJ", &last_slave.to_string());
                 let reply = gm_command(game, &line).await?;
-                last_gm_text = reply
-                    .iter()
-                    .filter_map(chat_text)
-                    .collect::<Vec<_>>()
-                    .join("
-");
+                last_gm_text = reply.iter().filter_map(chat_text).collect::<Vec<_>>().join(
+                    "
+",
+                );
                 // SCSlaveCreatedPacket: owner bc, tl_id u16, slave bc (`SLAVE` in `rawcs`).
                 for p in reply.iter().filter(|p| p.is_sc(sc::SCSlaveCreatedPacket)) {
                     let mut st = p.stream();

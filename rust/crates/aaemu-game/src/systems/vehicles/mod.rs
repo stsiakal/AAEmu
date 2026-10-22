@@ -548,6 +548,10 @@ pub fn force_dismount_and_despawn(
         if slave.data().leave_task != gen {
             return;
         }
+        tracing::info!(
+            "{}: the delay ran out, despawning the vehicle of the offline owner",
+            player.data().unit.name
+        );
         slaves::remove_and_despawn_all_active_owned_slaves(&server, &player, false);
     });
     res

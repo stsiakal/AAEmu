@@ -1728,6 +1728,12 @@ pub async fn create_for_owner(
         save(server, &active);
         // TODO (C#): If too far away, don't delete
         delete(server, Some(owner), world.id, active.obj_id, false);
+        // Fork fix: the C# went on to summon a second vehicle when the first one refused to
+        // go (cargo loaded, `SlaveEquipmentLoadedItem`), leaving the owner with two active
+        // slaves. One active summoned vehicle per owner.
+        if world.slave(active.obj_id).is_some() {
+            return None;
+        }
     }
     if item_id == 0 || item_template_id == 0 {
         return None;
@@ -3179,11 +3185,7 @@ pub fn on_zone_change(server: &GameServer, slave: &SlaveRef, last_zone: u32, new
 /// Tells `owner` (only) that `slave` is its own: `SCSlaveCreatedPacket` without the spawn effect
 /// and the first `SCMySlavePacket` position report, as a relogged owner needs them (the client
 /// learns the owned timeline from the creation announcement only).
-pub fn announce_to_owner(
-    world: &WorldInstance,
-    owner: &PlayerRef,
-    slave: &SlaveRef,
-) {
+pub fn announce_to_owner(world: &WorldInstance, owner: &PlayerRef, slave: &SlaveRef) {
     let obj = WorldObject::from(slave);
     let w = world.world_pos_rot(&obj);
     let (created, mine) = {

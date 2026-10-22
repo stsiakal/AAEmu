@@ -47,3 +47,4 @@ expectreply does not exist
 icast 15802 5223 self
 ownslave 8
 expectdb "SELECT COUNT(*) FROM slaves s JOIN characters c ON c.id=s.owner_id WHERE c.name='${rm}' AND s.owner_type=0" 1 5
+expectdb "SELECT COUNT(*) FROM slaves s JOIN characters c ON c.id=s.owner_id WHERE c.name='${rm}' AND s.owner_type=2" 0

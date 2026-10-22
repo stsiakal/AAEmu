@@ -4195,3 +4195,182 @@ async fn ship_cannon_gunner_seat_skill_and_leaving() {
     assert!(!pa.data().is_riding);
     assert!(cannon.data().attached_characters.is_empty());
 }
+
+/// A summoned vehicle of `owner` in instance 0 (`create_core`, the bag item of
+/// [`player_with_item`]).
+fn summon_slave(server: &GameServer, owner: &PlayerRef, item_id: u64) -> crate::world::SlaveRef {
+    let world = server.world.world(0).unwrap();
+    server.systems.npcs.spawns.get_or_create(&world);
+    let item = mates::owned_item(server, owner, item_id).unwrap();
+    slaves::create_core(
+        server,
+        &world,
+        Some(owner),
+        None,
+        SLAVE_TEMPLATE,
+        Some(item),
+        false,
+        None,
+        None,
+    )
+    .expect("slave")
+}
+
+#[tokio::test]
+async fn a_relogged_owner_is_told_which_slave_is_theirs() {
+    let server = server_with(slave_data());
+    let mut a = TestClient::new(&server, 1, 1);
+    let mut b = TestClient::new(&server, 2, 2);
+    let (pa, item_id) = player_with_item(&server, &a, 1, PA, (100.0, 100.0), SLAVE_ITEM);
+    let pb = spawn_player(&server, &b, test_character(2, "B", 110.0, 110.0), PB);
+    let slave = summon_slave(&server, &pa, item_id);
+    let tl = slave.data().unit.tl_id;
+    a.drain();
+    b.drain();
+
+    // Nothing to announce to a player without a vehicle, or to somebody else's.
+    super::on_player_join(&server, &pb);
+    assert!(b.drain().is_empty());
+
+    // The owner logs in again while the vehicle waits for its despawn task.
+    super::on_player_join(&server, &pa);
+    let fa = a.drain();
+    assert_eq!(
+        ops(&fa),
+        vec![sc::SCSlaveCreatedPacket, sc::SCMySlavePacket]
+    );
+    let mut created = bc(PA);
+    created.extend(tl.to_le_bytes());
+    created.extend(bc(slave.obj_id));
+    created.push(1); // hide the spawn effect
+    created.extend(0i64.to_le_bytes());
+    created.extend([2, 0, b'P', b'1']);
+    assert_eq!(body(&fa, sc::SCSlaveCreatedPacket), created);
+    assert!(b.drain().is_empty(), "the announcement is owner only");
+}
+
+#[tokio::test]
+async fn gm_slave_remove_despawns_a_summoned_vehicle() {
+    let server = server_with(slave_data());
+    let commands = &server.systems.services.commands;
+    crate::systems::services::commands::scripts::install(
+        commands,
+        crate::systems::services::commands::scripts::ScriptEnv::default(),
+    );
+    assert!(commands.reload());
+    let mut a = TestClient::new(&server, 1, 1);
+    let mut b = TestClient::new(&server, 2, 2);
+    let (pa, item_id) = player_with_item(&server, &a, 1, PA, (100.0, 100.0), SLAVE_ITEM);
+    let pb = spawn_player(&server, &b, test_character(2, "B", 110.0, 110.0), PB);
+    let slave = summon_slave(&server, &pa, item_id);
+    let world = server.world.world(0).unwrap();
+    let tl = slave.data().unit.tl_id;
+    a.drain();
+    b.drain();
+
+    let cmd = |what: &str| format!("slave {what} id {}", slave.obj_id);
+    let gm = crate::systems::services::commands::scripts::harness::run;
+    let (_, out) = gm(&server, &pb, &cmd("info")).await;
+    assert!(out.iter().any(|l| l.contains("ObjId:")), "{out:?}");
+    let (_, out) = gm(&server, &pb, &cmd("remove")).await;
+    assert!(
+        out.iter().any(|l| l.contains("removed successfully")),
+        "{out:?}"
+    );
+    // Gone from the world: `slave info` no longer finds it and the owner has no active slave.
+    assert!(world.slave(slave.obj_id).is_none());
+    assert!(slaves::get_active_slave_by_owner_obj_id(&world, PA).is_none());
+    let (_, out) = gm(&server, &pb, &cmd("info")).await;
+    assert!(out.iter().any(|l| l.contains("does not exist")), "{out:?}");
+    // Everybody around, the (online) owner included, saw the removal.
+    let mut removed = bc(PA);
+    removed.extend(tl.to_le_bytes());
+    for c in [&mut a, &mut b] {
+        let f = c.drain();
+        assert!(ops(&f).contains(&sc::SCSlaveDespawnPacket));
+        assert_eq!(body(&f, sc::SCSlaveRemovedPacket), removed);
+    }
+    // The owner can summon again (the saved row is reused, nothing blocks the item).
+    let again = summon_slave(&server, &pa, item_id);
+    assert_ne!(again.obj_id, slave.obj_id);
+}
+
+#[tokio::test]
+async fn an_offline_owners_vehicle_leaves_after_the_delay_unless_the_owner_returns() {
+    let server = server_with(slave_data());
+    let a = TestClient::new(&server, 1, 1);
+    let (pa, item_id) = player_with_item(&server, &a, 1, PA, (100.0, 100.0), SLAVE_ITEM);
+    let world = server.world.world(0).unwrap();
+    let slave = summon_slave(&server, &pa, item_id);
+
+    // Disconnect: the vehicle stays for the delay ...
+    super::force_dismount_and_despawn(&server, &pa, 80);
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    assert!(world.slave(slave.obj_id).is_some());
+    // ... and is despawned when it ran out.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(world.slave(slave.obj_id).is_none());
+
+    // Logging in again before the delay ends aborts the task (`on_character_selected`).
+    let again = summon_slave(&server, &pa, item_id);
+    super::force_dismount_and_despawn(&server, &pa, 80);
+    super::on_character_selected(&server, &pa);
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    assert!(world.slave(again.obj_id).is_some());
+}
+
+#[tokio::test]
+async fn object_and_timeline_ids_of_live_vehicles_are_never_reused() {
+    let server = server_with(slave_data());
+    let a = TestClient::new(&server, 1, 1);
+    let b = TestClient::new(&server, 2, 2);
+    let (pa, item_a) = player_with_item(&server, &a, 1, PA, (100.0, 100.0), SLAVE_ITEM);
+    let (pb, item_b) = player_with_item(&server, &b, 2, PB, (110.0, 110.0), SLAVE_ITEM);
+    // A's vehicle is left behind (offline owner); B summons and resummons around it.
+    let first = summon_slave(&server, &pa, item_a);
+    let mut live = vec![(first.obj_id, first.data().unit.tl_id)];
+    for _ in 0..4 {
+        let s = summon_slave(&server, &pb, item_b);
+        let id = (s.obj_id, s.data().unit.tl_id);
+        assert!(
+            live.iter().all(|(o, t)| *o != id.0 && *t != id.1),
+            "{id:?} collides with {live:?}"
+        );
+        // The previous summon of B was despawned by the new one.
+        live.truncate(1);
+        live.push(id);
+    }
+    let world = server.world.world(0).unwrap();
+    assert!(world.slave(first.obj_id).is_some());
+}
+
+#[tokio::test]
+async fn a_second_summon_keeps_the_first_vehicle_when_it_holds_cargo() {
+    use crate::models::doodad::Doodad;
+    use crate::world::Entity;
+    let server = server_with(slave_data());
+    let mut a = TestClient::new(&server, 1, 1);
+    let (pa, item_id) = player_with_item(&server, &a, 1, PA, (100.0, 100.0), SLAVE_ITEM);
+    let first = summon_slave(&server, &pa, item_id);
+    let world = server.world.world(0).unwrap();
+    // A doodad of the vehicle carrying an item (loaded cargo).
+    let cargo = Entity::new(0x4242, Doodad::new(777));
+    cargo.data().item_template_id = 777;
+    world.add_object(&cargo);
+    first.data().attached_doodads.push(cargo.obj_id);
+    a.drain();
+
+    let second =
+        slaves::create_for_owner(&server, &pa, item_id, SLAVE_ITEM, false, None, None, 0.0).await;
+    assert!(second.is_none(), "the cargo vehicle refused to despawn");
+    let active = slaves::get_active_slave_by_owner_obj_id(&world, PA).expect("still active");
+    assert_eq!(active.obj_id, first.obj_id);
+    assert_eq!(
+        slaves::all_slaves(&world)
+            .iter()
+            .filter(|s| s.data().summoner_obj_id == PA)
+            .count(),
+        1
+    );
+    assert!(ops(&a.drain()).contains(&sc::SCErrorMsgPacket));
+}

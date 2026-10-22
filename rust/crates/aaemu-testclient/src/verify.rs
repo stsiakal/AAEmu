@@ -433,4 +433,35 @@ mod tests {
         let path = suite_file("long-name.vtest", "bot abcdefghij\n[abcdefghij]\nme\n");
         assert!(Suite::load(&path).is_err());
     }
+
+    #[test]
+    fn again_bots_share_the_account_of_their_parent() {
+        let path = suite_file(
+            "relog.vtest",
+            "bot a gm
+bot a2 again a
+[a]
+drop
+[a2]
+ownslave
+",
+        );
+        let suite = Suite::load(&path).unwrap();
+        assert_eq!(suite.bots[1].again.as_deref(), Some("a"));
+        assert_eq!(suite.account("a2"), suite.account("a"));
+        let bad = suite_file(
+            "relog2.vtest",
+            "bot a2 again a
+bot a
+[a]
+me
+[a2]
+me
+",
+        );
+        assert!(
+            Suite::load(&bad).is_err(),
+            "the parent must be declared first"
+        );
+    }
 }

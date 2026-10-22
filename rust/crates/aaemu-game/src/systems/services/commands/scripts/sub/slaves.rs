@@ -236,7 +236,13 @@ impl SubCommand for SlaveRemoveSubCommand {
             // detached like its owner's own despawn, so it neither answers `slave info` nor
             // returns on the owner's next login.
             if let Some(world) = world_of_obj(server, &obj) {
-                crate::systems::vehicles::slaves::delete(server, None, world.id, slave.obj_id, true);
+                crate::systems::vehicles::slaves::delete(
+                    server,
+                    None,
+                    world.id,
+                    slave.obj_id,
+                    true,
+                );
             }
         } else if let Some(spawner) = server.systems.vehicles.slave_spawners.get(spawner_id) {
             // A spawner slave leaves the world and frees its spawner slot.

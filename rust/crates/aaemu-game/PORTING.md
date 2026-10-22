@@ -2092,6 +2092,30 @@ feature-audit/deviation note before porting one as-is.
 * systems::vehicles: `ShipyardCompleted` builds a `SkillItem` with only `ItemId`, so
   `SlaveManager.Create` returns on its `ItemTemplateId == 0` check: the finished ship is never
   summoned (the owner's active vehicle is still removed).
+* systems::vehicles (**deviation**, summoned vehicle ownership; fork fixes found by live ship
+  tests, see the `ship-owner` verify suite): (1) the C# kept a logged-out owner's vehicle in the
+  world for the 10 minute `ForceDismountAndDespawn` / `Leave` delay (kept, and now logged with
+  `the delay ran out, despawning the vehicle of the offline owner`) but announced a slave to its
+  owner only when it was created (`SCSlaveCreatedPacket`, then the 5 s `SCMySlavePacket`), so an
+  owner who logged in again inside the delay never learned which slave was theirs and could not
+  board (the Bevy client sets its "own slave" from `SCSlaveCreatedPacket` only, and its F key
+  falls back to skill 15307 "store backpack" on the vehicle). `vehicles::on_player_join`
+  (`CSNotifyInGameCompleted`) sends the owner, and only the owner, `SCSlaveCreatedPacket` (spawn
+  effect hidden) and the first `SCMySlavePacket` for its still active slave. (2) GM
+  `slave remove` only did `Slave.Hide()` in the C#: the slave stayed in the world (still found by
+  `slave info`, back for its owner on the next login). A summoned slave now goes through
+  `slaves::delete` (saved, riders dismounted, `SCSlaveDespawn` + `SCSlaveRemoved` around the
+  slave, ids released by the despawn tick; the doodads become non-persistent as for the owner's
+  own despawn) and a spawner slave through `SlaveSpawner::despawn`; `slaves::delete` therefore
+  also broadcasts for a summoned slave when the caller is not its owner. (3) `Create` summoned a
+  second vehicle when the owner's previous one refused to despawn (cargo loaded,
+  `SlaveEquipmentLoadedItem`), leaving two active slaves; the summon is now refused instead.
+  Checked and unchanged: one `slaves` row per summoning item (`REPLACE` by the slave's db id, a
+  resummon of the same item reuses it; a new item is a new row), nothing restores slaves at
+  startup, a fresh galleon has no default cannon children (their attach points 9-16 are
+  equipment slots; cannons appear after equipping and are restored with the equipment
+  container), object and timeline ids of live slaves are never handed out twice (obj ids are
+  released only by the despawn tick, tl ids never).
 * systems::vehicles: a slave's `TlId` is never released; the transfer spawner's `Despawn` and
   the spawn manager's despawn tick both release the transfer's obj id.
 * systems::vehicles: `SummonSlave.ReadDetails` always fails on `RepairStartTime` (so the repair

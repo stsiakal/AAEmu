@@ -70,6 +70,8 @@ Rules:
 
 - `suite`, `bot` and `[id]` go before the bot sections; a section holds only script commands.
 - Every declared bot needs a non-empty section.
+- `bot <id> again <other>` declares a second session of an earlier bot's account and
+  character: it starts after that bot's script ended (use `drop` there) and gives a relog.
 - `${<bot id>}` in a command expands to that bot's character name, so invites and checks can
   name their peers.
 - The account and character name is `v` + the first eight alphanumerics of the file stem + the
@@ -94,6 +96,10 @@ verification commands are:
 | `sync <token> [count]` | Suite barrier: wait until `count` bots reached the same token (default: every bot) |
 | `lootexpect took\|failed [npc obj]` | Loot the last killed NPC and fail unless `SCLootItemTook` (took) / `SCLootItemFailed` (failed) arrives |
 | `rezexpect inplace\|temple ok\|refused` | Send `CSResurrectCharacter` and fail unless `SCCharacterResurrected` for the bot's own unit does (ok) / does not (refused) arrive |
+
+| `ownslave [secs]` / `noownslave` | Wait for / refuse an `SCSlaveCreated` naming the bot as owner (the Bevy client's "own slave"); `rawcs` then knows `SLAVE` and `TLID` |
+| `attached` / `notattached` | Fail unless the bot is (to the last slave) / is not attached to something |
+| `expectreply <text>` / `expectnoreply <text>` | The chat lines answering the last `gm` command must / must not contain the text (`SLAVEOBJ` in `gm` lines is the last slave's object id) |
 
 Useful companions: `waitpeer [secs] [name]` waits until another player is in sight, `await
 <Event> [secs]` waits for a party / guild event (`TeamJoined`, `GuildInvite`, ...), `rawcs
@@ -127,6 +133,7 @@ The seed suites:
 | --- | --- |
 | `emote-spoof` | `CSExpressEmotionPacket` for another object is ignored (`systems/services/express_text.rs`), while the sender's own emote is announced |
 | `guild-guards` | A guild-invitation reply without a pending invite is refused (`systems/social/expedition.rs`); a normal invite + accept joins |
+| `ship-owner` | A relogged owner is told its still active ship is theirs (`SCSlaveCreated`, `systems/vehicles/mod.rs::on_player_join`) and boards it; another owner's leftover ship does not stop a fresh account from summoning and boarding; GM `slave remove` despawns a summoned ship; no default cannon rows on a fresh galleon |
 | `authority-guards` | A loot take from 5+ m is refused while a melee-range take works (`systems/economy/looting.rs`); an in-place resurrection without an offer is refused, with a scroll offer (item 18456) it works once, and the resurrection point always works (`systems/skills/resurrect.rs`) |
 
 ## Reports
