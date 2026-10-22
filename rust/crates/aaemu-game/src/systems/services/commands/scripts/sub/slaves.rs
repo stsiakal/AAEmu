@@ -244,11 +244,14 @@ impl SubCommand for SlaveRemoveSubCommand {
                     true,
                 );
             }
-        } else if let Some(spawner) = server.systems.vehicles.slave_spawners.get(spawner_id) {
-            // A spawner slave leaves the world and frees its spawner slot.
-            spawner.despawn(server, &slave);
-        } else if let Some(world) = world_of_obj(server, &obj) {
-            world.hide(&slave);
+        } else {
+            if let Some(spawner) = server.systems.vehicles.slave_spawners.get(spawner_id) {
+                // A spawner slave leaves the world and frees its spawner slot.
+                spawner.despawn(server, &slave);
+            }
+            if let Some(world) = world_of_obj(server, &obj) {
+                world.hide(&slave);
+            }
         }
         self.base.send_message(
             out,
@@ -622,6 +625,15 @@ mod tests {
                 ts::SLAVE
             )]
         );
-        assert!(!slave.is_visible());
+        // The slave summoned for the GM is despawned like its owner's own (fork fix, the C# only
+        // hid it): gone from the object table at once, hidden by the despawn tick.
+        assert!(world.slave(slave.obj_id).is_none());
+        let (_, out) = harness::run(&server, &gm.p, &format!("slave info id {id}")).await;
+        assert_eq!(
+            out,
+            [format!(
+                "|cFFFF0000[Slave Information] Slave with objId {id} does not exist|r"
+            )]
+        );
     }
 }
