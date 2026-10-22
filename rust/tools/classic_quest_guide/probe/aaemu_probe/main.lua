@@ -7,7 +7,7 @@
 -- It has NO _G, getfenv, setfenv, setmetatable, select, error, os, io or
 -- package. Nothing in this addon may touch those names.
 
-local VERSION = "0.1.1"
+local VERSION = "0.2.0"
 local BOOT_DIR = "aaemu_probe/observations/"
 
 local api = nil

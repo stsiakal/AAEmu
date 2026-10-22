@@ -89,6 +89,10 @@ class Probe:
         table = self.lua.table_from(fields, recursive=True)
         self.mock["set_unit"](self.mock, token, table)
 
+    def set_quest(self, qid, **fields):
+        table = self.lua.table_from(fields, recursive=True)
+        self.mock["set_quest"](self.mock, qid, table)
+
     def violations(self):
         return list(self.mock["violations"].values())
 
@@ -356,6 +360,278 @@ class ProbeTests(unittest.TestCase):
         self.assertTrue(surface["libs"]["Unit"]["present"])
         self.assertFalse(surface["libs"]["House"]["present"])
 
+    # -- 0.2.0 derived records -------------------------------------------------------
+
+    def test_ignored_events_are_counted_but_not_logged(self):
+        probe = self.make()
+        for _ in range(5):
+            probe.emit("END_QUEST_CHAT_BUBBLE", "a")
+            probe.emit("TARGET_OVER", "b")
+        probe.advance(15000)
+        self.assertEqual(probe.records_of("event"), [])
+        summary = probe.records_of("summary")[-1]
+        self.assertEqual(summary["counts"]["END_QUEST_CHAT_BUBBLE"], 5)
+        self.assertEqual(summary["counts"]["TARGET_OVER"], 5)
+        self.assertEqual(summary["events_seen"], 10)
+
+    def test_quest_getters_run_per_event_and_record_transitions(self):
+        probe = self.make()
+        probe.set_quest(123, completed=False, active_title="A Test",
+                        main_title="Main title", body="Body text")
+        chat = ["text", "Lucius", "0x1", False, 0, 0, 0, 0, 123, False]
+        probe.emit("CHAT_MSG_QUEST", *chat)
+        for name in ("IsCompleted", "GetActiveQuestTitle",
+                     "GetQuestContextMainTitle", "GetQuestContextBody"):
+            self.assertEqual(probe.mock["calls"]["Quest:" + name], 1, name)
+        probe.advance(15000)
+        first = probe.records_of("quest_state")[0]
+        self.assertEqual(first["qid"], 123)
+        self.assertEqual(first["transition"], "accepted")
+        self.assertTrue(first["changed"])
+        self.assertEqual(first["state"]["active_title"], "A Test")
+        self.assertEqual(first["state"]["main_title"], "Main title")
+        self.assertEqual(first["state"]["body"], "Body text")
+        self.assertEqual(first["state"]["completed"], False)
+
+        probe.set_quest(123, completed=True, active_title="A Test",
+                        main_title="Main title", body="Body text")
+        probe.emit("QUEST_LEFT_TIME_UPDATED", 123, 0)
+        probe.advance(15000)
+        records = probe.records_of("quest_state")
+        self.assertEqual(len(records), 2)
+        second = records[1]
+        self.assertEqual(second["transition"], "completed")
+        self.assertTrue(second["changed"])
+        self.assertEqual(second["prev"]["completed"], False)
+        self.assertEqual(second["state"]["completed"], True)
+        self.assertEqual(probe.mock["calls"]["Quest:IsCompleted"], 2)
+
+        probe.emit("QUEST_LEFT_TIME_UPDATED", 123, 0)
+        probe.advance(15000)
+        third = probe.records_of("quest_state")[2]
+        self.assertEqual(third["transition"], "unchanged")
+        self.assertFalse(third["changed"])
+        self.assertEqual(probe.mock["calls"]["Quest:IsCompleted"], 3)
+
+    def test_kill_and_loot_derivation(self):
+        probe = self.make()
+        probe.set_unit("target", id=77, name="Boar", x=1.0, y=2.0, z=3.0,
+                       info={"level": 3, "faction": "Beast"}, level=3,
+                       faction="Beast", hp=0, max_hp=50)
+        probe.emit("UNIT_COMBAT_STATE_CHANGED", True, "0x4d")
+        probe.emit("UNIT_COMBAT_STATE_CHANGED", False, "0x4d")
+        probe.emit("EXP_CHANGED", "0x1", 120, "amount")
+        probe.emit("ADDED_ITEM", "|i12345,0,0,0;", 2, 10, "")
+        probe.advance(15000)
+        kills = probe.records_of("kill")
+        self.assertEqual(len(kills), 1)
+        kill = kills[0]
+        self.assertEqual(kill["exp"], 120)
+        self.assertEqual(kill["npc_key"], "Boar|3|Beast|50")
+        self.assertEqual(kill["fingerprint"]["name"], "Boar")
+        self.assertEqual(kill["fingerprint"]["max_health"], 50)
+        self.assertEqual(seq(kill["position"]), [1.0, 2.0, 3.0])
+        loot = probe.records_of("loot")
+        self.assertEqual(len(loot), 1)
+        self.assertEqual(loot[0]["item_type_id"], 12345)
+        self.assertEqual(loot[0]["count"], 2)
+        self.assertEqual(loot[0]["npc_key"], kill["npc_key"])
+        self.assertLessEqual(loot[0]["elapsed_ms"], 3000)
+        # Loot more than 3 s after the kill is not attributed to it.
+        probe.advance(4000)
+        probe.emit("ADDED_ITEM", "|i999,0,0,0;", 1, 10, "")
+        probe.advance(15000)
+        self.assertEqual(len(probe.records_of("loot")), 1)
+
+    def test_fingerprint_and_link_helpers(self):
+        probe = self.make(load=False)
+        derive = probe.lua.execute("return require('aaemu_probe/derive')")
+        def key(**fields):
+            return derive["fingerprint_key"](probe.lua.table_from(fields))
+        base = key(name="Boar", level=3, faction="Beast", max_health=50)
+        with_id = key(name="Boar", level=3, faction="Beast", max_health=50, id=999)
+        leveled = key(name="Boar", level=4, faction="Beast", max_health=50)
+        self.assertEqual(base, "Boar|3|Beast|50")
+        self.assertEqual(base, with_id)
+        self.assertNotEqual(base, leveled)
+        near = probe.lua.table_from([1.0, 2.0, 3.0])
+        farther = probe.lua.table_from([1.2, 2.0, 3.0])
+        away = probe.lua.table_from([5.0, 2.0, 3.0])
+        self.assertTrue(derive["position_same"](near, farther))
+        self.assertFalse(derive["position_same"](near, away))
+        self.assertEqual(derive["item_type_from_link"]("|i12345,0,0,0;"), 12345)
+        self.assertIsNone(derive["item_type_from_link"]("not a link"))
+
+    def test_target_record_has_fingerprint(self):
+        probe = self.make()
+        # UnitInfo is empty for NPCs live; level/faction come from the id getter.
+        probe.set_unit("target", id=555, name="Wolf", x=5.0, y=6.0, z=7.0,
+                       info={}, by_id_info={"level": 9, "name": "Wolf"},
+                       max_hp=50)
+        probe.advance(1000)
+        probe.advance(15000)
+        dump = probe.records_of("target")[0]
+        self.assertEqual(dump["fingerprint"]["key"], "Wolf|9|-|50")
+        self.assertEqual(dump["fingerprint"]["name"], "Wolf")
+        self.assertEqual(seq(dump["fingerprint"]["position"]), [5.0, 6.0, 7.0])
+
+    def test_item_catalogue_from_bag_info(self):
+        probe = self.make(bag={2: {"itemType": 12345, "name": "Iron Sword",
+                                   "grade": 3, "category": "weapon",
+                                   "stack": 1, "cost": 99}})
+        probe.emit("ADDED_ITEM", "|i12345,0,0,0;", 1, 10, "")
+        probe.advance(15000)
+        catalogue = probe.records_of("item_catalogue")
+        self.assertEqual(len(catalogue), 1)
+        self.assertEqual(catalogue[0]["item_type_id"], 12345)
+        self.assertEqual(catalogue[0]["name"], "Iron Sword")
+        self.assertEqual(catalogue[0]["grade"], 3)
+        self.assertEqual(catalogue[0]["category"], "weapon")
+        self.assertEqual(catalogue[0]["slot"], 2)
+
+    def test_container_open_collects_same_ms_adds(self):
+        probe = self.make(bag={1: {"itemType": 500, "name": "Chest"}})
+        probe.emit("SPELLCAST_START", "Open", 1000, "player", False)
+        probe.emit("REMOVED_ITEM", "|i500,0,0,0;", 1, "consume", 40, "")
+        probe.emit("ADDED_ITEM", "|i600,0,0,0;", 3, 41, "")
+        probe.emit("ADDED_ITEM", "|i601,0,0,0;", 1, 41, "")
+        probe.advance(1000)
+        probe.advance(15000)
+        records = probe.records_of("container_open")
+        self.assertEqual(len(records), 1)
+        record = records[0]
+        self.assertEqual(record["consumed"]["item_type_id"], 500)
+        self.assertEqual(record["consumed"]["count"], 1)
+        self.assertEqual(record["add_count"], 2)
+        adds = seq(record["adds"])
+        self.assertEqual([a["item_type_id"] for a in adds], [600, 601])
+
+    def test_quest_reward_aggregates_items_money_and_exp(self):
+        probe = self.make()
+        probe.set_quest(321, completed=False, active_title="Turn in",
+                        main_title="Main", body="Body")
+        probe.emit("CHAT_MSG_QUEST", "t", "n", "0x1", False, 0, 0, 0, 0, 321,
+                   False)
+        probe.emit("ADDED_ITEM", "|i700,0,0,0;", 1, 35, "")
+        probe.emit("PLAYER_MONEY", 55, "delta", 0, "")
+        probe.emit("EXP_CHANGED", "0x1", 300, "amount")
+        probe.advance(15000)
+        rewards = probe.records_of("quest_reward")
+        self.assertEqual(len(rewards), 1)
+        reward = rewards[0]
+        self.assertEqual(reward["quest_id"], 321)
+        self.assertEqual(reward["money_delta"], 55)
+        self.assertEqual(reward["exp_delta"], 300)
+        self.assertEqual(seq(reward["items"])[0]["item_type_id"], 700)
+        self.assertEqual(reward["quest"]["active_title"], "Turn in")
+
+    def test_action_bar_is_keyed_by_fingerprint_across_respawns(self):
+        probe = self.make()
+        watched = dict(id=11, name="Mob", x=1.0, y=1.0, z=0.0,
+                       info={"level": 2, "faction": "Beast"}, level=2,
+                       faction="Beast", max_hp=30)
+        probe.set_unit("target", **watched)
+        probe.advance(1000)
+        probe.emit("DYNAMIC_ACTION_BAR_SHOW", "npc", 28855)
+        probe.advance(15000)
+        first = probe.records_of("action_bar")[0]
+        self.assertEqual(first["n"], 28855)
+        key = first["npc_key"]
+        self.assertEqual(key, "Mob|2|Beast|30")
+        watched["id"] = 12
+        probe.set_unit("target", **watched)
+        probe.advance(1000, 2)
+        probe.emit("DYNAMIC_ACTION_BAR_SHOW", "npc", 28855)
+        probe.emit("DYNAMIC_ACTION_BAR_SHOW", "npc", 1)
+        probe.advance(15000)
+        bars = probe.records_of("action_bar")
+        self.assertEqual(len(bars), 3)
+        self.assertEqual(bars[1]["npc_key"], key)
+        self.assertEqual(bars[2]["npc_key"], key)
+        catalogue = [c for c in probe.records_of("npc_catalogue")
+                     if c["key"] == key]
+        self.assertTrue(catalogue)
+        self.assertEqual(seq(catalogue[-1]["action_bars"]), [28855, 1])
+        self.assertEqual(len(seq(catalogue[-1]["positions"])), 1)
+        self.assertEqual(seq(catalogue[-1]["ids"]), [11, 12])
+
+    def test_pet_dump_and_target_marking(self):
+        probe = self.make()
+        horse = dict(id=88, name="Horse", x=4.0, y=5.0, z=6.0,
+                     info={"level": 4, "faction": "Player"}, level=4,
+                     faction="Player", max_hp=200)
+        probe.set_unit("playerpet1", **horse)
+        probe.set_unit("target", **horse)
+        probe.advance(1000)
+        probe.advance(15000)
+        pets = probe.records_of("pet")
+        self.assertEqual(len(pets), 1)
+        self.assertEqual(pets[0]["token"], "playerpet1")
+        self.assertEqual(pets[0]["id"], 88)
+        self.assertEqual(pets[0]["fingerprint"]["key"], "Horse|4|Player|200")
+        self.assertEqual(probe.records_of("target")[0]["own_pet"], "playerpet1")
+
+    def test_api_member_probe_lists_known_names(self):
+        probe = self.make()
+        probe.advance(15000)
+        members = probe.records_of("api_members")[0]
+        self.assertEqual(members["members"]["Unit"]["UnitName"], "function")
+        self.assertEqual(members["members"]["Quest"]["IsCompleted"], "function")
+        self.assertEqual(members["members"]["Bag"]["GetBagItemInfo"], "function")
+        self.assertIn("GetUnitMateType", seq(members["missing"]["Unit"]))
+        self.assertGreater(members["found_count"], 50)
+        self.assertEqual(members["present"]["Unit"], "table")
+        self.assertNotIn("House", members["members"])
+
+    def test_observed_0_1_1_event_shapes_do_not_error(self):
+        probe = self.make()
+        probe.set_quest(9, completed=False, active_title="Q", main_title="M",
+                        body="B")
+        probe.set_unit("target", id=3, name="Mob", x=1.0, y=2.0, z=0.0,
+                       info={"level": 2}, level=2, max_hp=20)
+        probe.emit("CHAT_MSG_QUEST", "text", "Lucius", "0x1", False, 0, 0, 0,
+                   0, 9, False)
+        probe.emit("QUEST_LEFT_TIME_UPDATED", 9, 0)
+        probe.emit("ADDED_ITEM", "|i100,0,0,0;", 1, 10, "")
+        probe.emit("REMOVED_ITEM", "|i101,0,0,0;", 1, "consume", 40, "")
+        probe.emit("BAG_UPDATE", 1, 0)
+        probe.emit("PLAYER_MONEY", 5, "delta", 0, "")
+        probe.emit("EXP_CHANGED", "0x1", 7, "amount")
+        probe.emit("UNIT_COMBAT_STATE_CHANGED", True, "0x3")
+        probe.emit("UNIT_COMBAT_STATE_CHANGED", False, "0x3")
+        probe.emit("TARGET_CHANGED", "0x3", "npc")
+        probe.emit("NPC_INTERACTION_END")
+        probe.emit("SPELLCAST_START", "Open", 1000, "player", False)
+        probe.emit("SKILL_LEARNED", "Charge", "skill")
+        probe.emit("LABORPOWER_CHANGED", 1, 2)
+        probe.emit("ACTABILITY_EXPERT_CHANGED", 1, 2)
+        probe.emit("DYNAMIC_ACTION_BAR_SHOW", "npc", 28855)
+        probe.emit("END_QUEST_CHAT_BUBBLE", "noise")
+        probe.emit("TARGET_OVER", "noise")
+        probe.advance(15000)
+        self.assertIsNone(probe.probe()["last_error"])
+
+    def test_derived_paths_stay_passive(self):
+        probe = self.make(bag={1: {"itemType": 1, "name": "X"}})
+        probe.set_quest(5, completed=False, active_title="Q",
+                        main_title="M", body="B")
+        probe.set_unit("target", id=2, name="Mob", x=0.0, y=0.0, z=0.0,
+                       info={"level": 1}, level=1, max_hp=10)
+        probe.emit("CHAT_MSG_QUEST", "t", "n", "0x1", False, 0, 0, 0, 0, 5,
+                   False)
+        probe.emit("DYNAMIC_ACTION_BAR_SHOW", "npc", 1)
+        probe.emit("SPELLCAST_START", "Open", 1, "player", False)
+        probe.emit("REMOVED_ITEM", "|i1,0,0,0;", 1, "consume", 40, "")
+        probe.emit("ADDED_ITEM", "|i2,0,0,0;", 1, 41, "")
+        probe.emit("UNIT_COMBAT_STATE_CHANGED", True, "0x2")
+        probe.emit("UNIT_COMBAT_STATE_CHANGED", False, "0x2")
+        probe.emit("EXP_CHANGED", "0x1", 10, "amount")
+        probe.emit("ADDED_ITEM", "|i3,0,0,0;", 1, 10, "")
+        probe.emit("PLAYER_MONEY", 1, "delta", 0, "")
+        probe.advance(1000, 3)
+        probe.h["unload"](probe.h)
+        self.assertEqual(probe.violations(), [])
+
     # -- passivity -----------------------------------------------------------------
 
     def test_never_calls_state_changing_api(self):
@@ -379,9 +655,11 @@ class ProbeTests(unittest.TestCase):
         for path in ADDON.glob("*.lua"):
             text = path.read_text(encoding="utf-8")
             if path.name == "getters.lua":
-                # The catalogue names forbidden prefixes only in comments and
-                # the refusal list.
+                # The catalogue names forbidden prefixes only in comments, the
+                # member-existence list (type read only) and the refusal list.
                 text = re.sub(r"--[^\n]*", "", text)
+                text = re.sub(r"G\.SURFACE_NAMES = \{.*?\n\}\n", "",
+                              text, flags=re.S)
                 text = re.sub(r"local FORBIDDEN = \{.*?\n\}", "", text, flags=re.S)
             self.assertIsNone(forbidden.search(text), path.name)
 

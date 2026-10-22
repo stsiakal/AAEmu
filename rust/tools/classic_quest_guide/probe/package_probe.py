@@ -19,8 +19,8 @@ ADDON_ID = "aaemu_probe"
 ZIP_NAME = ADDON_ID + ".zip"
 FIXED_TIME = (1980, 1, 1, 0, 0, 0)
 RUNTIME_FILES = (
-    "main.lua", "core.lua", "ui.lua", "util.lua", "getters.lua", "events.lua",
-    "README.md",
+    "main.lua", "core.lua", "ui.lua", "util.lua", "getters.lua", "derive.lua",
+    "events.lua", "README.md",
 )
 
 

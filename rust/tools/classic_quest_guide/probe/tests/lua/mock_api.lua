@@ -30,7 +30,7 @@ function Mock.new(opts)
     ui_ms = 1000, on_callbacks = {}, reject = opts.reject or {},
     violations = {}, calls = {}, file_fail = false, settings = {},
     units = {}, bag = {}, bag_capacity = 5, currency = 777,
-    save_settings_count = 0,
+    quests = {}, save_settings_count = 0,
   }
 
   local function count(name)
@@ -100,6 +100,15 @@ function Mock.new(opts)
   function unit:UnitHealth(token) local u = mock.units[token]; return u and u.hp end
   function unit:UnitMaxHealth(token) local u = mock.units[token]; return u and u.max_hp end
   function unit:UnitLevel(token) local u = mock.units[token]; return u and u.level end
+  function unit:GetFactionName(token)
+    local u = mock.units[token]
+    return u and (u.faction or (u.info and u.info.faction))
+  end
+  function unit:GetUnitWorldPosition(id)
+    for _, u in pairs(mock.units) do
+      if u.id == id then return u.x, u.y, u.z end
+    end
+  end
   function unit:GetNpcInfo(token) local u = mock.units[token]; return u and u.npc end
   function unit:UnitBuffCount(token)
     local u = mock.units[token]
@@ -121,7 +130,9 @@ function Mock.new(opts)
     for _, u in pairs(mock.units) do if u.id == id then return u.name end end
   end
   function unit:GetUnitInfoById(id)
-    for _, u in pairs(mock.units) do if u.id == id then return u.info end end
+    for _, u in pairs(mock.units) do
+      if u.id == id then return u.by_id_info or u.info end
+    end
   end
   function unit:GetUnitGradeById() return 3 end
   -- State-changing: must never be called.
@@ -137,6 +148,28 @@ function Mock.new(opts)
   function bag:GetCurrency() return mock.currency end
   function bag:GetBagItemInfo(_, index) return mock.bag[index] end
   function bag:EquipBagItem() violate("Bag.EquipBagItem") end
+
+  local quest = {}
+  function quest:IsCompleted(id)
+    count("Quest:IsCompleted")
+    local q = mock.quests[id]
+    return q and q.completed or false
+  end
+  function quest:GetActiveQuestTitle(id)
+    count("Quest:GetActiveQuestTitle")
+    local q = mock.quests[id]
+    return q and q.active_title
+  end
+  function quest:GetQuestContextMainTitle(id)
+    count("Quest:GetQuestContextMainTitle")
+    local q = mock.quests[id]
+    return q and q.main_title
+  end
+  function quest:GetQuestContextBody(id)
+    count("Quest:GetQuestContextBody")
+    local q = mock.quests[id]
+    return q and q.body
+  end
 
   local time = {}
   function time:GetUiMsec() return mock.ui_ms end
@@ -173,6 +206,7 @@ function Mock.new(opts)
   local api = {
     Interface = interface, Unit = unit, Bag = bag, Time = time, File = file,
     Log = log, Chat = chat, Team = team, Cursor = cursor, Map = map,
+    Quest = quest,
     Bank = {
       GetCurrency = function() return 55 end,
       Capacity = function() return 10 end,
@@ -219,6 +253,7 @@ function Mock.new(opts)
   function mock:text(id) return self.widgets[id]._text end
   function mock:exists(id) return self.widgets[id] ~= nil end
   function mock:set_unit(token, unit_table) self.units[token] = unit_table end
+  function mock:set_quest(id, fields) self.quests[id] = fields end
   function mock:file_count() return #self.file_order end
 
   return api, mock

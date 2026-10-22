@@ -1,8 +1,9 @@
--- Read-only getter catalogue for the one-shot API inventory and the target
--- dump. Every entry only reads state. Anything that changes state (Set*,
--- Equip*, Invite*, Change*, Dispatch*, Express*, TargetUnit, ClearCursor,
--- Move*, ToggleMap*, Save*) is deliberately absent, and the runtime refuses
--- names matching those prefixes as a second guard.
+-- Getter catalogue for the one-shot API inventory, the target dump and the
+-- member-existence probe. Every entry that is ever called only reads state.
+-- Anything that changes state (Set*, Equip*, Invite*, Change*, Dispatch*,
+-- Express*, TargetUnit, ClearCursor, Move*, ToggleMap*, Save*) is absent from
+-- the call lists, and the runtime refuses those prefixes as a second guard;
+-- SURFACE_NAMES below only reads the member type, never calls it.
 
 local G = {}
 
@@ -100,6 +101,102 @@ G.ZONE_CALLS = {
   {"Zone", "GetZoneStateInfoByZoneId"},
 }
 
+-- Quest getters called for every questTypeId seen in CHAT_MSG_QUEST (arg 9)
+-- and QUEST_LEFT_TIME_UPDATED (arg 1).
+G.QUEST_GETTERS = {
+  "IsCompleted", "GetActiveQuestTitle", "GetQuestContextMainTitle",
+  "GetQuestContextBody",
+}
+
+-- Fixed member names probed per library. The sandbox has no `next`, so a
+-- library cannot be enumerated; these are the documented names from api.lua
+-- plus the undocumented names already tried. Only the member type is read,
+-- nothing is called. State-changing names stay in the list because their
+-- existence is part of the surface; the probe never calls them.
+G.SURFACE_NAMES = {
+  Log = {"Info", "Err", "WriteEventParameters"},
+  File = {"Write", "Read"},
+  Interface = {
+    "CreateWindow", "CreateEmptyWindow", "CreateWidget", "CreateStatusBar",
+    "CreateComboBox", "ApplyButtonSkin", "SetTooltipOnPos", "Free",
+    "GetScreenWidth", "GetScreenHeight", "GetUIScale",
+  },
+  Unit = {
+    "GetUnitNameById", "GetUnitInfoById", "GetUnitScreenPosition",
+    "UnitDistance", "GetUnitId", "UnitBuffCount", "UnitName", "UnitBuff",
+    "UnitWorldPosition", "UnitDeBuffCount", "UnitDeBuff", "UnitHealth",
+    "UnitMaxHealth", "UnitMana", "UnitMaxMana", "UnitInfo", "UnitModifierInfo",
+    "UnitClass", "UnitGearScore", "UnitTeamAuthority", "UnitIsTeamMember",
+    "UnitIsForceAttack", "GetFactionName", "GetUnitScreenNameTagOffset",
+    "GetHighAbilityRscInfo", "UnitIsOffline", "GetOverHeadMarkerUnitId",
+    "GetCurrentZoneGroup", "TargetUnit",
+    -- Undocumented names already tried by the probe.
+    "UnitLevel", "UnitHeirLevel", "UnitRace", "UnitGender", "UnitCombatState",
+    "UnitHiddenBuffCount", "UnitRemovableDebuffCount", "GetUnitType",
+    "GetUnitTypeString", "GetNpcInfo", "GetTargetKindType",
+    "GetCombatRelationshipStr", "GetUnitMateType", "GetUnitMateTypeById",
+    "GetUnitGradeById", "GetUnitWorldPosition",
+  },
+  Team = {
+    "InviteToTeam", "SetRole", "IsPartyTeam", "IsPartyRaid",
+    "GetMemberIndexByName", "GetTeamDistributorName", "GetTeamPlayerIndex",
+    "GetRole", "MoveTeamMember",
+  },
+  Bag = {
+    "EquipBagItem", "GetBagItemInfo", "CountItems", "Capacity",
+    "CountBagItemByItemType", "GetCurrency",
+  },
+  Cursor = {
+    "ClearCursor", "SetCursorImage", "GetCursorPickedBagItemIndex",
+    "GetCursorPickedBagItemAmount", "GetCursorInfo",
+  },
+  Time = {
+    "GetUiMsec", "GetLocalTime", "PeriodTimeToDate", "TimeToDate",
+    "GetGameTime",
+  },
+  Quest = {
+    "IsCompleted", "GetActiveQuestTitle", "GetQuestContextMainTitle",
+    "GetQuestContextBody",
+  },
+  Input = {"IsShiftKeyDown", "IsControlKeyDown", "IsAltKeyDown", "GetMousePos"},
+  Player = {
+    "ChangeAppellation", "GetShowingAppellation", "GetGamePoints",
+    "GetCrimeInfo",
+  },
+  Ability = {
+    "GetBuffTooltip", "GetAbilityFromView", "IsActiveAbility",
+    "GetSkillsetNameById", "GetUnitClassName", "GetClassNameFromSkillsetIds",
+  },
+  Item = {"GetItemInfoByType"},
+  Skill = {"GetSkillTooltip"},
+  Store = {
+    "GetSellerShareRatio", "GetSpecialtyRatio", "GetProductionZoneGroups",
+    "GetSellableZoneGroups", "GetSpecialtyRatioBetween",
+  },
+  Bank = {"CountItems", "Capacity", "GetCurrency", "GetLinkText"},
+  Equipment = {
+    "GetEquippedItemTooltipInfo", "GetEquippedItemTooltipText",
+    "GetEquippedSkillsetLunagems",
+  },
+  SiegeWeapon = {"GetSiegeWeaponSpeed", "GetSiegeWeaponTurnSpeed"},
+  ItemEnchant = {
+    "GetRatioInfos", "GetEnchantItemInfo", "GetSupportItemInfo",
+    "GetTargetItemInfo",
+  },
+  Map = {"ToggleMapWithPortal", "GetPlayerSextants"},
+  Zone = {"GetZoneStateInfoByZoneId"},
+  Craft = {
+    "GetCraftBaseInfo", "GetCraftMaterialInfo", "GetCraftProductInfo",
+    "GetCraftTypeByItemType", "GetCraftTypesByName",
+  },
+  Option = {
+    "GetOnlyUseMyPortalSetting", "SetOnlyUseMyPortalSetting",
+    "GetCustomCloneModelCountSetting", "SetCustomCloneModelCountSetting",
+    "GetCustomCloneModeSetting", "SetCustomCloneModeSetting",
+  },
+  Chat = {"DispatchChatMessage", "ExpressEmotion"},
+}
+
 -- The only per-target getters used by the target dump. Each entry is tried
 -- with the "target" token; entries flagged by_id are also tried with the unit id.
 G.TARGET = {
@@ -157,6 +254,10 @@ G.SURFACE_LIBS = {
   "SiegeWeapon", "ItemEnchant", "Map", "Quest", "Zone", "Craft", "Option",
   "Nametag", "Chat", "Voice", "House",
 }
+
+-- Own mount/pet tokens. Dumped on every target change so a targeted pet can
+-- be matched to its token and its identity recorded.
+G.PET_TOKENS = {"playerpet1", "playerpet2"}
 
 -- Globals probed for existence only (type names, never called).
 G.GLOBALS = {

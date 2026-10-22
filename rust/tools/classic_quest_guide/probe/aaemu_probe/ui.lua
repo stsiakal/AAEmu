@@ -6,7 +6,7 @@ local U = require("aaemu_probe/util")
 local UI = {}
 
 local HINT_1 = "Play about 10 minutes: take and turn in a quest, kill and loot,"
-local HINT_2 = "use a doodad, open a merchant, mount. Then press Save."
+local HINT_2 = "open a container, mount, target a mob twice. Then press Save."
 
 local function safe(object, name, ...)
   if type(object) ~= "table" then return false end

@@ -4,12 +4,13 @@
 
 local U = require("aaemu_probe/util")
 local G = require("aaemu_probe/getters")
+local D = require("aaemu_probe/derive")
 local EVENT_NAMES = require("aaemu_probe/events")
 
 local Probe = {}
 Probe.__index = Probe
 
-local VERSION = "0.1.1"
+local VERSION = "0.2.0"
 local SCHEMA = "aaemu_probe.records"
 local FLUSH_MS = 15000
 local TARGET_POLL_MS = 1000
@@ -22,12 +23,22 @@ local RATE_MAX = 40
 local MAX_BAG_SLOTS = 400
 local MAX_BUFFS = 40
 local EVENT_LIMITS = {max_depth = 3, max_keys = 40, max_string = 300, max_nodes = 600}
+local KILL_CORRELATE_MS = 5000
+local LOOT_WINDOW_MS = 3000
+local OPEN_WINDOW_MS = 10000
+local CONTAINER_GRACE_MS = 250
+local REWARD_WINDOW_MS = 5000
+local QUEST_ID_TTL_MS = 60000
+local LAST_TARGET_TTL_MS = 30000
+local MAX_NPC_POSITIONS = 20
 
 -- api.On events documented in the API file (UPDATE is the frame tick).
 local API_ON_EVENTS = {
   "CHAT_MESSAGE", "TEAM_MEMBERS_CHANGED", "UI_RELOADED", "UPDATE_PING_INFO",
 }
 local BAG_EVENTS = {BAG_UPDATE = true, ADDED_ITEM = true, REMOVED_ITEM = true}
+-- Noise observed live in 0.1.1: counted in the summary, never stored raw.
+local IGNORED_EVENTS = {END_QUEST_CHAT_BUBBLE = true, TARGET_OVER = true}
 
 local function lib(api, name)
   local value
@@ -94,6 +105,28 @@ function Probe.new(api, helpers)
     ui = nil,
     since_delayed = 0,
     delayed_done = false,
+    kind_counts = {},
+    quests = {},
+    last_quest_id = nil,
+    last_quest_ms = nil,
+    combat = false,
+    combat_ms = nil,
+    combat_target = nil,
+    combat_units = {},
+    pending_kill = nil,
+    pending_exp = nil,
+    last_kill = nil,
+    last_open = nil,
+    pending_container = nil,
+    pending_reward = nil,
+    last_money = nil,
+    last_exp = nil,
+    last_target_fp = nil,
+    last_target_fp_ms = nil,
+    pets = {},
+    pet_absent = {},
+    npcs = {},
+    items = {},
   }, Probe)
   self:_open_session()
   self:_record_start()
@@ -159,16 +192,18 @@ function Probe:_add(kind, fields, force)
   record.seq = self.seq
   record.ms = self:_now()
   self.buffer[#self.buffer + 1] = record
+  self.kind_counts[kind] = (self.kind_counts[kind] or 0) + 1
   return true
 end
 
 function Probe:_summary_record()
-  local counts, suppressed = {}, {}
+  local counts, suppressed, kinds = {}, {}, {}
   for name, count in pairs(self.counts) do counts[name] = count end
   for name, count in pairs(self.suppressed) do suppressed[name] = count end
+  for name, count in pairs(self.kind_counts) do kinds[name] = count end
   return {
     events_seen = self.events_seen, distinct = self.distinct,
-    counts = counts, suppressed = suppressed,
+    counts = counts, suppressed = suppressed, kinds = kinds,
     suppressed_total = self.suppressed_total,
     missed_while_paused = self.missed_while_paused,
     registered_ok = self.registered_ok, registered_fail = self.registered_fail,
@@ -282,8 +317,15 @@ function Probe:on_event(source, name, ...)
     self:_run_inventory("entered_world")
   end
   local now = self:_now()
-  if not self:_rate_ok(name, now) then return end
   local raw = {...}
+  if IGNORED_EVENTS[name] then return end
+  -- Derived records are computed before the per-event rate limit so a burst of
+  -- raw events cannot hide a kill, loot or quest transition.
+  local derived_ok, derived_err = pcall(self._handle_derived, self, name, raw, now)
+  if not derived_ok then
+    self:_set_error("derive " .. name .. ": " .. tostring(derived_err))
+  end
+  if not self:_rate_ok(name, now) then return end
   local count = arg_count(raw)
   local budget = {nodes = EVENT_LIMITS.max_nodes}
   local args = {}
@@ -296,6 +338,516 @@ function Probe:on_event(source, name, ...)
     ui_ms = now, lt = ctx.local_time, pos = ctx.pos, pos_error = ctx.pos_error,
     zone = ctx.zone, target = ctx.target,
   })
+end
+
+-- Derived records -------------------------------------------------------------
+
+local function combat_active(value)
+  if type(value) == "boolean" then return value end
+  if type(value) == "number" then return value ~= 0 end
+  if type(value) == "string" then
+    if value == "true" then return true end
+    if value == "false" then return false end
+    local number = tonumber(value)
+    if number ~= nil then return number ~= 0 end
+  end
+  return nil
+end
+
+-- Unit ids arrive as hex strings in events but may be numbers in getters;
+-- compare them as lowercase hex text.
+local function id_key(value)
+  if value == nil then return nil end
+  if type(value) == "number" then return string.format("%x", value) end
+  if type(value) == "string" then
+    local number = tonumber(value)
+    if number ~= nil then return string.format("%x", number) end
+    return value:lower()
+  end
+  return tostring(value)
+end
+
+function Probe:_unit_position(token, id)
+  local unit = lib(self.api, "Unit")
+  local result = U.call_method(EVENT_LIMITS, unit, "UnitWorldPosition", token)
+  if (not result.ok or #(result.values or {}) < 3) and id ~= nil then
+    result = U.call_method(EVENT_LIMITS, unit, "GetUnitWorldPosition", id)
+  end
+  if result.ok and type(result.values) == "table" and #result.values >= 3 then
+    return result.values
+  end
+  return nil
+end
+
+local function info_filled(info)
+  return type(info) == "table"
+    and (info.name ~= nil or info.level ~= nil or info.faction ~= nil
+      or info.type ~= nil)
+end
+
+-- No template id is exposed for units, so this is the best stable identity:
+-- name + level + faction + max health. Positions are attached for catalogues.
+function Probe:_fingerprint(token, id)
+  local unit = lib(self.api, "Unit")
+  local info = U.first(U.call_method(EVENT_LIMITS, unit, "UnitInfo", token))
+  -- UnitInfo is empty for NPCs; the by-id getter still has level/faction.
+  if not info_filled(info) and id ~= nil then
+    local by_id = U.first(U.call_method(EVENT_LIMITS, unit, "GetUnitInfoById", id))
+    if info_filled(by_id) or type(info) ~= "table" then info = by_id end
+  end
+  local name = U.first(U.call_method(EVENT_LIMITS, unit, "UnitName", token))
+  if name == nil and id ~= nil then
+    name = U.first(U.call_method(EVENT_LIMITS, unit, "GetUnitNameById", id))
+  end
+  local level = U.first(U.call_method(EVENT_LIMITS, unit, "UnitLevel", token))
+  local faction = U.first(U.call_method(EVENT_LIMITS, unit, "GetFactionName", token))
+  local max_health = U.first(U.call_method(EVENT_LIMITS, unit, "UnitMaxHealth", token))
+  if type(info) == "table" then
+    if name == nil then name = info.name end
+    if level == nil then level = info.level end
+    if faction == nil then faction = info.faction end
+    if max_health == nil then max_health = info.maxHealth or info.max_health end
+  end
+  local fp = {
+    id = id, name = name, level = level, faction = faction,
+    max_health = max_health,
+    unit_type = type(info) == "table" and info.type or nil,
+    position = self:_unit_position(token, id),
+  }
+  fp.key = D.fingerprint_key(fp)
+  return fp
+end
+
+function Probe:_snapshot_fingerprint(now)
+  local unit = lib(self.api, "Unit")
+  local id = U.first(U.call_method(nil, unit, "GetUnitId", "target"))
+  if id ~= nil then return self:_fingerprint("target", id) end
+  if self.last_target_fp and now - (self.last_target_fp_ms or 0)
+     <= LAST_TARGET_TTL_MS then
+    return self.last_target_fp
+  end
+  return nil
+end
+
+function Probe:_observe_quest(qid, event, now)
+  qid = tonumber(qid)
+  if qid == nil or qid <= 0 then return end
+  local quest = lib(self.api, "Quest")
+  local readings, errors = {}, {}
+  for _, name in ipairs(G.QUEST_GETTERS) do
+    local result = U.call_method(EVENT_LIMITS, quest, name, qid)
+    readings[name] = U.first(result)
+    if not result.ok then errors[name] = result.error end
+  end
+  local state = {
+    completed = readings.IsCompleted,
+    active_title = readings.GetActiveQuestTitle,
+    main_title = readings.GetQuestContextMainTitle,
+    body = readings.GetQuestContextBody,
+  }
+  local entry = self.quests[qid]
+  local transition = D.quest_transition(entry and entry.state or nil, state)
+  local observations = (entry and entry.observations or 0) + 1
+  self.quests[qid] = {
+    state = state, ms = now, observations = observations,
+    transition = transition,
+  }
+  self.last_quest_id = qid
+  self.last_quest_ms = now
+  self:_add("quest_state", {
+    qid = qid, event = event, n = observations,
+    changed = transition ~= "unchanged", transition = transition,
+    state = state,
+    prev = (transition ~= "unchanged") and entry and entry.state or nil,
+    getter_errors = errors,
+  })
+end
+
+function Probe:_handle_derived(name, raw, now)
+  if name == "CHAT_MSG_QUEST" then
+    self:_observe_quest(raw[9], name, now)
+  elseif name == "QUEST_LEFT_TIME_UPDATED" then
+    self:_observe_quest(raw[1], name, now)
+  elseif name == "UNIT_COMBAT_STATE_CHANGED" then
+    self:_on_combat_state(raw, now)
+  elseif name == "EXP_CHANGED" then
+    self:_on_exp(raw, now)
+  elseif name == "ADDED_ITEM" then
+    self:_on_added_item(raw, now)
+  elseif name == "PLAYER_MONEY" then
+    self:_on_money(raw, now)
+  elseif name == "REMOVED_ITEM" then
+    self:_on_removed_item(raw, now)
+  elseif name == "SPELLCAST_START" then
+    self:_on_cast(raw, now)
+  elseif name == "DYNAMIC_ACTION_BAR_SHOW" then
+    self:_on_action_bar(raw, now)
+  end
+end
+
+function Probe:_on_combat_state(raw, now)
+  local active = combat_active(raw[1])
+  if active == nil then return end
+  local key = id_key(raw[2])
+  if active then
+    if key ~= nil then self.combat_units[key] = now end
+    self.combat = true
+    self.combat_ms = now
+    self.combat_target = self:_snapshot_fingerprint(now)
+    return
+  end
+  -- Only a unit we saw enter combat, the player, or the current target can
+  -- end a fight; unrelated unit updates must not invent kills.
+  local unit = lib(self.api, "Unit")
+  local player_key = id_key(U.first(U.call_method(nil, unit, "GetUnitId", "player")))
+  local target_key = id_key(self.last_target)
+  local known = key ~= nil and self.combat_units[key] ~= nil
+  if not known and (key == nil or (key ~= player_key and key ~= target_key)) then
+    return
+  end
+  if key ~= nil then self.combat_units[key] = nil end
+  self.combat = false
+  local fp = self:_snapshot_fingerprint(now)
+  self.pending_kill = {
+    ms = now, unit = raw[2], fp = fp,
+    pos = (type(fp) == "table" and fp.position) or self:_context().pos,
+  }
+  self.combat_target = nil
+  if type(fp) == "table" then self:_catalogue_npc(fp, now, "combat_end") end
+  if self.pending_exp and now - self.pending_exp.ms <= KILL_CORRELATE_MS then
+    self.pending_kill.exp = self.pending_exp.amount
+    self.pending_kill.exp_ms = self.pending_exp.ms
+    self.pending_exp = nil
+    self:_emit_kill(now)
+  end
+end
+
+function Probe:_emit_kill(now)
+  local pending = self.pending_kill
+  if not pending then return end
+  local fp = pending.fp
+  local position = (type(fp) == "table" and fp.position) or pending.pos
+  self.last_kill = {
+    ms = now, fp = fp, pos = position, exp = pending.exp,
+  }
+  self.pending_kill = nil
+  self:_add("kill", {
+    exp = pending.exp, exp_ms = pending.exp_ms,
+    combat_unit = pending.unit, elapsed_ms = now - pending.ms,
+    target_id = type(fp) == "table" and fp.id or nil,
+    npc_key = type(fp) == "table" and fp.key or nil,
+    fingerprint = fp, position = position, pos = self:_context().pos,
+  })
+end
+
+function Probe:_on_exp(raw, now)
+  local amount = tonumber(raw[2])
+  if amount ~= nil then self.last_exp = {ms = now, amount = amount} end
+  if self.pending_reward and now - self.pending_reward.ms <= REWARD_WINDOW_MS then
+    self.pending_reward.exp = amount
+    self:_maybe_finish_reward(now)
+  end
+  if amount == nil or amount <= 0 then return end
+  if self.pending_kill and now - self.pending_kill.ms <= KILL_CORRELATE_MS then
+    self.pending_kill.exp = amount
+    self.pending_kill.exp_ms = now
+    self:_emit_kill(now)
+  elseif self.combat == true then
+    -- EXP may arrive before the combat-end event; keep it for that window.
+    self.pending_exp = {
+      ms = now, amount = amount, unit = raw[1],
+      fp = self:_snapshot_fingerprint(now), pos = self:_context().pos,
+    }
+  end
+end
+
+function Probe:_find_bag_item(item_type)
+  local bag = lib(self.api, "Bag")
+  local capacity = U.first(U.call_method(EVENT_LIMITS, bag, "Capacity"))
+  local limit = type(capacity) == "number" and math.min(capacity, MAX_BAG_SLOTS) or 0
+  for slot = 1, limit do
+    local result = U.call_method(EVENT_LIMITS, bag, "GetBagItemInfo", 1, slot)
+    if result.ok then
+      local info = result.values[1]
+      if type(info) == "table" then
+        local found = tonumber(info.itemType or info.itemTypeId or info.type
+          or info.item_type_id)
+        if found == item_type then return info, slot end
+      end
+    end
+  end
+  return nil
+end
+
+function Probe:_catalogue_item(item_type, now)
+  if item_type == nil then return end
+  local entry = self.items[item_type]
+  if entry and entry.name ~= nil then return end
+  local info, slot = self:_find_bag_item(item_type)
+  if info == nil or info.name == nil then
+    if entry == nil then self.items[item_type] = {first_ms = now} end
+    return
+  end
+  entry = {
+    item_type_id = item_type, name = info.name, grade = info.grade,
+    category = info.category, stack = info.stack, cost = info.cost,
+    slot = slot, first_ms = entry and entry.first_ms or now,
+  }
+  self.items[item_type] = entry
+  self:_add("item_catalogue", entry)
+end
+
+-- Every bag snapshot also feeds the item catalogue, so an item that was
+-- added before its bag update is filled in on the next snapshot.
+function Probe:_catalogue_bag_items(items)
+  if type(items) ~= "table" then return end
+  local now = self:_now()
+  for slot, info in pairs(items) do
+    if type(info) == "table" then
+      local item_type = tonumber(info.itemType or info.itemTypeId or info.type
+        or info.item_type_id)
+      if item_type ~= nil then
+        local entry = self.items[item_type]
+        if entry == nil then
+          entry = {
+            item_type_id = item_type, name = info.name, grade = info.grade,
+            category = info.category, stack = info.stack, cost = info.cost,
+            slot = slot, first_ms = now,
+          }
+          self.items[item_type] = entry
+          self:_add("item_catalogue", entry)
+        elseif entry.name == nil and info.name ~= nil then
+          entry.name = info.name
+          entry.grade = info.grade
+          entry.category = info.category
+          entry.stack = info.stack
+          entry.cost = info.cost
+          entry.slot = slot
+          self:_add("item_catalogue", entry)
+        end
+      end
+    end
+  end
+end
+
+function Probe:_on_added_item(raw, now)
+  local link = raw[1]
+  local item_type = D.item_type_from_link(link)
+  local count = tonumber(raw[2])
+  local source = tonumber(raw[3])
+  self:_catalogue_item(item_type, now)
+  local ctx
+  if source == 10 and self.last_kill
+     and now - self.last_kill.ms <= LOOT_WINDOW_MS then
+    ctx = self:_context()
+    self:_add("loot", {
+      item_type_id = item_type, count = count, link = link,
+      npc_key = type(self.last_kill.fp) == "table" and self.last_kill.fp.key or nil,
+      npc = self.last_kill.fp, kill_ms = self.last_kill.ms,
+      kill_pos = self.last_kill.pos, pos = ctx.pos, zone = ctx.zone,
+      elapsed_ms = now - self.last_kill.ms,
+    })
+  end
+  if source == 35 then
+    if not self.pending_reward then
+      ctx = ctx or self:_context()
+      local qid = self.last_quest_id
+      if qid ~= nil and self.last_quest_ms ~= nil
+         and now - self.last_quest_ms > QUEST_ID_TTL_MS then
+        qid = nil
+      end
+      self.pending_reward = {
+        ms = now, quest_id = qid, items = {}, pos = ctx.pos, zone = ctx.zone,
+        money = nil, exp = nil,
+      }
+      -- Money and exp can arrive in the same tick just before the item.
+      if self.last_money and now - self.last_money.ms <= 1000 then
+        self.pending_reward.money = self.last_money.delta
+      end
+      if self.last_exp and now - self.last_exp.ms <= 1000 then
+        self.pending_reward.exp = self.last_exp.amount
+      end
+    end
+    self.pending_reward.items[#self.pending_reward.items + 1] = {
+      item_type_id = item_type, count = count, link = link,
+    }
+    self:_maybe_finish_reward(now)
+  end
+  if self.pending_container and now == self.pending_container.consume_ms then
+    self.pending_container.adds[#self.pending_container.adds + 1] = {
+      item_type_id = item_type, count = count, link = link, source = source,
+    }
+  end
+end
+
+function Probe:_on_money(raw, now)
+  local delta = tonumber(raw[1])
+  if delta ~= nil then self.last_money = {ms = now, delta = delta} end
+  if not self.pending_reward then return end
+  if now - self.pending_reward.ms > REWARD_WINDOW_MS then return end
+  self.pending_reward.money = delta
+  self:_maybe_finish_reward(now)
+end
+
+function Probe:_maybe_finish_reward(now)
+  local pending = self.pending_reward
+  if not pending then return end
+  if pending.money ~= nil and pending.exp ~= nil then
+    self:_emit_reward(now)
+  end
+end
+
+function Probe:_emit_reward(now)
+  local pending = self.pending_reward
+  if not pending then return end
+  self.pending_reward = nil
+  local quest_entry = pending.quest_id and self.quests[pending.quest_id]
+  self:_add("quest_reward", {
+    quest_id = pending.quest_id, items = pending.items,
+    money_delta = pending.money, exp_delta = pending.exp,
+    elapsed_ms = now - pending.ms, pos = pending.pos, zone = pending.zone,
+    quest = quest_entry and quest_entry.state or nil,
+  })
+end
+
+function Probe:_on_cast(raw, now)
+  local name = raw[1]
+  if type(name) ~= "string" or name:lower() ~= "open" then return end
+  local ctx = self:_context()
+  self.last_open = {
+    ms = now, cast = {name = name, args = {raw[2], raw[3], raw[4]}},
+    pos = ctx.pos, zone = ctx.zone,
+  }
+end
+
+function Probe:_on_removed_item(raw, now)
+  local reason = raw[3]
+  if type(reason) ~= "string" or reason:lower() ~= "consume" then return end
+  local open = self.last_open
+  if not open or now - open.ms > OPEN_WINDOW_MS then return end
+  self.last_open = nil
+  local ctx = self:_context()
+  self.pending_container = {
+    open_ms = open.ms, open_cast = open.cast, open_pos = open.pos,
+    consume_ms = now, consumed = {
+      item_type_id = D.item_type_from_link(raw[1]),
+      count = tonumber(raw[2]), link = raw[1], source = raw[4],
+    },
+    adds = {}, pos = open.pos or ctx.pos, zone = open.zone or ctx.zone,
+  }
+end
+
+function Probe:_on_action_bar(raw, now)
+  local fp = self:_snapshot_fingerprint(now)
+  local ctx = self:_context()
+  local target_id = type(fp) == "table" and fp.id
+    or (ctx.target and ctx.target.id) or nil
+  self:_add("action_bar", {
+    kind = raw[1], n = raw[2], target_id = target_id,
+    npc_key = type(fp) == "table" and fp.key or nil,
+    fingerprint = fp, pos = ctx.pos, zone = ctx.zone,
+  })
+  if type(fp) == "table" then
+    self:_catalogue_npc(fp, now, "action_bar", raw[2])
+  end
+end
+
+function Probe:_catalogue_npc(fp, now, origin, action_bar)
+  if type(fp) ~= "table" or fp.key == nil then return end
+  if fp.name == nil and fp.max_health == nil then return end
+  local key = fp.key
+  local entry = self.npcs[key]
+  local created = entry == nil
+  local changed = created
+  if created then
+    entry = {
+      first_ms = now, positions = {}, action_bars = {}, ids = {}, sightings = 0,
+      fingerprint = {
+        name = fp.name, level = fp.level, faction = fp.faction,
+        max_health = fp.max_health, unit_type = fp.unit_type,
+      },
+    }
+    self.npcs[key] = entry
+  end
+  entry.sightings = entry.sightings + 1
+  entry.last_ms = now
+  entry.last_id = fp.id
+  if fp.id ~= nil then
+    local tag = tostring(fp.id)
+    local known_id = false
+    for _, saved in ipairs(entry.ids) do
+      if tostring(saved) == tag then known_id = true; break end
+    end
+    if not known_id and #entry.ids < MAX_NPC_POSITIONS then
+      entry.ids[#entry.ids + 1] = fp.id
+      changed = true
+    end
+  end
+  if type(fp.position) == "table" then
+    local seen = false
+    for _, saved in ipairs(entry.positions) do
+      if D.position_same(saved.pos, fp.position) then seen = true; break end
+    end
+    if not seen and #entry.positions < MAX_NPC_POSITIONS then
+      entry.positions[#entry.positions + 1] = {
+        pos = fp.position, ms = now, origin = origin,
+      }
+      changed = true
+    end
+  end
+  if action_bar ~= nil then
+    local tag = tostring(action_bar)
+    local found = false
+    for _, value in ipairs(entry.action_bars) do
+      if tostring(value) == tag then found = true; break end
+    end
+    if not found then
+      entry.action_bars[#entry.action_bars + 1] = action_bar
+      changed = true
+    end
+  end
+  if changed then
+    self:_add("npc_catalogue", {
+      key = key, fingerprint = entry.fingerprint, positions = entry.positions,
+      action_bars = entry.action_bars, ids = entry.ids,
+      sightings = entry.sightings, first_ms = entry.first_ms,
+      last_ms = entry.last_ms, origin = origin, last_id = entry.last_id,
+    })
+  end
+end
+
+-- Flushes records that need a short window to collect their parts (container
+-- adds, quest reward money and exp, stale pending correlations).
+function Probe:_flush_derived(now)
+  local container = self.pending_container
+  if container and now - container.consume_ms > CONTAINER_GRACE_MS then
+    self.pending_container = nil
+    self:_add("container_open", {
+      open_cast = container.open_cast, open_ms = container.open_ms,
+      consume_ms = container.consume_ms, consumed = container.consumed,
+      adds = container.adds, add_count = #container.adds,
+      elapsed_ms = container.consume_ms - container.open_ms,
+      pos = container.pos, zone = container.zone,
+    })
+  end
+  if self.pending_reward and now - self.pending_reward.ms > REWARD_WINDOW_MS then
+    self:_emit_reward(now)
+  end
+  if self.pending_exp and now - self.pending_exp.ms > KILL_CORRELATE_MS then
+    self.pending_exp = nil
+  end
+  if self.pending_kill and now - self.pending_kill.ms > KILL_CORRELATE_MS then
+    self.pending_kill = nil
+  end
+  if self.last_kill and now - self.last_kill.ms > LOOT_WINDOW_MS * 4 then
+    self.last_kill = nil
+  end
+  if self.last_open and now - self.last_open.ms > OPEN_WINDOW_MS then
+    self.last_open = nil
+  end
+  for key, since in pairs(self.combat_units) do
+    if now - since > 300000 then self.combat_units[key] = nil end
+  end
 end
 
 local function make_widget_handler(self)
@@ -433,10 +985,47 @@ function Probe:_surface_records()
   return libs, names, globals
 end
 
+-- The sandbox has no `next`, so libraries cannot be enumerated; probe the
+-- fixed documented/known names instead and record which of them exist.
+function Probe:_member_records()
+  local api = self.api
+  local present, members, missing = {}, {}, {}
+  for libname, names in pairs(G.SURFACE_NAMES) do
+    local target = lib(api, libname)
+    present[libname] = type(target)
+    local found, absent = {}, {}
+    if target ~= nil then
+      for _, name in ipairs(names) do
+        local ok, value = pcall(function() return target[name] end)
+        if ok and value ~= nil then
+          found[name] = type(value)
+        else
+          absent[#absent + 1] = name
+        end
+      end
+    else
+      for _, name in ipairs(names) do absent[#absent + 1] = name end
+    end
+    members[libname] = found
+    missing[libname] = absent
+  end
+  return present, members, missing
+end
+
 function Probe:_run_inventory(phase)
   local libs, names, globals = self:_surface_records()
   self:_add("api_surface", {phase = phase, libs = libs, top_level = names}, true)
   self:_add("api_globals", {phase = phase, globals = globals}, true)
+  local present, members, missing = self:_member_records()
+  local found_count, missing_count = 0, 0
+  for _, found in pairs(members) do
+    for _ in pairs(found) do found_count = found_count + 1 end
+  end
+  for _, absent in pairs(missing) do missing_count = missing_count + #absent end
+  self:_add("api_members", {
+    phase = phase, present = present, members = members, missing = missing,
+    found_count = found_count, missing_count = missing_count,
+  }, true)
   local calls = {}
   local function push(entry, extra)
     local result = self:_call_entry(entry, extra)
@@ -482,6 +1071,7 @@ function Probe:_snapshot_bag(reason)
       first_error = first_error or result.error
     end
   end
+  self:_catalogue_bag_items(items)
   local sig = U.signature({items, currency.values, bank_currency.values})
   local record = {
     reason = reason, capacity = capacity, count = count, filled = filled,
@@ -517,22 +1107,23 @@ local function scan_hints(value, path, out, depth)
   end
 end
 
-function Probe:_buff_list(count_name, fn_name)
+function Probe:_buff_list(count_name, fn_name, token)
+  token = token or "target"
   local unit = lib(self.api, "Unit")
-  local count = U.first(U.call_method(EVENT_LIMITS, unit, count_name, "target"))
+  local count = U.first(U.call_method(EVENT_LIMITS, unit, count_name, token))
   local list = {}
   if type(count) == "number" then
     for index = 1, math.min(count, MAX_BUFFS) do
-      list[index] = U.call_method(EVENT_LIMITS, unit, fn_name, "target", index)
+      list[index] = U.call_method(EVENT_LIMITS, unit, fn_name, token, index)
     end
   end
   return {count = count, list = list}
 end
 
-function Probe:_dump_target(id)
+function Probe:_dump_unit(kind, token, id, extra)
   local calls, by_id = {}, {}
   for _, entry in ipairs(G.TARGET) do
-    calls[entry[1] .. "." .. entry[2]] = self:_call_entry({entry[1], entry[2], "target"})
+    calls[entry[1] .. "." .. entry[2]] = self:_call_entry({entry[1], entry[2], token})
   end
   for _, entry in ipairs(G.TARGET_BY_ID) do
     by_id[entry[1] .. "." .. entry[2]] = self:_call_entry({entry[1], entry[2]}, id)
@@ -545,12 +1136,50 @@ function Probe:_dump_target(id)
     if result.ok and result.values then scan_hints(result.values, key, hints, 0) end
   end
   local ctx = self:_context()
-  self:_add("target", {
-    id = id, calls = calls, by_id = by_id,
-    buffs = self:_buff_list("UnitBuffCount", "UnitBuff"),
-    debuffs = self:_buff_list("UnitDeBuffCount", "UnitDeBuff"),
+  local record = {
+    id = id, token = token, calls = calls, by_id = by_id,
+    buffs = self:_buff_list("UnitBuffCount", "UnitBuff", token),
+    debuffs = self:_buff_list("UnitDeBuffCount", "UnitDeBuff", token),
     id_like_fields = hints, pos = ctx.pos, zone = ctx.zone,
-  })
+    fingerprint = self:_fingerprint(token, id),
+  }
+  if extra then
+    for key, value in pairs(extra) do record[key] = value end
+  end
+  self:_add(kind, record)
+  return record
+end
+
+function Probe:_dump_target(id)
+  local own_pet = nil
+  for _, which in ipairs(G.PET_TOKENS) do
+    if self.pets[which] == id then own_pet = which end
+  end
+  local now = self:_now()
+  local record = self:_dump_unit("target", "target", id, {own_pet = own_pet})
+  local fp = record.fingerprint
+  self.last_target_fp = fp
+  self.last_target_fp_ms = now
+  if type(fp) == "table" then
+    self:_catalogue_npc(fp, now, "target")
+  end
+end
+
+-- Own mount/pet: dumped on every target change so its identity is recorded
+-- even when it is not the current target (and can be matched to a target dump).
+function Probe:_dump_pet(which)
+  local id = U.first(U.call_method(nil, lib(self.api, "Unit"), "GetUnitId", which))
+  if id == nil then
+    if not self.pet_absent[which] then
+      self.pet_absent[which] = true
+      self:_add("pet_absent", {token = which})
+    end
+    self.pets[which] = nil
+    return nil
+  end
+  self.pet_absent[which] = nil
+  self.pets[which] = id
+  return self:_dump_unit("pet", which, id, {})
 end
 
 function Probe:_poll_target()
@@ -558,6 +1187,7 @@ function Probe:_poll_target()
   if id == self.last_target then return end
   self.last_target = id
   self.ctx_ms = nil
+  for _, which in ipairs(G.PET_TOKENS) do self:_dump_pet(which) end
   if id == nil then
     self:_add("target_cleared", {})
     return
@@ -573,6 +1203,7 @@ function Probe:update(dt)
   self.since_poll = self.since_poll + dt
   self.since_flush = self.since_flush + dt
   self.since_bag = self.since_bag + dt
+  if self.active then self:_flush_derived(self:_now()) end
   if not self.delayed_done then
     self.since_delayed = self.since_delayed + dt
     if self.since_delayed >= 10000 then
@@ -657,7 +1288,12 @@ function Probe:_record_start()
     flush_ms = FLUSH_MS, max_buffer = MAX_BUFFER, rate_max = RATE_MAX,
     rate_window_ms = RATE_WINDOW_MS, context_ttl_ms = CONTEXT_TTL_MS,
     quest_count_available = false,
-    quest_note = "API exposes only per-questTypeId getters; no active quest list.",
+    quest_note = "API exposes only per-questTypeId getters; no active quest list. " ..
+      "Quest getters run on first sight and on every later event for the id.",
+    ignored_events = {"END_QUEST_CHAT_BUBBLE", "TARGET_OVER"},
+    derive_note = "kill = combat end + EXP_CHANGED; loot = ADDED_ITEM source 10 " ..
+      "within 3 s of a kill; container = Open cast + consume + same-ms adds; " ..
+      "quest reward = ADDED_ITEM source 35 + PLAYER_MONEY + EXP_CHANGED.",
   }, true)
 end
 
