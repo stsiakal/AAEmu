@@ -2512,7 +2512,7 @@ item (no `eiset_id` >= 9,000,001 and no item id 34,936..34,984), `items.level` <
 armor / cloak only, no item proc, no set proc, no set bonus unit attribute above 186, no
 3.0-only use skill, and a look for each of the four playable races whose paths are already in
 the 1.2 pak. The generated patch is
-`SQL/patches/compact/2026-10-21-gear-3.0-batch-1a.sql`; inserts are guarded with
+`SQL/patches/compact/backports/2026-10-21-gear-3.0-batch-1a.sql`; inserts are guarded with
 `WHERE NOT EXISTS` on the id and the eight orphan class-row fixes are value-for-value
 `UPDATE`s, so a second run is a no-op.
 
@@ -2564,7 +2564,7 @@ one playable look path absent from the 1.2 pak, and every playable look path pre
 pak. Dwarf/Warborn look paths are imported as data-only `item_assets` rows. The patch is generated
 against the 1.2 database **with batch 1a applied** (patch order), so its synthetic ids start above
 1a's (looks 3,856..3,974, `item_assets` 22,140..23,531). Generated patch:
-`SQL/patches/compact/2026-10-21-gear-3.0-batch-1b-costumes.sql`; inserts are guarded with
+`SQL/patches/compact/backports/2026-10-21-gear-3.0-batch-1b-costumes.sql`; inserts are guarded with
 `WHERE NOT EXISTS` on the id and a second run is a no-op. Regeneration is two-pass: build a probe
 overlay with the candidate list, `--repair-missing-textures` and `--unresolved-list <roots>`, then
 pass `<roots>` to `backport.py --skip-art-paths`; the final overlay build uses the repaired list.
@@ -2874,12 +2874,12 @@ the death never started its timer):
   comes back at full HP only after its repair wait, not when it is still on cooldown. (As the
   mirrored `SummonSlave.ReadDetails` bug above notes, the timer itself is still lost on restart.)
 
-## Level 51-55 capstones and experience (3.0.4.2 backport, 2026-10-20)
+## Level 51-55 capstones and experience (3.0.4.2 backport, opt-in since 2026-10-22)
 
 The 1.2 `compact.sqlite3` hides the ten ability-level 55 capstones (`skills.show = 'f'`) and
 carries a placeholder level 51-55 curve (level 51 needs 8,082,000 total exp, level 55
-179,307,360), so the last five levels are not playable the retail way. The opt-in patch
-`SQL/patches/compact/2026-10-20-level-55-retail-3.0.sql` backports the values from the
+179,307,360), so the last five levels are not playable the retail way. The **opt-in** patch
+`SQL/patches/compact/backports/2026-10-20-level-55-retail-3.0.sql` backports the values from the
 3.0.4.2 compact (`D:/aa-re/db-references/3.0.4.2-20240828/compact.sqlite3`):
 
 * `skills.show = 't'` for the one capstone of each ability: 23587, 23588, 23589, 23591, 23592,
@@ -2892,16 +2892,23 @@ carries a placeholder level 51-55 curve (level 51 needs 8,082,000 total exp, lev
   3,488,622) rise above the untouched 1.2 level 56 row (2,849,000), and
   `ExperienceManager.Load` (`ExperienceTable::from_templates`) requires strictly increasing
   `total_mate_exp`, so applying them would make the game data fail to load.
+* `ExperienceTable::level_from_exp_min` clamps the returned level to the cap. The C# search
+  window (`Min(Count - minLevel, maxLevel)`) can reach a row above the cap when the table has
+  more rows than the cap (the 1.2 `levels` table has 101), which would return level 51 with a
+  cap of 50; the clamp keeps both the 1.2 cap (50) and the backport cap (55) exact.
 
 Each `UPDATE` is guarded by the 1.2 original value, so the script is rerun-safe and leaves
-customized rows alone. It applies like the other compact patches: back up the server's
-`Data/compact.sqlite3`, run it offline with `sqlite3` (see the script header), then restart; the
-runtime loaders stay read-only. `PLAYER_LEVEL_CAP` is already 55 and `/level 55` raises the active
+customized rows alone. It applies like the other compact patches (`cargo xtask compact-patches
+<db> --backports`, default off), and the server behavior is opt-in too: `Backports.Enabled`
+(`config.rs`, default false) selects `player_level_cap()` in `data/experience.rs`, 50 for pure
+1.2 and 55 with the backport data. With `Backports.Enabled=true`, `/level 55` raises the active
 abilities to 55 (`Abilities.AddActiveExp` is capped by the level-55 exp), so the capstones are
-offered and pass the learn-path ability-level check once the data is patched. The regression test
+offered and pass the learn-path ability-level check once the data is patched; with it false the
+player stays capped at 50 and `/level` refuses 51-55. The regression test
 `data::level55_patch_tests::level55_patch_applies_to_a_copy_and_loads` (`#[ignore]`, gated by
 `AAEMU_COMPACT_DB`) executes the real patch file twice on a copy and checks the values and the
-server loaders. Open (out of tree): the Bevy client's hardcoded XP table
+server loaders; `data::experience::tests::the_vanilla_cap_is_50_and_backports_raise_it_to_55`
+covers the cap switch. Open (out of tree): the Bevy client's hardcoded XP table
 (`D:/aaemu-client/AABevy1.2/crates/aa-net/src/model.rs`) must be updated to the same 51-55 values
 for its UI to agree.
 

@@ -49,7 +49,7 @@ impl Command for AddXP {
 
 #[cfg(test)]
 pub(crate) mod tests {
-    use crate::data::experience::{ExperienceTable, LevelTemplate};
+    use crate::data::experience::{ExperienceTable, LevelTemplate, PLAYER_LEVEL_CAP};
     use crate::data::GameData;
     use crate::models::mate::Mate;
     use crate::models::npc::Npc;
@@ -62,6 +62,11 @@ pub(crate) mod tests {
     /// Game data with a 55 level experience table (level n starts at `(n - 1) * 10 000` exp,
     /// `(n - 1) * 1 000` for mates).
     pub fn chars_data() -> GameData {
+        chars_data_capped(PLAYER_LEVEL_CAP)
+    }
+
+    /// [`chars_data`] with an explicit player level cap (rows always go to 55).
+    pub fn chars_data_capped(player_level_cap: u8) -> GameData {
         let mut gd = GameData::empty();
         gd.experience = ExperienceTable::from_templates(
             (1u8..=55)
@@ -72,6 +77,7 @@ pub(crate) mod tests {
                     skill_points: 0,
                 })
                 .collect(),
+            player_level_cap,
         )
         .expect("experience table");
         gd

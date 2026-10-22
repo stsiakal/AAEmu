@@ -40,7 +40,7 @@ use super::spheres::SphereQuest;
 use super::state::{ActPath, QuestState};
 use super::templates::{ActKind, QuestActTemplate};
 use super::unit_reqs::{req_kind, validate, UnitReq};
-use crate::data::experience::{ExperienceTable, LevelTemplate};
+use crate::data::experience::{ExperienceTable, LevelTemplate, PLAYER_LEVEL_CAP};
 use crate::data::items::{ItemData, ItemTemplate};
 use crate::data::world_data::{FactionData, Localization, ZoneData};
 use crate::data::GameData;
@@ -320,7 +320,8 @@ impl Sim {
             .expect("levels")
             .map(|r| r.expect("level row"))
             .collect();
-        gd.experience = ExperienceTable::from_templates(levels).expect("experience");
+        gd.experience =
+            ExperienceTable::from_templates(levels, PLAYER_LEVEL_CAP).expect("experience");
 
         let mut zone_key_by_group = HashMap::new();
         let mut zone_key_by_id = HashMap::new();
