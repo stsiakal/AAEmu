@@ -43,8 +43,10 @@ pump 2
 noownslave
 gm slave info id SLAVEOBJ
 expectreply does not exist
-# one row per summoning item: the summon again reuses the saved row
+# one row per summoning item: the summon again (after the 10 s skill cooldown) reuses the
+# saved row
+pump 11
 icast 15802 5223 self
 ownslave 8
-expectdb "SELECT COUNT(*) FROM slaves s JOIN characters c ON c.id=s.owner_id WHERE c.name='${rm}' AND s.owner_type=0" 1 5
+expectdb "SELECT COUNT(*) FROM slaves WHERE item_id=ITEMID AND owner_type=0" 1 5
 expectdb "SELECT COUNT(*) FROM slaves s JOIN characters c ON c.id=s.owner_id WHERE c.name='${rm}' AND s.owner_type=2" 0

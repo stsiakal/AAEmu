@@ -121,7 +121,8 @@
 //! expectpkt <PacketName> [secs]     fail unless the packet arrives within `secs` (default 5)
 //! expectnopkt <PacketName> [secs]   fail if the packet arrives within `secs` (default 5)
 //! expectlog <regex> [secs]          fail unless a new game-log line matches (AAEMU_VERIFY_GAME_LOG)
-//! expectdb "<sql>" <value> [secs]   fail unless the SQL's value equals `value`
+//! expectdb "<sql>" <value> [secs]   fail unless the SQL's value equals `value` (`ITEMID` in the SQL
+//!                                   is the stack id the last `item` added)
 //!                                   (AAEMU_VERIFY_MYSQL; re-checked for `secs` when given)
 //! ```
 //!
@@ -497,6 +498,7 @@ async fn run_lines(
     let mut last_slave = 0u32;
     let mut last_slave_tl = 0u16;
     let mut last_gm_text = String::new();
+    let mut last_item_id = 0u64;
     for (n, raw) in text.lines().enumerate() {
         for e in &game.state.social[printed.min(game.state.social.len())..] {
             println!("    social: {e:?}");
@@ -790,6 +792,7 @@ async fn run_lines(
                 let reply = gm_command(game, &format!("item add self {tpl} {count}")).await?;
                 if let Some(id) = stack_id(&reply, tpl) {
                     items.insert(tpl, id);
+                    last_item_id = id;
                     println!("    item {tpl} stack id {id}");
                 }
                 show(&reply);
@@ -1291,7 +1294,9 @@ async fn run_lines(
                     "expectdb \"<sql>\" <expected> [secs] (one argument line)"
                 );
                 let secs: u64 = args.get(2).and_then(|x| x.parse().ok()).unwrap_or(0);
-                expect_db(&args[0], &args[1], secs).await?;
+                // `ITEMID` stands for the stack id the last `item` added.
+                let sql = args[0].replace("ITEMID", &last_item_id.to_string());
+                expect_db(&sql, &args[1], secs).await?;
             }
             "await" => {
                 let kind = parts.first().context("await needs an event name")?;
