@@ -371,7 +371,7 @@ initialization, tool discovery, argument validation and image content. Stdout co
 messages. The launcher inherits only the two ticket handles so its output pipes close promptly
 while the client stays alive. Tools are `client_list`, `client_attach`, `client_status`,
 `client_launch`, `client_lua`, `client_screenshot`, `client_window`, `client_pak` and `client_stop`.
-Vehicle and gameplay tests also have `client_input`, `client_action`, `client_inventory`, `client_mode_actions`,
+Vehicle and gameplay tests also have `client_input`, `client_wheel`, `client_mouse_look`, `client_action`, `client_inventory`, `client_mode_actions`,
 `client_unit_state`, `client_mode_input`, `client_loot`, `client_use_item`, `client_chat`, `client_vehicle`, `client_entities` and `client_perf`.
 Launch defaults to silent audio and fast hidden rendering with normal-priority CPU calibration and 64 KB pak
 read-ahead; pass `fast_start: false`, `smooth_start: false`, `fast_pak: false` or `hidden: false` to compare
@@ -422,6 +422,23 @@ dispatch and exact restoration afterward, modifier overlap, release ordering, de
 unsupported modifier slots and failed-post cleanup.
 Input submission does not prove that a skill cast succeeded: verify the client's binding,
 server cast, mana and buff results. The live pet Run! shortcut remains unverified.
+
+`client_wheel` turns the wheel by signed notches (positive up, negative down, magnitude 1–50),
+optionally holding `ctrl`/`shift`/`alt` for the wheel events. `client_mouse_look` takes a relative
+`dx`/`dy` delta (each −4095..4095 client pixels, not both zero) with the right button held. Both
+use the mouse symbols of the same guarded r208022 `CryInput.dll`: the `CMouse` constructor
+`sub_3350465A` registers `mouse1`–`mouse8` = 256–263, `mwheel_up`/`mwheel_down` = 264/265 and
+`maxis_x`/`maxis_y` = 266/267 (axis state 8), next to `pos_x`/`pos_y` = 269/270. The native
+`CMouse::Update` `sub_33504DE2` emits a wheel press and its release on consecutive frames and
+reports relative deltas as `maxis_x`/`maxis_y`; both reach listeners through
+`CMessageInput::PostInputEvent` (slot 8, RVA `0x14D6`). The driver builds the same 32-byte
+`SInputEvent` and dispatches it through that slot after the same build check. It never calls
+`SendInput` or `SetCursorPos`: the wheel release follows from the driver's own frame tick after
+50 ms, and mouse look holds Mouse2 for about 100 ms and splits the delta into at most 100-pixel
+`maxis_x`/`maxis_y` steps. Mouse look deliberately does not use the absolute `pos_x`/`pos_y`
+path, so the native mouse-lock branch that repositions the desktop cursor is not entered. Verify
+camera zoom/turning and the resulting server state; accepting the event does not prove a gameplay
+effect.
 
 `client_use_item` calls `X2Bag:UseItemByType` for a scroll actually present in inventory, preserving
 the client's normal skill cast, placement checks and server ownership checks. `accepted: true`

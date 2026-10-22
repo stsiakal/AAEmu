@@ -26,7 +26,8 @@ bool record_mouse(const Event& event) {
     // The native mouse device stores state before dispatching to listeners.
     if(event.id==269) { assert(!mouse_locked_flag);mouse_x=event.value; }
     else if(event.id==270) { assert(!mouse_locked_flag);mouse_y=event.value; }
-    else { assert(event.id==256 || event.id==257);mouse_button_down=event.state==1; }
+    else if(event.id==256 || event.id==257) mouse_button_down=event.state==1;
+    else assert(event.id==264 || event.id==265 || event.id==266 || event.id==267);
     bool accepted=record(event);
     if((event.id==269 && lock_after_x) || ((event.id==256 || event.id==257) && event.state==1 && lock_after_down))
         mouse_locked_flag=true;
@@ -44,7 +45,8 @@ static void event(size_t i,int id,bool down,int mask) {
 }
 static void mouse_event(size_t i,int id,int state,float value,int mask=0x200) {
     const input::Event& actual=events.at(i);
-    const char* name=id==269?"pos_x":id==270?"pos_y":id==257?"mouse2":"mouse1";
+    const char* name=id==269?"pos_x":id==270?"pos_y":id==257?"mouse2":id==256?"mouse1":
+        id==264?"mwheel_up":id==265?"mwheel_down":id==266?"maxis_x":"maxis_y";
     assert(actual.device==1 && actual.state==state && actual.id==id);
     assert(actual.unicode==0 && actual.symbol==NULL && actual.modifiers==mask);
     assert(actual.value==value && !strcmp(actual.name,name));
@@ -354,5 +356,54 @@ int main() {
     assert(input::control_at(env,"mouse_right_click 1 2",6700)[0]=='2');
     input::mouse_slots[26]=saved_slot;
     assert(events.empty() && attempts==saved_attempts && !input::mouse_held);
-    puts("input event bytes, synchronous modifier shadow/restoration, shared holds, bounds, rollback and deadline release passed");
+
+    // Wheel notches and camera-look deltas use the exact r208022 mouse symbol IDs and
+    // the same CMessageInput::PostInputEvent slot as the native CMouse::Update.
+    events.clear();input::physical=0;
+    input::modifier_get_supported=input::modifier_set_supported=true;
+    for(const char* bad: {"wheel","wheel 0","wheel 51","wheel -51","wheel 1 extra",
+        "wheel +1","wheel 1.5","meta+wheel 1","ctrl+ctrl+wheel 1","mouse_look",
+        "mouse_look 0 0","mouse_look 4096 0","mouse_look 0 -4096","mouse_look 1.5 0",
+        "mouse_look 1","mouse_lookfoo 1 2"})
+        assert(input::control_at(env,bad,7000)[0]=='2');
+    assert(events.empty());
+    assert(input::control_at(env,"wheel 3",7000)[0]=='0');
+    assert(events.size()==1 && events[0].id==264 && events[0].state==1 && events[0].value==3);
+    mouse_event(0,264,1,3,0);
+    input::tick_at(env,7049);assert(events.size()==1);
+    input::tick_at(env,7050);assert(events.size()==2);
+    mouse_event(1,264,2,0,0);
+    assert(input::control_at(env,"wheel -2",7060)[0]=='0');
+    assert(events.size()==3 && events[2].id==265 && events[2].state==1 && events[2].value==-2);
+    input::tick_at(env,7110);
+    assert(events.size()==4 && events[3].id==265 && events[3].state==2 && events[3].value==0);
+    mouse_event(3,265,2,0,0);
+    // A chord applies its modifiers to the wheel event, then releases them immediately.
+    events.clear();input::physical=0x200;
+    assert(input::control_at(env,"ctrl+shift+wheel 1",7200)[0]=='0');
+    assert(events.size()==5 && input::physical==0x200);
+    event(0,28,true,0x211);event(1,41,true,0x233);
+    mouse_event(2,264,1,1,0x233);
+    event(3,41,false,0x211);event(4,28,false,0x200);
+    input::tick_at(env,7249);assert(events.size()==5);
+    input::tick_at(env,7250);
+    assert(events.size()==6 && events[5].id==264 && events[5].state==2);
+    mouse_event(5,264,2,0,0x200);
+
+    // Mouse look presses Mouse2, emits bounded relative maxis_x/y deltas, then releases.
+    events.clear();input::physical=0;
+    assert(input::control_at(env,"mouse_look 120 -50",7300)[0]=='0');
+    assert(events.size()==5 && input::mouse_held && !input::mouse_pending);
+    assert(input::mouse_button==257);
+    mouse_event(0,257,1,1,0);
+    mouse_event(1,266,8,60,0);mouse_event(2,267,8,-25,0);
+    mouse_event(3,266,8,60,0);mouse_event(4,267,8,-25,0);
+    input::tick_at(env,7399);assert(events.size()==5);
+    input::tick_at(env,7400);
+    assert(events.size()==6 && !input::mouse_held);
+    mouse_event(5,257,2,0,0);
+    assert(input::control_at(env,"mouse_look 0 1",7401)[0]=='0');
+    input::tick_at(env,7501);
+    assert(!input::mouse_held);
+    puts("input event bytes, synchronous modifier shadow/restoration, shared holds, bounds, rollback, wheel/look and deadline release passed");
 }
