@@ -11,7 +11,7 @@ use sqlx::mysql::MySqlPoolOptions;
 
 use crate::config::AppConfig;
 use crate::data::client_files::ClientFileManager;
-use crate::data::experience::{ExperienceTable, LevelTemplate};
+use crate::data::experience::{ExperienceTable, LevelTemplate, PLAYER_LEVEL_CAP};
 use crate::data::items::{ItemTemplate, TemplateKind};
 use crate::data::world_templates::{WorldSpawnPosition, WorldTemplate, WorldTemplates};
 use crate::data::GameData;
@@ -56,6 +56,7 @@ fn exp_table() -> ExperienceTable {
                 skill_points: 0,
             })
             .collect(),
+        PLAYER_LEVEL_CAP,
     )
     .expect("levels")
 }

@@ -2,10 +2,23 @@
 //! `Character.ValidateAndFixExpAndLevel`, which `Character.Load` runs before the character list
 //! is written (it can change the level that is sent).
 
-/// `ExperienceManager.PlayerLevelCap`.
+/// `ExperienceManager.PlayerLevelCap` with the opt-in 3.0 backports (`Backports:Enabled`); the
+/// pure 1.2 cap is [`VANILLA_PLAYER_LEVEL_CAP`].
 pub const PLAYER_LEVEL_CAP: u8 = 55;
+/// The 1.2 player level cap (level 50 is the last retail 1.2 level; 51-55 are placeholders).
+pub const VANILLA_PLAYER_LEVEL_CAP: u8 = 50;
 /// `ExperienceManager.MateLevelCap`.
 pub const MATE_LEVEL_CAP: u8 = 50;
+
+/// The player level cap for the running configuration: 55 with `Backports:Enabled`, else the
+/// pure 1.2 cap of 50.
+pub fn player_level_cap(backports: bool) -> u8 {
+    if backports {
+        PLAYER_LEVEL_CAP
+    } else {
+        VANILLA_PLAYER_LEVEL_CAP
+    }
+}
 
 /// One `levels` row (`ExperienceLevelTemplate`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -46,8 +59,12 @@ pub struct ExperienceTable {
 
 impl ExperienceTable {
     /// `ExperienceManager.Load(loader, PlayerLevelCap, MateLevelCap)` with the loader's checks
-    /// (levels must start at 1 without gaps, experience strictly increasing).
-    pub fn from_templates(templates: Vec<LevelTemplate>) -> Result<Self, ExperienceError> {
+    /// (levels must start at 1 without gaps, experience strictly increasing). `player_level_cap`
+    /// is [`player_level_cap`] for the server configuration.
+    pub fn from_templates(
+        templates: Vec<LevelTemplate>,
+        player_level_cap: u8,
+    ) -> Result<Self, ExperienceError> {
         let (mut last_exp, mut last_mate_exp) = (-1i32, -1i32);
         for (expected, t) in (1u32..).zip(&templates) {
             if u32::from(t.level) != expected {
@@ -64,7 +81,7 @@ impl ExperienceTable {
             last_mate_exp = t.total_mate_exp;
         }
         let mut table = Self::default();
-        table.load(templates, PLAYER_LEVEL_CAP, MATE_LEVEL_CAP)?;
+        table.load(templates, player_level_cap, MATE_LEVEL_CAP)?;
         Ok(table)
     }
 
@@ -173,19 +190,18 @@ impl ExperienceTable {
             .collect();
         // `List.BinarySearch(minLevel, count, exp)` with C#'s count. Note: the count is
         // `Min(Count - minLevel, maxLevel)`, so the searched range may extend past maxLevel when
-        // the table has more rows than the cap (C# quirk, reproduced).
+        // the table has more rows than the cap. The C# then returns that row's level, above the
+        // cap; here the result is clamped to `max_level` so the 1.2 data (101 rows) really stops
+        // at the 1.2 cap of 50 and the backport data at 55.
         let start = usize::from(min_level);
         let count = (exp_by_level.len() - start).min(usize::from(max_level));
         let index = match exp_by_level[start..start + count].binary_search(&exp) {
             Ok(i) => return Ok(((start + i + 1) as u8, 0)),
             Err(i) => start + i,
         };
-        if index < exp_by_level.len() {
-            let level = index as u8;
-            return Ok((level, exp - self.exp_for_level(level, mate)));
-        }
-        let overflow = 0.max(exp - self.exp_for_level(max_level, mate));
-        Ok((max_level, overflow))
+        let level = (index as u8).min(max_level);
+        let overflow = 0.max(exp - self.exp_for_level(level, mate));
+        Ok((level, overflow))
     }
 
     /// `Character.ValidateAndFixExpAndLevel()` on `(level, experience)`; returns the fixed pair.
@@ -222,7 +238,7 @@ mod tests {
                 skill_points: 0,
             })
             .collect();
-        ExperienceTable::from_templates(t).unwrap()
+        ExperienceTable::from_templates(t, PLAYER_LEVEL_CAP).unwrap()
     }
 
     #[test]
@@ -234,7 +250,7 @@ mod tests {
             skill_points: 0,
         }];
         assert_eq!(
-            ExperienceTable::from_templates(bad).unwrap_err(),
+            ExperienceTable::from_templates(bad, PLAYER_LEVEL_CAP).unwrap_err(),
             ExperienceError::MissingLevel(1)
         );
         let unsorted = vec![
@@ -252,11 +268,32 @@ mod tests {
             },
         ];
         assert_eq!(
-            ExperienceTable::from_templates(unsorted).unwrap_err(),
+            ExperienceTable::from_templates(unsorted, PLAYER_LEVEL_CAP).unwrap_err(),
             ExperienceError::NotSortedByExp
         );
         let t = table(60);
         assert_eq!((t.max_player_level(), t.max_mate_level()), (55, 50));
+    }
+
+    #[test]
+    fn the_vanilla_cap_is_50_and_backports_raise_it_to_55() {
+        let rows = |n: u8| {
+            (1..=n)
+                .map(|l| LevelTemplate {
+                    level: l,
+                    total_exp: (i32::from(l) - 1) * 100,
+                    total_mate_exp: (i32::from(l) - 1) * 10,
+                    skill_points: 0,
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(player_level_cap(false), VANILLA_PLAYER_LEVEL_CAP);
+        let vanilla = ExperienceTable::from_templates(rows(60), player_level_cap(false)).unwrap();
+        assert_eq!(vanilla.max_player_level(), 50);
+        assert_eq!(vanilla.level_from_exp(99_999, 1, false).unwrap().0, 50);
+        let backports = ExperienceTable::from_templates(rows(60), player_level_cap(true)).unwrap();
+        assert_eq!(backports.max_player_level(), 55);
+        assert_eq!(backports.level_from_exp(99_999, 1, false).unwrap().0, 55);
     }
 
     #[test]

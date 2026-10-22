@@ -1,4 +1,4 @@
-//! Regression test for `SQL/patches/compact/2026-10-21-gear-3.0-batch-1a.sql`: the patch
+//! Regression test for `SQL/patches/compact/backports/2026-10-21-gear-3.0-batch-1a.sql`: the patch
 //! imports the retail 3.0 gear batch 1a (288 costumes/armor/cloaks below the Eanad power
 //! line, plus the material items of their crafts), re-keys the 3.0 armor looks above the
 //! 1.2 range, remaps their `item_assets` paths, adds the item category / tags / mod sets /
@@ -24,13 +24,13 @@ use crate::data::items::TemplateKind;
 /// The actual compact-data patch.
 const PATCH_SQL: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../../SQL/patches/compact/2026-10-21-gear-3.0-batch-1a.sql"
+    "/../../../SQL/patches/compact/backports/2026-10-21-gear-3.0-batch-1a.sql"
 ));
 
 /// The batch 1b costume patch, applied after batch 1a.
 const PATCH_1B_SQL: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../../SQL/patches/compact/2026-10-21-gear-3.0-batch-1b-costumes.sql"
+    "/../../../SQL/patches/compact/backports/2026-10-21-gear-3.0-batch-1b-costumes.sql"
 ));
 
 /// Selected gear items (the three samples: a cloak, an underwear costume and a leather

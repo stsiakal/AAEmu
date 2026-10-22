@@ -1,4 +1,4 @@
-//! Regression test for `SQL/patches/compact/2026-10-20-level-55-retail-3.0.sql`: the patch
+//! Regression test for `SQL/patches/compact/backports/2026-10-20-level-55-retail-3.0.sql`: the patch
 //! unhides the ten ability_level 55 capstones, sets the 3.0.4.2 experience curve for levels
 //! 51-55 and the 3.0 quest supplies exp for levels 51-55, while keeping the 1.2 skill points,
 //! quest copper, mate experience and every other row. The test executes the real patch file
@@ -13,12 +13,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::Connection;
 
-use super::{load_levels, ExperienceTable, SkillData};
+use super::{load_levels, ExperienceTable, SkillData, PLAYER_LEVEL_CAP};
 
 /// The actual compact-data patch.
 const PATCH_SQL: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../../SQL/patches/compact/2026-10-20-level-55-retail-3.0.sql"
+    "/../../../SQL/patches/compact/backports/2026-10-20-level-55-retail-3.0.sql"
 ));
 
 const CAPSTONES: [u32; 10] = [
@@ -173,7 +173,8 @@ fn level55_patch_applies_to_a_copy_and_loads() {
     assert_eq!(mate_exp(&conn, 55), 2_697_750);
 
     // The server's loaders accept the patched copy.
-    let exp = ExperienceTable::from_templates(load_levels(&conn).unwrap()).unwrap();
+    let exp =
+        ExperienceTable::from_templates(load_levels(&conn).unwrap(), PLAYER_LEVEL_CAP).unwrap();
     assert_eq!(exp.max_player_level(), 55);
     for (index, level) in (51..=55).enumerate() {
         assert_eq!(exp.exp_for_level(level, false), EXP_51_55[index]);

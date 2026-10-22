@@ -314,7 +314,7 @@ When code needs a schema change:
 1. Add `SQL/updates/YYYY-MM-DD_aaemu_{login|game}_*.sql` (date orders application).
 2. **Also** patch the base file `SQL/aaemu_login.sql` or `SQL/aaemu_game.sql`.
 3. Servers apply relevant updates once at startup when `Connections:AutoApplyUpdates` is true (`aaemu_commons::mysql`); applied scripts are recorded in an updates table.
-4. Fixes to the read-only **compact.sqlite3** go in `SQL/patches/compact/YYYY-MM-DD-*.sql` — idempotent/guarded SQL, applied in file-name order and recorded in the database's `aaemu_compact_patches` table by `cargo xtask compact-patches <db>` (run automatically by `Scripts/live-stack.sh sync` and `cargo xtask publish`); never commit `compact.sqlite3` itself.
+4. Fixes to the read-only **compact.sqlite3** go in `SQL/patches/compact/YYYY-MM-DD-*.sql` — idempotent/guarded SQL, applied in file-name order and recorded in the database's `aaemu_compact_patches` table by `cargo xtask compact-patches <db>` (run automatically by `Scripts/live-stack.sh sync` and `cargo xtask publish`); never commit `compact.sqlite3` itself. Opt-in later-version backports live in `SQL/patches/compact/backports/` and only run with `--backports` / `AAEMU_BACKPORTS=1` (default off).
 
 See `SQL/updates/readme.txt` and `SQL/patches/compact/README.md`. Prefer `SQL/patches/compact/` only for intentional compact.sqlite3 fixups (not normal gameplay state).
 

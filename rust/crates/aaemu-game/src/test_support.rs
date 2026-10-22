@@ -74,6 +74,7 @@ pub fn test_experience(up_to: u8) -> crate::data::ExperienceTable {
                 skill_points: i32::from(level),
             })
             .collect(),
+        up_to,
     )
     .expect("test experience table")
 }

@@ -129,6 +129,7 @@ impl System {
             &s.commands,
             commands::scripts::ScriptEnv {
                 app_path: server.config.app_path.clone(),
+                backports: server.config.backports.enabled,
             },
         );
         s.commands.reload();

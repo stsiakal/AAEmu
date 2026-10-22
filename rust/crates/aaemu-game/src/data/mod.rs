@@ -31,7 +31,10 @@ use std::path::Path;
 use rusqlite::{Connection, OpenFlags};
 
 pub use character_templates::CharacterData;
-pub use experience::{ExperienceError, ExperienceTable, LevelTemplate};
+pub use experience::{
+    player_level_cap, ExperienceError, ExperienceTable, LevelTemplate, PLAYER_LEVEL_CAP,
+    VANILLA_PLAYER_LEVEL_CAP,
+};
 pub use features::{Feature, FeatureSet};
 pub use formulas::FormulaManager;
 pub use items::{ItemData, ItemTemplate};
@@ -75,16 +78,19 @@ pub struct GameData {
 
 impl GameData {
     /// Loads everything from `<app_path>/Data/compact.sqlite3` (read-only), the server data files
-    /// and the client data sources (`ClientData.Sources`).
+    /// and the client data sources (`ClientData.Sources`). `backports` is `Backports:Enabled`;
+    /// false caps the player level at the pure 1.2 level 50.
     pub fn load(
         app_path: &Path,
         client_sources: &[String],
         language: &str,
+        backports: bool,
     ) -> Result<Self, GameDataError> {
         let path = app_path.join("Data").join("compact.sqlite3");
         let conn = Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
 
-        let experience = ExperienceTable::from_templates(load_levels(&conn)?)?;
+        let experience =
+            ExperienceTable::from_templates(load_levels(&conn)?, player_level_cap(backports))?;
         let items = ItemData::load(&conn)?;
         let localization = Localization::load(&conn, language)?;
         let factions = FactionData::load(&conn, &localization)?;
@@ -184,7 +190,9 @@ mod real_db_tests {
             return;
         };
         let conn = Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
-        let exp = ExperienceTable::from_templates(load_levels(&conn).unwrap()).unwrap();
+        let exp =
+            ExperienceTable::from_templates(load_levels(&conn).unwrap(), player_level_cap(false))
+                .unwrap();
         let items = ItemData::load(&conn).unwrap();
         let loc = Localization::load(&conn, "en_us").unwrap();
         let factions = FactionData::load(&conn, &loc).unwrap();

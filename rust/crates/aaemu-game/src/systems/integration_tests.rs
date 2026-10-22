@@ -18,7 +18,7 @@
 
 use std::sync::Arc;
 
-use crate::data::experience::{ExperienceTable, LevelTemplate};
+use crate::data::experience::{ExperienceTable, LevelTemplate, PLAYER_LEVEL_CAP};
 use crate::data::GameData;
 use crate::models::doodad::Doodad;
 use crate::opcodes::sc;
@@ -138,6 +138,7 @@ fn game_data() -> GameData {
                 skill_points: 0,
             })
             .collect(),
+        PLAYER_LEVEL_CAP,
     )
     .expect("experience table");
 

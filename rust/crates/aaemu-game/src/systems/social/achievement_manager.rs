@@ -470,7 +470,7 @@ fn known_completed_quests_by_category(
 mod tests {
     use super::super::achievement::{AchievementObjectives, Achievements};
     use super::*;
-    use crate::data::experience::{ExperienceTable, LevelTemplate};
+    use crate::data::experience::{ExperienceTable, LevelTemplate, PLAYER_LEVEL_CAP};
     use crate::data::GameData;
     use crate::models::char_data::Actability;
     use crate::opcodes::sc;
@@ -546,26 +546,29 @@ mod tests {
 
     /// A `levels` table with three levels, so an ability with 200 exp reads as level 3.
     fn experience() -> ExperienceTable {
-        ExperienceTable::from_templates(vec![
-            LevelTemplate {
-                level: 1,
-                total_exp: 0,
-                total_mate_exp: 0,
-                skill_points: 0,
-            },
-            LevelTemplate {
-                level: 2,
-                total_exp: 100,
-                total_mate_exp: 50,
-                skill_points: 1,
-            },
-            LevelTemplate {
-                level: 3,
-                total_exp: 200,
-                total_mate_exp: 100,
-                skill_points: 2,
-            },
-        ])
+        ExperienceTable::from_templates(
+            vec![
+                LevelTemplate {
+                    level: 1,
+                    total_exp: 0,
+                    total_mate_exp: 0,
+                    skill_points: 0,
+                },
+                LevelTemplate {
+                    level: 2,
+                    total_exp: 100,
+                    total_mate_exp: 50,
+                    skill_points: 1,
+                },
+                LevelTemplate {
+                    level: 3,
+                    total_exp: 200,
+                    total_mate_exp: 100,
+                    skill_points: 2,
+                },
+            ],
+            PLAYER_LEVEL_CAP,
+        )
         .expect("valid table")
     }
 

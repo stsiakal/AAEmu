@@ -1,7 +1,7 @@
 # Backports
 
 - Audience: Contributors
-- Last verified against: `rust-rewrite-bots` on October 21, 2026 (static research; gear batches 1a and 1b-costumes are offline-verified, no live run yet)
+- Last verified against: `rust-rewrite-bots` on October 22, 2026 (static research; gear batches 1a and 1b-costumes are offline-verified, no live run yet)
 - Target: ArcheAge 1.2 (`r208022`)
 
 ## Goal
@@ -12,6 +12,23 @@ a recognizable level curve, minus the grind wall. The Bevy client reads the serv
 so server data patches are visible without a client DB rebuild; the 1.2 client reads its own encrypted
 DB and does not see them. Counts and citations below come from static, read-only inspection of the 1.2
 server, Bevy, the 3.0.4.2 reference DB and the decrypted 10.x DB; nothing here is implemented.
+
+## Status and enabling
+
+Parity work runs on **pure 1.2 data and behavior by default**; these backports are opt-in and off
+unless every part below is turned on. The split exists so a server can test pure 1.2 while the
+backports stay in-tree for later.
+
+| Part | Switch | Where |
+| --- | --- | --- |
+| Data patches (`SQL/patches/compact/backports/*.sql`: level 55, gear batches) | `--backports` or `AAEMU_BACKPORTS=1` | `cargo xtask compact-patches`, `cargo xtask publish`, `Scripts/live-stack.sh sync` |
+| Server behavior (player level cap 55 instead of the 1.2 level 50) | `"Backports": { "Enabled": true }` | `Config.Local.json`; env `Backports__Enabled=true` or `--Backports:Enabled=true` |
+| 3.0 costume art (batch 1b) | overlay pak `10-gear-3.0-costumes.pak` | first `ClientData.Sources` entry, or Bevy `overlays/` / `AA_PAK_OVERLAYS` |
+
+The data switch and the server switch are independent: with `Backports.Enabled=false` the patched
+level 51-55 rows and capstones are loaded but the player level stays capped at 50 (the 1.2 cap), so
+a pure-1.2 server keeps 1.2 behavior even on a database that carries the patches. With
+`Backports.Enabled=true` and an unpatched database, the level 51-55 rows are the 1.2 placeholders.
 
 ## Decisions
 
@@ -49,9 +66,11 @@ effect on 1.2 balance and feel. Status follows the decisions above.
 
 ### What 1.2 already has
 
-- **Cap and table.** `PLAYER_LEVEL_CAP = 55` (`data/experience.rs:6-8`), loaded from every `levels`
-  row (`data/mod.rs:155`). 1.2 rows 51-55 total 8.08M / 16.70M / 36.28M / 80.35M / 179.31M XP with
-  24-28 skill points; 3.0 ends at 17,453,110 with the same points, 10.x at 7,784,000 with 18-20.
+- **Cap and table.** The 3.0 backport cap is `PLAYER_LEVEL_CAP = 55` (`data/experience.rs:9-13`);
+  pure 1.2 is `VANILLA_PLAYER_LEVEL_CAP = 50`, and `Backports.Enabled` selects between them when
+  the `levels` table is loaded (`data/mod.rs:92-95`). 1.2 rows 51-55 total 8.08M / 16.70M / 36.28M /
+  80.35M / 179.31M XP with 24-28 skill points; 3.0 ends at 17,453,110 with the same points, 10.x at
+  7,784,000 with 18-20.
 - **Ten capstones, one per ability**: 23587 (1), 23588 (2), 23589 (3), 23934 (4), 23591 (5), 23592
   (6), 23593 (7), 23594 (8), 23595 (9), 23596 (10). Each has `ability_level=55`, `need_learn=t`, one
   point and `SHOW='f'` in 1.2 (`show=1` in 3.0); four are plot-based (1195/1226/1266/1202), six have
@@ -67,7 +86,8 @@ effect on 1.2 balance and feel. Status follows the decisions above.
 ### Plan
 
 1. **Data patch.** `UPDATE skills SET SHOW='t'` for the ten ids in the patched server
-   `compact.sqlite3` via `SQL/patches/compact/`; Bevy sees them, the 1.2 client does not.
+   `compact.sqlite3` via `SQL/patches/compact/backports/`; Bevy sees them, the 1.2 client does not.
+   Set `Backports.Enabled=true` on the server so the level cap is 55.
 2. **XP choice.** Copy the 3.0 `levels.total_exp` rows for 51-55 and the 3.0 `quest_supplies`; keep
    the 1.2 `skill_points`. Do not keep 179M or import the 10.x 18-20 point spread.
 3. **Bevy in lockstep.** `crates/aa-net/src/model.rs:48,51-57` hardcodes the 1.2 table and
@@ -127,8 +147,8 @@ The later-version gear is delivered in audited batches from the 2026-10-21 inven
 (section 7 "Recommended batches"). **Batch 1a is done on `feat/gear-1a`**: 288 retail 3.0
 costumes, armor and cloaks with item level <= 62 (the Eanad power line) whose four playable-race
 look paths already exist in the 1.2 pak, plus 7 craft-material items and their 19 crafts. It is
-the compact-data patch `SQL/patches/compact/2026-10-21-gear-3.0-batch-1a.sql`; it needs no pak
-change and adds no new art file. The 8M emulator band and the custom Dawnsdrop sets are excluded,
+the compact-data patch `SQL/patches/compact/backports/2026-10-21-gear-3.0-batch-1a.sql`; it needs
+no pak change and adds no new art file. The 8M emulator band and the custom Dawnsdrop sets are excluded,
 as are item procs, set procs and set bonuses above unit attribute 186. The inventory report's
 "333 retail" rows still contained 45 Dawnsdrop items, so the retail-only batch is 288 (the count
 correction and the skipped rows are in `PORTING.md` under "Batch 1a").
@@ -136,7 +156,7 @@ correction and the skipped rows are in `PORTING.md` under "Batch 1a").
 **Batch 1b-costumes is done on `feat/gear-1b-costumes`**: 300 costumes whose four playable-race art
 is not in the 1.2 pak, with 867 primary look paths and 190 icons in the overlay pak
 `10-gear-3.0-costumes.pak` (TypeA/WIBO, 2,447 files, 1,011,265,024 bytes), plus 2 craft-material items
-and 19 crafts. The compact patch is `SQL/patches/compact/2026-10-21-gear-3.0-batch-1b-costumes.sql`
+and 19 crafts. The compact patch is `SQL/patches/compact/backports/2026-10-21-gear-3.0-batch-1b-costumes.sql`
 (generated on top of batch 1a, so the two apply in file-name order). The overlay is built with
 `--new-only`, `--repair-missing-textures` and `--exclude-path /characters/{dwarf,warborn}/`, so it
 only adds files and carries no Dwarf/Warborn path: 60 changed shared files (5 direct
@@ -284,8 +304,9 @@ the client's `overlays/*.pak` discovery).
 
 ## Order of work
 
-1. **Level 55** (S): flip the ten `SHOW` flags, patch the 3.0 51-55 XP and quest exp, sync Bevy's
-   level table, test all ten capstones and the library. No server code.
+1. **Level 55** (S): flip the ten `SHOW` flags with the opt-in `backports/` patch, patch the 3.0
+   51-55 XP and quest exp, set `Backports.Enabled=true`, sync Bevy's level table, test all ten
+   capstones and the library. No server code beyond the cap flag.
 2. **UI scale** (S, client-only) and the **first costume batches** (S-M each).
 3. **Farming/housing UI plus the planting snap** (M-L; the snap is client-only), the first client
    content gap.
@@ -312,8 +333,9 @@ The decisions answered the XP curve, level-55 scope, 55 gear, costume volume and
 Server paths are under `rust/crates/aaemu-game/src/` unless stated otherwise; Bevy paths are under
 `D:/aaemu-client/AABevy1.2`; reference data and string dumps are under `D:/aa-re/`.
 
-- Server: `data/experience.rs:6-8`; `data/mod.rs:155`; `managers/db_character.rs:668-685`;
-  `systems/skills/progress.rs:433-483`; `systems/skills/skill.rs:88`;
+- Server: `data/experience.rs:5-19`; `data/mod.rs:79-95`; `config.rs` (`BackportsConfig`);
+  `managers/db_character.rs:668-685`; `systems/skills/progress.rs:433-483`;
+  `systems/skills/skill.rs:88`;
   `systems/npcs/doodad/manager.rs:393,423-463,536-611`;
   `systems/economy/auction.rs:190-202,1282-1336`; `systems/economy/mail_packets.rs:43`;
   `systems/economy/looting.rs:607-641`; `PORTING.md:2314-2320`.
