@@ -2912,6 +2912,24 @@ covers the cap switch. Open (out of tree): the Bevy client's hardcoded XP table
 (`D:/aaemu-client/AABevy1.2/crates/aa-net/src/model.rs`) must be updated to the same 51-55 values
 for its UI to agree.
 
+## Global cooldown enforcement and plot-only skill cooldowns (2026-10-21)
+
+Deviations from the C# `Skill.Use` (`Skill.cs` 135-153 + `Helper.CheckInterval`):
+
+- The C# refused a GCD / last-use violation only when `CheckInterval` also failed, and that
+  returns true (and records) whenever no attempt was made in the last 150 ms. So the first press
+  during any GCD, and every press 150 ms after the previous one, got through (a bow skill with a
+  700 ms GCD fired 4-5 times a second). `use_skill` now answers `SkillResult.CooldownTime`
+  outright while more than `GCD_GRACE_MS` (150 ms, network jitter) of the GCD or of the
+  last-use delay is left; `ignore_global_cooldown` skills and GCD-bypassing calls are unchanged.
+  The `intervals` map is gone. The skill's own cooldown check (`UnitCooldowns::check_cooldown`,
+  250 ms tolerance) is unchanged.
+- Plot-only skills return before `Cast`, which is where the C# sets the GCD, and only got their
+  own cooldown at `DoPlotEnd`, so they could be recast while the plot ran. The GCD and the skill's
+  cooldown are now started when the plot starts (`DoPlotEnd`'s `AddCooldown` keeps the earlier
+  entry). Not done: refusing a recast with `skill_on_casting` while `active_plot` runs, since
+  plots chain follow-up skills through the same caster state.
+
 ## Loot take range (2026-10-21)
 
 C# `TryTakeLootLocked` never checked the distance to the corpse (`MaxLootingRange`, 200 m, only
@@ -3052,3 +3070,20 @@ gathers item 16035 x 5 with `highlight_doodad_id` 3848. Data only: `DoodadSpawne
 (`systems/npcs/doodad/spawner.rs`) already reads `UnitId` / `Position`. Regression test
 `spawn_tests::real_data_old_memoria_lake_trees_for_low_on_lumber` loads the shipped file through
 the real `parse_list` and checks the eight placements.
+
+## Construction step materials (2026-10-22)
+
+* The construction step skill of an unfinished house needs the consume item of its effects: the
+  Scarecrow Garden (design 267) step skill 18553 "Construct Garden" ("Spend up to 10 Labor and
+  1 Lumber") keeps its Lumber (item 8337 x1) in `skill_effects.consume_item_id` /
+  `consume_item_count`, not in `skill_reagents`. The C# consumed an effect-level item only when
+  the player had it and never cancelled the cast, so anyone built houses for free (and the
+  Rust port mirrored that). `systems::skills::validation::check_build_materials` now refuses the
+  cast, at the start and again at fire time, with `skill_need_reagent` (result 36, the 1.2
+  "reagent missing" result the cast already sends for `skill_reagents`) when the target is an
+  unfinished house, the skill is the house's current build-step skill and the character lacks
+  the item count. Labor is still checked by `check_resources` as before and nothing is spent on
+  a refusal. Every other skill keeps the soft effect-level consume. Reason: retail refuses the
+  construction without the materials; the step tooltip says it spends 1 Lumber. Regression:
+  `systems::housing::tests::construction_step_needs_its_effect_consume_item`. The error text the
+  client shows for result 36 was not re-checked in the client binary.
