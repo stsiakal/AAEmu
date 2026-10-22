@@ -1510,6 +1510,22 @@ is no longer mirrored (see "Known deviations", dead NPC returned and healed).
   which the time-of-day watcher fires on crossing. The C# has no such suppression (its chain
   recursed). Boards respawned by their own Final, and every other spawn, keep the catch-up.
 
+* systems::npcs (2026-10-22): `DoodadFuncOreMine`, `DoodadFuncRockMine` and `DoodadFuncShear`
+  were log-only stubs in the C#, so their phases never advanced and ore / rock veins and the
+  shearing doodads could not be gathered. The 1.2 compact tables carry no loot, labor or tool
+  columns either (`doodad_func_ore_mines` / `doodad_func_rock_mines`: `id` only;
+  `doodad_func_shears`: `shear_type_id`, `shear_term`), so the Rust funcs now do what the
+  authored phase graph describes, like `DoodadFuncCutdown`: set `ToNextPhase` and let the
+  engine enter the func's `NextPhase` group. That group holds the `DoodadFuncLootItem` rows
+  (e.g. vein 326: 255 OreMine -> 425 three loot rolls -> 426 `Final` / `RatioRespawn`;
+  green ore 1532: 2371 -> 2372 -> `RatioChange` branches) and, for shearing, the regrow
+  `Timer` (56 Shear -> 57 loot + 30 s timer). Loot keeps its C# task type
+  (`RecoverDoodadItem`), so a full bag still sends `BagInvalidItem` and leaves the phase
+  unlocked. Labor is the gathering skill's `consume_lp`, enforced by the skill cast. The
+  tool is data only: the C# server never validated `SkillTemplate.MainhandToolId` (the 1.2
+  mining / shear ids 2654 and 15607 do not even resolve to `items` rows) and neither does
+  Rust, so there is no server-side tool refusal at 1.2 parity.
+
 * systems::ai (2026-10-15): the optional compact patch
   `SQL/patches/compact/2026-10-14-fix-npc-ai-param-syntax.sql` repairs malformed Lua syntax
   in `npc_ai_params` 443, 835 and 1975 only when the original bytes match. It preserves authored
@@ -2977,3 +2993,14 @@ finishes and the NPC settles in HoldPosition without further movement.
   `slave_bindings`. The 10.x `SpawnOrReplaceEquipmentVisual` / `item_slave_equipments` visual
   spawning is not ported (no 1.2 C# reference), so equipping changes stats and the equipment
   container but does not spawn replacement part doodads.
+
+## Old Memoria Lake Tree spawns for "Low on Lumber" (C# PR #1793, 2026-10-22)
+
+Ported C# `develop` 9549c76b (PR #1793): seven `UnitId` 3848 (`Old Memoria Lake Tree`)
+placements in `app/Data/Worlds/main_world/doodad_spawns.json` at the Old Memoria lake
+(X ~9049-9098, Y ~9060-9121, Z ~192-197), next to the one placement the file already had. They
+make quest "Low on Lumber" (context 2094, level 38) satisfiable: `QuestActObjItemGather` id 890
+gathers item 16035 x 5 with `highlight_doodad_id` 3848. Data only: `DoodadSpawnerDef`
+(`systems/npcs/doodad/spawner.rs`) already reads `UnitId` / `Position`. Regression test
+`spawn_tests::real_data_old_memoria_lake_trees_for_low_on_lumber` loads the shipped file through
+the real `parse_list` and checks the eight placements.
