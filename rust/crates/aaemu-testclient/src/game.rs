@@ -1955,6 +1955,35 @@ impl GameClient {
         self.send_cs(cs::CSStartSkillPacket, s.as_bytes()).await
     }
 
+    /// `CSStartSkillPacket` of a summon item with a `SkillCastPositionTarget` (the `SummonPos`
+    /// spot the client picked): `pos` is `(x, y, z)`, `rot` the yaw.
+    pub async fn start_item_skill_at(
+        &mut self,
+        skill_id: u32,
+        item_id: u64,
+        item_template_id: u32,
+        pos: (f32, f32, f32),
+        rot: f32,
+    ) -> anyhow::Result<()> {
+        let mut s = PacketStream::new();
+        s.write_u32(skill_id)
+            .write_u8(2) // SkillCasterType.Item
+            .write_bc(self.state.self_obj)
+            .write_u64(item_id)
+            .write_u32(item_template_id)
+            .write_u8(0) // type1
+            .write_u32(0) // type2
+            .write_u8(1) // SkillCastTargetType.Position
+            .write_i64(aaemu_commons::helpers::convert_coord_to_long(pos.0))
+            .write_i64(aaemu_commons::helpers::convert_coord_to_long(pos.1))
+            .write_f32(pos.2)
+            .write_f32(rot)
+            .write_bc(0)
+            .write_bc(0)
+            .write_u8(0); // flag: no skill object
+        self.send_cs(cs::CSStartSkillPacket, s.as_bytes()).await
+    }
+
     /// `CSRemoveMatePacket`: dismiss the mate with transport id `tl_id`.
     pub async fn remove_mate(&mut self, tl_id: u16) -> anyhow::Result<()> {
         let mut s = PacketStream::new();

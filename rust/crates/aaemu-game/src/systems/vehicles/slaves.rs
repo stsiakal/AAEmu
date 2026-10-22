@@ -1630,6 +1630,13 @@ pub fn create_from_skill(
     }
 }
 
+/// How far the bottom of the hull's mass box lies below the hull root (`ShipModel`
+/// `mass_center_z` / `mass_box_size_z`): the least water depth a ship needs to float without
+/// resting on the bed.
+fn hull_draft(ship: &crate::systems::vehicles::data::ShipModel) -> f32 {
+    (ship.mass_box_size_z * 0.5 - ship.mass_center_z).max(0.0)
+}
+
 /// The client-chosen `SummonPos` turned into a spawn transform, or `None` (with
 /// `SlaveSpawnErrorInvalidArea`) when the spot is too far, on the wrong surface or inside
 /// collision. `None` also means "no placement": the C# in-front placement is used.
@@ -1676,11 +1683,35 @@ fn validated_summon_placement(
         if !super::ship_physics::is_water(server, world, [p.x, p.y, p.z]) {
             return invalid("a ship must be summoned on water");
         }
-        transform.set_height(super::ship_physics::water_surface(
-            server,
-            world,
-            [p.x, p.y, p.z],
-        ));
+        let surface = super::ship_physics::water_surface(server, world, [p.x, p.y, p.z]);
+        transform.set_height(surface);
+        // Fork addition (the C# never used a client-chosen spot): a hull summoned where the
+        // water is shallower than its own draft is buried in the bed and the physics throws it
+        // up and out (a clipper in a 1 m pond ended 14 m above the water).
+        if let Some(ship) = server
+            .game_data
+            .systems
+            .vehicles
+            .ship_model(template.model_id)
+        {
+            let floor = crate::systems::ai::collision::terrain_height_or(
+                server,
+                world.id,
+                p.x,
+                p.y,
+                || {
+                    crate::systems::npcs::heightmap::world_height(server, world, p.x, p.y)
+                        .unwrap_or(0.0)
+                },
+            );
+            let draft = hull_draft(ship);
+            if floor > 0.0 && surface - floor < draft {
+                return invalid(&format!(
+                    "the water is too shallow for the hull ({:.1} m, needs {draft:.1} m)",
+                    surface - floor
+                ));
+            }
+        }
     } else {
         if super::ship_physics::is_water(server, world, [p.x, p.y, p.z]) {
             return invalid("a land vehicle must be summoned on ground");
@@ -3496,4 +3527,36 @@ pub fn delete_slave_by_id<'a>(
         server.ids.character.release_id(db_id);
         true
     })
+}
+
+#[cfg(test)]
+mod hull_draft_tests {
+    use super::hull_draft;
+    use crate::systems::vehicles::data::ShipModel;
+
+    #[test]
+    fn galleon_needs_deeper_water_than_a_pond() {
+        // compact.sqlite3 `ship_models` row 6 (model 393, the clipper / galleon hull).
+        let galleon = ShipModel {
+            mass_center_z: -4.0,
+            mass_box_size_z: 14.5,
+            ..Default::default()
+        };
+        let draft = hull_draft(&galleon);
+        assert!((draft - 11.25).abs() < 1e-4);
+        // The Desireen pond: surface 127, bed 126.
+        assert!(127.0 - 126.0 < draft);
+        // Open sea at (13505, 12500): surface 100, bed 72.8.
+        assert!(100.0 - 72.84 > draft);
+    }
+
+    #[test]
+    fn draft_is_never_negative() {
+        let raft = ShipModel {
+            mass_center_z: 5.0,
+            mass_box_size_z: 1.0,
+            ..Default::default()
+        };
+        assert_eq!(hull_draft(&raft), 0.0);
+    }
 }

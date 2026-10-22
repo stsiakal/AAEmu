@@ -135,6 +135,7 @@ The seed suites:
 | `guild-guards` | A guild-invitation reply without a pending invite is refused (`systems/social/expedition.rs`); a normal invite + accept joins |
 | `ship-owner` | A relogged owner is told its still active ship is theirs (`SCSlaveCreated`, `systems/vehicles/mod.rs::on_player_join`) and boards it; another owner's leftover ship does not stop a fresh account from summoning and boarding; GM `slave remove` despawns a summoned ship; no default cannon rows on a fresh galleon |
 | `authority-guards` | A loot take from 5+ m is refused while a melee-range take works (`systems/economy/looting.rs`); an in-place resurrection without an offer is refused, with a scroll offer (item 18456) it works once, and the resurrection point always works (`systems/skills/resurrect.rs`) |
+| `ship-shallow` | A ship summoned on a spot whose water is shallower than the hull draft (clipper in the 1 m Desireen pond) is refused with a WARN, while open sea works (`systems/vehicles/slaves.rs`) |
 
 ## Reports
 

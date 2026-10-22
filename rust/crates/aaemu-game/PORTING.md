@@ -517,6 +517,13 @@ the x2game / cry3dengine decompiles (addresses below). Config `Physics` (`Config
 * Ground-targeted plot positions, doodad spawns / respawns, backpack drops, land slave summons and
   transfer parts use the physics ground (static + terrain) instead of the bilinear heightmap; ship
   summons read the sea floor with `GetTerrainElevation`.
+* A ship summoned on a client-chosen spot (`SummonPos`, `validated_summon_placement`; the C# only
+  had the in-front placement) is refused with `SlaveSpawnErrorInvalidArea` when the water there
+  (`surface - floor`) is shallower than the hull's draft, `mass_box_size_z / 2 - mass_center_z`
+  (11.25 m for the clipper / galleon model 393). Without it a clipper summoned in the 1 m deep
+  Desireen pond was buried in the bed and CryPhysics threw it ~14 m above the water. The C#
+  in-front search (`min_depth = MassBoxSizeZ - MassCenterZ + 1`) never refused and has the same
+  failure when no deep spot lies within 50 m.
 * Walking NPCs (not flying / holding / idling) stand on the physics ground (`reference_height_in`);
   NPC spawner points snap to it within 1 m (`npc_spawn_on_terrain`). Real data: 1 487 of the 1 524
   NPC spawns of the 4 busiest main_world cells are within 1 m of the physics ground (1 407 of the
