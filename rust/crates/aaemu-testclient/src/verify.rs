@@ -34,6 +34,9 @@ pub struct BotDecl {
     /// The suite runner does not grant access; `Scripts/verify.sh` reads this through
     /// `verify --list-bots` and sets `accounts.access_level` before the run.
     pub gm: bool,
+    /// `bot <id> again <parent>`: a second session of the parent's account and character. It
+    /// starts once the parent's script has ended (a relog after `drop`).
+    pub again: Option<String>,
 }
 
 /// A parsed suite.
@@ -156,15 +159,31 @@ impl Suite {
                 if bots.iter().any(|b| b.id == id) {
                     bail!("{}:{}: duplicate bot '{id}'", path.display(), n + 1);
                 }
-                let gm = match parts.next() {
-                    None => false,
-                    Some("gm") => true,
-                    Some(other) => bail!(
-                        "{}:{}: expected `bot <id> [gm]`, not '{other}'",
-                        path.display(),
-                        n + 1
-                    ),
-                };
+                let mut gm = false;
+                let mut again = None;
+                while let Some(word) = parts.next() {
+                    match word {
+                        "gm" => gm = true,
+                        "again" => {
+                            let parent = parts.next().with_context(|| {
+                                format!("{}:{}: `again` needs a bot id", path.display(), n + 1)
+                            })?;
+                            if !bots.iter().any(|b| b.id == parent && b.again.is_none()) {
+                                bail!(
+                                    "{}:{}: `again {parent}` must name an earlier plain bot",
+                                    path.display(),
+                                    n + 1
+                                );
+                            }
+                            again = Some(parent.to_string());
+                        }
+                        other => bail!(
+                            "{}:{}: expected `bot <id> [gm] [again <bot>]`, not '{other}'",
+                            path.display(),
+                            n + 1
+                        ),
+                    }
+                }
                 if account_name(&code, id).len() > 18 {
                     bail!(
                         "{}:{}: account {} is longer than the 18-character character-name limit",
@@ -176,6 +195,7 @@ impl Suite {
                 bots.push(BotDecl {
                     id: id.to_string(),
                     gm,
+                    again,
                 });
                 continue;
             }
@@ -214,7 +234,13 @@ impl Suite {
 
     /// Account / character name of a bot in this suite.
     pub fn account(&self, bot: &str) -> String {
-        account_name(&self.code, bot)
+        let parent = self
+            .bots
+            .iter()
+            .find(|b| b.id == bot)
+            .and_then(|b| b.again.as_deref())
+            .unwrap_or(bot);
+        account_name(&self.code, parent)
     }
 
     fn script(&self, bot: &str, names: &BTreeMap<String, String>) -> String {
@@ -242,7 +268,7 @@ fn ensure_code(code: &str) -> anyhow::Result<()> {
 /// `verify --list-bots`: one `<account> <0|1>` line per bot (Scripts/verify.sh provisions them).
 pub fn print_bots(path: &Path) -> anyhow::Result<()> {
     let suite = Suite::load(path)?;
-    for bot in &suite.bots {
+    for bot in suite.bots.iter().filter(|b| b.again.is_none()) {
         println!("{} {}", suite.account(&bot.id), if bot.gm { 1 } else { 0 });
     }
     Ok(())
@@ -276,13 +302,24 @@ pub async fn run(path: &Path, login: &str, password: &str) -> anyhow::Result<Sui
     let label = path.display().to_string();
     let bots = suite.bots.len();
     let mut tasks = Vec::new();
+    // A bot that relogs (`again`) waits for its parent's session to end.
+    let mut done: BTreeMap<String, tokio::sync::watch::Receiver<bool>> = BTreeMap::new();
     for bot in &suite.bots {
+        let (done_tx, done_rx) = tokio::sync::watch::channel(false);
+        done.insert(bot.id.clone(), done_rx);
+        let parent_done = bot.again.as_ref().and_then(|p| done.get(p).cloned());
         let cfg = bot_config(login, password, &suite.account(&bot.id))?;
         let text = suite.script(&bot.id, &names);
         let bot_id = bot.id.clone();
         let label = label.clone();
         let sync_dir: PathBuf = sync_dir.clone();
         tasks.push(tokio::spawn(async move {
+            if let Some(mut rx) = parent_done {
+                let _ = rx.wait_for(|d| *d).await;
+                // Let the server see the old connection close before the same character
+                // enters again.
+                tokio::time::sleep(Duration::from_millis(1500)).await;
+            }
             let out = {
                 let input = ScriptInput {
                     text: &text,
@@ -294,6 +331,7 @@ pub async fn run(path: &Path, login: &str, password: &str) -> anyhow::Result<Sui
                 let rec = Recorder::new(true);
                 scenario::run_script(&cfg, &rec, &input).await
             };
+            let _ = done_tx.send(true);
             BotReport {
                 id: bot_id,
                 ok: out.ok(),
@@ -394,5 +432,36 @@ mod tests {
         assert!(Suite::load(&path).is_err());
         let path = suite_file("long-name.vtest", "bot abcdefghij\n[abcdefghij]\nme\n");
         assert!(Suite::load(&path).is_err());
+    }
+
+    #[test]
+    fn again_bots_share_the_account_of_their_parent() {
+        let path = suite_file(
+            "relog.vtest",
+            "bot a gm
+bot a2 again a
+[a]
+drop
+[a2]
+ownslave
+",
+        );
+        let suite = Suite::load(&path).unwrap();
+        assert_eq!(suite.bots[1].again.as_deref(), Some("a"));
+        assert_eq!(suite.account("a2"), suite.account("a"));
+        let bad = suite_file(
+            "relog2.vtest",
+            "bot a2 again a
+bot a
+[a]
+me
+[a2]
+me
+",
+        );
+        assert!(
+            Suite::load(&bad).is_err(),
+            "the parent must be declared first"
+        );
     }
 }

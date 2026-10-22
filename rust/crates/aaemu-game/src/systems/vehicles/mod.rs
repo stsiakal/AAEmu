@@ -444,6 +444,23 @@ pub fn on_character_selected(server: &GameServer, player: &PlayerRef) {
     }
 }
 
+/// `CSNotifyInGameCompletedPacket` part: a character that logs in again while its summoned
+/// vehicle is still in the world (the logout / disconnect despawn task, 10 minutes, was aborted
+/// by [`on_character_selected`]) is told which slave is its own. The C# only announced a slave
+/// to its owner when it was created (`SCSlaveCreatedPacket`, then `SendMySlaveTask` position
+/// reports), so a relogged owner never learned the timeline and the client could not board.
+/// Fork-only deviation, see `PORTING.md`.
+pub fn on_player_join(server: &GameServer, player: &PlayerRef) {
+    let instance = player.data().unit.transform.instance_id;
+    let Some(world) = server.world.world(instance) else {
+        return;
+    };
+    let Some(slave) = slaves::get_active_slave_by_owner_obj_id(&world, player.obj_id) else {
+        return;
+    };
+    slaves::announce_to_owner(&world, player, &slave);
+}
+
 /// `CharacterMates.Load` (called from `Character.Load` at character select).
 pub async fn load_character(server: &GameServer, character_id: u32) {
     if let Err(e) = mates::load_character_mates(server, character_id).await {
@@ -531,6 +548,10 @@ pub fn force_dismount_and_despawn(
         if slave.data().leave_task != gen {
             return;
         }
+        tracing::info!(
+            "{}: the delay ran out, despawning the vehicle of the offline owner",
+            player.data().unit.name
+        );
         slaves::remove_and_despawn_all_active_owned_slaves(&server, &player, false);
     });
     res

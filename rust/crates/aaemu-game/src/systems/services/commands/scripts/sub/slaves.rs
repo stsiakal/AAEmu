@@ -214,18 +214,44 @@ impl SubCommand for SlaveRemoveSubCommand {
         };
 
         // Remove Slave
-        let (name, template_id) = {
+        let (name, template_id, spawner_id, summoner_obj_id) = {
             let mut s = slave.data();
+            let spawner_id = s.spawner_id;
             if s.spawner_id != 0 {
                 // removed from the game manually (not saved by /save all)
                 s.spawner_id = 0xffff_ffff;
             }
-            (s.unit.name.clone(), s.unit.template_id)
+            (
+                s.unit.name.clone(),
+                s.unit.template_id,
+                spawner_id,
+                s.summoner_obj_id,
+            )
         };
 
         let server = ctx.server()?;
-        if let Some(world) = world_of_obj(server, &WorldObject::from(&slave)) {
-            world.hide(&slave);
+        let obj = WorldObject::from(&slave);
+        if summoner_obj_id != 0 {
+            // Fork fix (C# only hid the slave): a summoned vehicle really despawns, saved and
+            // detached like its owner's own despawn, so it neither answers `slave info` nor
+            // returns on the owner's next login.
+            if let Some(world) = world_of_obj(server, &obj) {
+                crate::systems::vehicles::slaves::delete(
+                    server,
+                    None,
+                    world.id,
+                    slave.obj_id,
+                    true,
+                );
+            }
+        } else {
+            if let Some(spawner) = server.systems.vehicles.slave_spawners.get(spawner_id) {
+                // A spawner slave leaves the world and frees its spawner slot.
+                spawner.despawn(server, &slave);
+            }
+            if let Some(world) = world_of_obj(server, &obj) {
+                world.hide(&slave);
+            }
         }
         self.base.send_message(
             out,
@@ -599,6 +625,15 @@ mod tests {
                 ts::SLAVE
             )]
         );
-        assert!(!slave.is_visible());
+        // The slave summoned for the GM is despawned like its owner's own (fork fix, the C# only
+        // hid it): gone from the object table at once, hidden by the despawn tick.
+        assert!(world.slave(slave.obj_id).is_none());
+        let (_, out) = harness::run(&server, &gm.p, &format!("slave info id {id}")).await;
+        assert_eq!(
+            out,
+            [format!(
+                "|cFFFF0000[Slave Information] Slave with objId {id} does not exist|r"
+            )]
+        );
     }
 }

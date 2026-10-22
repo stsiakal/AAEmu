@@ -5,7 +5,8 @@
 //! One command per line, `#` starts a comment:
 //!
 //! ```text
-//! gm <command line>                  GM chat command (without the leading slash)
+//! gm <command line>                  GM chat command (without the leading slash); `SLAVEOBJ` stands
+//!                                    for the last created slave's object id
 //! gmq <command line>                like `gm`, but waits only 0.4 s and prints nothing
 //! tp <x> <y> <z>                     /move there, acknowledge the teleport, wait for the area
 //! pump <secs>                        just read packets
@@ -109,6 +110,12 @@
 //! scast <skill> <item template> <x> <y> <z> [rot]
 //!                                    summon-item cast on a spot (`SkillCastPositionTarget`)
 //! useitem <template> <stack id>     use an existing bag stack with `icast`
+//! expectreply <text> | expectnoreply <text>  the chat lines answering the last `gm` command
+//!                                    must / must not contain the text
+//! ownslave [secs]                   wait (8 s) until an `SCSlaveCreated` names us as the owner
+//!                                    (the Bevy client's "own slave"); `SLAVE` / `TLID` in `rawcs`
+//! attached | notattached          fail unless we are (to the last slave) / are not attached
+//! noownslave                        fail while such an announcement is still standing
 //! slavekill                         `/kill` the slave summoned by the last `icast` (GM)
 //! drop                               end the script without logging out (a disconnect)
 //! greply <faction id> <0|1>          CSReplyExpeditionInvitation without waiting for an invite
@@ -116,12 +123,14 @@
 //! expectpkt <PacketName> [secs]     fail unless the packet arrives within `secs` (default 5)
 //! expectnopkt <PacketName> [secs]   fail if the packet arrives within `secs` (default 5)
 //! expectlog <regex> [secs]          fail unless a new game-log line matches (AAEMU_VERIFY_GAME_LOG)
-//! expectdb "<sql>" <value> [secs]   fail unless the SQL's value equals `value`
+//! expectdb "<sql>" <value> [secs]   fail unless the SQL's value equals `value` (`ITEMID` in the SQL
+//!                                   is the stack id the last `item` added)
 //!                                   (AAEMU_VERIFY_MYSQL; re-checked for `secs` when given)
 //! ```
 //!
 //! `rawcs` bodies understand `SELF`, `PEER` (the first other player) and `SLAVE` (the last
-//! created slave) in place of their `bc` object id. Every failed expectation prints a `FAIL`
+//! created slave) in place of their `bc` object id, and `TLID` (the last created slave's
+//! timeline id, a little-endian u16). Every failed expectation prints a `FAIL`
 //! line and makes the run exit non-zero.
 
 use std::collections::{HashMap, HashSet};
@@ -489,6 +498,9 @@ async fn run_lines(
     let mut printed = game.state.social.len();
     let mut last_npc = 0u32;
     let mut last_slave = 0u32;
+    let mut last_slave_tl = 0u16;
+    let mut last_gm_text = String::new();
+    let mut last_item_id = 0u64;
     for (n, raw) in text.lines().enumerate() {
         for e in &game.state.social[printed.min(game.state.social.len())..] {
             println!("    social: {e:?}");
@@ -504,11 +516,19 @@ async fn run_lines(
         let parts: Vec<&str> = rest.split_whitespace().collect();
         match cmd {
             "gm" => {
-                let reply = gm_command(game, rest).await?;
+                let line = rest.replace("SLAVEOBJ", &last_slave.to_string());
+                let reply = gm_command(game, &line).await?;
+                last_gm_text = reply.iter().filter_map(chat_text).collect::<Vec<_>>().join(
+                    "
+",
+                );
                 // SCSlaveCreatedPacket: owner bc, tl_id u16, slave bc (`SLAVE` in `rawcs`).
                 for p in reply.iter().filter(|p| p.is_sc(sc::SCSlaveCreatedPacket)) {
                     let mut st = p.stream();
-                    if st.read_bc().is_ok() && st.read_u16().is_ok() {
+                    if st.read_bc().is_ok() {
+                        if let Ok(tl) = st.read_u16() {
+                            last_slave_tl = tl;
+                        }
                         last_slave = st.read_bc().unwrap_or(0);
                         println!("    slave created, obj {last_slave}");
                     }
@@ -774,6 +794,7 @@ async fn run_lines(
                 let reply = gm_command(game, &format!("item add self {tpl} {count}")).await?;
                 if let Some(id) = stack_id(&reply, tpl) {
                     items.insert(tpl, id);
+                    last_item_id = id;
                     println!("    item {tpl} stack id {id}");
                 }
                 show(&reply);
@@ -819,7 +840,7 @@ async fn run_lines(
                     if p.is_sc(sc::SCSlaveCreatedPacket) {
                         let mut st = p.stream();
                         st.read_bc()?; // owner
-                        st.read_u16()?; // tl id
+                        last_slave_tl = st.read_u16()?; // tl id
                         last_slave = st.read_bc()?;
                         println!("    SCSlaveCreated slave obj {last_slave}");
                     }
@@ -875,6 +896,58 @@ async fn run_lines(
                 let id: u64 = num(&parts, 1)?;
                 items.insert(tpl, id);
                 println!("    using item {tpl} stack id {id}");
+            }
+            "expectreply" | "expectnoreply" => {
+                // The chat lines answering the last `gm` command must (not) contain the text.
+                let want = rest.trim();
+                let found = last_gm_text.contains(want);
+                anyhow::ensure!(
+                    found == (cmd == "expectreply"),
+                    "{cmd} `{want}`: the last gm reply was `{last_gm_text}`"
+                );
+            }
+            "ownslave" => {
+                // The Bevy client's "own slave": an `SCSlaveCreated` naming us as the owner.
+                // Fails unless one was seen (including before the script started) within
+                // `secs`; `rawcs` then knows it as `SLAVE` / `TLID`.
+                let secs: u64 = parts.first().and_then(|x| x.parse().ok()).unwrap_or(8);
+                let deadline = Instant::now() + Duration::from_secs(secs);
+                while game.state.own_slave.is_none() && Instant::now() < deadline {
+                    game.recv_within(Duration::from_millis(250)).await?;
+                }
+                let (obj, tl) = game
+                    .state
+                    .own_slave
+                    .with_context(|| format!("no own slave announced within {secs} s"))?;
+                last_slave = obj;
+                last_slave_tl = tl;
+                println!("    own slave obj {obj} tl {tl}");
+            }
+            "attached" | "notattached" => {
+                // Whether the last `SCUnitAttached` / `SCUnitDetached` of our own unit left us
+                // attached (to the last slave for `attached`).
+                if cmd == "attached" {
+                    let (to, point) = game.state.attached_to.context("not attached to anything")?;
+                    anyhow::ensure!(
+                        last_slave == 0 || to == last_slave,
+                        "attached to {to}, expected slave {last_slave}"
+                    );
+                    println!("    attached to {to} at point {point}");
+                } else {
+                    anyhow::ensure!(
+                        game.state.attached_to.is_none(),
+                        "still attached to {:?}",
+                        game.state.attached_to
+                    );
+                }
+            }
+            "noownslave" => {
+                // Fails when the client would still believe it owns a slave.
+                anyhow::ensure!(
+                    game.state.own_slave.is_none(),
+                    "an own slave {:?} is still announced",
+                    game.state.own_slave
+                );
             }
             "slavekill" => {
                 // GM `/kill` on the slave summoned by the last `icast`.
@@ -1260,7 +1333,9 @@ async fn run_lines(
                     "expectdb \"<sql>\" <expected> [secs] (one argument line)"
                 );
                 let secs: u64 = args.get(2).and_then(|x| x.parse().ok()).unwrap_or(0);
-                expect_db(&args[0], &args[1], secs).await?;
+                // `ITEMID` stands for the stack id the last `item` added.
+                let sql = args[0].replace("ITEMID", &last_item_id.to_string());
+                expect_db(&sql, &args[1], secs).await?;
             }
             "await" => {
                 let kind = parts.first().context("await needs an event name")?;
@@ -1696,7 +1771,11 @@ async fn run_lines(
                 let hex = raw
                     .replace("SELF", &bc(game.state.self_obj))
                     .replace("PEER", &peer_bc)
-                    .replace("SLAVE", &bc(last_slave));
+                    .replace("SLAVE", &bc(last_slave))
+                    .replace(
+                        "TLID",
+                        &format!("{:02x}{:02x}", last_slave_tl & 0xff, last_slave_tl >> 8),
+                    );
                 anyhow::ensure!(
                     hex.len() % 2 == 0 && hex.is_ascii(),
                     "rawcs body hex must be an even number of hex digits"

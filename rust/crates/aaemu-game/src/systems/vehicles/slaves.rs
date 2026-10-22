@@ -1367,9 +1367,13 @@ pub fn delete(
         child.with_transform(|t| t.parent_obj_id = 0);
     }
     let spawns = spawn_manager_of(server, world.id);
+    // A player-summoned slave is despawned on its summoner's behalf even when the caller is
+    // not the owner (GM `slave remove`, the 10 minute logout task of an offline owner).
+    let summoner_obj_id = slave.data().summoner_obj_id;
+    let by_owner = owner.is_some() || summoner_obj_id != 0;
     for id in &doodad_ids {
         let Some(d) = world.doodad(*id) else { continue };
-        if owner.is_some() {
+        if by_owner {
             d.data().is_persistent = false;
         }
         if let Some(s) = &spawns {
@@ -1384,14 +1388,15 @@ pub fn delete(
         }
     }
     super::ship_physics::remove_ship(server, &slave);
-    if let Some(o) = owner {
-        let me = WorldObject::from(o);
-        broadcast(server, &me, &SCSlaveDespawnPacket { obj_id }, true);
+    if by_owner {
+        // Around the owner when it is here, else around the slave itself.
+        let anchor = owner.map_or_else(|| slave_obj.clone(), WorldObject::from);
+        broadcast(server, &anchor, &SCSlaveDespawnPacket { obj_id }, true);
         broadcast(
             server,
-            &me,
+            &anchor,
             &SCSlaveRemovedPacket {
-                obj_id: o.obj_id,
+                obj_id: summoner_obj_id,
                 tl_id: tl as u16,
             },
             true,
@@ -1754,6 +1759,12 @@ pub async fn create_for_owner(
         save(server, &active);
         // TODO (C#): If too far away, don't delete
         delete(server, Some(owner), world.id, active.obj_id, false);
+        // Fork fix: the C# went on to summon a second vehicle when the first one refused to
+        // go (cargo loaded, `SlaveEquipmentLoadedItem`), leaving the owner with two active
+        // slaves. One active summoned vehicle per owner.
+        if world.slave(active.obj_id).is_some() {
+            return None;
+        }
     }
     if item_id == 0 || item_template_id == 0 {
         return None;
@@ -3200,6 +3211,40 @@ pub fn on_zone_change(server: &GameServer, slave: &SlaveRef, last_zone: u32, new
             crate::world::session::on_zone_change(server, &p, last_zone, new_zone);
         }
     }
+}
+
+/// Tells `owner` (only) that `slave` is its own: `SCSlaveCreatedPacket` without the spawn effect
+/// and the first `SCMySlavePacket` position report, as a relogged owner needs them (the client
+/// learns the owned timeline from the creation announcement only).
+pub fn announce_to_owner(world: &WorldInstance, owner: &PlayerRef, slave: &SlaveRef) {
+    let obj = WorldObject::from(slave);
+    let w = world.world_pos_rot(&obj);
+    let (created, mine) = {
+        let d = slave.data();
+        (
+            SCSlaveCreatedPacket {
+                owner_obj_id: owner.obj_id,
+                tl_id: d.unit.tl_id,
+                slave_obj_id: slave.obj_id,
+                hide_spawn_effect: true,
+                unk_id: 0,
+                creator_name: d.summoner_name.clone(),
+            },
+            SCMySlavePacket {
+                obj_id: slave.obj_id,
+                tl_id: d.unit.tl_id,
+                name: d.unit.name.clone(),
+                template_id: d.unit.template_id,
+                hp: d.unit.hp,
+                max_hp: d.unit.max_hp,
+                x: w.x,
+                y: w.y,
+                z: w.z,
+            },
+        )
+    };
+    owner.send(created);
+    owner.send(mine);
 }
 
 /// `SendMySlavePacketToAllOwners()` (`SendMySlaveTask`, every 5 s).

@@ -686,6 +686,13 @@ pub struct GameState {
     /// Position of the last `SCTeleportUnitPacket` (a GM `/move` only tells the client to go
     /// there; the server adopts the position from the client's next movement packet).
     pub last_teleport: Option<(f32, f32, f32)>,
+    /// Our own summoned slave as the Bevy client learns it: the last `SCSlaveCreatedPacket`
+    /// whose owner is our object id (slave object id, timeline id), cleared by the matching
+    /// `SCSlaveRemovedPacket`.
+    pub own_slave: Option<(u32, u16)>,
+    /// What we are attached to (object id, attach point): `SCUnitAttachedPacket` /
+    /// `SCUnitDetachedPacket` of our own unit.
+    pub attached_to: Option<(u32, u8)>,
     /// Absolute labor power from the select snapshot, kept current by
     /// `SCCharacterLaborPowerChangedPacket` (the live durability checks read it after a relog).
     pub labor: Option<i32>,
@@ -1337,6 +1344,30 @@ pub(crate) fn observe_into(st: &mut GameState, p: &Packet) -> anyhow::Result<()>
             }
             st.chat_log.push_back(text);
             st.chat_count = st.chat_count.saturating_add(1);
+        }
+    } else if p.is_sc(sc::SCSlaveCreatedPacket) {
+        let owner = s.read_bc()?;
+        let tl = s.read_u16()?;
+        let slave = s.read_bc()?;
+        if owner != 0 && owner == st.self_obj {
+            st.own_slave = Some((slave, tl));
+        }
+    } else if p.is_sc(sc::SCUnitAttachedPacket) {
+        let child = s.read_bc()?;
+        let point = s.read_u8()?;
+        let parent = s.read_bc()?;
+        if child == st.self_obj {
+            st.attached_to = Some((parent, point));
+        }
+    } else if p.is_sc(sc::SCUnitDetachedPacket) {
+        if s.read_bc()? == st.self_obj {
+            st.attached_to = None;
+        }
+    } else if p.is_sc(sc::SCSlaveRemovedPacket) {
+        let obj = s.read_bc()?;
+        let tl = s.read_u16()?;
+        if obj == st.self_obj && st.own_slave.is_some_and(|(_, t)| t == tl) {
+            st.own_slave = None;
         }
     } else if p.is_sc(sc::SCTeleportUnitPacket) {
         // Every teleport (GM `/move` included) confirms the own position with this packet;
