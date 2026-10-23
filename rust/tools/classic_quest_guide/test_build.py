@@ -371,8 +371,13 @@ class BuilderTests(unittest.TestCase):
     def read_manifest(self):
         return json.loads((self.output / "manifest.json").read_text(encoding="utf-8"))
 
+    def lua(self):
+        if LuaRuntime is None:
+            self.skipTest("lupa.lua51 unavailable")
+        return LuaRuntime(unpack_returned_tuples=True)
+
     def read_index(self):
-        runtime = LuaRuntime(unpack_returned_tuples=True)
+        runtime = self.lua()
         return runtime.execute(
             (self.output / "aaemu_quest_guide" / "data" / "index.lua")
             .read_text(encoding="utf-8")
@@ -388,7 +393,7 @@ class BuilderTests(unittest.TestCase):
                 )
                 break
         self.assertIsNotNone(chunk_file, f"quest {quest_id} missing from index")
-        runtime = LuaRuntime(unpack_returned_tuples=True)
+        runtime = self.lua()
         table = runtime.execute(chunk_file.read_text(encoding="utf-8"))
         return table["quests"][quest_id]
 
@@ -681,7 +686,7 @@ class BuilderTests(unittest.TestCase):
         self.assertFalse(entries[101]["in_ref"])
         self.assertTrue(self.read_quest(100)["in_ref"])
         self.assertFalse(self.read_quest(101)["in_ref"])
-        meta = LuaRuntime(unpack_returned_tuples=True).execute(
+        meta = self.lua().execute(
             (self.output / "aaemu_quest_guide" / "data" / "meta.lua")
             .read_text(encoding="utf-8"))
         self.assertEqual(meta["inputs"]["ref_db"]["sha256"], ref_hash)
