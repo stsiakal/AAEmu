@@ -94,7 +94,8 @@ local function matches(entry, tokens, index)
     elseif kind == "name" then
       if not tostring(name):lower():find(value:lower(), 1, true) then return false end
     else
-      local haystack = tostring(entry.id) .. " " .. name .. " " .. status
+      local haystack = tostring(entry.id) .. " " .. name .. " " .. status ..
+        " " .. tostring(entry.start_npc_name or "")
       local category_name = tostring((index.categories or {})[entry.category_id] or "")
       if not haystack:lower():find(token:lower(), 1, true)
         and not category_name:lower():find(token:lower(), 1, true) then
@@ -105,13 +106,26 @@ local function matches(entry, tokens, index)
   return true
 end
 
+local function tokens_for(text)
+  local tokens = {}
+  local trimmed = tostring(text or ""):gsub("^%s+", ""):gsub("%s+$", "")
+  if #trimmed == 0 then return tokens end
+  for word in trimmed:gmatch("%S+") do tokens[#tokens + 1] = word end
+  return tokens
+end
+
+-- Shared by Find and the checklist text filter.
+function Catalog:matches_entry(entry, text)
+  local tokens = tokens_for(text)
+  if #tokens == 0 then return true end
+  return matches(entry, tokens, self.index)
+end
+
 -- Scan once per explicit search; never called from UPDATE.
 function Catalog:search(text, limit)
   limit = limit or 200
-  local tokens = {}
-  local trimmed = tostring(text or ""):gsub("^%s+", ""):gsub("%s+$", "")
-  if #trimmed == 0 then return nil, 0 end
-  for word in trimmed:gmatch("%S+") do tokens[#tokens + 1] = word end
+  local tokens = tokens_for(text)
+  if #tokens == 0 then return nil, 0 end
   local ids = {}
   for _, entry in ipairs(self.index.quests or {}) do
     if matches(entry, tokens, self.index) then

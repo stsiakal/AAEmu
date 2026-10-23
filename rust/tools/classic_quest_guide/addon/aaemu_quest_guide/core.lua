@@ -3,7 +3,9 @@
 
 local U = require("aaemu_quest_guide/util")
 local Catalog = require("aaemu_quest_guide/catalog")
+local Checklist = require("aaemu_quest_guide/checklist")
 local Nav = require("aaemu_quest_guide/nav")
+local Progress = require("aaemu_quest_guide/progress")
 local Recorder = require("aaemu_quest_guide/recorder")
 local UI = require("aaemu_quest_guide/ui")
 
@@ -27,6 +29,7 @@ function Core.new(api, helpers)
     alive = true,
     ui_ms = 0,
     page = "step",
+    view = "quest",
     text_page = 1,
     step_index = 1,
     quest = nil,
@@ -53,6 +56,8 @@ function Core.new(api, helpers)
       self.index_positions[entry.id] = position
     end
   end
+  self.checklist = Checklist.new(api, self)
+  self.progress = Progress.new(api, self)
   self.nav = Nav.new(api, self)
   self.recorder = Recorder.new(api, self)
   self.ui = UI.new(api, self)
@@ -103,6 +108,7 @@ function Core:_clear_progress(reason)
   self.classic = {}
   self.text_page = 1
   self.page = "step"
+  if self.checklist then self.checklist.page = 1 end
   if reason and self.nav then self.nav:clear(reason) end
 end
 
@@ -139,6 +145,7 @@ function Core:_sync_identity_now()
     self:_clear_progress("Character changed: navigation and manual progress cleared.")
     self.player_key = key
     self.identity = identity
+    if self.progress then self.progress:reload() end
     if identity then
       self:try_resume()
     else
@@ -163,6 +170,7 @@ function Core:_sync_context_now()
   self.recorder:stop("context change")
   self:_clear_progress("Context changed: navigation and manual progress cleared.")
   self.context_key = current
+  if self.progress then self.progress:reload() end
   if self.identity then self:try_resume() end
   self:set_status("Declared server/context changed; old progress was isolated.")
   return true
@@ -235,9 +243,20 @@ end
 function Core:completion_text()
   local value = self.completion or {}
   if not self.quest then return "not selected" end
-  if not value.ok then return "unavailable (" .. tostring(value.error or "error") .. ")" end
+  if self.progress and self.progress:is_observed(self.quest.id) then
+    return "completed (turn-in/reward observed)"
+  end
+  if not value.ok then
+    if self.progress and self.progress:is_manual(self.quest.id) then
+      return "manual mark [m] (not client completion)"
+    end
+    return "unavailable (" .. tostring(value.error or "error") .. ")"
+  end
   if value.nil_value then return "unavailable (nil)" end
   if value.value == true then return "completed (observed)" end
+  if self.progress and self.progress:is_manual(self.quest.id) then
+    return "manual mark [m] (not client completion)"
+  end
   if value.value == false then return "not completed (observed)" end
   return "unavailable (unexpected value)"
 end
@@ -282,6 +301,8 @@ function Core:refresh_classic()
 end
 
 function Core:refresh_completion()
+  self.progress:reload()
+  self.progress:refresh_live()
   self:refresh_classic()
   if self.ui then self.ui:refresh_all() end
   self:set_status("Classic completion refreshed from the client API (observed only).")
@@ -305,6 +326,7 @@ function Core:open_quest(id, restore)
     return false
   end
   self.quest = quest
+  self.view = "quest"
   self.step_index = 1
   self.manual = {}
   self.text_page = 1
@@ -377,6 +399,13 @@ function Core:find()
   if not self.catalog then self:set_status("Catalog unavailable.") return end
   local text = self.ui and self.ui.filter_edit and U.trim(self.ui:get_text(self.ui.filter_edit)) or ""
   self.filter = text
+  if self.view == "checklist" then
+    self.checklist.page = 1
+    if self.ui then self.ui:refresh_all() end
+    self:set_status("Checklist text filter: " ..
+      (text == "" and "(cleared)" or U.truncate(text, 80)) .. ".")
+    return
+  end
   if text == "" then
     self.list = nil
     self:set_status("Filter cleared; all " .. tostring(self.catalog:size()) .. " quests are in the browser.")
@@ -415,16 +444,25 @@ end
 function Core:set_page(page)
   if not PAGE_KEYS[page] then return end
   self.page = page
+  self.view = "quest"
   self.text_page = 1
   if self.ui then self.ui:refresh_all() end
 end
 
 function Core:previous_text_page()
+  if self.view == "checklist" then
+    if self.checklist:next_page(-1) and self.ui then self.ui:refresh_all() end
+    return
+  end
   self.text_page = math.max(1, self.text_page - 1)
   if self.ui then self.ui:refresh_all() end
 end
 
 function Core:next_text_page()
+  if self.view == "checklist" then
+    if self.checklist:next_page(1) and self.ui then self.ui:refresh_all() end
+    return
+  end
   self.text_page = self.text_page + 1
   if self.ui then self.ui:refresh_all() end
 end
@@ -465,6 +503,145 @@ function Core:on_form_changed()
   self:_sync_context_now()
   self.nav:clear("World/context label changed: navigation cleared.")
   if self.ui then self.ui:refresh_all() end
+end
+
+function Core:open_checklist()
+  if not self:_ensure_current("checklist") then return end
+  if not self.catalog then
+    self:set_status("Catalog unavailable: " .. tostring(self.catalog_error))
+    return false
+  end
+  self.view = "checklist"
+  self.progress:reload()
+  self.progress:refresh_live()
+  self.checklist.page = 1
+  if self.ui then self.ui:refresh_all() end
+  self:set_status("Checklist refreshed from the client API. " ..
+    self.checklist:filter_summary() .. ".")
+  return true
+end
+
+function Core:set_checklist_filter(name)
+  if not self.checklist:set_filter(name) then return end
+  self.view = "checklist"
+  if self.ui then self.ui:refresh_all() end
+  self:set_status("Checklist filter: " .. self.checklist:filter_summary() .. ".")
+end
+
+function Core:toggle_checklist_placeholders()
+  self.checklist.hide_placeholders = not self.checklist.hide_placeholders
+  self.checklist.page = 1
+  self.view = "checklist"
+  if self.ui then self.ui:refresh_all() end
+  self:set_status("Checklist filter: " .. self.checklist:filter_summary() .. ".")
+end
+
+function Core:toggle_checklist_ref()
+  if not self.checklist:ref_available() then
+    self:set_status("This catalog was built without --ref-db; " ..
+      "the not-in-3.0 filter is unavailable.")
+    return
+  end
+  self.checklist.hide_not_ref = not self.checklist.hide_not_ref
+  self.checklist.page = 1
+  self.view = "checklist"
+  if self.ui then self.ui:refresh_all() end
+  self:set_status("Checklist filter: " .. self.checklist:filter_summary() .. ".")
+end
+
+function Core:checklist_open_row(index)
+  local row = self.checklist.rows[tonumber(index) or 0]
+  if not row then return end
+  self:open_quest(row.id)
+end
+
+function Core:checklist_go(index)
+  local row = self.checklist.rows[tonumber(index) or 0]
+  if not row then return end
+  self:go_to_giver(row.id)
+end
+
+function Core:go_to_giver(quest_id)
+  if not self:_ensure_current("go to giver") then return false end
+  if not self.catalog then
+    self:set_status("Catalog unavailable: " .. tostring(self.catalog_error))
+    return false
+  end
+  local id = tonumber(quest_id) or (self.quest and self.quest.id)
+  if not id then
+    self:set_status("Open or select a quest first.")
+    return false
+  end
+  local quest, error_message = self.catalog:quest(id)
+  if not quest then
+    self:set_status(error_message)
+    return false
+  end
+  local start = quest.start
+  if type(start) ~= "table" or not start.step_index then
+    self:set_status("Quest #" .. tostring(id) ..
+      " has no accept step in the catalog; no waypoint.")
+    return false
+  end
+  local step = (quest.steps or {})[start.step_index]
+  if not step or not start.has_position
+      or type(step.locations) ~= "table" or #step.locations == 0 then
+    local kind = tostring(start.kind or (step and step.target and step.target.kind) or "?")
+    local status = tostring(start.status or (step and step.status) or "?")
+    self:set_status("Quest #" .. tostring(id) .. " starts from " .. kind ..
+      " with no 1.2 world position (status " .. status ..
+      "); navigation not started.")
+    return false, "no position"
+  end
+  self:open_quest(id)
+  self.step_index = U.clamp(tonumber(start.step_index) or 1, 1,
+    math.max(1, #(quest.steps or {})))
+  self.text_page = 1
+  self.page = "step"
+  self:save_resume()
+  if self.ui then self.ui:refresh_all() end
+  local ok, message = self.nav:activate_candidate()
+  self.nav:update(self:now())
+  if self.ui then self.ui:refresh_all() end
+  self:set_status(message)
+  return ok, message
+end
+
+function Core:mark_done()
+  if not self:_ensure_current("manual mark") then return false end
+  local id = self.quest and self.quest.id
+  if not id then
+    self:set_status("Open a quest first to mark it done.")
+    return false
+  end
+  local ok, message = self.progress:set_manual(id, true)
+  if self.ui then self.ui:refresh_all() end
+  self:set_status(message)
+  return ok
+end
+
+function Core:unmark_done()
+  if not self:_ensure_current("manual mark") then return false end
+  local id = self.quest and self.quest.id
+  if not id then
+    self:set_status("Open a quest first to remove its manual mark.")
+    return false
+  end
+  local ok, message = self.progress:set_manual(id, false)
+  if self.ui then self.ui:refresh_all() end
+  self:set_status(message)
+  return ok
+end
+
+function Core:on_game_event(name, ...)
+  if not self.alive then return end
+  self:_sync_identity_now()
+  self:_sync_context_now()
+  local changed, message = self.progress:handle_event(name, ...)
+  if changed then
+    if self.ui then self.ui:refresh_all() end
+    self:set_status(message)
+  end
 end
 
 function Core:use_candidate()
@@ -557,6 +734,10 @@ function Core:_resume_key(identity, context_key)
   return table.concat({context_key, identity.name, db}, "|")
 end
 
+function Core:storage_key()
+  return self:_resume_key()
+end
+
 function Core:save_resume()
   local _, identity_changed = self:_sync_identity_now()
   local context_changed = self:_sync_context_now()
@@ -599,6 +780,7 @@ end
 function Core:_initial_identity()
   self.context_key = self:_current_context_key()
   local identity = self:_sync_identity_now()
+  self.progress:reload()
   if not identity then
     self:set_status("Player identity unavailable; recording and resume are disabled until it is known.")
   elseif not self:try_resume() then
@@ -612,6 +794,7 @@ function Core:notify_identity_changed(identity)
   if identity then
     self.player_key = type(identity.id) .. ":" .. tostring(identity.id) .. "|" .. identity.name
     self.identity = identity
+    if self.progress then self.progress:reload() end
     if not self:try_resume() then
       self:set_status("Character changed to " .. identity.name ..
         "; no saved progress for this character/context.")
@@ -619,6 +802,7 @@ function Core:notify_identity_changed(identity)
   else
     self.player_key = nil
     self.identity = nil
+    if self.progress then self.progress:reload() end
     self:set_status("Character identity became unknown; recording/progress isolated.")
   end
   if self.ui then self.ui:refresh_all() end
@@ -628,6 +812,7 @@ function Core:notify_context_changed()
   self:_save_progress_for(self.identity, self.context_key)
   self:_clear_progress("Declared context changed: navigation and manual progress cleared.")
   self.context_key = self:_current_context_key()
+  if self.progress then self.progress:reload() end
   if self.identity then self:try_resume() end
   if self.ui then self.ui:refresh_all() end
 end

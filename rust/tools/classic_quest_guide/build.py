@@ -9,7 +9,12 @@ Inputs are opened read-only. All output goes below an explicit ``--output``
 directory and is deterministic unless ``--timestamp`` is requested.
 
     python build.py --db compact.sqlite3 --worlds Data/Worlds \
-        --spheres quests-spheres.json --output /path/to/package
+        --spheres quests-spheres.json --ref-db reference/compact.sqlite3 \
+        --output /path/to/package
+
+``--ref-db`` is optional. When given, every quest record and index entry gets
+``in_ref`` (the id exists in the reference ``quest_contexts``) and the reference
+hash is recorded in ``manifest.json``/``meta.lua``.
 
 Layout below ``--output``::
 
@@ -49,15 +54,21 @@ SCHEMA = "aaemu_quest_guide.catalog"
 SCHEMA_VERSION = 1
 DATA_VERSION = "1.2"
 GENERATOR_NAME = "aaemu_quest_guide build.py"
-GENERATOR_VERSION = "0.1.0"
+GENERATOR_VERSION = "0.2.0"
 MARKER_NAME = ".aaemu_quest_guide_generated"
 MARKER_TEXT = "aaemu_quest_guide generated data v1; safe to replace\n"
 DEFAULT_CHUNK_SIZE = 200
 TUTORIAL_CATEGORY = 45
+START_KIND = 2
+ACCEPT_ACT_PREFIX = "QuestActConAccept"
 FAIL_KIND = 5
 DROP_KIND = 7
 OPTIONAL_KINDS = {FAIL_KIND, DROP_KIND}
 SUPPLY_KINDS = {3, 8}
+# Placeholder context names observed in the 1.2 database. They are hidden by
+# default in the checklist but stay readable through the catalog.
+PLACEHOLDER_QUEST_RE = re.compile(r"^quest\s*\d+\s*$", re.IGNORECASE)
+PLACEHOLDER_MARKERS = ("dummy", "not used", "(not used)", "미사용")
 KIND_NAMES = {
     0: "Invalid", 1: "None", 2: "Start", 3: "Supply", 4: "Progress",
     5: "Fail", 6: "Ready", 7: "Drop", 8: "Reward",
@@ -121,6 +132,83 @@ class BuildError(RuntimeError):
 
 def truth(value):
     return value in ("t", "true", 1, True)
+
+
+def is_placeholder_name(name) -> bool:
+    """True for empty/engineering placeholder context names.
+
+    1.2 keeps quest rows that are not player content: empty names, ``dummy``,
+    ``Quest <id>`` and "(Not Used)" (``미사용``) rows. They are flagged so the
+    checklist can hide them by default; nothing is deleted.
+    """
+    if name is None:
+        return True
+    text = str(name).strip()
+    if not text:
+        return True
+    if not re.search(r"[^\W\d_]", text, re.UNICODE):
+        return True
+    lowered = text.lower()
+    if PLACEHOLDER_QUEST_RE.match(text):
+        return True
+    return any(marker in lowered for marker in PLACEHOLDER_MARKERS)
+
+
+def select_start_step(steps: list[dict]) -> dict | None:
+    """Pick the quest's accept step and describe its first world location.
+
+    Start components are alternatives. Prefer an NPC/doodad accept act that has
+    a 1.2 spawn, then any accept act, then any Start step. The chosen step index
+    is 1-based in the quest's normal ``steps`` order.
+    """
+    candidates = [
+        (index, step) for index, step in enumerate(steps)
+        if step.get("component_kind_id") == START_KIND
+    ]
+    if not candidates:
+        return None
+
+    def rank(item):
+        index, step = item
+        target = step.get("target") or {}
+        kind = target.get("kind")
+        locations = step.get("locations") or []
+        act_type = str(step.get("act_type") or "")
+        return (
+            0 if kind in ("npc", "doodad") and locations else 1,
+            0 if act_type.startswith(ACCEPT_ACT_PREFIX) else 1,
+            0 if locations else 1,
+            index,
+        )
+
+    index, step = min(candidates, key=rank)
+    target = step.get("target") or {}
+    locations = step.get("locations") or []
+    first = locations[0] if locations and isinstance(locations[0], dict) else {}
+    return {
+        "step_index": index + 1,
+        "component_id": step.get("component_id"),
+        "component_kind_id": step.get("component_kind_id"),
+        "act_id": step.get("act_id"),
+        "act_type": step.get("act_type"),
+        "kind": target.get("kind"),
+        "ids": list(target.get("ids") or []),
+        "count": target.get("count"),
+        "has_position": bool(locations),
+        "status": step.get("status"),
+        "world": first.get("world"),
+        "conditional": first.get("schedule") is not None,
+    }
+
+
+def target_name(kind: str, ids, npc_names: dict, doodad_names: dict):
+    if not ids:
+        return None
+    if kind == "npc":
+        return npc_names.get(ids[0])
+    if kind == "doodad":
+        return doodad_names.get(ids[0])
+    return None
 
 
 def sha256_file(path: Path) -> str:
@@ -270,6 +358,18 @@ def rows(conn: sqlite3.Connection, table: str) -> list[dict]:
     if not re.fullmatch(r"[A-Za-z0-9_]+", table):
         raise BuildError(f"unsafe table name: {table!r}")
     return [dict(row) for row in conn.execute(f'SELECT * FROM "{table}"')]
+
+
+def id_name_map(conn: sqlite3.Connection, table: str) -> dict[int, str]:
+    """Read ``id -> name`` when the table carries a name column."""
+    columns = {row[1] for row in conn.execute(f'PRAGMA table_info("{table}")')}
+    if "name" not in columns:
+        return {}
+    return {
+        row["id"]: row["name"]
+        for row in conn.execute(f'SELECT id, name FROM "{table}"')
+        if row["name"] is not None
+    }
 
 
 def require_tables(conn: sqlite3.Connection, required: set[str]):
@@ -482,6 +582,9 @@ def build_quest_record(
     context_texts: dict[int, list[dict]],
     level_supplies: dict[int, dict],
     plan_module,
+    npc_names: dict[int, str],
+    doodad_names: dict[int, str],
+    ref_ids: set[int] | None = None,
 ) -> dict:
     quest_id = plan_quest["quest_id"]
     component_by_id = {component["id"]: component for component in components}
@@ -695,7 +798,17 @@ def build_quest_record(
         ],
         "text_source_notice": TEXT_NOTICE,
         "target_id_space": ID_SPACE_NOTICE,
+        "placeholder": is_placeholder_name(plan_quest.get("name")),
     }
+    start = select_start_step(normal_steps)
+    if start is not None:
+        start["name"] = target_name(start.get("kind"), start.get("ids"),
+                                    npc_names, doodad_names)
+        record["start"] = start
+        if start.get("kind") == "npc" and start.get("name"):
+            record["start_npc_name"] = start["name"]
+    if ref_ids is not None:
+        record["in_ref"] = quest_id in ref_ids
     if plan_quest.get("prereq_notes"):
         record["prereq_notes"] = plan_quest["prereq_notes"]
     if record["prereq_quests"]:
@@ -709,7 +822,8 @@ def build_quest_record(
 
 
 def build_catalog(conn: sqlite3.Connection, plan_result: dict,
-                  plan_module, chunk_size: int = DEFAULT_CHUNK_SIZE):
+                  plan_module, chunk_size: int = DEFAULT_CHUNK_SIZE,
+                  ref_ids: set[int] | None = None):
     tables = table_names(conn)
     require_tables(conn, {
         "quest_contexts", "quest_components", "quest_acts", "unit_reqs",
@@ -719,6 +833,8 @@ def build_catalog(conn: sqlite3.Connection, plan_result: dict,
     categories = {
         row["id"]: row.get("name") for row in rows(conn, "quest_categories")
     }
+    npc_names = id_name_map(conn, "npcs")
+    doodad_names = id_name_map(conn, "doodad_almighties")
     components_by_quest: dict[int, list[dict]] = defaultdict(list)
     for component in rows(conn, "quest_components"):
         components_by_quest[component["quest_context_id"]].append(component)
@@ -754,6 +870,7 @@ def build_catalog(conn: sqlite3.Connection, plan_result: dict,
             conn, plan_quest, context, categories,
             components_by_quest.get(quest_id, []), requirements, acts_by_id,
             detail_cache, tables, context_texts, level_supplies, plan_module,
+            npc_names, doodad_names, ref_ids,
         ))
 
     chunks = []
@@ -787,7 +904,7 @@ def build_catalog(conn: sqlite3.Connection, plan_result: dict,
 
     index_entries = []
     for quest in quests:
-        index_entries.append({
+        entry = {
             "id": quest["id"],
             "name": quest["name"],
             "category_id": quest["category_id"],
@@ -797,7 +914,21 @@ def build_catalog(conn: sqlite3.Connection, plan_result: dict,
             "zone_id": quest["zone_id"],
             "chunk": chunk_by_id[quest["id"]],
             "has_branches": bool(quest["branches"]["fail"] or quest["branches"]["drop"]),
-        })
+            "placeholder": bool(quest.get("placeholder")),
+        }
+        start = quest.get("start") or {}
+        if start:
+            entry["start_kind"] = start.get("kind")
+            if start.get("kind") == "npc":
+                ids = start.get("ids") or []
+                entry["start_npc_id"] = ids[0] if ids else None
+            else:
+                entry["start_npc_id"] = None
+            entry["start_npc_name"] = start.get("name")
+            entry["start_has_position"] = bool(start.get("has_position"))
+        if "in_ref" in quest:
+            entry["in_ref"] = bool(quest["in_ref"])
+        index_entries.append(entry)
     index = {
         "data_version": DATA_VERSION,
         "generator_version": GENERATOR_VERSION,
@@ -810,15 +941,23 @@ def build_catalog(conn: sqlite3.Connection, plan_result: dict,
         "coordinate_notice": COORDINATE_NOTICE,
         "text_notice": TEXT_NOTICE,
         "id_space_notice": ID_SPACE_NOTICE,
+        "placeholder_count": sum(1 for quest in quests if quest.get("placeholder")),
     }
+    if ref_ids is not None:
+        index["ref"] = {
+            "quest_contexts": len(ref_ids),
+            "not_in_ref": sum(1 for quest in quests if not quest.get("in_ref")),
+        }
     index_text = lua_header(
         "Metadata index for browsing; chunks are loaded on demand."
     )
     index_text += "return {\n"
     for key in ("data_version", "generator_version", "chunk_size", "chunk_count",
-                "quest_count", "coordinate_notice", "text_notice",
-                "id_space_notice"):
+                "quest_count", "placeholder_count", "coordinate_notice",
+                "text_notice", "id_space_notice"):
         index_text += "  %s = %s,\n" % (key, lua_literal(index[key]))
+    if "ref" in index:
+        index_text += "  ref = %s,\n" % lua_literal(index["ref"])
     index_text += "  categories = %s,\n" % lua_literal(categories)
     index_text += "  chunks = {\n"
     for chunk in chunks:
@@ -865,6 +1004,7 @@ def build_meta(manifest: dict) -> dict:
             "db": manifest["inputs"]["db"],
             "worlds": manifest["inputs"]["worlds"],
             "spheres": manifest["inputs"].get("spheres"),
+            "ref_db": manifest["inputs"].get("ref_db"),
         },
         "coordinate_provenance": manifest["coordinate_provenance"],
         "observed_environment": manifest["observed_environment"],
@@ -982,7 +1122,10 @@ def summarize(catalog: dict, plan_result: dict, manifest: dict) -> dict:
             "db_sha256": manifest["inputs"]["db"]["sha256"],
             "worlds_sha256": manifest["inputs"]["worlds"]["sha256"],
             "spheres_sha256": (manifest["inputs"].get("spheres") or {}).get("sha256"),
+            "ref_db_sha256": (manifest["inputs"].get("ref_db") or {}).get("sha256"),
         },
+        "placeholders": sum(1 for quest in quests if quest.get("placeholder")),
+        "reference": reference_summary(quests, manifest["inputs"].get("ref_db")),
         "files": {
             "count": len(files),
             "bytes": sum(entry["bytes"] for entry in files),
@@ -990,6 +1133,18 @@ def summarize(catalog: dict, plan_result: dict, manifest: dict) -> dict:
         "warnings": manifest["notices"],
         "route": catalog["route"],
         "spheres": manifest["inputs"].get("spheres"),
+    }
+
+
+def reference_summary(quests: list[dict], ref_info: dict | None) -> dict | None:
+    if ref_info is None:
+        return None
+    present = [quest for quest in quests if "in_ref" in quest]
+    return {
+        "sha256": ref_info.get("sha256"),
+        "quest_contexts": ref_info.get("quest_contexts"),
+        "in_ref": sum(1 for quest in present if quest.get("in_ref")),
+        "not_in_ref": sum(1 for quest in present if not quest.get("in_ref")),
     }
 
 
@@ -1123,20 +1278,43 @@ def write_output(output: Path, files: dict[str, str], manifest: dict,
 # Main build
 
 
+def read_reference_ids(ref_db: Path) -> tuple[set[int], dict]:
+    """Read quest_contexts ids from the read-only reference database."""
+    conn = open_readonly(ref_db)
+    try:
+        if "quest_contexts" not in table_names(conn):
+            raise BuildError(
+                f"reference database is missing quest_contexts: {ref_db}")
+        ids = {row[0] for row in conn.execute("SELECT id FROM quest_contexts")}
+    except sqlite3.Error as error:
+        raise BuildError(f"reference database error: {error}") from error
+    finally:
+        conn.close()
+    return ids, {
+        "file": ref_db.name,
+        "sha256": sha256_file(ref_db),
+        "bytes": ref_db.stat().st_size,
+        "quest_contexts": len(ids),
+    }
+
+
 def run_build(db_path: Path, worlds_path: Path, output_path: Path,
               spheres_path: Path | None = None, chunk_size: int = DEFAULT_CHUNK_SIZE,
               code_commit: str | None = None, timestamp: bool = False,
               classic_build: str = "unknown", source_dir: Path | None = None,
-              data_only: bool = False):
+              data_only: bool = False, ref_db_path: Path | None = None):
     if chunk_size < 1:
         raise BuildError("--chunk-size must be at least 1")
     source_dir = (source_dir or Path(__file__).resolve().parent).resolve()
     db = require_file(db_path, "database")
     worlds = require_dir(worlds_path, "worlds directory")
     spheres = require_file(spheres_path, "spheres file") if spheres_path else None
+    ref_db = require_file(ref_db_path, "reference database") if ref_db_path else None
     inputs = {"database": db, "worlds": worlds}
     if spheres is not None:
         inputs["spheres"] = spheres
+    if ref_db is not None:
+        inputs["reference database"] = ref_db
     output = validate_output_path(output_path, inputs, source_dir)
 
     plan_module = load_plan_module()
@@ -1149,6 +1327,10 @@ def run_build(db_path: Path, worlds_path: Path, output_path: Path,
             "sha256": sha256_file(spheres),
             "bytes": spheres.stat().st_size,
         }
+    ref_ids = None
+    ref_info = None
+    if ref_db is not None:
+        ref_ids, ref_info = read_reference_ids(ref_db)
     provenance = git_provenance(source_dir, code_commit)
 
     conn = open_readonly(db)
@@ -1157,7 +1339,8 @@ def run_build(db_path: Path, worlds_path: Path, output_path: Path,
             plan_result, sphere_stats = load_plan_result(
                 conn, worlds, spheres, plan_module
             )
-            catalog = build_catalog(conn, plan_result, plan_module, chunk_size)
+            catalog = build_catalog(conn, plan_result, plan_module, chunk_size,
+                                    ref_ids)
             contexts_total = conn.execute(
                 "SELECT COUNT(*) FROM quest_contexts"
             ).fetchone()[0]
@@ -1231,6 +1414,7 @@ def run_build(db_path: Path, worlds_path: Path, output_path: Path,
                 "bytes": worlds_bytes,
             },
             "spheres": spheres_info,
+            "ref_db": ref_info,
         },
         "coordinate_provenance": coordinate_provenance,
         "observed_environment": {
@@ -1242,6 +1426,8 @@ def run_build(db_path: Path, worlds_path: Path, output_path: Path,
             "contexts": contexts,
             "quests": len(catalog["quests"]),
             "status": dict(sorted(status_counts.items())),
+            "placeholders": sum(
+                1 for quest in catalog["quests"] if quest.get("placeholder")),
             "chunk_size": chunk_size,
             "chunks": len(catalog["chunks"]),
         },
@@ -1282,6 +1468,9 @@ def main(argv=None):
                         help="output directory; must not overlap inputs or the tool source")
     parser.add_argument("--spheres", type=Path,
                         help="optional quest-sign-sphere export (read-only)")
+    parser.add_argument("--ref-db", type=Path,
+                        help="optional reference compact.sqlite3 (e.g. 3.0); adds "
+                             "in_ref per quest and the reference hash to meta")
     parser.add_argument("--chunk-size", type=int, default=DEFAULT_CHUNK_SIZE,
                         help=f"quests per lazy Lua chunk (default {DEFAULT_CHUNK_SIZE})")
     parser.add_argument("--code-commit",
@@ -1298,7 +1487,7 @@ def main(argv=None):
             args.db, args.worlds, args.output, args.spheres,
             chunk_size=args.chunk_size, code_commit=args.code_commit,
             timestamp=args.timestamp, classic_build=args.classic_build,
-            data_only=args.data_only,
+            data_only=args.data_only, ref_db_path=args.ref_db,
         )
     except BuildError as error:
         print("error: " + str(error), file=sys.stderr)
@@ -1308,6 +1497,8 @@ def main(argv=None):
         "quests": summary["quests"],
         "status": summary["status"],
         "chunks": summary["chunks"]["count"],
+        "placeholders": summary.get("placeholders"),
+        "reference": summary.get("reference"),
         "files": summary["files"],
         "package": summary.get("package"),
         "code_commit": manifest["generator"]["code_commit"],
