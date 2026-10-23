@@ -8,7 +8,6 @@ use anyhow::Context;
 use crate::auth::{
     AuthFlow, KoreaAuthFlow, KoreaStep, LoginClient, PasswordAuthFlow, ReconnectAuthFlow,
 };
-use crate::controllers::game::send_with_delay;
 use crate::models::{GameServerId, GsRegisterResult};
 use crate::network::internal::InternalConnection;
 use crate::network::login::LoginConnection;
@@ -89,6 +88,16 @@ pub async fn handle_c2l(
     }
 }
 
+/// Constant-time comparison of the shared secret (fork deviation: upstream compares with `!=`).
+fn secret_matches(given: &str, expected: &str) -> bool {
+    given.len() == expected.len()
+        && given
+            .bytes()
+            .zip(expected.bytes())
+            .fold(0u8, |d, (a, b)| d | (a ^ b))
+            == 0
+}
+
 /// Dispatches a game server packet.
 pub async fn handle_g2l(
     server: &Arc<LoginServer>,
@@ -115,15 +124,19 @@ pub async fn handle_g2l(
             Ok(())
         }
         G2lPacket::RegisterGameServer(p) => {
-            if p.secret_key != server.config.secret_key {
+            if !secret_matches(&p.secret_key, &server.config.secret_key) {
                 tracing::error!("Connection {}, bad secret key", conn.ip);
-                send_with_delay(
-                    conn.clone(),
-                    Duration::from_secs(5),
-                    LgRegisterGameServer {
+                // Fork deviation: the error reply is followed by closing the connection, so a peer
+                // cannot keep guessing the secret on one connection.
+                let conn = conn.clone();
+                tokio::spawn(async move {
+                    tokio::time::sleep(Duration::from_secs(5)).await;
+                    conn.send_packet(&LgRegisterGameServer {
                         result: GsRegisterResult::Error,
-                    },
-                );
+                    });
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                    conn.close();
+                });
                 return Ok(());
             }
             server.games.add(p.gs_id, p.mirrors, conn);
