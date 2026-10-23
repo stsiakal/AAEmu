@@ -16,13 +16,27 @@ extern unsigned char mouse_module[0x5000];
 extern bool mouse_locked_flag;
 #endif
 struct Key { const char* name; int id; int modifier; };
-// r208022 keyboard key IDs (escape = 0, number row, tab, Q/W/E..., space = 56).
+// r208022 keyboard key IDs (keyboard constructor sub_335033xx, ids above VK codes).
+// escape = 0, enter = 27, tab = 14, backspace = 13, letters 15..24, number row 1..10,
+// f1..f12 = 58..83, arrows/home/end/pgup/pgdn/insert/delete = 96..105.
 static const Key keys[] = {{"w",16,0},{"a",29,0},{"s",30,0},{"d",31,0},{"f",32,0},
-    {"g",33,0},{"space",56,0},{"q",15,0},{"e",17,0},
+    {"g",33,0},{"h",34,0},{"j",35,0},{"k",36,0},{"l",37,0},{"space",56,0},
+    {"q",15,0},{"e",17,0},{"z",43,0},{"x",44,0},{"c",45,0},{"v",46,0},
+    {"b",47,0},{"n",48,0},{"m",49,0},
     // r208022 keyboard constructors 335036BB..33503775: R through P -> IDs18..24.
     {"r",18,0},{"t",19,0},{"y",20,0},{"u",21,0},{"i",22,0},{"o",23,0},{"p",24,0},
     {"1",1,0},{"2",2,0},{"3",3,0},{"4",4,0},{"5",5,0},
-    {"6",6,0},{"7",7,0},{"8",8,0},{"9",9,0},{"0",10,0}};
+    {"6",6,0},{"7",7,0},{"8",8,0},{"9",9,0},{"0",10,0},
+    {"escape",0,0},{"enter",27,0},{"tab",14,0},{"backspace",13,0},
+    {"f1",58,0},{"f2",59,0},{"f3",60,0},{"f4",61,0},{"f5",62,0},{"f6",63,0},
+    {"f7",64,0},{"f8",65,0},{"f9",66,0},{"f10",67,0},{"f11",82,0},{"f12",83,0},
+    {"home",96,0},{"up",97,0},{"pgup",98,0},{"left",99,0},{"right",100,0},
+    {"end",101,0},{"down",102,0},{"pgdn",103,0},{"insert",104,0},{"delete",105,0}};
+// Human spellings for keys whose native symbol name is abbreviated.
+struct Alias { const char* name; const char* target; };
+static const Alias aliases[] = {{"esc","escape"},{"return","enter"},
+    {"pageup","pgup"},{"page_up","pgup"},{"pagedown","pgdn"},{"page_down","pgdn"},
+    {"del","delete"},{"ins","insert"}};
 // Exact r208022 keyboard symbols (3350381A / 335039B9 / 33503B9E):
 // modifier flags include both sides of the native ctrl/shift/alt mask.
 static const Key modifiers[] = {{"lctrl",28,0x11},{"shift",41,0x22},{"alt",55,0x44}};
@@ -41,6 +55,41 @@ static bool wheel_held=false;
 static ULONGLONG wheel_until=0;
 static int wheel_id=264;
 static const char* wheel_name="mwheel_up";
+// Native 1.2 UI input is fed by the "ArcheAge" window procedure (x2game FUN_3950a8e0):
+// WM_MOUSEMOVE/WM_LBUTTONDOWN/WM_LBUTTONUP/WM_MOUSEWHEEL are translated into the same
+// SInputEvents and forwarded to IInput. SendMessageW runs that WndProc on this thread,
+// in-process, without touching the desktop cursor or generating OS input.
+static int cursor_x=0,cursor_y=0;
+static bool mouse_window_mode=false;
+#ifndef AADRIVER_INPUT_TEST
+static HWND game_window() {
+    static HWND cached=NULL;
+    if (cached && IsWindow(cached)) return cached;
+    struct Find { HWND window; };
+    Find find={NULL};
+    EnumWindows([](HWND window,LPARAM param) -> BOOL {
+        DWORD pid=0;
+        GetWindowThreadProcessId(window,&pid);
+        if (pid!=GetCurrentProcessId()) return TRUE;
+        char name[32]={0};
+        if (GetClassNameA(window,name,sizeof(name)) && !strcmp(name,"ArcheAge")) {
+            ((Find*)param)->window=window;
+            return FALSE;
+        }
+        return TRUE;
+    },(LPARAM)&find);
+    cached=find.window;
+    return cached;
+}
+static bool window_input(void) { return game_window()!=NULL; }
+static bool window_mouse(UINT message,WPARAM flags,int x,int y) {
+    HWND window=game_window();
+    return window && SendMessageW(window,message,flags,MAKELPARAM(x,y))==0;
+}
+#else
+static bool window_input(void) { return false; }
+static bool window_mouse(UINT,WPARAM,int,int) { return false; }
+#endif
 // SInputEvent from CryInput.dll sub_3350439C: 32 bytes, value at +24.
 struct Event { int device, state; const char* name; int id, unicode, modifiers;
     float value; void* symbol; };
@@ -212,6 +261,10 @@ static bool mouse_event(void* env,int id,int state,const char* name,float value)
     } catch(...) { return false; }
 }
 static void mouse_up(void* env) {
+    if(mouse_window_mode) {
+        window_mouse(mouse_button==257?WM_RBUTTONUP:WM_LBUTTONUP,0,cursor_x,cursor_y);
+        return;
+    }
     // r208022 sub_335049E7 dispatches both Mouse1 (256) and Mouse2 (257) before
     // the position-lock / SetCursorPos branch, including after a listener locks it.
     if(!mouse_event(env,mouse_button,2,mouse_button_name(),0.f))
@@ -223,10 +276,23 @@ static void release_mouse(void* env) {
     mouse_held=false;
     mouse_pending=false;
     if(pressed) mouse_up(env);
+    mouse_window_mode=false;
 }
 static void tick_mouse(void* env,ULONGLONG now) {
     if(!mouse_held || now<mouse_until) return;
     if(!mouse_pending) { release_mouse(env);return; }
+    if(mouse_window_mode) {
+        mouse_pending=false;
+        bool right=mouse_button==257;
+        if(!window_mouse(WM_MOUSEMOVE,0,cursor_x,cursor_y) ||
+           !window_mouse(right?WM_RBUTTONDOWN:WM_LBUTTONDOWN,
+                         right?MK_RBUTTON:MK_LBUTTON,cursor_x,cursor_y)) {
+            mouse_held=false;
+            return;
+        }
+        mouse_until=now+100;
+        return;
+    }
     if(!checked_mouse(env) || mouse_locked(env)) {
         // Cancel a queued click without a button-up when no press occurred.
         mouse_held=mouse_pending=false;
@@ -257,18 +323,30 @@ static std::string mouse_control(void* env,const std::string& command,int button
         coords[i]=coords[i]*10+(digit-'0');
     }
     unsigned x=coords[0],y=coords[1];
+    cursor_x=(int)x;cursor_y=(int)y;
     if(click && mouse_held) return "2mouse button already held; release first";
-    if(!checked_mouse(env)) return "2CryInput mouse is not the supported r208022 build";
-    // The native locked-position path calls SetCursorPos; never enter that path.
-    if(mouse_locked(env)) return "2mouse input unavailable while native mouse is locked";
-    if(!mouse_event(env,269,8,"pos_x",(float)x)) return "2mouse input unavailable";
-    // A synchronous listener can change mouse-lock state after the first axis.
-    if(mouse_locked(env)) return "2mouse input became locked";
-    if(!mouse_event(env,270,8,"pos_y",(float)y)) return "2mouse input unavailable";
-    if(!click) return "0mouse moved";
-    if(mouse_locked(env)) return "2mouse input became locked";
+    // The client WndProc translates window messages into the same IInput events and
+    // feeds UI hit-testing/hardware-mouse listeners. Prefer it; the CryInput device
+    // path below is the fallback when no "ArcheAge" window exists.
+    bool window=window_input();
+    if(window) {
+        if(!window_mouse(WM_MOUSEMOVE,0,cursor_x,cursor_y))
+            return "2mouse input unavailable";
+        if(!click) { mouse_window_mode=false;return "0mouse moved"; }
+    } else {
+        if(!checked_mouse(env)) return "2CryInput mouse is not the supported r208022 build";
+        // The native locked-position path calls SetCursorPos; never enter that path.
+        if(mouse_locked(env)) return "2mouse input unavailable while native mouse is locked";
+        if(!mouse_event(env,269,8,"pos_x",(float)x)) return "2mouse input unavailable";
+        // A synchronous listener can change mouse-lock state after the first axis.
+        if(mouse_locked(env)) return "2mouse input became locked";
+        if(!mouse_event(env,270,8,"pos_y",(float)y)) return "2mouse input unavailable";
+        if(!click) { mouse_window_mode=false;return "0mouse moved"; }
+        if(mouse_locked(env)) return "2mouse input became locked";
+    }
     mouse_held=true;
     mouse_pending=true;
+    mouse_window_mode=window;
     // Exact native constructor sub_3350465A registers Mouse1=256 and Mouse2=257.
     mouse_button=button;
     // The driver ticks after native Update and before draining new requests. A queued
@@ -285,10 +363,13 @@ static void release_modifiers(void* env,int before,int after) {
         }
     }
 }
+static void drag_cancel(void* env);
+static void tick_drag(void* env,ULONGLONG now);
 void release(void* env) {
     int mask=held_modifiers();
     // All primary keys leave before any chord modifiers.
     for(size_t i=0;i<held.size();++i) post(env,*held[i].key,false,physical_modifiers(env)|mask);
+    drag_cancel(env);
     release_mouse(env);
     release_wheel(env);
     held.clear();
@@ -296,6 +377,7 @@ void release(void* env) {
 }
 static void tick_at(void* env,ULONGLONG now) {
     // Release before same-deadline keyboard modifiers, with no dependency on the pipe.
+    tick_drag(env,now);
     tick_mouse(env,now);
     tick_wheel(env,now);
     for(size_t i=0;i<held.size();) {
@@ -323,6 +405,16 @@ static bool split_modifiers(char* name,int& mask) {
     }
     memmove(name,primary,strlen(primary)+1);
     return true;
+}
+static const Key* find_key(const char* name) {
+    for(size_t i=0;i<sizeof(keys)/sizeof(keys[0]);++i)
+        if(!strcmp(name,keys[i].name)) return &keys[i];
+    for(size_t i=0;i<sizeof(aliases)/sizeof(aliases[0]);++i)
+        if(!strcmp(name,aliases[i].name)) {
+            for(size_t j=0;j<sizeof(keys)/sizeof(keys[0]);++j)
+                if(!strcmp(aliases[i].target,keys[j].name)) return &keys[j];
+        }
+    return NULL;
 }
 static bool parse_signed(const std::string& text,int& value,int limit) {
     if(text.empty()) return false;
@@ -358,7 +450,8 @@ static std::string wheel_control(void* env,const std::string& command,ULONGLONG 
     int notches=0;
     if(!parse_signed(count_text,notches,50) || notches==0)
         return "2wheel notches must be nonzero with an absolute value of at most 50";
-    if(!checked(env)) return "2CryInput is not the supported r208022 build";
+    bool window=window_input();
+    if(!window && !checked(env)) return "2CryInput is not the supported r208022 build";
     if(mask!=0 && !modifier_state_supported(env))
         return "2CryInput modifier state is not the supported r208022 build";
     // Complete any previous press before starting a new one.
@@ -377,6 +470,12 @@ static std::string wheel_control(void* env,const std::string& command,ULONGLONG 
     bool up=notches>0;
     int id=up?wheel_up_id:wheel_down_id;
     const char* symbol=up?"mwheel_up":"mwheel_down";
+    if(window) {
+        // The WndProc reads the signed high word as the notch delta and posts mwheel_up/down.
+        window_mouse(WM_MOUSEWHEEL,MAKEWPARAM(0,(WORD)(notches*WHEEL_DELTA)),cursor_x,cursor_y);
+        release_modifiers(env,down,before);
+        return "0wheel sent through the client window";
+    }
     if(!dispatch(env,Event{1,1,symbol,id,0,physical_modifiers(env)|down,(float)notches,NULL})) {
         release_modifiers(env,down,before);
         return "2wheel input unavailable";
@@ -423,8 +522,100 @@ static std::string mouse_look_control(void* env,const std::string& command,ULONG
     mouse_until=now+100;
     return "0mouse look applied (right button released after 100 ms)";
 }
+// Left-button drag: move to the source, press, cross to the target in several frames, release.
+// UI drag-and-drop (for example a skill from the skill book to the action bar) needs the
+// button held while the cursor moves, which a single click cannot express.
+struct Drag {
+    bool active; int phase,step; int x1,y1,x2,y2; ULONGLONG until;
+    Drag():active(false),phase(0),step(0),x1(0),y1(0),x2(0),y2(0),until(0) {}
+};
+static Drag drag;
+static bool drag_via_window=false;
+#ifdef AADRIVER_INPUT_TEST
+static const int drag_steps=4,drag_hold=50,drag_step=40,drag_release_delay=50;
+#else
+// Slower than a click so the stock UI's drag threshold and hover updates are reached.
+static const int drag_steps=8,drag_hold=100,drag_step=60,drag_release_delay=100;
+#endif
+static bool drag_move(void* env,int x,int y,bool held=false) {
+    if(drag_via_window) return window_mouse(WM_MOUSEMOVE,held?MK_LBUTTON:0,x,y);
+    return mouse_event(env,269,8,"pos_x",(float)x) && mouse_event(env,270,8,"pos_y",(float)y);
+}
+static bool drag_press(void* env) {
+    if(drag_via_window) return window_mouse(WM_LBUTTONDOWN,MK_LBUTTON,drag.x1,drag.y1);
+    return mouse_event(env,256,1,"mouse1",1.f);
+}
+static bool drag_release(void* env,int x,int y) {
+    if(drag_via_window) return window_mouse(WM_LBUTTONUP,0,x,y);
+    return mouse_event(env,256,2,"mouse1",0.f);
+}
+static void drag_cancel(void* env) {
+    if(!drag.active) return;
+    if(drag.phase>=2) drag_release(env,drag.x2,drag.y2);
+    drag.active=false;
+}
+static std::string drag_control(void* env,const std::string& command,ULONGLONG now) {
+    std::istringstream words(command);
+    std::string name,x1_text,y1_text,x2_text,y2_text,extra;
+    if(!(words>>name>>x1_text>>y1_text>>x2_text>>y2_text) || (words>>extra)
+        || name!="mouse_drag")
+        return "2mouse drag expects x1 y1 x2 y2 within 0..4095";
+    const std::string* texts[4]={&x1_text,&y1_text,&x2_text,&y2_text};
+    unsigned coords[4]={0,0,0,0};
+    for(int i=0;i<4;++i) for(char digit:*texts[i]) {
+        if(digit<'0' || digit>'9' || coords[i]>409 || coords[i]*10+(digit-'0')>4095)
+            return "2mouse drag expects x1 y1 x2 y2 within 0..4095";
+        coords[i]=coords[i]*10+(digit-'0');
+    }
+    if(mouse_held || drag.active) return "2mouse button already held; release first";
+    if(coords[0]==coords[2] && coords[1]==coords[3])
+        return "2mouse drag needs distinct source and target";
+    drag_via_window=window_input();
+    if(!drag_via_window && !checked_mouse(env))
+        return "2CryInput mouse is not the supported r208022 build";
+    if(!drag_via_window && mouse_locked(env))
+        return "2mouse input unavailable while native mouse is locked";
+    drag.active=true;drag.phase=1;drag.step=0;
+    drag.x1=(int)coords[0];drag.y1=(int)coords[1];
+    drag.x2=(int)coords[2];drag.y2=(int)coords[3];
+    cursor_x=drag.x1;cursor_y=drag.y1;
+    if(!drag_move(env,drag.x1,drag.y1)) { drag.active=false;return "2mouse drag unavailable"; }
+    drag.until=now+drag_hold;
+    return "0mouse drag queued (press, moves, release; verify the resulting action)";
+}
+static void tick_drag(void* env,ULONGLONG now) {
+    if(!drag.active || now<drag.until) return;
+    if(drag.phase==1) {
+        mouse_button=256;mouse_window_mode=drag_via_window;
+        if(!drag_press(env)) { drag.active=false;return; }
+        drag.phase=2;drag.step=0;drag.until=now+drag_step;
+        return;
+    }
+    if(drag.phase==2) {
+        if(drag.step<drag_steps) {
+            int step=++drag.step;
+            int x=drag.x1+(drag.x2-drag.x1)*step/drag_steps;
+            int y=drag.y1+(drag.y2-drag.y1)*step/drag_steps;
+            cursor_x=x;cursor_y=y;
+            if(!drag_move(env,x,y,true)) { drag_release(env,x,y);drag.active=false;return; }
+            drag.until=now+drag_step;
+            return;
+        }
+        drag.phase=3;drag.until=now+drag_release_delay;
+        return;
+    }
+    drag_release(env,drag.x2,drag.y2);
+    drag.active=false;
+    mouse_window_mode=false;
+}
 static std::string control_at(void* env,const std::string& command,ULONGLONG now) {
+    if(command.compare(0,10,"mouse_drag")==0) return drag_control(env,command,now);
     if(command=="release") { release(env);return "0released"; }
+    if(drag.active && (command.compare(0,10,"mouse_move")==0
+        || command.compare(0,11,"mouse_click")==0
+        || command.compare(0,17,"mouse_right_click")==0
+        || command.compare(0,10,"mouse_look")==0))
+        return "2mouse drag already queued; release first";
     if(is_wheel_command(command)) return wheel_control(env,command,now);
     if(command.compare(0,10,"mouse_look")==0) return mouse_look_control(env,command,now);
     if(command.compare(0,10,"mouse_move")==0) return mouse_control(env,command,0,now);
@@ -435,8 +626,7 @@ static std::string control_at(void* env,const std::string& command,ULONGLONG now
         || duration<1 || duration>10000) return "2input expects a supported key and duration 1..10000 ms";
     int mask=0;
     if(!split_modifiers(name,mask)) return "2unsupported or duplicate modifier";
-    const Key* key=NULL;
-    for(size_t i=0;i<sizeof(keys)/sizeof(keys[0]);++i) if(!strcmp(name,keys[i].name)) key=&keys[i];
+    const Key* key=find_key(name);
     if(!key) return "2unsupported key";
     if(!checked(env)) return "2CryInput is not the supported r208022 build";
     if((mask|held_modifiers())!=0 && !modifier_state_supported(env))

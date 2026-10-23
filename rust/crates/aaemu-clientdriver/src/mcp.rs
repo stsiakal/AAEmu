@@ -428,6 +428,12 @@ mod backend {
                         driver.send(&Request::Input(command))?.into_result()?,
                     ))
                 }
+                "client_drag" => {
+                    let command = actions::drag_command(args)?;
+                    Ok(text_result(
+                        driver.send(&Request::Input(command))?.into_result()?,
+                    ))
+                }
                 name if actions::is_tool(name) => {
                     let (target, code) = actions::request(name, args)?;
                     let response = driver.send(&Request::Lua(target, code))?.into_result()?;
@@ -636,7 +642,7 @@ mod tests {
         assert_eq!(results.len(), 2);
         assert_eq!(results[0]["result"]["protocolVersion"], VERSION);
         assert_eq!(results[1]["id"], "list");
-        assert_eq!(results[1]["result"]["tools"].as_array().unwrap().len(), 25);
+        assert_eq!(results[1]["result"]["tools"].as_array().unwrap().len(), 26);
         assert!(results[1]["result"]["tools"]
             .as_array()
             .unwrap()
@@ -652,6 +658,11 @@ mod tests {
             .unwrap()
             .iter()
             .any(|tool| tool["name"] == "client_mouse_look"));
+        assert!(results[1]["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|tool| tool["name"] == "client_drag"));
     }
     #[test]
     fn schema_errors_are_distinct_from_execution_errors() {

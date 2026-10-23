@@ -392,6 +392,14 @@ including when the MCP session disconnects, and `key: "release"` clears every te
 The native fixture tests cover key IDs, overlapping presses, deadlines, release and invalid
 commands. These inputs work while hidden and do not send keys to another desktop application.
 
+Supported keys are the letter row, the number row, `space`, `enter` (ID 27), `escape` (ID 0),
+`tab` (14), `backspace` (13), `up`/`down`/`left`/`right` (97/102/99/100), `home`/`end`
+(96/101), `pgup`/`pgdn` (98/103), `insert`/`delete` (104/105) and `f1`–`f12` (58–83). Those
+IDs come from the same r208022 keyboard constructor as the letter/number keys; the native
+symbol names are exactly those strings. The MCP schema also accepts the spellings `pageup`
+and `pagedown` (and `return`/`esc`), which the driver maps to the canonical native symbol.
+Every one supports the same `ctrl`/`shift`/`alt` chords.
+
 Number-row keys `"1"` through `"0"` also accept an optional `modifiers` array containing
 distinct `"ctrl"`, `"shift"`, and `"alt"` values. For example,
 `client_input {"pid":1234,"key":"1","modifiers":["ctrl"],"duration_ms":100}` presses a
@@ -499,12 +507,32 @@ GM test.
 It also reports effective `take_all_bounds` for the existing Take All widget. Inspect a
 screenshot before clicking: the button may be hidden during timed loot notifications.
 The tool does not open a corpse or take items; use normal interaction and pointer input.
-`client_pointer` moves or clicks in client pixels through the guarded 1.2 mouse handler:
-`action: "click"` remains a left-click and `action: "right_click"` sends a right-click.
-The mouse-lock mode is rejected before position events because that native path can move the
-desktop cursor. Clicks position first and wait at least 50 ms for the native Update before
-pressing, then hold for 100 ms and release on the driver's independent tick; repeated
-clicks while held are rejected. `client_input` with `key: "release"` also releases the mouse.
+`client_pointer` moves or clicks in client pixels: `action: "click"` is a left-click and
+`action: "right_click"` a right-click. The driver now delivers these in-process through the
+client's own `"ArcheAge"` window procedure (x2game r208022 `FUN_3950A8E0`, registered at
+`FUN_3950C210` with the `WM_*` translations). `SendMessageW` runs that WndProc on the client
+main thread: `WM_MOUSEMOVE` (0x200) becomes `pos_x`/`pos_y` 269/270 with state 8,
+`WM_LBUTTONDOWN`/`WM_LBUTTONUP` (0x201/0x202) become `mouse1` 256 with state 1/2,
+`WM_RBUTTONDOWN`/`WM_RBUTTONUP` become `mouse2`, and `WM_MOUSEWHEEL` (0x20A) becomes
+`mwheel_up`/`mwheel_down` 264/265. That is the path the stock UI consumes: x2ui.dll
+(`TimeDateStamp 0x4758FD55`, image size `0x6A000`) registers a hardware-mouse listener whose
+`FUN_10001560` handles move/left/right events and feeds widget hit-testing, clicks and drags.
+The message is sent only to the client's own hidden HWND and never to the desktop; no
+`SendInput`, `SetCursorPos` or foreground-window change is involved. If no `"ArcheAge"` window
+exists (for example a non-UI test), the driver falls back to the guarded CryInput `CMouse`
+device path and rejects the native mouse-lock mode before position events, because that path
+can move the desktop cursor. Clicks send the position, wait at least 50 ms for a frame,
+press, hold 100 ms and release on the driver's independent tick; repeated clicks while held
+are rejected. `client_input` with `key: "release"` also releases the mouse.
+
+`client_drag` performs a left-button drag from `x1,y1` to `x2,y2` (client pixels, 0..4095,
+endpoints distinct): move to the source, press, cross to the target in four intermediate
+frames, then release. UI drag-and-drop such as dragging a skill from the skill book onto the
+action bar therefore sees a real held-button drag rather than a click. The drag runs across
+client frames and is cancelled by `release`. A skill drop additionally requires a learned,
+usable skill and an unlocked action bar; confirm it with the resulting server packet
+(`CSUpdateActionSlot` for an action-bar drop) or UI state, since event submission alone does
+not prove the widget action completed.
 Stock Map clicks and native mouse coordinates have been checked with hidden rendering.
 Allow the client to render the resulting UI before taking a screenshot; input acceptance
 alone does not establish that a ground-targeted cast or server interaction completed.
