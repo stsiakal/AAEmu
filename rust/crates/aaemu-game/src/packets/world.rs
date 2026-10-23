@@ -986,6 +986,19 @@ mod tests {
         assert_eq!(encode(&p), want);
     }
 
+    /// The default (no stored row) response: empty string, u16 length 0, trailer 1.
+    #[test]
+    fn response_ui_data_default_is_byte_exact() {
+        assert_eq!(
+            body(&SCResponseUIDataPacket {
+                character_id: 0x0102_0304,
+                ui_data_type: 1,
+                ui_data: String::new(),
+            }),
+            vec![4, 3, 2, 1, 1, 0, 0, 0, 1, 0, 0, 0]
+        );
+    }
+
     #[test]
     fn chat_message_layout() {
         let p = SCChatMessagePacket {

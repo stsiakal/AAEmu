@@ -185,7 +185,8 @@ pub struct Character {
     /// flushed by `db_character::save_character` (never marshalled).
     pub labor_power_unsaved: i32,
     pub slots: Vec<ActionSlot>,
-    /// `_options` (UI data).
+    /// `_options` (UI data; persisted in `character_ui_data`: 1 character options, 2 key
+    /// bindings, 5 common server data).
     pub options: BTreeMap<u16, String>,
     pub inventory: Inventory,
     pub abilities: CharacterAbilities,

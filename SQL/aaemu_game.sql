@@ -446,6 +446,15 @@ CREATE TABLE IF NOT EXISTS `options` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8 COMMENT='Settings that the client stores on the server';
 
 
+CREATE TABLE IF NOT EXISTS `character_ui_data` (
+  `character_id` int unsigned NOT NULL,
+  `ui_data_type` smallint unsigned NOT NULL COMMENT '1 character option, 2 key bindings, 5 common server data; native types are 0..6',
+  `data` mediumtext NOT NULL COMMENT 'Opaque client blob (UTF-8, at most 8191 bytes)',
+  `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`character_id`,`ui_data_type`) USING BTREE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Per-character client UI data (options, key bindings)';
+
+
 CREATE TABLE IF NOT EXISTS `portal_book_coords` (
   `id` int NOT NULL,
   `name` varchar(128) CHARACTER SET utf8 COLLATE utf8_general_ci NOT NULL,
