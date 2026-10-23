@@ -27,7 +27,7 @@ else:
     LUPA_ERROR = None
 
 import build  # noqa: E402
-from test_build import make_fixture  # noqa: E402
+from test_build import extend_fixture, make_fixture  # noqa: E402
 
 
 def lua_path(path: Path) -> str:
@@ -64,6 +64,9 @@ class LuaAddon:
     def fire(self, widget_id, action):
         mock = self.table["mock"]
         return mock["fire"](mock, widget_id, action)
+
+    def game_event(self, name, args=None):
+        return self.mock_call("event", name, self.lua.table_from(args or []))
 
     def update(self, ms=1000):
         self.mock_call("update", ms)
@@ -483,6 +486,196 @@ class AddonRuntimeTests(unittest.TestCase):
         self.assertEqual(addon.file_count(), 0)
         self.assertEqual(addon.pending_count(), 0)
         self.assertIn("Recording off", addon.text("aqg_recstatus"))
+
+    def test_checklist_without_reference_database(self):
+        addon = self.make_addon()
+        addon.click("aqg_checklist")
+        before = addon.text("aqg_header")
+        addon.click("aqg_cl_ref")
+        self.assertIn("without --ref-db", addon.text("aqg_status"))
+        self.assertEqual(before, addon.text("aqg_header"))
+
+
+class ChecklistRuntimeTests(AddonRuntimeTests):
+    @classmethod
+    def setUpClass(cls):
+        if LuaRuntime is None:
+            raise unittest.SkipTest("lupa.lua51 unavailable: set AAEMU_LUA_TEST_DEPS")
+        import sqlite3
+
+        cls.temp = tempfile.TemporaryDirectory()
+        root = Path(cls.temp.name)
+        cls.db, cls.worlds = make_fixture(root)
+        cls.extra_ids = extend_fixture(cls.db, 20)
+        cls.ref = root / "reference.sqlite3"
+        ref = sqlite3.connect(cls.ref)
+        try:
+            ref.execute("CREATE TABLE quest_contexts (id INTEGER PRIMARY KEY)")
+            ref.executemany(
+                "INSERT INTO quest_contexts VALUES (?)",
+                [(100,), (200,), (201,), (230,), (240,), (241,)])
+            ref.commit()
+        finally:
+            ref.close()
+        cls.output = root / "package"
+        cls.manifest, _ = build.run_build(
+            cls.db, cls.worlds, cls.output, code_commit="test-commit",
+            data_only=True, ref_db_path=cls.ref)
+        cls.db_hash = cls.manifest["inputs"]["db"]["sha256"]
+
+    def test_checklist_without_reference_database(self):
+        self.skipTest("this fixture is built with a reference database")
+
+    def row_index(self, addon, quest_id):
+        rows = addon.state()["checklist"]["rows"]
+        for index in range(1, len(rows) + 1):
+            if rows[index]["id"] == quest_id:
+                return index
+        return None
+
+    def row_text(self, addon, quest_id):
+        index = self.row_index(addon, quest_id)
+        if index is None:
+            return None
+        return addon.text("aqg_cl_row_%d" % index)
+
+    def test_checklist_paging_filters_and_placeholders(self):
+        addon = self.make_addon()
+        addon.mock["active_titles"][100] = None
+        addon.click("aqg_checklist")
+        self.assertFalse(addon.shown("aqg_content"))
+        self.assertTrue(addon.shown("aqg_cl_row_1"))
+        first = addon.text("aqg_cl_row_1")
+        self.assertIn("[ ] 100", first)
+        self.assertIn("Classic Test Title", first)
+        self.assertIn("NPC 500", first)
+        self.assertIn("completed 0 / 16 visible", addon.text("aqg_header"))
+        self.assertIn("25 matching", addon.text("aqg_header"))
+        self.assertIn("Page 1/2 | checklist", addon.text("aqg_pageinfo"))
+        self.assertFalse(addon.shown("aqg_cl_row_17"))
+
+        addon.click("aqg_next_text")
+        self.assertIn("Page 2/2 | checklist", addon.text("aqg_pageinfo"))
+        self.assertEqual(addon.state()["checklist"]["page"], 2)
+        addon.click("aqg_prev_text")
+        self.assertEqual(addon.state()["checklist"]["page"], 1)
+
+        addon.mock["completed"][100] = True
+        addon.click("aqg_checklist")
+        self.assertIn("24 matching", addon.text("aqg_header"))
+        self.assertIsNone(self.row_text(addon, 100))
+
+        addon.click("aqg_cl_done")
+        self.assertIn("1 matching", addon.text("aqg_header"))
+        self.assertIn("[x] 100", self.row_text(addon, 100))
+
+        addon.click("aqg_cl_all")
+        self.assertIn("25 matching", addon.text("aqg_header"))
+        self.assertIn("[x] 100", self.row_text(addon, 100))
+
+        addon.click("aqg_cl_placeholders")
+        self.assertIn("27 matching", addon.text("aqg_header"))
+        addon.set_text("aqg_filter", "dummy")
+        addon.click("aqg_find")
+        self.assertIn("dummy", addon.text("aqg_cl_row_1"))
+
+        addon.set_text("aqg_filter", "Checklist Quest 205")
+        addon.click("aqg_find")
+        self.assertIn("1 matching", addon.text("aqg_header"))
+        self.assertIn("Checklist Quest 205", addon.text("aqg_cl_row_1"))
+
+    def test_checklist_completion_union_and_manual_marks(self):
+        addon = self.make_addon()
+        self.open_quest(addon, 102)
+        addon.click("aqg_mark_done")
+        addon.click("aqg_checklist")
+        addon.click("aqg_cl_all")
+        self.assertIn("[m] 102", self.row_text(addon, 102))
+
+        addon.call("reload")
+        addon.click("aqg_checklist")
+        addon.click("aqg_cl_all")
+        self.assertIn("[m] 102", self.row_text(addon, 102))
+
+        self.open_quest(addon, 102)
+        addon.click("aqg_mark_undo")
+        addon.click("aqg_checklist")
+        addon.click("aqg_cl_all")
+        self.assertIn("[ ] 102", self.row_text(addon, 102))
+
+        addon.game_event("CHAT_MSG_QUEST", [
+            "Take this.", "Tester", "ticket", False, 1, 1, 1, 1, 103, False])
+        addon.game_event("ADDED_ITEM", ["|i500,0,0,deadbeef;", 1, 35, ""])
+        addon.click("aqg_checklist")
+        addon.click("aqg_cl_all")
+        self.assertIn("[x] 103", self.row_text(addon, 103))
+
+        addon.call("reload")
+        addon.click("aqg_checklist")
+        addon.click("aqg_cl_all")
+        self.assertIn("[x] 103", self.row_text(addon, 103))
+
+        addon.mock["completed"][200] = True
+        addon.click("aqg_refresh_completion")
+        addon.click("aqg_cl_done")
+        self.assertIn("[x] 200", self.row_text(addon, 200))
+
+    def test_checklist_marks_are_scoped_to_character_and_context(self):
+        addon = self.make_addon()
+        self.open_quest(addon, 102)
+        addon.click("aqg_mark_done")
+        addon.mock["units"]["player"] = unit_table(
+            self.lua, 4321, "OtherPlayer", 0.0, 0.0, 0.0)
+        addon.advance(2000)
+        addon.click("aqg_checklist")
+        addon.click("aqg_cl_all")
+        self.assertIn("[ ] 102", self.row_text(addon, 102))
+
+        addon.mock["units"]["player"] = unit_table(
+            self.lua, 77, "Player", 0.0, 0.0, 0.0)
+        addon.advance(2000)
+        addon.click("aqg_checklist")
+        addon.click("aqg_cl_all")
+        self.assertIn("[m] 102", self.row_text(addon, 102))
+
+        addon.set_text("aqg_context", "different-context")
+        addon.fire("aqg_context", "OnTextChanged")
+        addon.click("aqg_checklist")
+        addon.click("aqg_cl_all")
+        self.assertIn("[ ] 102", self.row_text(addon, 102))
+
+    def test_go_to_giver_position_and_no_position(self):
+        addon = self.make_addon()
+        addon.set_text("aqg_server", "ClassicEU")
+        addon.set_text("aqg_context", "test-context")
+        addon.set_text("aqg_world", "main_world")
+        addon.fire("aqg_server", "OnTextChanged")
+        addon.click("aqg_checklist")
+        addon.click("aqg_cl_go_1")
+        self.assertTrue(addon.shown("aqg_waypoint"))
+        self.assertIn("unverified 1.2 placement",
+                      addon.text("aqg_waypoint_label"))
+        self.assertEqual(addon.state()["step_index"], 1)
+
+        self.open_quest(addon, 230)
+        addon.click("aqg_go_giver")
+        self.assertFalse(addon.shown("aqg_waypoint"))
+        self.assertIn("no 1.2 world position", addon.text("aqg_status"))
+        self.assertIn("item", addon.text("aqg_status"))
+
+        self.open_quest(addon, 101)
+        addon.click("aqg_go_giver")
+        self.assertIn("no accept step", addon.text("aqg_status"))
+
+    def test_checklist_not_in_reference_filter(self):
+        addon = self.make_addon()
+        addon.click("aqg_checklist")
+        self.assertIn("25 matching", addon.text("aqg_header"))
+        addon.click("aqg_cl_ref")
+        self.assertIn("4 matching", addon.text("aqg_header"))
+        self.assertIn("not in 3.0 hidden", addon.text("aqg_stepline"))
+        addon.click("aqg_cl_ref")
+        self.assertIn("25 matching", addon.text("aqg_header"))
 
 
 if __name__ == "__main__":

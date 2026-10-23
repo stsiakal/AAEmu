@@ -141,7 +141,8 @@ function Pages.step(state)
       " (also unverified 1.2 placements)")
   end
   add(lines, "Manual acknowledgement: " .. state:manual_summary())
-  add(lines, "Classic completion is read separately from client IsCompleted.")
+  add(lines, "Completion is IsCompleted plus recorded turn-in/reward events; " ..
+    "manual done marks are separate ([m]).")
   if quest.blockers and #quest.blockers > 0 then
     add(lines, "Quest blockers: " .. table.concat(quest.blockers, "; "))
   end
@@ -348,11 +349,26 @@ function Pages.info(state)
       " | min level " .. tostring(quest.min_level))
     add(lines, "Catalog status: " .. tostring(quest.status) ..
       " | zone " .. tostring(quest.zone_id) ..
-      " | repeatable " .. tostring(quest.repeatable))
+      " | repeatable " .. tostring(quest.repeatable) ..
+      " | placeholder " .. tostring(quest.placeholder == true))
+    if quest.in_ref ~= nil then
+      add(lines, "Present in the reference db (3.0 coverage): " ..
+        tostring(quest.in_ref == true))
+    end
+    local start = quest.start
+    if type(start) == "table" then
+      add(lines, "Accept step: " .. tostring(start.act_type or "?") ..
+        " (" .. tostring(start.kind or "?") .. ")" ..
+        (start.name and (" " .. tostring(start.name)) or "") ..
+        (start.has_position and (" | candidate world " ..
+          tostring(start.world or "?")) or " | no 1.2 world position"))
+    else
+      add(lines, "Accept step: none in the catalog.")
+    end
     if quest.blockers and #quest.blockers > 0 then
       add(lines, "Blockers: " .. table.concat(quest.blockers, "; "))
     end
-    add(lines, "Classic completion (observed): " .. state:completion_text())
+    add(lines, "Completion (union): " .. state:completion_text())
     add(lines, "Classic runtime title: " .. state:classic_title())
     local body = state:classic_body()
     add(lines, "Classic runtime body: " ..

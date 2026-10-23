@@ -17,7 +17,7 @@ import shutil
 import tempfile
 import zipfile
 
-VERSION = "0.1.0"
+VERSION = "0.2.0"
 ADDON_ID = "aaemu_quest_guide"
 ZIP_NAME = ADDON_ID + "-" + VERSION + ".zip"
 MARKER_NAME = ".aaemu_quest_guide_generated"
@@ -25,7 +25,8 @@ FIXED_TIME = (1980, 1, 1, 0, 0, 0)
 VERSION_RE = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
 RUNTIME_FILES = (
     "main.lua", "core.lua", "ui.lua", "nav.lua", "recorder.lua",
-    "pages.lua", "catalog.lua", "util.lua", "README.md",
+    "pages.lua", "catalog.lua", "checklist.lua", "progress.lua",
+    "util.lua", "README.md",
 )
 
 

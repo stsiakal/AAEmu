@@ -926,3 +926,158 @@ valid profile package, and received Windows sharing error 32; the installed
 manifest SHA stayed unchanged. Closing that client permits normal verified update
 application. Root-relative SHA filenames and receipt bounds reject arbitrary file
 paths. Receipts protect integrity/base identity, not publisher authenticity.
+
+
+## 13. Calling original client functions (differential tests)
+
+The driver can inspect client memory and call functions in loaded modules **on the client's
+main thread**, through the same request queue as Lua. This is for proving a line-by-line port:
+give the original function and the Rust function the same crafted inputs and compare the
+results. Nothing is written to the client installation.
+
+### Commands
+
+All commands accept `--pid N`; without it the single running client is used. Values in replies
+are `key=value` tokens after the status byte (`0` ok / `2` driver error).
+
+| CLI | Pipe op | Meaning |
+|---|---|---|
+| `mod <module>` | `M` | Actual load address, image size and PE timestamp of a loaded module. |
+| `read <target> <len>` | `R` | Read memory, print lowercase hex (1 MiB max). |
+| `write <target> <hex> [--unsafe]` | `w` | Write a scratch buffer (or any address with `--unsafe`). |
+| `alloc <len>` | `A` | Allocate tracked scratch memory (64 MiB max), print its address. |
+| `free <addr>` | `D` | Release a tracked scratch allocation. |
+| `call <target> <conv> [this=addr] [dump=addr:len]... [unsafe] [void] [args...]` | `c` | Call an original function on the main thread; returns EAX and ST0. |
+| `peek-global <target> <type>` | `g` | Read a cvar / global (`u8|i8|u16|i16|u32|i32|u64|i64|f32|f64|ptr`). |
+
+A `<target>` is either `module+<hex rva>` (relocated by the module's **actual** load address;
+never hardcode the base from an unpacked dump) or a raw address (`0x...` / decimal).
+
+`call` conventions:
+
+* `cdecl`, `stdcall`: all arguments on the stack, left to right.
+* `thiscall`: `this=` goes in ECX, arguments on the stack.
+* `fastcall`: the first two arguments go in ECX/EDX, the rest on the stack. With `this=`,
+  `this` is ECX and the first argument is EDX.
+* Arguments are 32-bit slots: a bare number or `u32:<n>` (decimal / `0x`), `f:<n>` (an `f32`
+  bit pattern), or `p:<addr>` (a pointer, which must lie in a tracked `alloc` buffer unless
+  `unsafe` is given).
+* `dump=<addr>:<len>` reads that buffer after the call and returns it as `buf0`, `buf1`, ...
+  (at most 16 buffers / 4 MiB).
+* By default the driver reads ST0 after the call (a `float`/`double`/`float10` return) and
+  reports both the raw 80-bit value (`st0=`, 20 hex digits) and its `f64` value (`d64=`).
+  Pass `void` (or `nost0`) for a function that returns no float: it leaves the x87 stack
+  untouched instead of popping a value that is not there.
+
+```sh
+T=<build>/aaemu-clientdriver.exe   # the lane's live/release build
+
+$T mod x2game.dll
+$T mod cryphysics.dll
+$T read x2game.dll+8c1af0 4
+
+A=$($T alloc 72)                       # one 0x48-byte sphere object
+B=$($T alloc 72)
+# ... write the crafted objects with `write $A <hex>` ...
+$T call x2game.dll+8c1af0 cdecl dump=$A:72 p:$A p:$B
+$T call cryphysics.dll+3ab60 thiscall this=$A f:10.0
+$T call cryphysics.dll+3a0e0 cdecl void f:1.5
+$T peek-global cryphysics.dll+20a6c4 f32
+$T free $A
+$T free $B
+```
+
+`call` prints `eax=... st0_valid=... st0=... st0_f32=... st0_raw=...` and one `bufN=` line
+per dump. For example, `call cryphysics.dll+3a0e0 cdecl f:1.5` returns the argument unchanged
+(`st0=1.5`), while the `void` form reports `st0_valid=false`.
+
+### Rust API
+
+`aaemu_clientdriver::win::Driver` has the same operations:
+
+```rust
+use std::time::Duration;
+use aaemu_clientdriver::win::Driver;
+use aaemu_clientdriver::{Arg, Call, CallConv, Dump};
+
+let mut driver = Driver::connect(pid, Duration::from_secs(5))?;
+let module = driver.module("x2game.dll")?;
+let a = driver.alloc_bytes(&object_a)?;       // or alloc_f32s / alloc_vec3 / alloc_quat
+let b = driver.alloc_bytes(&object_b)?;
+let result = driver.call(&Call {
+    target: "x2game.dll+8c1af0".into(),
+    conv: CallConv::Cdecl,
+    this: None,
+    args: vec![Arg::Ptr(a), Arg::Ptr(b)],
+    dumps: vec![Dump { addr: a, len: 0x48 }],
+    unsafe_: false,
+    capture_st0: true,                         // false = `void`
+})?;
+println!("eax={:#x} st0={} buffers={}", result.eax, result.st0, result.buffers.len());
+```
+
+`CallResult { eax, st0, st0_raw, st0_valid, buffers }` keeps both the decoded `f64` and the
+raw x87 value. `write_f32s` / `write_f64s` / `write_vec3` / `write_quat` marshal little-endian
+arrays (`Vec3` = three `f32`, quaternion = four `f32`); `alloc_f32s` / `alloc_vec3` /
+`alloc_quat` allocate and fill them. `peek_global` returns `GlobalValue { addr, ty, raw, value }`.
+
+### Live self-test
+
+The `#[ignore]`d test calls the original implementations and compares them with the Rust
+formulas. It needs a running 1.2 client with `aadriver.dll` (the lane's hidden client is fine):
+
+```sh
+cd rust
+AAEMU_DRIVER_LIVE=1 [AAEMU_DRIVER_PID=<pid>]   cargo test -p aaemu-clientdriver --test live_call -- --ignored --nocapture
+```
+
+It uses:
+
+* x2game `FUN_398b1af0` (RVA `0x8C1AF0`, cdecl): sphere-sphere gap
+  `|c1-c2| - (r1+r2)`, reading doubles at `+0x28/+0x30/+0x38` and a float at `+0x40` of both
+  objects (see `D:/aa-re/client12/out-x2game/x2game.dll.c`);
+* cryphysics `FUN_3502ab60` (RVA `0x3AB60`, `__thiscall`): clamps a float argument to the
+  object's speed limit at `+0x2B4 - +0x2B8`, with a `0.001` floor; this also exercises the
+  ST0 float return and `this=`;
+* scratch read/write/peek/free and the scratch-only write guard.
+
+Observed on 2026-10-23 with the lane stack and a hidden client:
+
+| Module | Base | Size | Timestamp |
+|---|---:|---:|---:|
+| `x2game.dll` | `0x38FF0000` | `0x1CB0A00` | `0x543CB835` |
+| `CryPhysics.dll` | `0x34FF0000` | `0x75B400` | `0x543CB771` |
+| `cryaction.dll` | `0x304F0000` | `0x548A00` | `0x543CB85B` |
+| `CryScriptSystem.dll` | `0x24CD0000` | `0xA2000` | `0x543CB87C` |
+
+| Sphere pair (centers / radii) | Rust | Original |
+|---|---:|---:|
+| `(0,0,0) r=1` vs `(3,4,0) r=2` | `2.0` | `2.0` |
+| `(1.5,-2.25,0.5) r=0.75` vs `(-0.5,1.25,2) r=1.25` | `2.301162633521` | `2.301162633521` |
+| `(10,0,0) r=5` vs `(10,0,0) r=5` | `-10.0` | `-10.0` |
+| `(-100.25,33.5,7.125) r=0.001` vs `(-100.25,33.5,7.625) r=0.25` | `0.248999999953` | `0.248999999953` |
+
+The clamp returned `2.0`, `3.5` and `7.0` for `(limit=5, floor=1.5, arg=2)`,
+`(5, 1.5, 10)` and `(1, 1.5, 7)`, matching the Rust formula. `x2common.dll` and `crygame.dll`
+are not loaded at the login screen in this client, so the test uses cryphysics (and reports
+unavailable modules instead of failing).
+
+### Safety notes
+
+* Every operation is queued to the **main thread** inside `CScriptSystem::Update`, like Lua.
+  A minimised or paused client stops ticking and the request times out after 30 seconds; do
+  not call functions that block, wait on the renderer/network, or take a lock the caller holds.
+* `call` is wrapped in SEH: an access violation becomes a driver error instead of a crash.
+  SEH does **not** protect against logical corruption, a deadlock, or a call that changes
+  engine state. Use a throwaway hidden client and keep the server's connection state in view.
+* `write` only accepts tracked `alloc` memory. `--unsafe` removes that check and can corrupt
+  the client; use it only when the test explicitly needs to patch game memory. `free` only
+  releases tracked allocations.
+* Scratch allocations live until `free` or process exit. Keep the addresses in the same
+  controller session; they are not valid in another client.
+* Relocate by `mod` (or `module+<rva>` every time). The same DLL can load at a different base
+  on each run; a base from an unpacked dump is only the preferred one.
+* Prefer pure functions with crafted scratch objects. Do not drive gameplay or UI through
+  this path; use the Lua commands for that.
+* The client installation is read-only. These commands never write files; `unsafe` writes
+  process memory only.

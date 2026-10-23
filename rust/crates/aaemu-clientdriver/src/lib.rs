@@ -8,7 +8,9 @@
 //! Wire format, both directions: `u32 LE length` + `length` bytes.
 //! * request: one op byte + payload (`S`/`U`/`T` + Lua = run in the System / UI / third state,
 //!   `B` + target + Lua = the engine's own `ExecuteBuffer`, `P` = ping, `X` = detach,
-//!   `C` = capture, `Whide`/`Wshow` = window visibility, `F` + action = pak I/O);
+//!   `C` = capture, `Whide`/`Wshow` = window visibility, `F` + action = pak I/O,
+//!   `M` = module info, `R`/`w` = read/write memory, `A`/`D` = alloc/free scratch,
+//!   `c` = call an original function on the main thread, `g` = peek a global);
 //! * response: one status byte (`0` ok, `1` Lua error, `2` driver error) + UTF-8 text,
 //!   except successful capture replies, which contain binary PNG bytes.
 //!
@@ -17,6 +19,9 @@
 //! injection).
 
 use std::io::{Read, Write};
+
+/// A 32-bit address in the client process.
+pub type Address = u32;
 
 /// Named pipe of the driver inside the client with process id `pid`.
 pub fn pipe_name(pid: u32) -> String {
@@ -44,8 +49,270 @@ impl Target {
     }
 }
 
-/// A request to the driver.
+/// Calling convention of an original client function.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CallConv {
+    Cdecl,
+    Stdcall,
+    Thiscall,
+    Fastcall,
+}
+
+impl CallConv {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            CallConv::Cdecl => "cdecl",
+            CallConv::Stdcall => "stdcall",
+            CallConv::Thiscall => "thiscall",
+            CallConv::Fastcall => "fastcall",
+        }
+    }
+
+    pub fn parse(text: &str) -> Option<Self> {
+        Some(match text {
+            "cdecl" => CallConv::Cdecl,
+            "stdcall" => CallConv::Stdcall,
+            "thiscall" => CallConv::Thiscall,
+            "fastcall" => CallConv::Fastcall,
+            _ => return None,
+        })
+    }
+}
+
+/// One argument of [`Call`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Arg {
+    /// A plain 32-bit value (integer, pointer-sized flag, ...).
+    U32(u32),
+    /// An `f32`, passed as its bit pattern in a stack slot.
+    F32(f32),
+    /// A pointer to caller-allocated scratch memory (or any address with `unsafe_`).
+    Ptr(Address),
+}
+
+impl Arg {
+    fn spec(self) -> String {
+        match self {
+            Arg::U32(value) => value.to_string(),
+            Arg::F32(value) => format!("f:{value:?}"),
+            Arg::Ptr(address) => format!("p:0x{address:08x}"),
+        }
+    }
+}
+
+/// A scratch buffer to read back after a [`Call`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Dump {
+    pub addr: Address,
+    pub len: usize,
+}
+
+/// An original client function call.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Call {
+    /// `<module>+<rva>` (relocated by the module's actual load address) or a raw address.
+    pub target: String,
+    pub conv: CallConv,
+    /// `this` pointer for `thiscall`, or the first register argument of `fastcall`.
+    pub this: Option<Address>,
+    pub args: Vec<Arg>,
+    /// Scratch buffers dumped after the call, in order (`buf0`, `buf1`, ...).
+    pub dumps: Vec<Dump>,
+    /// Allow pointer arguments outside scratch memory and a raw call target.
+    pub unsafe_: bool,
+    /// Read ST0 after the call. Clear it (`void` in the command syntax) for functions that
+    /// return no float, so the x87 stack is left untouched.
+    pub capture_st0: bool,
+}
+
+impl Call {
+    /// Builds a call from the native command syntax:
+    /// `<target> <conv> [this=<addr>] [dump=<addr>:<len>]... [unsafe] [args...]`.
+    /// Addresses here are raw 32-bit values; the native command also accepts `module+rva`.
+    pub fn parse_spec(spec: &str) -> anyhow::Result<Call> {
+        use anyhow::Context;
+        let mut tokens = spec.split_whitespace();
+        let target = tokens
+            .next()
+            .context("call needs a target (<module>+<rva> or address)")?
+            .to_string();
+        let conv = tokens
+            .next()
+            .and_then(CallConv::parse)
+            .context("call needs a convention (cdecl|stdcall|thiscall|fastcall)")?;
+        let mut call = Call {
+            target,
+            conv,
+            this: None,
+            args: Vec::new(),
+            dumps: Vec::new(),
+            unsafe_: false,
+            capture_st0: true,
+        };
+        for token in tokens {
+            if token == "unsafe" {
+                call.unsafe_ = true;
+            } else if token == "void" || token == "nost0" {
+                call.capture_st0 = false;
+            } else if token == "st0" {
+                call.capture_st0 = true;
+            } else if let Some(text) = token.strip_prefix("this=") {
+                call.this = Some(parse_address(text)?);
+            } else if let Some(text) = token.strip_prefix("dump=") {
+                let (address, len) = text.rsplit_once(':').context("dump expects <addr>:<len>")?;
+                call.dumps.push(Dump {
+                    addr: parse_address(address)?,
+                    len: len.parse().context("bad dump length")?,
+                });
+            } else if let Some(text) = token.strip_prefix("p:") {
+                call.args.push(Arg::Ptr(parse_address(text)?));
+            } else if let Some(text) = token.strip_prefix("f:") {
+                call.args
+                    .push(Arg::F32(text.parse().context("bad f32 argument")?));
+            } else if let Some(text) = token.strip_prefix("u32:") {
+                call.args.push(Arg::U32(parse_address(text)?));
+            } else if let Some(text) = token.strip_prefix("0x") {
+                call.args.push(Arg::U32(
+                    u32::from_str_radix(text, 16).context("bad hex argument")?,
+                ));
+            } else {
+                call.args.push(Arg::U32(
+                    token
+                        .parse()
+                        .with_context(|| format!("bad call argument '{token}'"))?,
+                ));
+            }
+        }
+        Ok(call)
+    }
+
+    fn spec(&self) -> String {
+        let mut spec = format!("{} {}", self.target, self.conv.as_str());
+        if let Some(this) = self.this {
+            spec.push_str(&format!(" this=0x{this:08x}"));
+        }
+        for dump in &self.dumps {
+            spec.push_str(&format!(" dump=0x{:08x}:{}", dump.addr, dump.len));
+        }
+        if self.unsafe_ {
+            spec.push_str(" unsafe");
+        }
+        if !self.capture_st0 {
+            spec.push_str(" void");
+        }
+        for arg in &self.args {
+            spec.push(' ');
+            spec.push_str(&arg.spec());
+        }
+        spec
+    }
+}
+
+fn parse_address(text: &str) -> anyhow::Result<Address> {
+    use anyhow::Context;
+    match text.strip_prefix("0x") {
+        Some(hex) => {
+            u32::from_str_radix(hex, 16).with_context(|| format!("bad hex address '{text}'"))
+        }
+        None => text
+            .parse()
+            .with_context(|| format!("bad address '{text}'")),
+    }
+}
+
+/// A loaded module as reported by the client process.
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ModuleInfo {
+    pub name: String,
+    pub base: Address,
+    pub size: u32,
+    pub stamp: u32,
+}
+
+/// The result of an original client function call.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CallResult {
+    /// EAX after the call.
+    pub eax: u32,
+    /// ST0 (x87 float10 / float / double return) decoded as `f64`.
+    pub st0: f64,
+    /// Raw 80-bit ST0 bytes as x87 stores them (little-endian significand, then sign/exponent).
+    pub st0_raw: [u8; 10],
+    /// Whether ST0 was read. False for a `void` call, where `st0`/`st0_raw` are zero.
+    pub st0_valid: bool,
+    /// Dumped buffers, in the order of [`Call::dumps`].
+    pub buffers: Vec<Vec<u8>>,
+}
+
+impl CallResult {
+    /// ST0 rounded to `f32` (a function returning `float`).
+    pub fn st0_f32(&self) -> f32 {
+        self.st0 as f32
+    }
+}
+
+/// Type read by `peek-global`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GlobalType {
+    U8,
+    I8,
+    U16,
+    I16,
+    U32,
+    I32,
+    U64,
+    I64,
+    F32,
+    F64,
+    Ptr,
+}
+
+impl GlobalType {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            GlobalType::U8 => "u8",
+            GlobalType::I8 => "i8",
+            GlobalType::U16 => "u16",
+            GlobalType::I16 => "i16",
+            GlobalType::U32 => "u32",
+            GlobalType::I32 => "i32",
+            GlobalType::U64 => "u64",
+            GlobalType::I64 => "i64",
+            GlobalType::F32 => "f32",
+            GlobalType::F64 => "f64",
+            GlobalType::Ptr => "ptr",
+        }
+    }
+
+    pub fn parse(text: &str) -> Option<Self> {
+        Some(match text {
+            "u8" => GlobalType::U8,
+            "i8" => GlobalType::I8,
+            "u16" => GlobalType::U16,
+            "i16" => GlobalType::I16,
+            "u32" => GlobalType::U32,
+            "i32" => GlobalType::I32,
+            "u64" => GlobalType::U64,
+            "i64" => GlobalType::I64,
+            "f32" => GlobalType::F32,
+            "f64" => GlobalType::F64,
+            "ptr" => GlobalType::Ptr,
+            _ => return None,
+        })
+    }
+}
+
+/// Value read by `peek-global`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GlobalValue {
+    pub addr: Address,
+    pub ty: GlobalType,
+    pub raw: Vec<u8>,
+    pub value: String,
+}
+
+/// A request to the driver.
+#[derive(Clone, Debug, PartialEq)]
 pub enum Request {
     /// Compile `code` as `return <code>` (else as statements), run it, return its values.
     Lua(Target, String),
@@ -62,6 +329,30 @@ pub enum Request {
     Input(String),
     /// Controls bounded DXGI frame interval recording.
     FrameProfile(String),
+    /// Actual base / size / timestamp of a loaded module.
+    Module(String),
+    /// Reads client memory (`<module>+<rva>` or an address), returned as hex.
+    ReadMemory {
+        target: String,
+        len: usize,
+    },
+    /// Writes to scratch memory (or anywhere with `unsafe_`).
+    WriteMemory {
+        target: String,
+        bytes: Vec<u8>,
+        unsafe_: bool,
+    },
+    /// Allocates a tracked scratch buffer in the client.
+    Alloc(usize),
+    /// Frees a tracked scratch buffer.
+    Free(Address),
+    /// Calls an original client function on the main thread.
+    Call(Call),
+    /// Reads a cvar / global through its address.
+    PeekGlobal {
+        target: String,
+        ty: GlobalType,
+    },
     /// Detaches hooks; the native module stays mapped until the client exits.
     Unload,
 }
@@ -85,8 +376,86 @@ impl Request {
             Request::PakIo(action) => [b"F".as_slice(), action.as_bytes()].concat(),
             Request::Input(action) => [b"I".as_slice(), action.as_bytes()].concat(),
             Request::FrameProfile(action) => [b"V".as_slice(), action.as_bytes()].concat(),
+            Request::Module(name) => [b"M".as_slice(), name.as_bytes()].concat(),
+            Request::ReadMemory { target, len } => format!("R{target} {len}").into_bytes(),
+            Request::WriteMemory {
+                target,
+                bytes,
+                unsafe_,
+            } => {
+                let mut spec = format!("w{target} {}", hex_encode(bytes));
+                if *unsafe_ {
+                    spec.push_str(" unsafe");
+                }
+                spec.into_bytes()
+            }
+            Request::Alloc(len) => format!("A{len}").into_bytes(),
+            Request::Free(address) => format!("D0x{address:08x}").into_bytes(),
+            Request::Call(call) => [b"c".as_slice(), call.spec().as_bytes()].concat(),
+            Request::PeekGlobal { target, ty } => format!("g{target} {}", ty.as_str()).into_bytes(),
         }
     }
+}
+
+/// Encodes bytes as lowercase hex.
+pub fn hex_encode(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        out.push_str(&format!("{byte:02x}"));
+    }
+    out
+}
+
+/// Decodes an even-length lowercase or uppercase hex string.
+pub fn hex_decode(text: &str) -> anyhow::Result<Vec<u8>> {
+    use anyhow::bail;
+    if !text.len().is_multiple_of(2) {
+        bail!("hex string has an odd length");
+    }
+    let mut out = Vec::with_capacity(text.len() / 2);
+    for pair in text.as_bytes().chunks(2) {
+        let digit = |c: u8| -> Option<u8> {
+            Some(match c {
+                b'0'..=b'9' => c - b'0',
+                b'a'..=b'f' => c - b'a' + 10,
+                b'A'..=b'F' => c - b'A' + 10,
+                _ => return None,
+            })
+        };
+        match (digit(pair[0]), digit(pair[1])) {
+            (Some(hi), Some(lo)) => out.push((hi << 4) | lo),
+            _ => bail!("invalid hex string"),
+        }
+    }
+    Ok(out)
+}
+
+/// Marshals `f32` values as little-endian scratch bytes.
+pub fn f32_bytes(values: &[f32]) -> Vec<u8> {
+    values.iter().flat_map(|v| v.to_le_bytes()).collect()
+}
+
+/// Marshals `f64` values as little-endian scratch bytes.
+pub fn f64_bytes(values: &[f64]) -> Vec<u8> {
+    values.iter().flat_map(|v| v.to_le_bytes()).collect()
+}
+
+/// Marshals a CryEngine `Vec3` (three packed `f32`) as scratch bytes.
+pub fn vec3_bytes(value: [f32; 3]) -> Vec<u8> {
+    f32_bytes(&value)
+}
+
+/// Marshals a CryEngine quaternion (four packed `f32`) as scratch bytes.
+pub fn quat_bytes(value: [f32; 4]) -> Vec<u8> {
+    f32_bytes(&value)
+}
+
+/// Parses the `key=value` fields of an ok reply.
+pub fn reply_fields(text: &str) -> std::collections::BTreeMap<String, String> {
+    text.split_whitespace()
+        .filter_map(|field| field.split_once('='))
+        .map(|(key, value)| (key.to_string(), value.to_string()))
+        .collect()
 }
 
 /// Validates a binary screenshot reply without converting PNG data to UTF-8.
@@ -259,6 +628,88 @@ mod tests {
         assert_eq!(Request::PakIo("profile".into()).payload(), b"Fprofile");
         assert_eq!(Request::Input("w 1000".into()).payload(), b"Iw 1000");
         assert_eq!(Request::FrameProfile("off".into()).payload(), b"Voff");
+        assert_eq!(
+            Request::Module("x2game.dll".into()).payload(),
+            b"Mx2game.dll"
+        );
+        assert_eq!(
+            Request::ReadMemory {
+                target: "x2game.dll+8c1af0".into(),
+                len: 4
+            }
+            .payload(),
+            b"Rx2game.dll+8c1af0 4"
+        );
+        assert_eq!(
+            Request::WriteMemory {
+                target: "0x1000".into(),
+                bytes: vec![0xde, 0xad],
+                unsafe_: true
+            }
+            .payload(),
+            b"w0x1000 dead unsafe"
+        );
+        assert_eq!(Request::Alloc(72).payload(), b"A72");
+        assert_eq!(Request::Free(0x1000).payload(), b"D0x00001000");
+        assert_eq!(
+            Request::PeekGlobal {
+                target: "x2game.dll+100".into(),
+                ty: GlobalType::F32
+            }
+            .payload(),
+            b"gx2game.dll+100 f32"
+        );
+    }
+
+    #[test]
+    fn call_spec_round_trip() {
+        let call = Call::parse_spec(
+            "x2game.dll+8c1af0 cdecl dump=0x2000:8 p:0x1000 f:-1.5 42 0x20 unsafe",
+        )
+        .unwrap();
+        assert_eq!(call.conv, CallConv::Cdecl);
+        assert_eq!(call.args.len(), 4);
+        assert_eq!(
+            call.dumps,
+            vec![Dump {
+                addr: 0x2000,
+                len: 8
+            }]
+        );
+        assert!(call.unsafe_);
+        assert_eq!(
+            call.spec(),
+            "x2game.dll+8c1af0 cdecl dump=0x00002000:8 unsafe p:0x00001000 f:-1.5 42 32"
+        );
+        let void = Call::parse_spec("x2game.dll+10 cdecl void").unwrap();
+        assert!(!void.capture_st0);
+        assert_eq!(void.spec(), "x2game.dll+10 cdecl void");
+        let thiscall = Call::parse_spec("x2game.dll+10 thiscall this=0x3000 p:0x1000").unwrap();
+        assert_eq!(thiscall.this, Some(0x3000));
+        assert!(Call::parse_spec("x2game.dll+10 bogus").is_err());
+    }
+
+    #[test]
+    fn hex_and_marshalling() {
+        assert_eq!(hex_encode(&[0x00, 0xab, 0xff]), "00abff");
+        assert_eq!(hex_decode("00AbFf").unwrap(), vec![0x00, 0xab, 0xff]);
+        assert!(hex_decode("0").is_err());
+        assert!(hex_decode("zz").is_err());
+        assert_eq!(vec3_bytes([1.0, -2.0, 0.5]).len(), 12);
+        assert_eq!(
+            quat_bytes([0.0, 0.0, 0.0, 1.0]),
+            f32_bytes(&[0.0, 0.0, 0.0, 1.0])
+        );
+        assert_eq!(f64_bytes(&[1.0]), 1.0f64.to_le_bytes().to_vec());
+    }
+
+    #[test]
+    fn parses_reply_fields() {
+        let fields = reply_fields("eax=0x0000002a st0=00 d64=000000000000f03f buf0=dead");
+        assert_eq!(fields["eax"], "0x0000002a");
+        assert_eq!(fields["d64"], "000000000000f03f");
+        assert_eq!(fields["buf0"], "dead");
+        assert_eq!(fields.get("missing"), None);
     }
 
     #[test]

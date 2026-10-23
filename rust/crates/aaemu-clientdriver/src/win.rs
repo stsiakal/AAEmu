@@ -13,7 +13,10 @@ use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context};
 
-use crate::{roundtrip, Reply, Request};
+use crate::{
+    f32_bytes, f64_bytes, hex_decode, quat_bytes, reply_fields, roundtrip, vec3_bytes, Address,
+    Call, CallResult, GlobalType, GlobalValue, ModuleInfo, Reply, Request,
+};
 
 type Handle = *mut c_void;
 
@@ -423,6 +426,25 @@ fn scopeguard<F: FnMut()>(f: F) -> impl Drop {
     G(f)
 }
 
+fn field<'a>(
+    fields: &'a std::collections::BTreeMap<String, String>,
+    key: &str,
+) -> anyhow::Result<&'a str> {
+    fields
+        .get(key)
+        .map(String::as_str)
+        .with_context(|| format!("driver reply has no '{key}' field"))
+}
+
+fn parse_hex_u32(
+    fields: &std::collections::BTreeMap<String, String>,
+    key: &str,
+) -> anyhow::Result<u32> {
+    let text = field(fields, key)?;
+    let text = text.strip_prefix("0x").unwrap_or(text);
+    u32::from_str_radix(text, 16).with_context(|| format!("bad '{key}' value in driver reply"))
+}
+
 /// A connection to the driver's named pipe.
 pub struct Driver {
     file: std::fs::File,
@@ -455,6 +477,152 @@ impl Driver {
     /// One request / reply round trip.
     pub fn send(&mut self, req: &Request) -> anyhow::Result<Reply> {
         Ok(roundtrip(&mut self.file, req)?)
+    }
+
+    /// Actual load address, image size and PE timestamp of a module
+    /// (`x2game.dll`, `cryphysics.dll`, `x2common.dll`, ...).
+    pub fn module(&mut self, name: &str) -> anyhow::Result<ModuleInfo> {
+        let text = self
+            .send(&Request::Module(name.to_string()))?
+            .into_result()?;
+        let fields = reply_fields(&text);
+        Ok(ModuleInfo {
+            name: field(&fields, "name")?.to_string(),
+            base: parse_hex_u32(&fields, "base")?,
+            size: parse_hex_u32(&fields, "size")?,
+            stamp: parse_hex_u32(&fields, "stamp")?,
+        })
+    }
+
+    /// Reads `len` bytes at `<module>+<rva>` or a raw address.
+    pub fn read_memory(&mut self, target: &str, len: usize) -> anyhow::Result<Vec<u8>> {
+        let text = self
+            .send(&Request::ReadMemory {
+                target: target.to_string(),
+                len,
+            })?
+            .into_result()?;
+        hex_decode(field(&reply_fields(&text), "hex")?)
+    }
+
+    /// Writes bytes to a tracked scratch buffer (or anywhere with `unsafe_`).
+    pub fn write_memory(
+        &mut self,
+        target: &str,
+        bytes: &[u8],
+        unsafe_: bool,
+    ) -> anyhow::Result<usize> {
+        let text = self
+            .send(&Request::WriteMemory {
+                target: target.to_string(),
+                bytes: bytes.to_vec(),
+                unsafe_,
+            })?
+            .into_result()?;
+        field(&reply_fields(&text), "wrote")?
+            .parse()
+            .context("bad 'wrote' value in driver reply")
+    }
+
+    /// Allocates a tracked scratch buffer in the client.
+    pub fn alloc(&mut self, len: usize) -> anyhow::Result<Address> {
+        let text = self.send(&Request::Alloc(len))?.into_result()?;
+        parse_hex_u32(&reply_fields(&text), "addr")
+    }
+
+    /// Frees a tracked scratch buffer.
+    pub fn free(&mut self, address: Address) -> anyhow::Result<()> {
+        self.send(&Request::Free(address))?.into_result()?;
+        Ok(())
+    }
+
+    /// Calls an original client function on the main thread.
+    pub fn call(&mut self, call: &Call) -> anyhow::Result<CallResult> {
+        let text = self.send(&Request::Call(call.clone()))?.into_result()?;
+        let fields = reply_fields(&text);
+        let st0_raw = hex_decode(field(&fields, "st0")?)?;
+        let st0_len = st0_raw.len();
+        let st0_raw: [u8; 10] = st0_raw
+            .try_into()
+            .map_err(|_| anyhow::anyhow!("driver returned {st0_len} ST0 bytes, expected 10"))?;
+        let d64 = hex_decode(field(&fields, "d64")?)?;
+        let d64: [u8; 8] = d64
+            .try_into()
+            .map_err(|_| anyhow::anyhow!("driver returned bad f64 bits"))?;
+        let mut buffers = Vec::with_capacity(call.dumps.len());
+        for index in 0..call.dumps.len() {
+            buffers.push(hex_decode(field(&fields, &format!("buf{index}"))?)?);
+        }
+        Ok(CallResult {
+            eax: parse_hex_u32(&fields, "eax")?,
+            st0: f64::from_le_bytes(d64),
+            st0_raw,
+            st0_valid: field(&fields, "st0_valid")? == "1",
+            buffers,
+        })
+    }
+
+    /// Reads a cvar / global through `<module>+<rva>` (or a raw address).
+    pub fn peek_global(&mut self, target: &str, ty: GlobalType) -> anyhow::Result<GlobalValue> {
+        let text = self
+            .send(&Request::PeekGlobal {
+                target: target.to_string(),
+                ty,
+            })?
+            .into_result()?;
+        let fields = reply_fields(&text);
+        Ok(GlobalValue {
+            addr: parse_hex_u32(&fields, "addr")?,
+            ty,
+            raw: hex_decode(field(&fields, "hex")?)?,
+            value: field(&fields, "value")?.to_string(),
+        })
+    }
+
+    /// Writes a little-endian `f32` array into scratch memory.
+    pub fn write_f32s(&mut self, address: Address, values: &[f32]) -> anyhow::Result<()> {
+        self.write_memory(&format!("0x{address:08x}"), &f32_bytes(values), false)?;
+        Ok(())
+    }
+
+    /// Writes a little-endian `f64` array into scratch memory.
+    pub fn write_f64s(&mut self, address: Address, values: &[f64]) -> anyhow::Result<()> {
+        self.write_memory(&format!("0x{address:08x}"), &f64_bytes(values), false)?;
+        Ok(())
+    }
+
+    /// Writes a CryEngine `Vec3` (three packed `f32`) into scratch memory.
+    pub fn write_vec3(&mut self, address: Address, value: [f32; 3]) -> anyhow::Result<()> {
+        self.write_memory(&format!("0x{address:08x}"), &vec3_bytes(value), false)?;
+        Ok(())
+    }
+
+    /// Writes a CryEngine quaternion (four packed `f32`) into scratch memory.
+    pub fn write_quat(&mut self, address: Address, value: [f32; 4]) -> anyhow::Result<()> {
+        self.write_memory(&format!("0x{address:08x}"), &quat_bytes(value), false)?;
+        Ok(())
+    }
+
+    /// Allocates scratch memory and fills it with `bytes`.
+    pub fn alloc_bytes(&mut self, bytes: &[u8]) -> anyhow::Result<Address> {
+        let address = self.alloc(bytes.len())?;
+        self.write_memory(&format!("0x{address:08x}"), bytes, false)?;
+        Ok(address)
+    }
+
+    /// Allocates scratch memory holding a little-endian `f32` array.
+    pub fn alloc_f32s(&mut self, values: &[f32]) -> anyhow::Result<Address> {
+        self.alloc_bytes(&f32_bytes(values))
+    }
+
+    /// Allocates scratch memory holding a `Vec3`.
+    pub fn alloc_vec3(&mut self, value: [f32; 3]) -> anyhow::Result<Address> {
+        self.alloc_bytes(&vec3_bytes(value))
+    }
+
+    /// Allocates scratch memory holding a quaternion.
+    pub fn alloc_quat(&mut self, value: [f32; 4]) -> anyhow::Result<Address> {
+        self.alloc_bytes(&quat_bytes(value))
     }
 
     /// Returns PNG bytes from the client's renderer, independent of desktop visibility.

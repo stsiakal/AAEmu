@@ -1,0 +1,41 @@
+{
+    probe_version = "0.2.0",
+    version = 1,
+    session = "0001",
+    chunk = 2,
+    count = 3,
+    records = {
+        {
+            k = "event",
+            seq = 18,
+            ms = 6000,
+            lt = "106",
+            e = "TARGET_CHANGED",
+            args = { "boar02", "npc" },
+            pos = { 1, 2, 3 },
+            zone = 5,
+        },
+        {
+            k = "kill",
+            seq = 19,
+            ms = 6100,
+            fingerprint = {
+                name = "Test Boar",
+                id = "boar02",
+                level = 2,
+                faction = "Hostile",
+                max_health = 100,
+                key = "Test Boar|2|Hostile|100",
+                position = { 50.0, 60.0, 70.0 },
+            },
+            target_id = "boar02",
+            npc_key = "Test Boar|2|Hostile|100",
+            position = { 50.0, 60.0, 70.0 },
+        },
+        {
+            k = "summary",
+            seq = 20,
+            ms = 6100,
+        },
+    },
+}
