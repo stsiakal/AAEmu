@@ -15,20 +15,32 @@ use crate::data::world_templates::WorldSpawnPosition;
 use crate::models::movement::{MoveKind, MoveType, TransferMove, WorldPos};
 use crate::models::transfer::Transfer;
 use crate::packets::world::SCOneUnitMovementPacket;
+use crate::packets::world_objects::SCUnitAttachedPacket;
 use crate::server::GameServer;
 use crate::systems::npcs::doodad::spawner::SimpleSpawnerDef;
 use crate::systems::skills::types::KillReason;
-use crate::world::{Entity, TransferRef, WorldInstance, WorldObject};
+use crate::world::{Entity, PlayerRef, TransferRef, WorldInstance, WorldObject};
 
 use super::data::{attach_point, TransferTemplate};
-use super::slaves::buff;
+use super::packets::SCUnitDetachedPacket;
+use super::slaves::{attach_reason, buff};
 use super::stats::{self, VehicleKind};
-use super::{broadcast, now_ms};
+use super::{broadcast, now_ms, world_of};
 
 /// `Transfer.BoundedChildAlongFrontOffsetMeters`.
 pub const BOUNDED_CHILD_ALONG_FRONT_OFFSET_METERS: f32 = -9.24417;
 /// `TransferManager.Delay` (tick period).
 pub const TICK_MS: u64 = 100;
+/// First / last passenger attach point of `CSBoardingTransferPacket` (`ap`; the 1.2 client
+/// `FUN_393546b0` scans 2..7 and `FUN_39440d30` sends 0 to leave).
+pub const FIRST_PASSENGER_POINT: u8 = attach_point::PASSENGER0;
+pub const LAST_PASSENGER_POINT: u8 = attach_point::PASSENGER5;
+/// Boarding range in metres: the 4 m (squared 16.0, `DAT_39ac7408`) vehicle bind check of the 1.2
+/// client (`re-transport.md` §2), applied to transfers because the 1.2 server only logged the
+/// packet. Inference, see `PORTING.md`.
+pub const BOARD_RANGE: f32 = 4.0;
+/// `AttachUnitReason.BoardTransfer`.
+pub const BOARD_REASON: u8 = attach_reason::BOARD_TRANSFER;
 /// `FactionsEnum.PcFriendly`.
 pub const PC_FRIENDLY: u32 = 165;
 /// The template ids `TransferSpawner.Spawn` does not put on a route (trailers).
@@ -137,6 +149,34 @@ impl TransferManager {
         }
         a.push(t.clone());
     }
+
+    fn remove(&self, obj_id: u32) {
+        self.active
+            .lock()
+            .expect("transfers poisoned")
+            .retain(|t| t.obj_id != obj_id);
+    }
+
+    /// The transfer a `CSBoardingTransferPacket` names by `tl` id. The motor and its boarding
+    /// part share the tl (C# `TransferManager.Create`); the seat-bearing part is the one bound
+    /// to the motor (`AttachPointId` not `System`), so it wins, else the motor itself.
+    pub fn get_active_transfer_by_tl_id(&self, tl_id: u16) -> Option<TransferRef> {
+        let active = self.get_transfers();
+        active
+            .iter()
+            .find(|t| {
+                let d = t.data();
+                d.unit.tl_id == tl_id
+                    && d.attach_point_id != attach_point::SYSTEM
+                    && t.core().region().is_some()
+            })
+            .or_else(|| {
+                active
+                    .iter()
+                    .find(|t| t.data().unit.tl_id == tl_id && t.core().region().is_some())
+            })
+            .cloned()
+    }
 }
 
 /// The transfer state of every instance (`world.TransferManager`) and the spawners.
@@ -171,6 +211,191 @@ pub fn transfer_tick(server: &GameServer) {
             move_to(server, &t);
         }
     }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Boarding
+// ---------------------------------------------------------------------------------------------
+
+/// The transfer the character is seated on and the point, if any.
+fn transfer_of(server: &GameServer, instance_id: u32, obj_id: u32) -> Option<(TransferRef, u8)> {
+    server
+        .systems
+        .vehicles
+        .transfers
+        .get(instance_id)
+        .get_transfers()
+        .into_iter()
+        .find_map(|t| {
+            let point = t
+                .data()
+                .attached_characters
+                .iter()
+                .find(|(_, id)| *id == obj_id)
+                .map(|(point, _)| *point)?;
+            Some((t, point))
+        })
+}
+
+/// `CSBoardingTransferPacket`: `ap` 0 leaves the current transfer, 2..7 takes that seat.
+///
+/// The 1.2 server only logged the packet. The rules here follow the 1.2 client's send sites
+/// (`re-transport.md` §7: `FUN_393565c0` boards the target transfer at the first free point
+/// 2..7, `FUN_39440d30` leaves with point 0) and the generic `Unit::AttachTo` /
+/// `SCUnitAttached` / `SCUnitDetached` object model of the C# port. Range, seat-free and
+/// alive/busy checks are server-side additions (see `PORTING.md`).
+pub fn boarding(server: &GameServer, character: &PlayerRef, tl_id: u16, ap: u8) {
+    if ap == 0 {
+        leave_if_boarded(server, character, BOARD_REASON);
+        return;
+    }
+    if !(FIRST_PASSENGER_POINT..=LAST_PASSENGER_POINT).contains(&ap) {
+        tracing::warn!(
+            "BoardingTransfer. {} asked for invalid attach point {ap}",
+            character.data().unit.name
+        );
+        return;
+    }
+    let me = WorldObject::from(character);
+    let Some(world) = world_of(server, &me) else {
+        return;
+    };
+    let Some(transfer) = server
+        .systems
+        .vehicles
+        .transfers
+        .get(world.id)
+        .get_active_transfer_by_tl_id(tl_id)
+    else {
+        return;
+    };
+    let transfer_obj = WorldObject::from(&transfer);
+    let (dead, taken) = {
+        let d = transfer.data();
+        (
+            d.unit.is_dead(),
+            d.attached_characters.iter().any(|(point, _)| *point == ap),
+        )
+    };
+    let (alive, busy, name) = {
+        let c = character.data();
+        (
+            !c.unit.is_dead(),
+            c.attached_point != attach_point::NONE || c.is_riding,
+            c.unit.name.clone(),
+        )
+    };
+    if dead || taken || !alive || busy || transfer_of(server, world.id, character.obj_id).is_some()
+    {
+        tracing::debug!(
+            "BoardingTransfer. {name} refused: transfer dead {dead}, point {ap} taken {taken}, \
+             alive {alive}, busy {busy}"
+        );
+        return;
+    }
+    // `MathUtil.GetDistance` is 2D in the C#; a passenger below an airship must not board it.
+    let a = world.world_pos_rot(&me);
+    let b = world.world_pos_rot(&transfer_obj);
+    let distance = len3(sub([a.x, a.y, a.z], [b.x, b.y, b.z]));
+    if distance > BOARD_RANGE {
+        tracing::debug!("BoardingTransfer. {name} is {distance} m from the transfer");
+        return;
+    }
+    broadcast(
+        server,
+        &me,
+        &SCUnitAttachedPacket {
+            child_obj_id: character.obj_id,
+            point: ap,
+            reason: BOARD_REASON,
+            obj_id: transfer.obj_id,
+        },
+        true,
+    );
+    transfer
+        .data()
+        .attached_characters
+        .push((ap, character.obj_id));
+    // `IsBoardedOnTransfer` reads the sticky parent (C# `Transform.StickyParent = transfer`).
+    world.set_sticky_parent(&me, Some(&transfer_obj));
+    character
+        .data()
+        .unit
+        .transform
+        .set_position(0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+    {
+        let mut c = character.data();
+        c.attached_point = ap;
+        c.is_riding = false;
+    }
+    tracing::debug!(
+        "BoardingTransfer. {name} boarded transfer {} (tl {tl_id}) at point {ap}",
+        transfer.obj_id
+    );
+}
+
+/// Leaves the transfer the character is seated on, if any (`ap` 0, death, logout, despawn).
+/// Returns whether a transfer was left.
+pub fn leave_if_boarded(server: &GameServer, character: &PlayerRef, reason: u8) -> bool {
+    let me = WorldObject::from(character);
+    let Some(world) = world_of(server, &me) else {
+        return false;
+    };
+    let Some((transfer, point)) = transfer_of(server, world.id, character.obj_id) else {
+        return false;
+    };
+    let transfer_obj = WorldObject::from(&transfer);
+    let pos = world.world_pos_rot(&transfer_obj);
+    transfer
+        .data()
+        .attached_characters
+        .retain(|(_, id)| *id != character.obj_id);
+    world.set_sticky_parent(&me, None);
+    world.detach_child(&me);
+    crate::systems::vehicles::set_unit_position(
+        server, &me, pos.x, pos.y, pos.z, pos.rot_x, pos.rot_y, pos.rot_z,
+    );
+    {
+        let mut c = character.data();
+        c.attached_point = attach_point::NONE;
+        c.is_riding = false;
+    }
+    broadcast(
+        server,
+        &me,
+        &SCUnitDetachedPacket {
+            obj_id: character.obj_id,
+            reason,
+        },
+        true,
+    );
+    tracing::debug!(
+        "BoardingTransfer. {} left transfer {} (point {point}, reason {reason})",
+        character.data().unit.name,
+        transfer.obj_id
+    );
+    true
+}
+
+/// Unboards everybody on `transfer` (its despawn: the seats go away with it).
+pub fn unboard_all(server: &GameServer, transfer: &TransferRef, reason: u8) {
+    let riders: Vec<u32> = transfer
+        .data()
+        .attached_characters
+        .iter()
+        .map(|(_, id)| *id)
+        .collect();
+    for id in riders {
+        if let Some(p) = server.world.character_by_obj_id(id) {
+            leave_if_boarded(server, &p, reason);
+        }
+    }
+    transfer.data().attached_characters.clear();
+}
+
+/// A dead passenger leaves the transfer (the C# `Unit.DoDie` had no transfer branch).
+pub fn on_player_death(server: &GameServer, player: &PlayerRef) {
+    leave_if_boarded(server, player, attach_reason::NONE);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -486,9 +711,24 @@ impl TransferSpawner {
         Some(transfer)
     }
 
-    /// `Despawn(transfer)`.
+    /// `Despawn(transfer)`: the riders leave first (their seats go away with it), then the
+    /// bounded boarding part of a motor is despawned with it.
     pub fn despawn(&self, server: &GameServer, transfer: &TransferRef) {
         if let Some(world) = server.world.world_of(&WorldObject::from(transfer)) {
+            let manager = server.systems.vehicles.transfers.get(world.id);
+            let (bonding, bounded) = {
+                let t = transfer.data();
+                (t.bonding_obj_id, t.bounded_obj_id)
+            };
+            unboard_all(server, transfer, attach_reason::PREFAB_CHANGED);
+            if bonding == 0 && bounded != 0 {
+                if let Some(part) = world.transfer(bounded) {
+                    unboard_all(server, &part, attach_reason::PREFAB_CHANGED);
+                    world.delete(&part);
+                    manager.remove(bounded);
+                }
+            }
+            manager.remove(transfer.obj_id);
             world.delete(transfer);
         }
         let mut st = self.state.lock().expect("spawner poisoned");

@@ -314,6 +314,10 @@ pub fn set_unit_position(
 /// `Transform.DetachAll()`. `true` when a mate / slave dismount happened.
 pub fn force_dismount(server: &GameServer, player: &PlayerRef, reason: u8) -> bool {
     let mut res = false;
+    // A transfer passenger (`ap` 2..7) steps off before the generic detach below.
+    if transfers::leave_if_boarded(server, player, reason) {
+        res = true;
+    }
     let instance = player.data().unit.transform.instance_id;
     if let Some((mate, point)) = server
         .systems
@@ -377,7 +381,10 @@ pub fn on_death_event(server: &GameServer, victim: &WorldObject) {
     match victim {
         WorldObject::Shipyard(s) => shipyards::on_death(server, s),
         WorldObject::Mate(m) => mates::on_death(server, m),
-        WorldObject::Player(p) => slaves::on_gunner_death(server, p),
+        WorldObject::Player(p) => {
+            slaves::on_gunner_death(server, p);
+            transfers::on_player_death(server, p);
+        }
         _ => {}
     }
 }

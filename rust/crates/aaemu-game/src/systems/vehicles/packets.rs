@@ -419,11 +419,14 @@ cs_packet!(
 );
 
 cs_packet!(
-    /// `CSBoardingTransferPacket` (log only in C#).
+    /// `CSBoardingTransferPacket`: `tl` = transfer tl id, `ap` = attach point (2..7 board,
+    /// 0 = leave). The 1.2 client sends it from `FUN_393565c0` / `FUN_39440d30`
+    /// (`re-transport.md` §7); the C# only logged it.
     CSBoardingTransferPacket { tl: u16, ap: u8 }
     read |s| { Ok(Self { tl: s.read_u16()?, ap: s.read_u8()? }) }
     handle |self, server, conn| {
-        tracing::warn!("BoardingTransfer, Tl: {}, Ap: {}", self.tl, self.ap);
+        let p = active_char!(conn);
+        super::transfers::boarding(server, &p, self.tl, self.ap);
         Ok(())
     }
 );
@@ -729,6 +732,15 @@ mod tests {
         let mut s = PacketStream::from_bytes(body);
         let p = CSUnhangPacket::read(&mut s).unwrap();
         assert_eq!((p.unit_obj_id, p.reason), (0x0A, 2));
+
+        // CSBoardingTransfer: tl u16 + attach point u8 (2..7 board, 0 leave).
+        let mut s = PacketStream::from_bytes(vec![0x07, 0x00, 0x05]);
+        let p = CSBoardingTransferPacket::read(&mut s).unwrap();
+        assert_eq!((p.tl, p.ap), (7, 5));
+        assert_eq!(s.remaining(), 0);
+        let mut s = PacketStream::from_bytes(vec![0x07, 0x00, 0x00]);
+        let p = CSBoardingTransferPacket::read(&mut s).unwrap();
+        assert_eq!(p.ap, 0);
     }
 
     /// The client sends container + slot only for a nonzero item id (37 / 39-byte bodies).
