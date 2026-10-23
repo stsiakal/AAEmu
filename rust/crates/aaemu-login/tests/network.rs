@@ -2,6 +2,8 @@
 //! reconnection token, answers the character request and the enter-world request, while a fake
 //! client authenticates with the token, lists worlds and enters the world.
 
+use std::net::SocketAddr;
+use std::sync::Arc;
 use std::time::Duration;
 
 use aaemu_commons::net::FrameCodec;
@@ -44,8 +46,7 @@ async fn send_raw(c: &mut Conn, opcode: u16, body: impl FnOnce(&mut PacketStream
     c.send(s.into_bytes()).await.unwrap();
 }
 
-#[tokio::test]
-async fn reconnect_list_world_and_enter_world() {
+async fn start_server() -> (Arc<LoginServer>, SocketAddr, SocketAddr, CancellationToken) {
     let config = AppConfig::from_value(lowercase_keys(serde_json::json!({
         "SecretKey": "test",
         "SkipHostResolve": true,
@@ -72,18 +73,12 @@ async fn reconnect_list_world_and_enter_world() {
     let login = network::login::bind("127.0.0.1", 0).await.unwrap();
     let login_addr = login.local_addr().unwrap();
     tokio::spawn(network::login::run(server.clone(), login, shutdown.clone()));
+    (server, internal_addr, login_addr, shutdown)
+}
 
-    // --- an unregistered internal peer cannot add reconnection tokens
-    let mut rogue = Framed::new(TcpStream::connect(internal_addr).await.unwrap(), FrameCodec);
-    send(
-        &mut rogue,
-        &GlPlayerReconnect {
-            gs_id: GameServerId(1),
-            account_id: AccountId(42),
-            token: 999,
-        },
-    )
-    .await;
+#[tokio::test]
+async fn reconnect_list_world_and_enter_world() {
+    let (server, internal_addr, login_addr, shutdown) = start_server().await;
 
     // --- game server registers
     let mut gs = Framed::new(TcpStream::connect(internal_addr).await.unwrap(), FrameCodec);
@@ -276,22 +271,6 @@ async fn reconnect_list_world_and_enter_world() {
     assert_eq!(op, l2c::opcodes::AC_LOGIN_DENIED);
     assert_eq!(s.as_bytes()[2], 2); // BadResponse
 
-    // --- the token sent by the unregistered peer was never accepted
-    let mut client3 = Framed::new(TcpStream::connect(login_addr).await.unwrap(), FrameCodec);
-    send_raw(&mut client3, 0x00e, |s| {
-        s.write_u32(0)
-            .write_u32(0)
-            .write_u32(42)
-            .write_u8(1)
-            .write_u32(999)
-            .write_u16(0);
-    })
-    .await;
-    let (op, s) = recv(&mut client3).await;
-    assert_eq!(op, l2c::opcodes::AC_LOGIN_DENIED);
-    assert_eq!(s.as_bytes()[2], 2); // BadResponse
-    drop(rogue);
-
     // --- game server disconnect unregisters it
     drop(gs);
     tokio::time::sleep(Duration::from_millis(200)).await;
@@ -304,108 +283,168 @@ async fn reconnect_list_world_and_enter_world() {
     shutdown.cancel();
 }
 
-async fn internal_fixture() -> (std::sync::Arc<LoginServer>, std::net::SocketAddr) {
-    let config = AppConfig::from_value(lowercase_keys(serde_json::json!({
-        "SecretKey": "test",
-        "SkipHostResolve": true,
-        "InternalNetwork": { "Host": "127.0.0.1", "Port": 0 },
-        "Network": { "Host": "127.0.0.1", "Port": 0 },
-        "Connections": { "MySQLProvider": { "Host": "127.0.0.1", "Port": 1, "User": "x", "Password": "x", "Database": "x" } },
-        "GameServers": [ { "Id": 1, "Name": "AAEmu", "Host": "127.0.0.1", "Port": 1239 } ]
-    })))
-    .unwrap();
-    let pool = db::create_pool(db::connect_options(&config).unwrap());
-    let server = LoginServer::new(config, pool);
-    server.requests.initialize();
-    server.games.load(&server.config).await;
-    let internal = network::internal::bind("127.0.0.1", 0).await.unwrap();
-    let addr = internal.local_addr().unwrap();
-    tokio::spawn(network::internal::run(
-        server.clone(),
-        internal,
-        CancellationToken::new(),
-    ));
-    (server, addr)
-}
-
-/// Whether the peer closed the connection (EOF or reset) within a few seconds.
-async fn is_closed(c: &mut Conn) -> bool {
-    matches!(
-        tokio::time::timeout(Duration::from_secs(3), c.next()).await,
-        Ok(None) | Ok(Some(Err(_)))
-    )
-}
-
 #[tokio::test]
-async fn unauthenticated_internal_peer_is_dropped_on_any_other_packet() {
-    let (server, addr) = internal_fixture().await;
-    // Each packet other than a registration is refused and drops the connection.
-    for which in 0..3 {
-        let mut rogue = Framed::new(TcpStream::connect(addr).await.unwrap(), FrameCodec);
-        match which {
-            0 => {
-                send(
-                    &mut rogue,
-                    &GlPlayerReconnect {
-                        gs_id: GameServerId(1),
-                        account_id: AccountId(1),
-                        token: 1,
-                    },
-                )
-                .await
-            }
-            1 => {
-                send(
-                    &mut rogue,
-                    &GlPlayerEnter {
-                        connection_id: ConnectionId(1),
-                        gs_id: GameServerId(1),
-                        result: 0,
-                    },
-                )
-                .await
-            }
-            _ => {
-                send(
-                    &mut rogue,
-                    &GlGameServerLoad {
-                        load: GsLoad::MEDIUM,
-                    },
-                )
-                .await
-            }
+async fn unauthorized_internal_tokens_are_rejected_over_sockets() {
+    let (_server, internal_addr, login_addr, shutdown) = start_server().await;
+    for (secret, token) in [(None, 777), (Some("wrong"), 888)] {
+        let mut gs = Framed::new(TcpStream::connect(internal_addr).await.unwrap(), FrameCodec);
+        if let Some(secret) = secret {
+            send(
+                &mut gs,
+                &GlRegisterGameServer {
+                    secret_key: secret.into(),
+                    gs_id: GameServerId(1),
+                    mirrors: vec![],
+                },
+            )
+            .await;
         }
-        assert!(is_closed(&mut rogue).await, "case {which} stayed open");
+        send(
+            &mut gs,
+            &GlPlayerReconnect {
+                gs_id: GameServerId(1),
+                account_id: AccountId(42),
+                token,
+            },
+        )
+        .await;
+
+        // A subsequent valid registration is a processing barrier on this same socket.
+        // It must not retroactively legitimize a token sent before authentication.
+        send(
+            &mut gs,
+            &GlRegisterGameServer {
+                secret_key: "test".into(),
+                gs_id: GameServerId(1),
+                mirrors: vec![],
+            },
+        )
+        .await;
+        let mut token_acknowledged = false;
+        loop {
+            let (op, mut body) = recv(&mut gs).await;
+            if op == l2g::opcodes::LG_REGISTER_GAME_SERVER {
+                assert_eq!(
+                    LgRegisterGameServer::read(&mut body).unwrap().result,
+                    aaemu_login::models::GsRegisterResult::Success
+                );
+                break;
+            }
+            assert_eq!(op, l2g::opcodes::LG_PLAYER_RECONNECT);
+            token_acknowledged = true;
+        }
+
+        let mut client = Framed::new(TcpStream::connect(login_addr).await.unwrap(), FrameCodec);
+        send_raw(&mut client, 0x00e, |s| {
+            s.write_u32(0)
+                .write_u32(0)
+                .write_u32(42)
+                .write_u8(1)
+                .write_u32(token)
+                .write_u16(0);
+        })
+        .await;
+        let (op, body) = recv(&mut client).await;
+        assert_eq!(
+            op,
+            l2c::opcodes::AC_LOGIN_DENIED,
+            "unauthorized internal token authenticated a client"
+        );
+        assert_eq!(body.as_bytes()[2], 2); // BadResponse
+        assert!(!token_acknowledged, "unauthorized token was acknowledged");
     }
-    assert_eq!(server.internal_connections.unregistered_count(), 0);
+    shutdown.cancel();
 }
 
 #[tokio::test]
-async fn wrong_secret_never_registers() {
-    let (server, addr) = internal_fixture().await;
-    let mut rogue = Framed::new(TcpStream::connect(addr).await.unwrap(), FrameCodec);
+async fn malformed_internal_collections_do_not_block_subsequent_registration() {
+    let (_server, internal_addr, _login_addr, shutdown) = start_server().await;
+    let mut gs = Framed::new(TcpStream::connect(internal_addr).await.unwrap(), FrameCodec);
+    send_raw(&mut gs, 0x000, |s| {
+        s.write_str("test")
+            .write_u8(1)
+            .write_i32(i32::MAX)
+            .write_u8(2);
+    })
+    .await;
+    send_raw(&mut gs, 0x003, |s| {
+        s.write_u32(1).write_u32(1).write_i32(i32::MAX).write_u8(0);
+    })
+    .await;
     send(
-        &mut rogue,
+        &mut gs,
         &GlRegisterGameServer {
-            secret_key: "tesx".into(),
+            secret_key: "test".into(),
             gs_id: GameServerId(1),
             mirrors: vec![],
         },
     )
     .await;
-    // Not registered: a follow-up packet is refused and the connection dropped.
+    let (op, mut body) = recv(&mut gs).await;
+    assert_eq!(op, l2g::opcodes::LG_REGISTER_GAME_SERVER);
+    assert_eq!(
+        LgRegisterGameServer::read(&mut body).unwrap().result,
+        aaemu_login::models::GsRegisterResult::Success
+    );
+    shutdown.cancel();
+}
+
+#[tokio::test]
+async fn replaced_internal_socket_disconnect_does_not_unregister_current_owner() {
+    let (server, internal_addr, _login_addr, shutdown) = start_server().await;
+    let registration = GlRegisterGameServer {
+        secret_key: "test".into(),
+        gs_id: GameServerId(1),
+        mirrors: vec![],
+    };
+    let mut old = Framed::new(TcpStream::connect(internal_addr).await.unwrap(), FrameCodec);
+    send(&mut old, &registration).await;
+    assert_eq!(
+        recv(&mut old).await.0,
+        l2g::opcodes::LG_REGISTER_GAME_SERVER
+    );
+    let old_id = server
+        .games
+        .get_game_server(GameServerId(1))
+        .unwrap()
+        .connection
+        .unwrap()
+        .id;
+    let mut current = Framed::new(TcpStream::connect(internal_addr).await.unwrap(), FrameCodec);
+    send(&mut current, &registration).await;
+    assert_eq!(
+        recv(&mut current).await.0,
+        l2g::opcodes::LG_REGISTER_GAME_SERVER
+    );
+    let current_connection = server
+        .games
+        .get_game_server(GameServerId(1))
+        .unwrap()
+        .connection
+        .unwrap();
+    drop(old);
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while server.internal_connections.get(old_id).is_some() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("old socket is fully unregistered");
+    assert!(server
+        .games
+        .owns_connection(GameServerId(1), &current_connection));
     send(
-        &mut rogue,
+        &mut current,
         &GlPlayerReconnect {
             gs_id: GameServerId(1),
-            account_id: AccountId(1),
-            token: 5,
+            account_id: AccountId(42),
+            token: 777,
         },
     )
     .await;
-    assert!(is_closed(&mut rogue).await);
-    assert!(server
-        .games
-        .get_game_server(GameServerId(1))
-        .is_some_and(|g| !g.active()));
+    assert_eq!(
+        recv(&mut current).await.0,
+        l2g::opcodes::LG_PLAYER_RECONNECT
+    );
+    shutdown.cancel();
 }

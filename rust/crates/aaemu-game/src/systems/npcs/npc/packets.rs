@@ -248,6 +248,18 @@ pub fn interaction_option(t: &super::data::NpcTemplate) -> u32 {
     }
 }
 
+/// The skills `SCNpcInteractionSkillList` lists for an NPC: its function ([`interaction_option`]), else the skills of its
+/// `npc_interaction_set_id` (`npc_interactions`: the beauty salon helper offers "Enter the beauty salon", 22780), else 0.
+pub fn interaction_skills(data: &super::data::NpcData, t: &super::data::NpcTemplate) -> Vec<u32> {
+    match interaction_option(t) {
+        0 => match data.interactions.get(&t.npc_interaction_set_id) {
+            Some(skills) if !skills.is_empty() => skills.clone(),
+            _ => vec![0],
+        },
+        _ => interaction_options(t),
+    }
+}
+
 impl ClientPacket for CSStartInteractionPacket {
     const NAME: &'static str = "CSStartInteractionPacket";
 
@@ -297,14 +309,11 @@ impl ClientPacket for CSStartInteractionPacket {
             if let Some(npc) = world.npc(self.npc_obj_id) {
                 let template_id = npc.data().unit.template_id;
                 // `npc.Template` is never null for a created NPC.
-                let options = server
-                    .game_data
-                    .systems
-                    .npcs
-                    .npc
+                let npcs = &server.game_data.systems.npcs.npc;
+                let skills = npcs
                     .template(template_id)
-                    .map_or_else(|| vec![0], interaction_options);
-                me.send(packet(options));
+                    .map_or_else(|| vec![0], |t| interaction_skills(npcs, t));
+                me.send(packet(skills));
             }
             if let Some(WorldObject::Mate(_)) = world.unit(self.npc_obj_id) {
                 me.send(packet(vec![skills_enum::SLAVE_MOUNTING]));
@@ -755,5 +764,21 @@ mod tests {
         t.blacksmith = false;
         t.repairman = true;
         assert_eq!(interaction_options(&t), vec![REPAIR]);
+    }
+
+    #[test]
+    fn interaction_set_skills_fill_in_for_a_functionless_npc() {
+        let mut data = super::super::data::NpcData::default();
+        data.interactions.insert(12, vec![22780, 23469]);
+        let mut t = super::super::data::NpcTemplate::default();
+        assert_eq!(interaction_skills(&data, &t), vec![0]);
+        t.npc_interaction_set_id = 12;
+        assert_eq!(interaction_skills(&data, &t), vec![22780, 23469]);
+        t.npc_interaction_set_id = 99;
+        assert_eq!(interaction_skills(&data, &t), vec![0]);
+        // a function stays what the answer lists
+        t.npc_interaction_set_id = 12;
+        t.merchant = true;
+        assert_eq!(interaction_skills(&data, &t), vec![skills_enum::USE_STORE]);
     }
 }
