@@ -120,6 +120,24 @@ last error), **Save**, **Stop/Start**, and a hint line. If 500 records are
 buffered and cannot be written, logging **pauses**, the window says PAUSED, and
 the number missed is counted and recorded when logging resumes.
 
+## Importing recordings as evidence
+
+`rust/tools/classic_quest_guide/import_observations.py` parses these files
+without executing Lua and writes deterministic JSON evidence (quests, rewards,
+item sources, NPC positions and kills), stamped with the probe version, session,
+file, seq and local time:
+
+    python import_observations.py --input <observations dir> \
+        --output evidence.json [--db <1.2 compact.sqlite3>]
+
+`--input` may be repeated. Quest completion is inferred from a completed
+`quest_state`, a quest turn-in item removal (source 35) or a quest reward, and
+the evidence kinds are listed. `completed: false` means no completion evidence
+was recorded, not that the quest was proven incomplete. With `--db`,
+quest-related records also carry the 1.2 expected quest/supply/reward data and a
+match/mismatch flag; a mismatch is a suspect, not proof of a bug. Tests:
+`python -m unittest test_import` from the same folder.
+
 ## Privacy
 
 The files contain your character name and position, target and pet names, NPC
