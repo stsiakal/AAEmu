@@ -20,6 +20,12 @@
 //      'B' <t><lua> run through the engine's own IScriptSystem::ExecuteBuffer
 //                  (t = 'S'/'U'/'T'; no result value, only ok / failed)
 //      'P'         ping: driver / client info
+//      'M' <name>  loaded module base / image size / timestamp
+//      'R' <target> <len>            read memory as hex
+//      'w' <target> <hex> [unsafe]   write scratch memory (or anywhere with `unsafe`)
+//      'A' <len> / 'D' <address>     allocate / free tracked scratch memory
+//      'c' <target> <conv> ...       call an original client function (main thread, SEH)
+//      'g' <target> <type>           peek a global / cvar value
 //      'X'         unhook and unload the driver
 //    response: status (1 byte: '0' ok, '1' Lua error, '2' driver error) + UTF-8 text
 //
@@ -36,6 +42,7 @@
 #include "pakio.h"
 #include "virtualpak.h"
 #include "startup.h"
+#include "memcall.h"
 #ifndef AADRIVER_PLAYER
 #include "visuals.h"
 #include "input.h"
@@ -220,6 +227,13 @@ static void drainQueue() {
                 if (r->op == 'F') r->reply = pakio::verify();
                 else if (r->op == 'I') r->reply = input::control(*(void**)(g_css + RVA_gEnv), r->code);
                 else if (r->op == 'W') r->reply = visuals::window(r->code == "show");
+                else if (r->op == 'M') r->reply = memcall::module(r->code);
+                else if (r->op == 'R') r->reply = memcall::read(r->code);
+                else if (r->op == 'w') r->reply = memcall::write(r->code);
+                else if (r->op == 'A') r->reply = memcall::alloc(r->code);
+                else if (r->op == 'D') r->reply = memcall::dealloc(r->code);
+                else if (r->op == 'c') r->reply = memcall::call(r->code);
+                else if (r->op == 'g') r->reply = memcall::peek(r->code);
                 else r->reply = r->op == 'B' ? runExecuteBuffer(r->target, r->code) : runLua(r->op, r->code);
             } };
             Run::go(r);
@@ -531,6 +545,9 @@ static DWORD WINAPI serverThread(LPVOID) {
             case 'I': reply = submit('I', 0, req.substr(1), 30000); break;
             case 'V': reply = visuals::profile(req.substr(1)); break;
             case 'S': case 'U': case 'T': reply = submit(op, 0, req.substr(1), 30000); break;
+            case 'M': case 'R': case 'w': case 'A': case 'D': case 'c': case 'g':
+                reply = submit(op, 0, req.substr(1), 30000);
+                break;
             case 'B':
                 reply = req.size() < 2 ? std::string("2missing target") : submit('B', req[1], req.substr(2), 30000);
                 break;

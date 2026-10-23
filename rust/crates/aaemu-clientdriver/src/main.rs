@@ -7,6 +7,13 @@
 //! aaemu-clientdriver lua    [--target system|ui|third] [--pid N] <code...>|-   run Lua, print result
 //! aaemu-clientdriver exec   [--target ...] [--pid N] <code...>|-   IScriptSystem::ExecuteBuffer
 //! aaemu-clientdriver repl   [--target ...] [--pid N]               interactive line REPL
+//! aaemu-clientdriver mod    <module> [--pid N]     actual module base / image size / timestamp
+//! aaemu-clientdriver read   <module+rva> <len> [--pid N]          memory as hex
+//! aaemu-clientdriver write  <target> <hex> [--unsafe] [--pid N]   scratch memory (or `--unsafe`)
+//! aaemu-clientdriver alloc  <len> [--pid N]        scratch buffer -> address
+//! aaemu-clientdriver free   <addr> [--pid N]      release a scratch buffer
+//! aaemu-clientdriver call   <module+rva> <conv> [this=..] [dump=..] [args...] [--pid N]
+//! aaemu-clientdriver peek-global <module+rva> <type> [--pid N]
 //! aaemu-clientdriver oracle stats [--out PATH] [--no-heal] [--pid N] client-vs-server stat check
 //! aaemu-clientdriver unload [--pid N]              unhook and unload the driver
 //! ```
@@ -23,7 +30,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 #[cfg(windows)]
-use aaemu_clientdriver::{Reply, Request, Target};
+use aaemu_clientdriver::{hex_decode, hex_encode, Call, GlobalType, Reply, Request, Target};
 use anyhow::bail;
 #[cfg(windows)]
 use anyhow::Context;
@@ -40,6 +47,7 @@ struct Args {
     pid: Option<u32>,
     target: Target,
     dll: Option<PathBuf>,
+    unsafe_: bool,
     rest: Vec<String>,
 }
 
@@ -50,6 +58,7 @@ fn parse() -> anyhow::Result<Args> {
         pid: None,
         target: Target::System,
         dll: std::env::var_os("AADRIVER_DLL").map(PathBuf::from),
+        unsafe_: false,
         rest: vec![],
     };
     let mut it = std::env::args().skip(1);
@@ -58,6 +67,7 @@ fn parse() -> anyhow::Result<Args> {
         match arg.as_str() {
             "--pid" => a.pid = Some(it.next().context("--pid needs a value")?.parse()?),
             "--dll" => a.dll = Some(it.next().context("--dll needs a value")?.into()),
+            "--unsafe" => a.unsafe_ = true,
             "--target" | "-t" => {
                 a.target = match it.next().context("--target needs a value")?.as_str() {
                     "system" | "s" => Target::System,
@@ -103,6 +113,18 @@ fn resolve_pid(a: &Args) -> anyhow::Result<u32> {
                 .collect::<Vec<_>>()
                 .join(", ")
         ),
+    }
+}
+
+#[cfg(windows)]
+fn parse_address_arg(text: &str) -> anyhow::Result<u32> {
+    match text.strip_prefix("0x") {
+        Some(hex) => {
+            u32::from_str_radix(hex, 16).with_context(|| format!("bad hex address '{text}'"))
+        }
+        None => text
+            .parse()
+            .with_context(|| format!("bad address '{text}' (use 0x... or decimal)")),
     }
 }
 
@@ -209,6 +231,94 @@ fn run() -> anyhow::Result<()> {
             };
             let mut d = Driver::connect(resolve_pid(&a)?, Duration::from_secs(5))?;
             print_reply(d.send(&Request::Window(visible))?)
+        }
+        "mod" => {
+            let name = a
+                .rest
+                .first()
+                .context("mod needs a module name (e.g. x2game.dll)")?;
+            let mut d = Driver::connect(resolve_pid(&a)?, Duration::from_secs(5))?;
+            let module = d.module(name)?;
+            println!(
+                "name={} base=0x{:08x} size=0x{:x} stamp=0x{:08x}",
+                module.name, module.base, module.size, module.stamp
+            );
+            Ok(())
+        }
+        "read" => {
+            if a.rest.len() != 2 {
+                bail!("read expects <module+rva|address> <len>");
+            }
+            let len: usize = a.rest[1]
+                .parse()
+                .with_context(|| format!("bad length '{}'", a.rest[1]))?;
+            let mut d = Driver::connect(resolve_pid(&a)?, Duration::from_secs(5))?;
+            let bytes = d.read_memory(&a.rest[0], len)?;
+            println!("{}", hex_encode(&bytes));
+            Ok(())
+        }
+        "write" => {
+            if a.rest.len() != 2 {
+                bail!("write expects <target> <hex> [--unsafe]");
+            }
+            let bytes = hex_decode(&a.rest[1])?;
+            let mut d = Driver::connect(resolve_pid(&a)?, Duration::from_secs(5))?;
+            let wrote = d.write_memory(&a.rest[0], &bytes, a.unsafe_)?;
+            println!("wrote {wrote} bytes");
+            Ok(())
+        }
+        "alloc" => {
+            let len: usize = a
+                .rest
+                .first()
+                .context("alloc needs a length")?
+                .parse()
+                .context("bad allocation length")?;
+            let mut d = Driver::connect(resolve_pid(&a)?, Duration::from_secs(5))?;
+            println!("0x{:08x}", d.alloc(len)?);
+            Ok(())
+        }
+        "free" => {
+            let address = parse_address_arg(a.rest.first().context("free needs an address")?)?;
+            let mut d = Driver::connect(resolve_pid(&a)?, Duration::from_secs(5))?;
+            d.free(address)?;
+            println!("freed 0x{address:08x}");
+            Ok(())
+        }
+        "call" => {
+            if a.rest.len() < 2 {
+                bail!(
+                    "call expects <module+rva> <cdecl|stdcall|thiscall|fastcall> [this=..] \
+                     [dump=addr:len] [args...]"
+                );
+            }
+            let mut call = Call::parse_spec(&a.rest.join(" "))?;
+            call.unsafe_ |= a.unsafe_;
+            let mut d = Driver::connect(resolve_pid(&a)?, Duration::from_secs(5))?;
+            let result = d.call(&call)?;
+            println!(
+                "eax=0x{:08x} st0_valid={} st0={:?} st0_f32={:?} st0_raw={}",
+                result.eax,
+                result.st0_valid,
+                result.st0,
+                result.st0_f32(),
+                hex_encode(&result.st0_raw)
+            );
+            for (index, buffer) in result.buffers.iter().enumerate() {
+                println!("buf{index}={}", hex_encode(buffer));
+            }
+            Ok(())
+        }
+        "peek-global" => {
+            if a.rest.len() != 2 {
+                bail!("peek-global expects <module+rva|address> <type>");
+            }
+            let ty = GlobalType::parse(&a.rest[1])
+                .with_context(|| format!("unknown type '{}'", a.rest[1]))?;
+            let mut d = Driver::connect(resolve_pid(&a)?, Duration::from_secs(5))?;
+            let value = d.peek_global(&a.rest[0], ty)?;
+            println!("{}", value.value);
+            Ok(())
         }
         "lua" => {
             let c = code(&a)?;

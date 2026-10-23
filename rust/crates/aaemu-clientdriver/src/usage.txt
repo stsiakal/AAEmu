@@ -20,6 +20,19 @@ aaemu-clientdriver: run Lua inside a running ArcheAge 1.2 client
   exec   [-t ...] [--pid N] <code...>|-
                                     run <code> through IScriptSystem::ExecuteBuffer (no result)
   repl   [-t ...] [--pid N]         interactive line REPL
+  mod <module> [--pid N]            actual base / image size / timestamp of a loaded module
+  read <module+rva|addr> <len> [--pid N]
+                                    read client memory, print lowercase hex
+  write <target> <hex> [--unsafe] [--pid N]
+                                    write scratch memory (from alloc); --unsafe allows any address
+  alloc <len> [--pid N]             allocate tracked scratch memory, print its address
+  free <addr> [--pid N]             release a scratch allocation
+  call <module+rva> <cdecl|stdcall|thiscall|fastcall> [this=addr] [dump=addr:len]...
+       [unsafe] [args...] [--pid N] call an original client function on the main thread;
+                                    args: 123 / 0x7b (u32), f:1.5 (f32), p:addr (scratch pointer);
+                                    prints EAX, ST0 (f64, raw x87) and each dumped buffer
+  peek-global <module+rva|addr> <u8|i8|u16|i16|u32|i32|u64|i64|f32|f64|ptr> [--pid N]
+                                    read a cvar / global value
   oracle stats [--out PATH] [--no-heal] [--pid N]
                                     compare the client's self-computed stat tables (UnitInfo /
                                     UnitModifierInfo / max HP/MP) with the server's
@@ -30,6 +43,12 @@ aaemu-clientdriver: run Lua inside a running ArcheAge 1.2 client
 
 With no --pid the single running client is used. Code read from stdin when the argument is `-`
 or absent. The driver DLL is found next to this exe, under --dll, or at $AADRIVER_DLL.
+
+Memory commands run on the client's main thread. `write` only accepts tracked `alloc` memory
+unless --unsafe is given; `free` only releases tracked allocations. `call` is wrapped in SEH:
+an access violation is reported as a driver error instead of crashing the client. Prefer a
+scratch buffer and a module+rva target relocated by the module's actual base. See
+rust/docs/client/LUA-DRIVER.md section 13.
 
 The normal 64-bit controller uses the x86 aainject.exe next to aadriver.dll.
 Build the native parts with native/build.bat, then cargo build -p aaemu-clientdriver --release.
