@@ -66,7 +66,7 @@ int main() {
     input::tick_at(env,600);event(2,16,false,0);assert(input::held.size()==1);
     input::tick_at(env,700);event(3,29,false,0);assert(input::held.empty());
     size_t before=events.size();
-    for(const char* bad: {"w 0","w 10001","w 1 extra","escape 10","w","w -1",
+    for(const char* bad: {"w 0","w 10001","w 1 extra","nosuchkey 10","w","w -1",
         "ctrl+ctrl+1 10","meta+1 10","ctrl+ 10","ctrl+shift+alt+ctrl+1 10",
         "+1 10","1+ctrl 10","release 10","ctrl+release 10"})
         assert(input::control_at(env,bad,700)[0]=='2');
@@ -150,6 +150,33 @@ int main() {
         input::tick_at(env,4001);assert(events.size()==2 && input::held.empty());
         event(0,i?i:10,true,0);event(1,i?i:10,false,0);
     }
+    // r208022 navigation/function keys and the human-spelling aliases.
+    const struct { const char* command; int id; const char* name; } extra[] = {
+        {"escape 1",0,"escape"},{"enter 1",27,"enter"},{"return 1",27,"enter"},
+        {"tab 1",14,"tab"},{"backspace 1",13,"backspace"},
+        {"k 1",36,"k"},{"m 1",49,"m"},{"z 1",43,"z"},
+        {"f1 1",58,"f1"},{"f12 1",83,"f12"},
+        {"home 1",96,"home"},{"up 1",97,"up"},{"pgup 1",98,"pgup"},
+        {"pageup 1",98,"pgup"},{"left 1",99,"left"},{"right 1",100,"right"},
+        {"end 1",101,"end"},{"down 1",102,"down"},{"pgdn 1",103,"pgdn"},
+        {"pagedown 1",103,"pgdn"},{"insert 1",104,"insert"},{"delete 1",105,"delete"}};
+    input::physical=0;
+    for(const auto& key: extra) {
+        events.clear();
+        assert(input::control_at(env,key.command,4050)[0]=='0');
+        input::tick_at(env,4051);
+        assert(events.size()==2 && input::held.empty());
+        event(0,key.id,true,0);event(1,key.id,false,0);
+        assert(!strcmp(events[0].name,key.name));
+    }
+    // Chords apply to the new keys through the same modifier shadow.
+    events.clear();input::physical=0x200;
+    assert(input::control_at(env,"ctrl+shift+enter 2",4060)[0]=='0');
+    assert(events.size()==3);
+    event(0,28,true,0x211);event(1,41,true,0x233);event(2,27,true,0x233);
+    input::tick_at(env,4062);
+    event(3,27,false,0x233);event(4,41,false,0x211);event(5,28,false,0x200);
+    input::physical=0;
     // Native mode-bar hotkeys use letter keys as well as the number row.
     // Each exact R..P ID supports a chord, bounded deadline and scoped global restoration.
     const char* letters="rtyuiop";
@@ -167,6 +194,34 @@ int main() {
     }
     input::mouse_slots[26]=input::mouse_module+0x4564;
     input::mouse_slots[28]=input::mouse_module+0x457C;
+    // Drag validation and the move/press/four-moves/release state machine (CryInput
+    // fallback path when no client window exists).
+    events.clear();
+    for(const char* bad: {"mouse_drag","mouse_drag 1 2","mouse_drag 1 2 3",
+        "mouse_drag 1 2 3 4 extra","mouse_drag -1 2 3 4","mouse_drag 1 2 4096 4",
+        "mouse_drag 1 2 3 -1","mouse_drag 1 2 1 2","mouse_drag 1.5 2 3 4"})
+        assert(input::control_at(env,bad,4900)[0]=='2');
+    assert(events.empty() && input::held.empty());
+    assert(input::control_at(env,"mouse_drag 10 20 30 40",4900)[0]=='0');
+    assert(events.size()==2);
+    mouse_event(0,269,8,10);mouse_event(1,270,8,20);
+    input::tick_at(env,4950);assert(events.size()==3);mouse_event(2,256,1,1);
+    int drag_x=10,drag_y=20;
+    for(int step=1;step<=4;++step) {
+        input::tick_at(env,4950+step*40);
+        assert(events.size()==size_t(3+step*2));
+        drag_x=10+(30-10)*step/4;drag_y=20+(40-20)*step/4;
+        mouse_event(3+(step-1)*2,269,8,(float)drag_x);
+        mouse_event(4+(step-1)*2,270,8,(float)drag_y);
+    }
+    input::tick_at(env,5150);assert(events.size()==11);
+    input::tick_at(env,5200);assert(events.size()==12);
+    mouse_event(11,256,2,0);
+    // release cancels an unfinished drag and emits an unmatched-free button-up only if pressed.
+    events.clear();
+    assert(input::control_at(env,"mouse_drag 10 20 30 40",5200)[0]=='0');
+    assert(input::control_at(env,"release",5201)=="0released");
+    assert(events.size()==2 && !input::mouse_held);
     events.clear();
     assert(input::control_at(env,"mouse_move 123 87",5000)[0]=='0');
     assert(events.size()==2 && input::mouse_x==123 && input::mouse_y==87);

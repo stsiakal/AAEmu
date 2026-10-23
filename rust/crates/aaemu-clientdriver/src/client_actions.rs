@@ -9,10 +9,11 @@ use serde_json::{json, Value};
 pub fn tools(pid: Value) -> Vec<Value> {
     vec![
         tool("client_perf", "Record DXGI frame intervals (profile resets and enables, off disables, status reads). Reports FPS, mean, p95, p99 and maximum for the latest 2048 rendered frames. Screenshot readback can affect timings; capture after profiling.",json!({"pid":pid,"action":{"type":"string","enum":["profile","status","off"]}}), &["action"], false),
-        tool("client_input", "Press a keyboard key or number-row chord through the client's CryInput on its main thread. Optional ctrl/shift/alt modifiers are pressed before the key and released after it. Works with hidden rendering, without desktop keystrokes. Automatic release after 1..10000 ms survives MCP disconnect. release clears all test keys.",json!({"pid":pid,"key":{"type":"string","enum":["w","a","s","d","q","e","r","t","y","u","i","o","p","space","f","g","1","2","3","4","5","6","7","8","9","0","release"]},"modifiers":{"type":"array","maxItems":3,"uniqueItems":true,"items":{"type":"string","enum":["ctrl","shift","alt"]}},"duration_ms":{"type":"integer","minimum":1,"maximum":10000}}), &["key"], false),
+        tool("client_input", "Press a keyboard key or chord through the client's CryInput on its main thread. Optional ctrl/shift/alt modifiers are pressed before the key and released after it. Supports letters, the number row, space, Enter, Escape, Tab, Backspace, arrows, Home/End, PageUp/PageDown, Insert/Delete and F1-F12. Works with hidden rendering, without desktop keystrokes. Automatic release after 1..10000 ms survives MCP disconnect. release clears all test keys.",json!({"pid":pid,"key":{"type":"string","enum":["w","a","s","d","q","e","r","t","y","u","i","o","p","space","f","g","h","j","k","l","z","x","c","v","b","n","m","1","2","3","4","5","6","7","8","9","0","enter","escape","tab","backspace","up","down","left","right","home","end","pgup","pgdn","insert","delete","f1","f2","f3","f4","f5","f6","f7","f8","f9","f10","f11","f12","release"]},"modifiers":{"type":"array","maxItems":3,"uniqueItems":true,"items":{"type":"string","enum":["ctrl","shift","alt"]}},"duration_ms":{"type":"integer","minimum":1,"maximum":10000}}), &["key"], false),
         tool("client_wheel", "Turn the mouse wheel by signed notches (positive up, negative down, magnitude 1..50) through the client's CryInput on its main thread. Optional ctrl/shift/alt modifiers are held for the wheel events. The release follows on the client's next input tick. Works with hidden rendering, without desktop input.",json!({"pid":pid,"notches":{"type":"integer","minimum":-50,"maximum":50},"modifiers":{"type":"array","maxItems":3,"uniqueItems":true,"items":{"type":"string","enum":["ctrl","shift","alt"]}}}), &["notches"], false),
         tool("client_mouse_look", "Turn the camera or character by a relative mouse delta (dx, dy in client pixels, each -4095..4095, not both zero) with the right mouse button held through the client's CryInput on its main thread. The button is released by the client's next input ticks. Works with hidden rendering, without desktop input.",json!({"pid":pid,"dx":{"type":"integer","minimum":-4095,"maximum":4095},"dy":{"type":"integer","minimum":-4095,"maximum":4095}}), &["dx","dy"], false),
         tool("client_pointer", "Move, left-click (click), or right-click (right_click) through the supported 1.2 client's native mouse handler on its main thread. Coordinates are client pixels, bounded to 0..4095. Hidden rendering is supported. Rejects native mouse-lock mode before movement to preserve the desktop cursor. A click holds for 100 ms with automatic release independent of MCP; verify the resulting UI or gameplay action.",json!({"pid":pid,"action":{"type":"string","enum":["move","click","right_click"]},"x":{"type":"integer","minimum":0,"maximum":4095},"y":{"type":"integer","minimum":0,"maximum":4095}}), &["action","x","y"], false),
+        tool("client_drag", "Drag with the left button from x1,y1 to x2,y2 through the client's native mouse handler on its main thread. Coordinates are client pixels, bounded to 0..4095; source and target must differ. The press, four intermediate moves and release run across client frames, so UI drag-and-drop (skill book to action bar, inventory) fires normally. Works with hidden rendering, without desktop input. Verify the resulting UI or gameplay action.",json!({"pid":pid,"x1":{"type":"integer","minimum":0,"maximum":4095},"y1":{"type":"integer","minimum":0,"maximum":4095},"x2":{"type":"integer","minimum":0,"maximum":4095},"y2":{"type":"integer","minimum":0,"maximum":4095}}), &["x1","y1","x2","y2"], false),
         tool("client_action", "Execute a valid 1.2 UI hotkey action, such as do_interaction_1, cycle_hostile_forward or toggle_bag. Continuous movement uses client_input.",json!({"pid":pid,"action":{"type":"string","minLength":1,"maxLength":96}}), &["action"], false),
         tool("client_inventory", "Read inventory slots, item templates, names, counts and use skills from the live client. bag_id defaults to 1 (inventory).",json!({"pid":pid,"bag_id":{"type":"integer","minimum":1,"maximum":2}}), &[], true),
         tool("client_unit_state", "Read the player or current target's native opaque unit ID, distance, name, health, maximum health and at most 32 visible buffs and 32 visible debuffs, indexed from 1. An absent target returns present=false without fabricated health. target defaults to target. Requires an in-world character; does not target or cast.",json!({"pid":pid,"target":{"type":"string","enum":["player","target"],"default":"target"}}), &[], true),
@@ -259,6 +260,27 @@ pub fn pointer_command(args: &Value) -> anyhow::Result<String> {
         bail!("pointer coordinates must be 0..4095 client pixels");
     }
     Ok(format!("mouse_{action} {x} {y}"))
+}
+
+#[cfg(any(windows, test))]
+pub fn drag_command(args: &Value) -> anyhow::Result<String> {
+    let mut coords = [0u64; 4];
+    for (i, name) in ["x1", "y1", "x2", "y2"].iter().enumerate() {
+        let value = args[*name]
+            .as_u64()
+            .with_context(|| format!("{name} must be an integer"))?;
+        if value > 4095 {
+            bail!("drag coordinates must be 0..4095 client pixels");
+        }
+        coords[i] = value;
+    }
+    if coords[0] == coords[2] && coords[1] == coords[3] {
+        bail!("drag source and target must differ");
+    }
+    Ok(format!(
+        "mouse_drag {} {} {} {}",
+        coords[0], coords[1], coords[2], coords[3]
+    ))
 }
 
 #[cfg(any(windows, test))]
@@ -615,7 +637,10 @@ mod tests {
     fn feature_schemas_reject_unbounded_or_wrong_inputs() {
         for (name, args) in [
             ("client_input", json!({"key":"w","duration_ms":10001})),
-            ("client_input", json!({"key":"escape"})),
+            ("client_input", json!({"key":"nosuchkey"})),
+            ("client_drag", json!({"x1":-1,"y1":1,"x2":2,"y2":2})),
+            ("client_drag", json!({"x1":1,"y1":1,"x2":4096,"y2":2})),
+            ("client_drag", json!({"x1":1,"y1":1,"x2":2})),
             ("client_pointer", json!({"action":"click","x":4096,"y":0})),
             ("client_pointer", json!({"action":"click","x":0,"y":-1})),
             ("client_pointer", json!({"action":"click","x":0.5,"y":1})),
@@ -679,6 +704,47 @@ mod tests {
         assert_eq!(input_command(&json!({"key":"release"})).unwrap(), "release");
         assert!(input_command(&json!({"key":"release","modifiers":["ctrl"]})).is_err());
         assert!(input_command(&json!({"key":"1","modifiers":["ctrl","ctrl"]})).is_err());
+        for key in [
+            "enter",
+            "escape",
+            "tab",
+            "backspace",
+            "up",
+            "down",
+            "left",
+            "right",
+            "home",
+            "end",
+            "pgup",
+            "pgdn",
+            "insert",
+            "delete",
+            "f1",
+            "f12",
+        ] {
+            let args = json!({"key":key,"modifiers":["shift"],"duration_ms":250});
+            super::super::validate(&schema["inputSchema"], &args).unwrap();
+            assert_eq!(input_command(&args).unwrap(), format!("shift+{key} 250"));
+        }
+    }
+    #[test]
+    fn drag_commands_are_bounded_and_require_distinct_endpoints() {
+        let schema = tools(json!({}))
+            .into_iter()
+            .find(|t| t["name"] == "client_drag")
+            .unwrap();
+        let args = json!({"x1":10,"y1":20,"x2":30,"y2":40});
+        super::super::validate(&schema["inputSchema"], &args).unwrap();
+        assert_eq!(drag_command(&args).unwrap(), "mouse_drag 10 20 30 40");
+        for bad in [
+            json!({"x1":10,"y1":20,"x2":10,"y2":20}),
+            json!({"x1":-1,"y1":0,"x2":1,"y2":1}),
+            json!({"x1":0,"y1":0,"x2":4096,"y2":1}),
+            json!({"y1":0,"x2":1,"y2":1}),
+            json!({"x1":0,"y1":0,"x2":1}),
+        ] {
+            assert!(drag_command(&bad).is_err());
+        }
     }
     #[test]
     fn wheel_commands_apply_modifiers_and_reject_invalid_notches() {
