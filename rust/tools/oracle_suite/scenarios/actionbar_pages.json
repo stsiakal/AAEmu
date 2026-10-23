@@ -1,0 +1,143 @@
+{
+  "name": "actionbar_pages",
+  "description": "Bind the same skill to visible action-bar cell 1 on page 1 and page 2, switch pages with Shift+Down/Up, and compare CSUpdateActionSlot slot numbers.",
+  "setup": [
+    {
+      "name": "setup_tutorial",
+      "action": "lua",
+      "code": "if tutorial and tutorial.window then tutorial.window:Show(false) end",
+      "wait": 0.5
+    },
+    {
+      "name": "setup_move",
+      "action": "move",
+      "x": 15578.0,
+      "y": 15382.0,
+      "z": 126.2,
+      "wait": 5
+    },
+    {
+      "name": "setup_anchor",
+      "action": "gm",
+      "command": "echo oracle-anchor",
+      "wait": 0.5
+    }
+  ],
+  "steps": [
+    {
+      "name": "page_a",
+      "action": "lua",
+      "code": "return X2Action:GetActionBarPage()",
+      "wait": 0.5
+    },
+    {
+      "name": "bind_p1",
+      "action": "bind_skill",
+      "page": 1,
+      "cell": 1,
+      "skill": 18132,
+      "wait": 1.0
+    },
+    {
+      "name": "shot_p1",
+      "action": "wait",
+      "seconds": 0.2
+    },
+    {
+      "name": "page_down",
+      "action": "key",
+      "key": "down",
+      "modifiers": [
+        "shift"
+      ],
+      "wait": 1.0
+    },
+    {
+      "name": "page_b",
+      "action": "lua",
+      "code": "return X2Action:GetActionBarPage()",
+      "wait": 0.5
+    },
+    {
+      "name": "bind_p2",
+      "action": "bind_skill",
+      "page": 2,
+      "cell": 1,
+      "skill": 18132,
+      "wait": 1.0
+    },
+    {
+      "name": "shot_p2",
+      "action": "wait",
+      "seconds": 0.2
+    },
+    {
+      "name": "page_up",
+      "action": "key",
+      "key": "up",
+      "modifiers": [
+        "shift"
+      ],
+      "wait": 1.0
+    },
+    {
+      "name": "page_c",
+      "action": "lua",
+      "code": "return X2Action:GetActionBarPage()",
+      "wait": 0.5
+    }
+  ],
+  "screenshots": [
+    "shot_p1",
+    "shot_p2"
+  ],
+  "checks": [
+    {
+      "name": "action-bar page sequence",
+      "type": "lua",
+      "steps": [
+        "page_a",
+        "page_b",
+        "page_c"
+      ],
+      "expect": [
+        "1",
+        "2",
+        "1"
+      ]
+    },
+    {
+      "name": "CSUpdateActionSlot slot and skill",
+      "type": "packet",
+      "packet": "CSUpdateActionSlotPacket",
+      "steps": [
+        "bind_p1",
+        "bind_p2"
+      ],
+      "fields": [
+        "slot",
+        "kind",
+        "skill"
+      ],
+      "expect": {
+        "count": 2,
+        "slot": [
+          1,
+          49
+        ],
+        "skill": [
+          18132,
+          18132
+        ]
+      }
+    },
+    {
+      "name": "shot_p1",
+      "type": "shot"
+    },
+    {
+      "name": "shot_p2",
+      "type": "shot"
+    }
+  ]
+}

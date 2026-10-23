@@ -749,3 +749,29 @@ second session entering the world again at the saved position. No server errors.
 
 Stop the servers (Ctrl+C, or `taskkill //IM aaemu-game.exe //IM aaemu-login.exe //IM
 AAEmu.Game.exe //IM AAEmu.Login.exe`), then shut the private MySQL down (`SHUTDOWN` above).
+
+## 8. Original client vs Bevy client: `rust/tools/oracle_suite`
+
+`oracle_suite` runs the same scenario in the hidden 1.2 client (through
+`aaemu-clientdriver`) and in Bevy `aa-client` (`--offscreen-shot --mute`) against
+one lane stack with `RUST_LOG=info,aaemu_game::net::fields=trace`, then writes a
+markdown report with per-check SAME/DIFFERENT/NOT RUN and side-by-side contact
+sheets:
+
+```sh
+python rust/tools/oracle_suite/oracle_suite.py --lane <lane>
+python rust/tools/oracle_suite/oracle_suite.py --lane <lane> mount_ride house_place
+python rust/tools/oracle_suite/oracle_suite.py --lane <lane> --bevy-client D:/aaemu-target/bevy/debug/aa-client.exe
+```
+
+Scenario files live in `rust/tools/oracle_suite/scenarios/` (setup GM commands,
+abstract key/click/move/lua steps, packet/Lua/metric checks and screenshots). The
+runner creates throwaway accounts (password only in a temporary `--password-file`,
+deleted afterwards), grants the two lane characters access level 100 in the lane
+database, positions them before login, starts/restarts only its own lane stack,
+and stops only the clients it launched. See
+[`rust/tools/oracle_suite/README.md`](tools/oracle_suite/README.md) for the step
+and check vocabulary and the known limits (Bevy has no scripted UI drag; far
+in-game teleports crash its offscreen renderer, so the runner positions the
+character row before login instead).
+

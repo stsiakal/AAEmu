@@ -1,0 +1,161 @@
+{
+  "name": "house_place",
+  "description": "Place the Thatched Farmhouse design (item 21165) in a housing area: two placement clicks (lock the spot, ask for the tax quote), then confirm the Start Construction window. Compares CSConstructHouseTax and CSCreateHouse fields.",
+  "setup": [
+    {
+      "name": "setup_tutorial",
+      "action": "lua",
+      "code": "if tutorial and tutorial.window then tutorial.window:Show(false) end",
+      "wait": 0.5
+    },
+    {
+      "name": "setup_gold",
+      "action": "gm",
+      "command": "gold add self 100",
+      "wait": 1
+    },
+    {
+      "name": "setup_certs_unbound",
+      "action": "gm",
+      "command": "item add self 31891 10",
+      "wait": 1
+    },
+    {
+      "name": "setup_certs_bound",
+      "action": "gm",
+      "command": "item add self 31892 10",
+      "wait": 1
+    },
+    {
+      "name": "setup_design",
+      "action": "gm",
+      "command": "item add self 21165 1",
+      "wait": 1
+    },
+    {
+      "name": "setup_move",
+      "action": "move",
+      "x": 17781.281,
+      "y": 11849.92,
+      "z": 115.43,
+      "wait": 40
+    }
+  ],
+  "steps": [
+    {
+      "name": "ghost",
+      "action": "house_place",
+      "item": 21165,
+      "dx": 0,
+      "dy": 8,
+      "wait": 4
+    },
+    {
+      "name": "ghost_retry",
+      "action": "house_place",
+      "item": 21165,
+      "dx": 0,
+      "dy": 8,
+      "wait": 4
+    },
+    {
+      "name": "click_lock",
+      "action": "click",
+      "point": [
+        0.5,
+        0.709
+      ],
+      "wait": 2
+    },
+    {
+      "name": "click_quote",
+      "action": "click",
+      "point": [
+        0.5,
+        0.709
+      ],
+      "wait": 2.5
+    },
+    {
+      "name": "build",
+      "action": "build",
+      "point": [
+        0.484,
+        0.652
+      ],
+      "wait": 6
+    }
+  ],
+  "screenshots": [
+    "ghost",
+    "ghost_retry",
+    "click_lock",
+    "click_quote",
+    "build"
+  ],
+  "checks": [
+    {
+      "name": "CSConstructHouseTax request",
+      "type": "packet",
+      "packet": "CSConstructHouseTaxPacket",
+      "steps": [
+        "click_quote"
+      ],
+      "fields": [
+        "design_id",
+        "x",
+        "y",
+        "z"
+      ],
+      "expect": {
+        "count": 1,
+        "design_id": [
+          171
+        ]
+      }
+    },
+    {
+      "name": "CSCreateHouse fields",
+      "type": "packet",
+      "packet": "CSCreateHousePacket",
+      "steps": [
+        "build"
+      ],
+      "fields": [
+        "design_id",
+        "money_amount",
+        "item_id"
+      ],
+      "expect": {
+        "count": 1,
+        "design_id": [
+          171
+        ]
+      }
+    },
+    {
+      "name": "ghost",
+      "type": "shot"
+    },
+    {
+      "name": "ghost_retry",
+      "type": "shot"
+    },
+    {
+      "name": "click_lock",
+      "type": "shot"
+    },
+    {
+      "name": "click_quote",
+      "type": "shot"
+    },
+    {
+      "name": "build",
+      "type": "shot"
+    }
+  ],
+  "notes": [
+    "Original: the placement ghost is obstructed at the test spot (screenshot evidence), so the original sent no CSConstructHouseTax or CSCreateHouse and both packet checks are NOT RUN.",
+    "Bevy: requests the quote and sends CSCreateHouse with the quoted 450000 total, but the server refuses the build (client log: error 481); no SCMyHouse."
+  ]
+}
