@@ -10,6 +10,10 @@ aaemu-clientdriver: run Lua inside a running ArcheAge 1.2 client
   mcp [options]                    serve local newline-delimited JSON-RPC on stdin/stdout
                                     --dll PATH --launcher PATH --client PATH --password-file PATH
                                     --login HOST:PORT --user NAME --artifact-dir DIR
+                                    client_input drives keys/chords (letters, digits, Enter,
+                                    Escape, Tab, arrows, F1-F12...), client_pointer clicks,
+                                    client_drag drags, client_wheel signed wheel notches and
+                                    client_mouse_look a right-drag delta (hidden rendering)
   lua    [-t system|ui|third] [--pid N] <code...>|-
                                     compile `return <code>` (else as statements), run it on the
                                     client main thread, print the returned values (TAB-joined)

@@ -82,9 +82,9 @@ fn validate(schema: &Value, args: &Value) -> anyhow::Result<()> {
             .get(key)
             .with_context(|| format!("unknown argument '{key}'"))?;
         let valid = match property["type"].as_str() {
-            Some("integer") => value.as_u64().is_some_and(|n| {
-                n >= property["minimum"].as_u64().unwrap_or(0)
-                    && n <= property["maximum"].as_u64().unwrap_or(u64::MAX)
+            Some("integer") => value.as_i64().is_some_and(|n| {
+                n >= property["minimum"].as_i64().unwrap_or(i64::MIN)
+                    && n <= property["maximum"].as_i64().unwrap_or(i64::MAX)
             }),
             Some("boolean") => value.is_boolean(),
             Some("array") => value.as_array().is_some_and(|items| {
@@ -396,6 +396,18 @@ mod backend {
                         driver.send(&Request::Input(command))?.into_result()?,
                     ))
                 }
+                "client_wheel" => {
+                    let command = actions::wheel_command(args)?;
+                    Ok(text_result(
+                        driver.send(&Request::Input(command))?.into_result()?,
+                    ))
+                }
+                "client_mouse_look" => {
+                    let command = actions::mouse_look_command(args)?;
+                    Ok(text_result(
+                        driver.send(&Request::Input(command))?.into_result()?,
+                    ))
+                }
                 "client_mode_input" => {
                     let (target, code) = actions::request(name, args)?;
                     let response = driver.send(&Request::Lua(target, code))?.into_result()?;
@@ -412,6 +424,12 @@ mod backend {
                 }
                 "client_pointer" => {
                     let command = actions::pointer_command(args)?;
+                    Ok(text_result(
+                        driver.send(&Request::Input(command))?.into_result()?,
+                    ))
+                }
+                "client_drag" => {
+                    let command = actions::drag_command(args)?;
                     Ok(text_result(
                         driver.send(&Request::Input(command))?.into_result()?,
                     ))
@@ -624,12 +642,27 @@ mod tests {
         assert_eq!(results.len(), 2);
         assert_eq!(results[0]["result"]["protocolVersion"], VERSION);
         assert_eq!(results[1]["id"], "list");
-        assert_eq!(results[1]["result"]["tools"].as_array().unwrap().len(), 23);
+        assert_eq!(results[1]["result"]["tools"].as_array().unwrap().len(), 26);
         assert!(results[1]["result"]["tools"]
             .as_array()
             .unwrap()
             .iter()
             .any(|tool| tool["name"] == "client_target"));
+        assert!(results[1]["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|tool| tool["name"] == "client_wheel"));
+        assert!(results[1]["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|tool| tool["name"] == "client_mouse_look"));
+        assert!(results[1]["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|tool| tool["name"] == "client_drag"));
     }
     #[test]
     fn schema_errors_are_distinct_from_execution_errors() {

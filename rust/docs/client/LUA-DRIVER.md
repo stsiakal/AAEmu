@@ -371,7 +371,7 @@ initialization, tool discovery, argument validation and image content. Stdout co
 messages. The launcher inherits only the two ticket handles so its output pipes close promptly
 while the client stays alive. Tools are `client_list`, `client_attach`, `client_status`,
 `client_launch`, `client_lua`, `client_screenshot`, `client_window`, `client_pak` and `client_stop`.
-Vehicle and gameplay tests also have `client_input`, `client_action`, `client_inventory`, `client_mode_actions`,
+Vehicle and gameplay tests also have `client_input`, `client_wheel`, `client_mouse_look`, `client_action`, `client_inventory`, `client_mode_actions`,
 `client_unit_state`, `client_mode_input`, `client_loot`, `client_use_item`, `client_chat`, `client_vehicle`, `client_entities` and `client_perf`.
 Launch defaults to silent audio and fast hidden rendering with normal-priority CPU calibration and 64 KB pak
 read-ahead; pass `fast_start: false`, `smooth_start: false`, `fast_pak: false` or `hidden: false` to compare
@@ -391,6 +391,14 @@ checks the module timestamp, image size and slot address. It releases keys after
 including when the MCP session disconnects, and `key: "release"` clears every test key.
 The native fixture tests cover key IDs, overlapping presses, deadlines, release and invalid
 commands. These inputs work while hidden and do not send keys to another desktop application.
+
+Supported keys are the letter row, the number row, `space`, `enter` (ID 27), `escape` (ID 0),
+`tab` (14), `backspace` (13), `up`/`down`/`left`/`right` (97/102/99/100), `home`/`end`
+(96/101), `pgup`/`pgdn` (98/103), `insert`/`delete` (104/105) and `f1`–`f12` (58–83). Those
+IDs come from the same r208022 keyboard constructor as the letter/number keys; the native
+symbol names are exactly those strings. The MCP schema also accepts the spellings `pageup`
+and `pagedown` (and `return`/`esc`), which the driver maps to the canonical native symbol.
+Every one supports the same `ctrl`/`shift`/`alt` chords.
 
 Number-row keys `"1"` through `"0"` also accept an optional `modifiers` array containing
 distinct `"ctrl"`, `"shift"`, and `"alt"` values. For example,
@@ -422,6 +430,23 @@ dispatch and exact restoration afterward, modifier overlap, release ordering, de
 unsupported modifier slots and failed-post cleanup.
 Input submission does not prove that a skill cast succeeded: verify the client's binding,
 server cast, mana and buff results. The live pet Run! shortcut remains unverified.
+
+`client_wheel` turns the wheel by signed notches (positive up, negative down, magnitude 1–50),
+optionally holding `ctrl`/`shift`/`alt` for the wheel events. `client_mouse_look` takes a relative
+`dx`/`dy` delta (each −4095..4095 client pixels, not both zero) with the right button held. Both
+use the mouse symbols of the same guarded r208022 `CryInput.dll`: the `CMouse` constructor
+`sub_3350465A` registers `mouse1`–`mouse8` = 256–263, `mwheel_up`/`mwheel_down` = 264/265 and
+`maxis_x`/`maxis_y` = 266/267 (axis state 8), next to `pos_x`/`pos_y` = 269/270. The native
+`CMouse::Update` `sub_33504DE2` emits a wheel press and its release on consecutive frames and
+reports relative deltas as `maxis_x`/`maxis_y`; both reach listeners through
+`CMessageInput::PostInputEvent` (slot 8, RVA `0x14D6`). The driver builds the same 32-byte
+`SInputEvent` and dispatches it through that slot after the same build check. It never calls
+`SendInput` or `SetCursorPos`: the wheel release follows from the driver's own frame tick after
+50 ms, and mouse look holds Mouse2 for about 100 ms and splits the delta into at most 100-pixel
+`maxis_x`/`maxis_y` steps. Mouse look deliberately does not use the absolute `pos_x`/`pos_y`
+path, so the native mouse-lock branch that repositions the desktop cursor is not entered. Verify
+camera zoom/turning and the resulting server state; accepting the event does not prove a gameplay
+effect.
 
 `client_use_item` calls `X2Bag:UseItemByType` for a scroll actually present in inventory, preserving
 the client's normal skill cast, placement checks and server ownership checks. `accepted: true`
@@ -482,12 +507,32 @@ GM test.
 It also reports effective `take_all_bounds` for the existing Take All widget. Inspect a
 screenshot before clicking: the button may be hidden during timed loot notifications.
 The tool does not open a corpse or take items; use normal interaction and pointer input.
-`client_pointer` moves or clicks in client pixels through the guarded 1.2 mouse handler:
-`action: "click"` remains a left-click and `action: "right_click"` sends a right-click.
-The mouse-lock mode is rejected before position events because that native path can move the
-desktop cursor. Clicks position first and wait at least 50 ms for the native Update before
-pressing, then hold for 100 ms and release on the driver's independent tick; repeated
-clicks while held are rejected. `client_input` with `key: "release"` also releases the mouse.
+`client_pointer` moves or clicks in client pixels: `action: "click"` is a left-click and
+`action: "right_click"` a right-click. The driver now delivers these in-process through the
+client's own `"ArcheAge"` window procedure (x2game r208022 `FUN_3950A8E0`, registered at
+`FUN_3950C210` with the `WM_*` translations). `SendMessageW` runs that WndProc on the client
+main thread: `WM_MOUSEMOVE` (0x200) becomes `pos_x`/`pos_y` 269/270 with state 8,
+`WM_LBUTTONDOWN`/`WM_LBUTTONUP` (0x201/0x202) become `mouse1` 256 with state 1/2,
+`WM_RBUTTONDOWN`/`WM_RBUTTONUP` become `mouse2`, and `WM_MOUSEWHEEL` (0x20A) becomes
+`mwheel_up`/`mwheel_down` 264/265. That is the path the stock UI consumes: x2ui.dll
+(`TimeDateStamp 0x4758FD55`, image size `0x6A000`) registers a hardware-mouse listener whose
+`FUN_10001560` handles move/left/right events and feeds widget hit-testing, clicks and drags.
+The message is sent only to the client's own hidden HWND and never to the desktop; no
+`SendInput`, `SetCursorPos` or foreground-window change is involved. If no `"ArcheAge"` window
+exists (for example a non-UI test), the driver falls back to the guarded CryInput `CMouse`
+device path and rejects the native mouse-lock mode before position events, because that path
+can move the desktop cursor. Clicks send the position, wait at least 50 ms for a frame,
+press, hold 100 ms and release on the driver's independent tick; repeated clicks while held
+are rejected. `client_input` with `key: "release"` also releases the mouse.
+
+`client_drag` performs a left-button drag from `x1,y1` to `x2,y2` (client pixels, 0..4095,
+endpoints distinct): move to the source, press, cross to the target in four intermediate
+frames, then release. UI drag-and-drop such as dragging a skill from the skill book onto the
+action bar therefore sees a real held-button drag rather than a click. The drag runs across
+client frames and is cancelled by `release`. A skill drop additionally requires a learned,
+usable skill and an unlocked action bar; confirm it with the resulting server packet
+(`CSUpdateActionSlot` for an action-bar drop) or UI state, since event submission alone does
+not prove the widget action completed.
 Stock Map clicks and native mouse coordinates have been checked with hidden rendering.
 Allow the client to render the resulting UI before taking a screenshot; input acceptance
 alone does not establish that a ground-targeted cast or server interaction completed.

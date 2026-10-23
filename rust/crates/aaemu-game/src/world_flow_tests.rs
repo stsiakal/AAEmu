@@ -194,7 +194,9 @@ async fn two_players_see_each_other_move_talk_and_leave() {
     let server = server();
     let mut a = Client::new(&server, 1, 1001);
     let mut b = Client::new(&server, 2, 1002);
-    a.conn.characters = vec![character(1, "Alpha", 100.0, 100.0)];
+    let mut alpha = character(1, "Alpha", 100.0, 100.0);
+    alpha.options.insert(2, "bindings".into());
+    a.conn.characters = vec![alpha];
     b.conn.characters = vec![character(2, "Beta", 120.0, 110.0)];
 
     // ---- select (post-load part)
@@ -237,7 +239,8 @@ async fn two_players_see_each_other_move_talk_and_leave() {
     assert_eq!(*body, want_body);
     assert_eq!(burst[7].1[..3], [slot_type::INVENTORY, 1, 4]);
     assert_eq!(burst[8].1[..3], [slot_type::BANK, 1, 0]);
-    // SCQuests / SCCompletedQuests with no entries; the UI options are empty strings.
+    // SCQuests / SCCompletedQuests with no entries; UI types 1 and 5 are empty, type 2 keeps
+    // the stored key bindings.
     assert_eq!(burst[14].1, vec![0, 0, 0, 0]);
     assert_eq!(burst[15].1, vec![0, 0, 0, 0]);
     assert_eq!(burst[16].1, vec![1, 0]); // SCActability(last, 0 entries)
@@ -246,6 +249,11 @@ async fn two_players_see_each_other_move_talk_and_leave() {
     assert_eq!(burst[19].1, vec![0, 0]);
     assert_eq!(burst[20].1, vec![0]);
     assert_eq!(burst[21].1, vec![1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0]);
+    assert_eq!(
+        burst[22].1,
+        vec![1, 0, 0, 0, 2, 0, 8, 0, b'b', b'i', b'n', b'd', b'i', b'n', b'g', b's', 9, 0, 0, 0]
+    );
+    assert_eq!(burst[23].1, vec![1, 0, 0, 0, 5, 0, 0, 0, 1, 0, 0, 0]);
     assert!(!pa
         .data()
         .unit

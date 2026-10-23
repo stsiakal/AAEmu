@@ -15,9 +15,12 @@ pub struct Transfer {
     pub attach_point_id: u8,
     /// `Bounded?.ObjId ?? 0`.
     pub bounded_obj_id: u32,
-    /// `AttachedDoodads` / `AttachedCharacters` (obj ids).
+    /// `AttachedDoodads` (obj ids).
     pub attached_doodads: Vec<u32>,
-    pub attached_characters: Vec<u32>,
+    /// `AttachedCharacters` as (attach point, character obj id). The C# list is never filled
+    /// (`CSBoardingTransferPacket` only logged); the 1.2 client sends the point, so it is kept
+    /// here (see `PORTING.md`).
+    pub attached_characters: Vec<(u8, u32)>,
     pub spawner_id: u32,
     pub path_point_index: i32,
     pub speed: f32,

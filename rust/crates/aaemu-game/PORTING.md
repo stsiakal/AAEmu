@@ -114,7 +114,7 @@ systems::{skills, npcs, economy, social, quests}: Data (tables), System (manager
 | `Core/Managers/ItemManager` (templates + user items) | `data/items.rs`, `managers/item.rs`, `models/item.rs`, `models/container.rs` | done | See `systems::economy`. |
 | `Models/Game/Items/Containers` (ItemContainer, EquipmentContainer, MateEquipmentContainer, CofferContainer, LootingContainer) | `models/container.rs`, `systems/economy/looting.rs` | done | See `systems::economy`. |
 | `Core/Managers/UnitManagers/CharacterManager` | `data/character_templates.rs`, `managers/character.rs`, `db_character.rs` | partial | Load (templates, body parts, buffs, supplies, equip packs, appellations, actabilities, expert limits, CharTemplates.json), Create, SetDeleteCharacter, SetRestoreCharacter, CheckForDeletedCharacters(+Deletion) with the delete task, IsCharacterPendingDeletion, LoadCharacters. Bag expands, beauty salon, rolls, online tracking todo. |
-| `Models/Game/Char` (Character, Inventory, Abilities, Actability, Skills, Appellations, Portals, Friends, Blocked, Quests (rows), VisualOptions, ActionSlot) | `models/character.rs`, `models/char_data.rs`, `db_character.rs` | partial | Character.Load (both variants' columns), Character.Load() sub-loads, Save / SaveDirectlyToDatabase (characters, options, abilities, actabilities, appellations, active buffs, portals, friends, blocked, skills, quests), Write, CheckWantedThreshold (buffs + pirate faction). Mates, craft, combat, events todo. |
+| `Models/Game/Char` (Character, Inventory, Abilities, Actability, Skills, Appellations, Portals, Friends, Blocked, Quests (rows), VisualOptions, ActionSlot) | `models/character.rs`, `models/char_data.rs`, `db_character.rs` | partial | Character.Load (both variants' columns), Character.Load() sub-loads, Save / SaveDirectlyToDatabase (characters, character_ui_data, abilities, actabilities, appellations, active buffs, portals, friends, blocked, skills, quests), Write, CheckWantedThreshold (buffs + pirate faction). Mates, craft, combat, events todo. |
 | `Models/Game/Units/Buffs`, `Models/Game/Skills/Buff` | `models/buff.rs`, `systems/mod.rs` | partial | Indices, stack rules, GetAllBuffs, CheckBuff(s), GetEffectByIndex / FromBuffId, GetBuffCountById, RemoveBuff / RemoveEffect (index, template+skill) / RemoveAllEffects, persistence (SaveActiveBuffs / LoadActiveBuffs), the NetBuff wire format and `BuffEvent`s (started / refreshed / removed) dispatched to `systems::UnitHooks`. Effects (`Start` / `Dispel`), tolerance, triggers, `TriggerRemoveOn`, tag checks, timers, buff packets: skills subsystem. |
 | `Models/Game/World/GameObject`, `Models/Game/Units/{BaseUnit,Unit,IBaseUnit,IUnit,BaseUnitType,UnitTypeFlag,ModelPostureType}` | `models/unit.rs`, `world/object.rs` | partial | All data members (`UnitBase`), `Hpp`, `IsDead`, `NeedsRegen`, trigger counts, `CalculateWithBonuses`, `UnitData` / `BaseUnitData` traits, handles (`Entity<D>`, `WorldObject`). Behaviour (`ReduceCurrentHp`, `DoDie`, `CanAttack`, regen, aggro, `UseSkill`, `SetFaction`, `UpdateGearBonuses`, the `SetPosition` underwater state) lives in the phase-3 subsystems (`systems::skills`). |
 | `Models/Game/Units/{UnitCooldowns,CombatBuffs,UnitAttribute,UnitModifierType}`, `Models/Game/Skills/{Bonus,DynamicBonus,SkillModifier(s),BuffModifier(s)}`, `Skills/Static/{SkillAttribute,BuffAttribute}`, `Templates/{BonusTemplate,DynamicBonusTemplate,LinearFuncTemplate}` | `models/unit.rs` | done / partial | Data model + pure logic (`ApplyModifiers`, `Evaluate`, cooldown checks). The DB loaders for the rows and `TriggerCombatBuffs` are the skills subsystem's. |
@@ -312,7 +312,7 @@ Cross-subsystem: mates are despawned on dungeon entry and `PlayerCanEnter` check
 | `MateGameData`, `SlaveGameData` (templates, unit modifiers, initial items / buffs, passive buffs, doodad / healing point / slave bindings, drop doodads, mount skills, repairable slaves, `slave_equip_slots`, `item_slave_equipments`, `allow_to_equip_slaves` / `allow_to_equip_slots`, `slave_attach_points*.json`), `TransferGameData` (templates, bindings, binding doodads, paths, client `transfer_path.xml` roads + `GetOwnerPaths`), `ShipyardManager.Load`, `TaxationsManager` table, `ModelManager` vehicle / ship models | `systems/vehicles/data.rs` | done | Gated test `real_compact_db_vehicle_tables` checks the row counts; `real_transfer_follows_its_client_route` loads the roads from the game_pak. |
 | `MateManager` (per instance), `CharacterMates` (load / save / spawn / despawn), `Mate` (`AddExp`, `MateXpUpdateTask`, `RegenTick`, `DoFallDamage`, `OnZoneChange`, stats) | `systems/vehicles/mates.rs`, `stats.rs` | done | Mount / dismount (`SCUnitAttached` / `SCUnitDetached`, rider becomes a transform child), rename, target, user state, mate equipment packet (item move through `VehicleItemHooks`), kill exp, stun / unmount skills, death despawn. |
 | `SlaveManager` (per instance), `SlaveSpawner`, `SummonSlave` details, `Slave` (`DoDie`, `DoHpChangeTrigger` / repair points, `RegenTick`, `Save`, `OnZoneChange`, stats) | `systems/vehicles/slaves.rs` | done | Create (saved slave / persistent doodads / saved child slaves from MySQL, position, boats on the water surface, doodad and slave bindings at the model attach points), bind / unbind, delete with portal-time despawn, Rider's Escape, repair cooldown, `RepairSlaveEffect`, `SendMySlaveTask`, logout (+10 min) / disconnect despawn task, `slaves` table (`AfterCharacters`). |
-| `TransferManager` (per instance, 100 ms tick), `TransferSpawner`, `Transfer` route following (`GoToPath`, `MoveTo`, `NextPoint`) | `systems/vehicles/transfers.rs` | done | Carriage motor + boarding part + bench doodads, `SCOneUnitMovementPacket` (transfer move type) for both parts. Spawned from `SpawnManager.SpawnAll`. |
+| `TransferManager` (per instance, 100 ms tick), `TransferSpawner`, `Transfer` route following (`GoToPath`, `MoveTo`, `NextPoint`) | `systems/vehicles/transfers.rs` | done | Carriage motor + boarding part + bench doodads, `SCOneUnitMovementPacket` (transfer move type) for both parts. Spawned from `SpawnManager.SpawnAll`. `CSBoardingTransfer` (the C# only logged it): passenger boarding at points 2..7, `SCUnitAttached`/`SCUnitDetached` (reason `BoardTransfer` 7) with the passenger as a sticky transform child of the seat-bearing part, seats freed on `ap` 0 / death / logout / despawn. Seat list sent with the transfer's `SCUnitStatePacket` visibility. |
 | `ShipyardManager` runtime, `Shipyard` build steps, `CraftEffect` shipyard branches, `ShipyardTickTask`, `ShipyardCompleteTask` | `systems/vehicles/shipyards.rs`, `effects.rs` | done | Requirements via the skills item hooks + money (`SCItemTaskSuccess` money form). |
 | `ShipHarpoonRopeController`, `CSUnhangPacket` | `systems/vehicles/harpoon.rs` | done | Tow forces are physics (`ShipHarpoonTowPhysics`): the per-tick entry points are exposed for the physics port. |
 | `CSMoveUnitPacket` vehicle branches (ship request, vehicle, mate xp, riding, standing on objects) | `systems/vehicles/movement.rs`, `world/session.rs` | done | Ship-deck support accepts the actor standing flag independently of the movement header, preserving valid GC-relative positions and the current-parent sentinel during controller updates. This corrects the mirrored C# header-only attachment test; clearing both support flags still disembarks. A unit no longer hanging (`HangingFromObject` unset) loses its sticky parent unless it is boarded on a transfer. |
@@ -950,11 +950,15 @@ is no longer mirrored (see "Known deviations", dead NPC returned and healed).
   return online character profiles through the existing 1.2 outbound formats (the C# inbound
   handlers only logged). Offline, absent and unauthenticated requests receive no reply; offline
   lookup and failure-response semantics remain unresolved.
-* systems::services (UI data caps, 2026-10-20): `CSSaveUIDataPacket` accepts only keys `0..=16` and
-  values of at most 16 KiB. Values observed from the real 1.2 client are 280, 4 708 (key bindings)
-  and 313 bytes; 16 KiB is 3.5x the largest and stays below the 64 KiB `options.value` TEXT
-  column. Unknown keys and oversized values are dropped with a warning (the C# stored any
-  `ushort` key and any length in memory).
+* systems::services (UI data, 2026-10-23): `CSRequestUIDataPacket` / `CSSaveUIDataPacket` store the
+  opaque blob per character and type in `character_ui_data` (the C# reused the generic `options`
+  table); the SQL update copies the legacy numeric keys. Saves accept the native types `0..=6` and
+  at most 8191 bytes: the 1.2 sender serialises into an 8192-byte buffer with a trailing NUL
+  (`0x392f3350` / `0x39217640`), and no 1.2 producer can send more. Values observed from the real
+  client are 280, 4 708 (key bindings) and 313 bytes. Unknown types and oversized payloads are
+  dropped with a warning (the C# stored any `ushort` key and any length in memory). Requests answer
+  with the stored blob or the empty default, the world-entry push of types 1/2/5 reads the same
+  map, and a finalised character deletion removes its rows.
 * systems::social: family title and steward requests require targets in the caller's own family.
   Authorized packet changes call the existing family snapshot save immediately; the C# handlers
   only changed memory. Team risky actions require membership and known actions, with owner
@@ -1235,8 +1239,28 @@ is no longer mirrored (see "Known deviations", dead NPC returned and healed).
 * systems::vehicles: the transfer motor is not a transform child of its boarding part (the C#
   sets and immediately clears that parent); the boarding part is moved explicitly by the motor's
   tick, as the C# does for its packets. The transfer's own sticky link to its motor is not
-  recorded (only `IsBoardedOnTransfer` reads sticky parents of transfers, and the C#
-  `AttachedCharacters` list is never filled).
+  recorded (only `IsBoardedOnTransfer` reads sticky parents of transfers).
+* systems::vehicles (transfer boarding): the C# `CSBoardingTransferPacket` only logged `tl` and
+  `ap` and never filled `Transfer.AttachedCharacters`, so `IsBoardedOnTransfer` was dead code.
+  Rust completes it from the 1.2 client's send sites (`re-transport.md` §7: `FUN_393565c0` boards
+  the target transfer at the first free point 2..7 via `FUN_393546b0`, `FUN_39440d30` sends
+  `ap = 0` with the current transfer's tl). `Transfer.AttachedCharacters` therefore holds
+  `(attach point, character obj id)` (the C# `List<Character>` had no seats). The seat-bearing
+  target is the transfer sharing the packet's `tl` whose `AttachPointId` is not `System` (the
+  motor and its boarding part share the tl; the C# `Create` marks the motor `System`), falling
+  back to the motor for single-part transfers. There is no 1.2 server-side reference for the
+  rules the C# omitted, so these are **inferences**, checked congruently with the client:
+  the 4 m bind range (`BOARD_RANGE`, the squared-16.0 vehicle bind constant `DAT_39ac7408` of
+  `re-transport.md` §2), 3D distance (the C# `GetDistance` is 2D, an airship passenger below the
+  hull must not board), the dead/busy/not-already-bound precheck of `FUN_39346290`
+  (`re-transport.md` §2), a dead transfer being refused, and `ap` outside 0 / 2..7 ignored.
+  Unboarding uses reason 7 (`BoardTransfer`), except death (`None`) and despawn
+  (`PrefabChanged`); the 1.2 client does not send a reason with `ap = 0`. The
+  `TRANSFER_BOARDING` / `TRANSFER_UNBOARDING` bar events 0x64/0x65 are client-side: the 1.2
+  `sc` table has no boarding-transfer S->C packet (only `CSBoardingTransferPacket` 0x67), so the
+  client derives the bar from `SCUnitAttached` / `SCUnitDetached` (inference; the event fire
+  site itself was not found, `re-transport.md` §10.4). The despawn path now also removes the
+  transfer from `TransferManager` and despawns the bounded boarding part with its motor.
 * systems::vehicles: `Transform.Parent = null` keeps the world position (`detach_child`); the C#
   keeps the local values until the next position update.
 * systems::vehicles: `Thread.Sleep(50)` between `SCMateSpawnedPacket` and the mate spawn is not

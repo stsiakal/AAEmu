@@ -14,7 +14,7 @@ files in them (a client writing its own logs at runtime is fine). Put all RE out
 | Path | `D:\AA1.2` | `D:\ArcheAge Returns 10.0.2.13 - 8yx - r575 - 2026-06-18` |
 | Version / arch | 1.2 Trion `r208022`, **x86** (`bin32\`) | 10.0.2.13 `r575`, **x64** (`Bin64\`) |
 | Game logic DLL | `bin32\x2game.dll` | `Bin64\x2game.dll`, dev build `x2game-dev.dll` |
-| Physics | `bin32\cryphysics.dll` (**VMProtect-packed**; no unpacked copy on this machine) | `Bin64\cryphysics.dll` (client), `cryphysics_dedicate.dll` (zone) |
+| Physics | `bin32\cryphysics.dll` (VMProtect-packed entry stubs only; unpacked runtime dump and Ghidra decompile in `D:\aa-re\cryphysics\x86_12\`) | `Bin64\cryphysics.dll` (client), `cryphysics_dedicate.dll` (zone) |
 | Zone server | — | `dedicatedserver.exe` + `Bin64\*_dedicate.dll` (`x2game-dev_dedicate`, `cry3dengine_`, `cryaction_`, `cryaisystem_`, `cryentitysystem_`, `crynetwork_`, `cryphysics_dedicate`) |
 | Content | `game_pak` (worlds, models, navmesh) | `game_pak` (68 GB) |
 | Start it | `Scripts/live-stack.sh client` (our `aaemu-launcher`, ticket login) | `launch_aaemu.bat` (`-devmode`, targets an older local AAEmu setup); see `FAST_START.md` |
@@ -29,7 +29,7 @@ files in them (a client writing its own logs at runtime is fine). Put all RE out
   `game_pak` copy it is not plain SQLite). Its private-server guard (`daruguard.dll`) is only loaded by that
   project's own launcher, not by `archeage.exe` started directly. Static inventory: `D:\aa-re\aac\INVENTORY.md`.
 - **AA Classic 3.5 install** `C:\Games\AAClassic`: its `x2game.dll`/`xlcommon.dll` import the private server's
-  modules. **Do not run or dump it.**
+  modules.
 
 **Same engine, different game layer.** The CryPhysics in both clients is the same generation (48 of 55
 matched vtables have identical slot counts; same contact dispatch tables and default tuning values), so 10.x physics behaviour
@@ -93,14 +93,17 @@ Saved IDA databases (open these instead of re-analysing):
 | 10.x zone DLLs (`cry3dengine_`, `cryaction_`, `cryaisystem_`, `cryentitysystem_`, `crynetwork_`, `cryphysics_dedicate`) and `x2game-dev_dedicate.dll` (89,574 functions) | `D:\aa-re\zone\bin\` (decompiles of the six `_dedicate` DLLs in `D:\aa-re\zone\out\`; for `x2game-dev_dedicate` only indexes sit in `zone\bin\`, its `.c` is in `<10.x>\Bin64\decompiled\`) |
 | 10.x client `crynetwork.dll`, `xlcommon.dll`, `xlpack.dll` | `D:\aa-re\zone\client10\` (with `.c`) |
 | 1.2 `crysystem.dll`, `cryscriptsystem.dll` (not packed; no `.c`, IDA has no x86 decompiler) | `D:\aa-re\client12\ida\` |
-| 1.2 `cryphysics.dll` | **none** (VMProtect-packed, never unpacked here) |
+| 1.2 `cryphysics.dll` | Ghidra project `C:\AAEMU_DISK\aa-re\cryphysics\x86_12\ghidra` (`cp12`, `cryphysics_unpacked.dll`); decompile `D:\aa-re\cryphysics\x86_12\out\cryphysics.c` (2,841 functions); unpack steps in `D:\aa-re\cryphysics\NOTES.md` |
 
 Saved Ghidra projects (open these instead of re-analysing; the path is the `C:\AAEMU_DISK` form):
 
 | Project | Binaries | State |
 |---|---|---|
-| `C:\AAEMU_DISK\aa-re\client12\ghidra\proj-aa12u` (`aa12u`) | `x2game_unpacked.dll`, `crynetwork_unpacked.dll`, `archeage_unpacked.exe` (1.2) | **The 1.2 client logic oracle.** `x2game` fully analysed: 65,437 functions (18,961 named); `crynetwork` 11,698 / 1,957; `archeage` 176 / 32 (mostly packer data). The dumps keep the original import tables, so Win32/CRT names resolve. `.data` is absent from the runtime dump, so globals/RTTI descriptors resolve by reference only |
+| `C:\AAEMU_DISK\aa-re\client12\ghidra\proj-aa12u` (`aa12u`) | `x2game_unpacked.dll`, `crynetwork_unpacked.dll`, `archeage_unpacked.exe` (1.2) | **The 1.2 client logic oracle.** `x2game` fully analysed: 65,437 functions (18,961 labelled, but only 99 real names: the rest are compiler `Unwind@`/`Catch_All@` labels and thunks, so the game logic is unnamed); `crynetwork` 11,698 / 1,957; `archeage` 176 / 32 (mostly packer data). The dumps keep the original import tables, so Win32/CRT names resolve. `.data` is absent from the runtime dump, so globals/RTTI descriptors resolve by reference only |
 | `C:\AAEMU_DISK\aa-re\aac\ghidra\proj-aa30u` (`aa30u`) | `x2game_unpacked.dll`, `crynetwork_unpacked.dll` (3.0.4.2) | `x2game` 56,263 functions (131 named; external calls resolved with `aac\unpack\extmap_30.txt`), `crynetwork` 9,778 / 245 (externals unresolved: dumped too late) |
+| `C:\AAEMU_DISK\aa-re\client12\ghidra\proj-aa12-engine` (`aa12engine`) | `cryaction.dll` (15,108 functions / 5,753 named), `cryanimation.dll` (7,163 / 2,329), `cryentitysystem.dll` (4,282 / 1,626), `crygame.dll` (5,390 / 43) from `D:\AA1.2\bin32` (unpacked originals, copies in `D:\aa-re\client12\engine\`) | **The 1.2 engine/animation oracle** (CAnimatedCharacter, animation graph runtime, CExactPositioning, movement controller). Exports (functions CSV, strings, imports, exports, Ghidra decompile `.c`) in `D:\aa-re\client12\engine\out\`. Run files `client12\ghidra\run_engine*.cmd`. Separate from `proj-aa12u` on purpose. |
+| `C:\AAEMU_DISK\aa-re\client12\ghidra\proj-aa12-engine2` (`aa12engine2`) | 11 remaining 1.2 engine DLLs (unpacked originals): `x2ui`, `cryfont`, `crysoundsystem`, `crymovie`, `cryinput`, `x2common`, `xlcommon`, `xlleveldb`, `cryaisystem`, `cry3dengine`, `cryrenderd3d10` | Fully analysed and decompiled: 41,433 functions / 15,655 named, 0 decompile failures (40,954 emitted; thunks/externals skipped). Exports in `D:\aa-re\client12\engine2\out\<dll>.{c,funcs.csv,strings.txt,imports.txt,exports.txt}`; run files `client12\ghidra\run_engine2.cmd` / `run_engine2_post.cmd`; logs `engine2_<dll>.log`. `x2ui` (UI widget framework) done first |
+| `C:\AAEMU_DISK\aa-re\client12\out-x2game\` | Plain-file export of the whole 1.2 `x2game` (from `proj-aa12u`, read-only): `x2game.dll.c` (65,230 functions decompiled, 0 failures), `funcs.csv`, `strings.txt`, `strings-xrefs.tsv` (string -> functions), `calls.tsv` (caller -> callee). Run file `client12\ghidra\run_x2game_export.cmd`. Use these instead of opening the Ghidra project, so many workers can search in parallel |
 
 `proj-aa12` (packed 1.2 `x2game.dll` as shipped) and `proj-smoke` no longer exist.
 
@@ -138,6 +141,7 @@ any of this inside the client folders; outputs go to `D:\aa-re\`.
 | `rust/crates/aaemu-game/PORTING.md` | Per-subsystem status, deviations, C# and engine bugs mirrored; "systems::ai collision" = how physics is wired into the game server |
 | `rust/crates/aaemu-game/CONTRIBUTING-PORT.md` | Game-crate module layout, object model, locking, test conventions |
 | `rust/docs/client/LUA-DRIVER.md` | Running Lua inside the 1.2 client (addresses, design, usage) |
+| `D:\aa-re\aac\RE-MAP-30.md` | 3.0.4.2 client RE map: 1.2 -> 3.0 function matches (`map30\map30.csv`, `m12_<addr>` names in `proj-aa30u`), subsystem coverage, 3.0-only clusters. Note: the 1.2 project's "18,961 named" are almost all `Unwind@`/`Catch_All@` labels (99 real names) |
 | `rust/LIVE-TESTING.md` | Private MySQL, live servers, headless test client, C#-vs-Rust parity method |
 | `rust/PORT-AUDIT.md` (+ `rust/tools/port_audit/`) | Every former C# file mapped to its Rust counterpart |
 | `rust/CLIENT-DB-GAP-AUDIT.md` | Server vs. 1.2 client + databases gap audit (packets, unused tables, hardcoded values, quests, Ghidra unpack evidence); supersedes `rust/CLIENT-FEATURE-GAPS.md` |
@@ -163,7 +167,7 @@ Present on this machine:
 
 | Path | How to get it back |
 |---|---|
-| `D:\aa-re\cryphysics\` (`x64_10x`, `x86_12`, `compare\func_match.csv`, `unpack_x86`, `harness`, `work_x64`, `work_x86`) | Empty. 10.x side: use `zone\bin\cryphysics_dedicate.dll.i64` and `zone\out\`. The 1.2 `cryphysics.dll` is VMProtect-packed with no unpacked copy and the function match table is gone (`rust/docs/physics/CRYPHYSICS-MAP.md` keeps the addresses) |
+| `D:\aa-re\cryphysics\` (`x64_10x`, `x86_12`, `compare\func_match.csv`, `unpack_x86`, `harness`, `work_x64`, `work_x86`) | Rebuilt 2026-10-19 (`NOTES.md`): `x86_12\` = 1.2 unpacked DLL + Ghidra decompile (2,841 functions), `unpack_x86\` = runtime-dump unpack tools and captures, `x64_10x\` = 10.x client DLL + IDA decompile, `compare\func_match.csv` = 1,281 matched 1.2/10.x function pairs. `harness`, `work_x64`, `work_x86` were not rebuilt (oracle sources are in the repo) |
 | `D:\aa-re\zone\agent_proto\`, `zone\agent_geom\` (WZ/ZW protocol notes, `sub_cgf.md`, `sub_navmesh.md`, `pakx.py`, `cgf.py`, `baiparse.py`, per-cell data) | Gone. The WZ/ZW tables are rebuilt in `zone\feasibility\`; for pak extraction use `aac\paktool` / `zone\feasibility\paktool` (wrappers over `aaemu_commons::aapak`) |
 | `D:\aaemu-target\phys-bvtree\cgf_corpus\` (1,500 models with physics blobs, `AAEMU_PHYS_CGF_DIR`) | Rebuild the corpus by extracting models from the 1.2 `D:\AA1.2\game_pak` |
 | `physoracle.exe` build (`AAEMU_PHYS_ORACLE`) | Build from `rust/crates/aaemu-physics/oracle` with MSVC 2022 (`build.bat`) |
