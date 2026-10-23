@@ -16,7 +16,7 @@ local ALLOWED_TYPES = {
 local ALLOWED_ACTIONS = {
   OnClick = true, OnDragStart = true, OnDragStop = true,
   OnTextChanged = true, OnEnterPressed = true, OnShow = true, OnHide = true,
-  OnWheelUp = true, OnWheelDown = true,
+  OnWheelUp = true, OnWheelDown = true, OnEvent = true,
 }
 
 local Mock = {}
@@ -122,6 +122,15 @@ function Mock.new(opts)
   function Widget.methods:StopMovingOrSizing() self._moving = false end
   function Widget.methods:CreateChildWidget(widget_type, id, _index, _auto)
     return make_widget(widget_type, id, self)
+  end
+  function Widget.methods:RegisterEvent(name)
+    if type(name) ~= "string" or name == "" then
+      error("RegisterEvent requires an event name")
+    end
+    local events = rawget(self, "_events") or {}
+    rawset(self, "_events", events)
+    events[name] = true
+    return true
   end
 
   local interface = {}
@@ -339,6 +348,23 @@ function Mock.new(opts)
   end
   function mock:advance(ms, count)
     for _ = 1, count or 1 do self:update(ms or 1000) end
+  end
+  function mock:event(name, args)
+    self.event_log = self.event_log or {}
+    self.event_log[#self.event_log + 1] = name
+    args = args or {}
+    local delivered = 0
+    for _, widget in pairs(self.widgets) do
+      local events = rawget(widget, "_events")
+      if events and events[name] then
+        local handler = widget._handlers.OnEvent
+        if handler then
+          handler(widget, name, unpack(args))
+          delivered = delivered + 1
+        end
+      end
+    end
+    return delivered
   end
   function mock:set_unit(name, value) self.units[name] = value end
   function mock:remove_unit(name) self.units[name] = nil end

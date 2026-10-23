@@ -6,6 +6,8 @@ local MODULES = {
   "aaemu_quest_guide/ui",
   "aaemu_quest_guide/pages",
   "aaemu_quest_guide/nav",
+  "aaemu_quest_guide/progress",
+  "aaemu_quest_guide/checklist",
   "aaemu_quest_guide/recorder",
   "aaemu_quest_guide/catalog",
   "aaemu_quest_guide/util",
@@ -63,7 +65,7 @@ local function Load()
   instance_state = state
   global_env()[GLOBAL_KEY] = state
   pcall(function()
-    api.Log:Info("AAEmu Quest Guide 0.1.0 loaded. Expected data 1.2; observations are Classic.")
+    api.Log:Info("AAEmu Quest Guide 0.2.0 loaded. Expected data 1.2; observations are Classic.")
   end)
   return state
 end
@@ -90,7 +92,7 @@ local metadata = {
   name = "AAEmu 1.2 Quest Guide",
   desc = "Browse expected 1.2 quest data, observe Classic outcomes, and opt in to unverified 1.2 waypoints.",
   author = "stsiakal",
-  version = "0.1.0",
+  version = "0.2.0",
   OnLoad = Load,
   OnUnload = Unload,
   OnSettingToggle = SettingToggle,

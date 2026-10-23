@@ -1,8 +1,9 @@
 # AAEmu 1.2 Quest Guide (AAClassic addon)
 
-Version 0.1.0. An ArcheAge Classic Lua addon for browsing **expected 1.2 quest
-data** from the AAEmu static database. It never treats those values as Classic
-observations and never performs game actions.
+Version 0.2.0. An ArcheAge Classic Lua addon for browsing **expected 1.2 quest
+data** from the AAEmu static database, tracking a character's quest checklist
+and opting in to unverified 1.2 waypoints. It never treats those values as
+Classic observations and never performs game actions.
 
 ## Manual installation (exact)
 
@@ -24,16 +25,33 @@ manually. A marketplace listing would need separate publishing and review.
 ## Controls
 
 - **Quest ID + Open**: open any catalog quest by numeric ID.
-- **Filter + Find**: bounded search by ID/name/status/category/level; up to 200
-  matches, then Prev/Next Quest browses the filtered list.
+- **Checklist**: catalog list, 16 rows per page. Each row shows the status mark
+  (`[x]` completed, `[m]` manual done mark, `[~]` in progress, `[ ]` not
+  completed), quest id, Classic title (or fallback), level, category/zone and
+  the start NPC (or the start kind). Click a row to open the quest; click **Go**
+  on the row to start the waypoint for its accept step.
+- **Checklist filters**: **Not completed** (default), **Completed**, **All**,
+  **Hide placeholders** (default on for empty/`dummy`/`Quest <n>`/`(Not Used)`
+  names) and **Hide not in 3.0** (default off; available only when the catalog
+  was built with a reference database). The header shows completed / visible
+  counts for the page, the page number and the total matching the filters.
+- **Filter + Find**: bounded search by ID/name/status/category/level/start NPC;
+  up to 200 matches, then Prev/Next Quest browses the filtered list. While the
+  checklist is open, Find applies the same text filter to the checklist instead.
 - **Prev/Next Quest**: move through the current browser list.
+- **< / >**: page the current quest text page or the checklist.
 - **Route 330>6198**: opens the candidate starter list. It is **unverified, not
   validated and not optimal**. Quest 330 should be taken before 6198.
 - **Step / Requirements / Rewards / Sources / Branches / Info** pages, with
   `<` and `>` text paging. No page is thousands of lines.
 - **Prev/Next Step** advances the displayed step. Next Step records a **manual
-  acknowledgement only**; it is not completion. Classic completion comes only
-  from `api.Quest:IsCompleted`.
+  acknowledgement only**; it is not completion.
+- **Mark done / Unmark**: separate per-quest manual mark stored as `[m]`; it is
+  never presented as client completion and can be removed at any time.
+- **Go to giver**: selects the quest's accept step (start NPC/doodad/item) and
+  starts the existing opt-in 1.2-candidate navigation for its first world
+  location. A start with no 1.2 position (`no_spawn`, `dynamic_spawn`, item or
+  other non-world start) is reported and navigation stays off.
 - **Start/Stop recording**, **Snapshot player/target**, **Save/Export**, and
   report buttons **Blocked / Missing NPC / Missing doodad / Wrong outcome** with
   an optional note. Reports are user annotations, not confirmed game events.
@@ -58,19 +76,27 @@ manually. A marketplace listing would need separate publishing and review.
 - If a write fails, records stay in memory for **Retry** via Save/Export. When
   the buffer is full, recording pauses instead of silently dropping. If the
   client exits while writes keep failing, unsaved records can be lost.
-- Addon settings (session counter, form labels, per-character/context resume)
-  are stored by the client under the addon ID `aaemu_quest_guide`.
-- Resume is scoped to player name + declared server/context + catalog database
-  hash. A manual step acknowledgement is restored; completion is always re-read
-  from the Classic client.
+- Addon settings (session counter, form labels, per-character/context resume,
+  checklist progress) are stored by the client under the addon ID
+  `aaemu_quest_guide`.
+- Resume and checklist progress are scoped to player name + declared
+  server/context + catalog database hash. A manual step acknowledgement is
+  restored; live completion is always re-read from the Classic client.
+- Checklist completion is the union of `api.Quest:IsCompleted` (re-read when the
+  checklist opens or **Refresh** is pressed) and quest ids recorded as completed
+  from turn-in/reward events: a `CHAT_MSG_QUEST` quest id followed within 60 s
+  by a quest reward item (`ADDED_ITEM` source 35) or a turn-in item removal
+  (`REMOVED_ITEM` source 35). No other event or proximity turns a quest green.
+- Manual **Mark done** / **Unmark** is stored separately from the observed set,
+  shown as `[m]`, and is never counted as `api.Quest` completion.
 
 ## Data and API limits
 
 - Expected data is **1.2** from `compact.sqlite3` + `Data/Worlds`; provenance
   (DB hash, generator commit) is in `data/meta.lua` and the package manifest.
-- Compact quest names and context texts are Korean **internal 1.2 data**. The
-  Classic localized title/body are read separately from `api.Quest`; the
-  fallback is `Quest#<id>`.
+- Compact quest names, start NPC/doodad names and context texts are Korean
+  **internal 1.2 data**. The Classic localized title/body are read separately
+  from `api.Quest`; the fallback is `Quest#<id>`.
 - 1.2 `Data/Worlds` positions are **unverified candidates**, never automatic
   Classic coordinates. There is no heading API and no proximity completion.
 - There is no current-world API; candidate world matching is a manual label
@@ -78,6 +104,11 @@ manually. A marketplace listing would need separate publishing and review.
   waypoint. Scheduled locations stay labelled conditional.
 - Requirements are displayed, not evaluated as pass/fail. The addon does not
   assume objective counters; only documented reads are sampled.
+- `api.Quest:IsCompleted` can still read false immediately at turn-in. That is
+  why the persisted turn-in/reward observation exists; it is evidence from the
+  client's reward events, not a fabricated completion.
+- The reference database only adds a coverage flag (`in_ref`, e.g. present in
+  the 3.0 reference catalog). It does not make 1.2 data Classic truth.
 - No global world/doodad enumeration, no telemetry, no network upload, no chat
   or game actions.
 
@@ -93,12 +124,22 @@ manually. A marketplace listing would need separate publishing and review.
 6. Turn the camera until the waypoint is behind it; confirm **Turn to find
    waypoint** appears without a direction.
 7. Capture player/target, then clear navigation.
-8. Start recording, wait 2+ seconds, save/export, and check the exact relative
-   path shown and the file under `observations/`.
-9. Click a report button with a note; confirm it is tagged as a user annotation.
-10. Hide the main window; confirm the **Quest Guide** button restores it.
+8. Open **Checklist**; confirm 16-row pages, the status marks and the header
+   counts; toggle **Hide placeholders** and **Hide not in 3.0**.
+9. Turn in a quest; reopen **Checklist** and confirm `[x]` without relying on
+   `IsCompleted` alone. Reload the UI and confirm the mark persisted.
+10. **Mark done** a quest, confirm `[m]`, then **Unmark** it.
+11. Select a start NPC row and press **Go**; confirm the unverified banner.
+    Press **Go to giver** on an item-start quest and confirm the explicit
+    "no 1.2 world position" message with navigation off.
+12. Start recording, wait 2+ seconds, save/export, and check the exact relative
+    path shown and the file under `observations/`.
+13. Click a report button with a note; confirm it is tagged as a user annotation.
+14. Hide the main window; confirm the **Quest Guide** button restores it.
 
 ## Build (developers)
 
 The package contains no Python and no SQLite/client assets. It is produced from
 the builder and this runtime source; see `rust/tools/classic_quest_guide/`.
+Pass `--ref-db <compact.sqlite3>` to add per-quest `in_ref` coverage and the
+reference hash to `data/meta.lua`/`manifest.json` and the checklist filter.

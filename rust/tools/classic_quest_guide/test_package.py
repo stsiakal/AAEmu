@@ -24,7 +24,7 @@ import build  # noqa: E402
 import package_addon  # noqa: E402
 from test_build import make_fixture  # noqa: E402
 
-VERSION = "0.1.0"
+VERSION = "0.2.0"
 
 
 def file_bytes(root: Path) -> dict[str, bytes]:
@@ -84,7 +84,7 @@ class PackageTests(unittest.TestCase):
             self.assertTrue(name.startswith("aaemu_quest_guide/"), name)
         package = self.manifest["package"]
         self.assertEqual(package["version"], VERSION)
-        self.assertEqual(package["zip"], "aaemu_quest_guide-0.1.0.zip")
+        self.assertEqual(package["zip"], "aaemu_quest_guide-0.2.0.zip")
         self.assertEqual(self.summary["package"]["zip_sha256"],
                          package["zip_sha256"])
 

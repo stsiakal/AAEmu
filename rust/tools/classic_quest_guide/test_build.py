@@ -9,8 +9,10 @@ edge cases. Real-data generation is exercised by the build command, not here.
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import os
+from contextlib import redirect_stdout
 from pathlib import Path
 import shutil
 import sqlite3
@@ -268,6 +270,72 @@ def make_fixture(root: Path):
     conn.commit()
     conn.close()
     return db, worlds
+
+
+def extend_fixture(db: Path, count: int = 20):
+    """Add checklist rows, an item start and placeholder contexts."""
+    conn = sqlite3.connect(db)
+    context = (
+        "INSERT INTO quest_contexts (id,name,category_id,LEVEL,REPEATABLE,selective,"
+        "successive,restart_on_fail,let_it_done,chapter_idx,quest_idx,milestone_id,"
+        "zone_id,degree,grade_id,translate) VALUES (?,?,3,10,'f','f','f','f','f',"
+        "NULL,NULL,NULL,10,1,1,'t')"
+    )
+    try:
+        ids = [200 + index for index in range(count)] + [230, 240, 241]
+        names = {
+            230: "Item Start Quest",
+            240: "dummy",
+            241: "Quest 999",
+        }
+        for quest_id in ids:
+            conn.execute(context, (quest_id, names.get(
+                quest_id, "Checklist Quest %d" % quest_id)))
+        for index in range(count):
+            quest_id = 200 + index
+            conn.execute(
+                "INSERT INTO quest_components (id,quest_context_id,component_kind_id,"
+                "or_unit_reqs,npc_id,npc_spawner_id) VALUES (?,?,2,'f',0,0)",
+                (5000 + quest_id, quest_id))
+            conn.execute(
+                "INSERT INTO quest_components (id,quest_context_id,component_kind_id,"
+                "or_unit_reqs,npc_id,npc_spawner_id) VALUES (?,?,4,'f',0,0)",
+                (5100 + quest_id, quest_id))
+            conn.execute(
+                "INSERT INTO quest_acts VALUES (?,?,?,'QuestActConAcceptNpc')",
+                (6000 + quest_id, 5000 + quest_id, 6100 + quest_id))
+            conn.execute(
+                "INSERT INTO quest_act_con_accept_npcs VALUES (?, 500)",
+                (6100 + quest_id,))
+            conn.execute(
+                "INSERT INTO quest_acts VALUES (?,?,?,'QuestActObjMonsterHunt')",
+                (6200 + quest_id, 5100 + quest_id, 6300 + quest_id))
+            conn.execute(
+                "INSERT INTO quest_act_obj_monster_hunts VALUES (?, 500, 1)",
+                (6300 + quest_id,))
+        for quest_id in (230, 240, 241):
+            conn.execute(
+                "INSERT INTO quest_components (id,quest_context_id,component_kind_id,"
+                "or_unit_reqs,npc_id,npc_spawner_id) VALUES (?,?,2,'f',0,0)",
+                (5000 + quest_id, quest_id))
+            if quest_id == 230:
+                conn.execute(
+                    "INSERT INTO quest_acts VALUES (?,?,?,'QuestActConAcceptItem')",
+                    (6000 + quest_id, 5000 + quest_id, 6100 + quest_id))
+                conn.execute(
+                    "INSERT INTO quest_act_con_accept_items VALUES (?, 900)",
+                    (6100 + quest_id,))
+            else:
+                conn.execute(
+                    "INSERT INTO quest_acts VALUES (?,?,?,'QuestActConAcceptNpc')",
+                    (6000 + quest_id, 5000 + quest_id, 6100 + quest_id))
+                conn.execute(
+                    "INSERT INTO quest_act_con_accept_npcs VALUES (?, 500)",
+                    (6100 + quest_id,))
+        conn.commit()
+    finally:
+        conn.close()
+    return ids
 
 
 def file_bytes(root: Path) -> dict[str, bytes]:
@@ -537,6 +605,116 @@ class BuilderTests(unittest.TestCase):
             (self.output / "summary.json").read_text(encoding="utf-8"))
         self.assertIn("generated_at", manifest)
         self.assertEqual(manifest["generated_at"], summary["generated_at"])
+
+    def add_contexts(self, names):
+        conn = sqlite3.connect(self.db)
+        try:
+            template = (
+                "INSERT INTO quest_contexts (id,name,category_id,LEVEL,REPEATABLE,"
+                "selective,successive,restart_on_fail,let_it_done,chapter_idx,"
+                "quest_idx,milestone_id,zone_id,degree,grade_id,translate) "
+                "VALUES (?,?,3,1,'f','f','f','f','f',NULL,NULL,NULL,10,1,1,'t')"
+            )
+            for quest_id, name in names:
+                conn.execute(template, (quest_id, name))
+            conn.commit()
+        finally:
+            conn.close()
+
+    def make_ref_db(self, ids):
+        path = self.root / "reference.sqlite3"
+        conn = sqlite3.connect(path)
+        try:
+            conn.execute("CREATE TABLE quest_contexts (id INTEGER PRIMARY KEY)")
+            conn.executemany("INSERT INTO quest_contexts VALUES (?)",
+                             [(quest_id,) for quest_id in ids])
+            conn.commit()
+        finally:
+            conn.close()
+        return path
+
+    def test_placeholder_names_are_flagged(self):
+        self.add_contexts([
+            (105, "dummy"),
+            (106, "Quest 106"),
+            (107, "(Not Used)"),
+            (108, "미사용"),
+            (109, "Real Named Quest"),
+            (110, "Unit Req Dummy"),
+        ])
+        manifest, summary = self.build()
+        index = self.read_index()
+        entries = {entry["id"]: entry for entry in lua_values(index["quests"])}
+        self.assertTrue(entries[105]["placeholder"])
+        self.assertTrue(entries[106]["placeholder"])
+        self.assertTrue(entries[107]["placeholder"])
+        self.assertTrue(entries[108]["placeholder"])
+        self.assertFalse(entries[109]["placeholder"])
+        self.assertTrue(entries[110]["placeholder"])
+        self.assertFalse(entries[100]["placeholder"])
+        self.assertEqual(summary["placeholders"], 5)
+        self.assertEqual(manifest["catalog"]["placeholders"], 5)
+        self.assertTrue(self.read_quest(105)["placeholder"])
+
+    def test_reference_database_flags_and_metadata(self):
+        ref = self.make_ref_db([100, 103])
+        ref_hash = hashlib.sha256(ref.read_bytes()).hexdigest()
+        manifest, summary = self.build(ref_db_path=ref)
+        self.assertEqual(manifest["inputs"]["ref_db"], {
+            "file": "reference.sqlite3",
+            "sha256": ref_hash,
+            "bytes": ref.stat().st_size,
+            "quest_contexts": 2,
+        })
+        self.assertEqual(summary["reference"], {
+            "sha256": ref_hash,
+            "quest_contexts": 2,
+            "in_ref": 2,
+            "not_in_ref": 2,
+        })
+        index = self.read_index()
+        self.assertEqual(index["ref"]["quest_contexts"], 2)
+        self.assertEqual(index["ref"]["not_in_ref"], 2)
+        entries = {entry["id"]: entry for entry in lua_values(index["quests"])}
+        self.assertTrue(entries[100]["in_ref"])
+        self.assertTrue(entries[103]["in_ref"])
+        self.assertFalse(entries[101]["in_ref"])
+        self.assertTrue(self.read_quest(100)["in_ref"])
+        self.assertFalse(self.read_quest(101)["in_ref"])
+        meta = LuaRuntime(unpack_returned_tuples=True).execute(
+            (self.output / "aaemu_quest_guide" / "data" / "meta.lua")
+            .read_text(encoding="utf-8"))
+        self.assertEqual(meta["inputs"]["ref_db"]["sha256"], ref_hash)
+
+    def test_reference_database_without_quest_contexts_is_rejected(self):
+        ref = self.root / "bad-reference.sqlite3"
+        conn = sqlite3.connect(ref)
+        try:
+            conn.execute("CREATE TABLE unrelated (id INTEGER PRIMARY KEY)")
+            conn.commit()
+        finally:
+            conn.close()
+        with self.assertRaises(build.BuildError):
+            self.build(ref_db_path=ref)
+        missing = self.root / "missing-reference.sqlite3"
+        with self.assertRaises(build.BuildError):
+            self.build(ref_db_path=missing)
+
+    def test_cli_accepts_reference_database(self):
+        ref = self.make_ref_db([100])
+        out = self.root / "cli-out"
+        stdout = io.StringIO()
+        with redirect_stdout(stdout):
+            code = build.main([
+                "--db", str(self.db), "--worlds", str(self.worlds),
+                "--output", str(out), "--ref-db", str(ref),
+                "--code-commit", "test-commit", "--data-only",
+            ])
+        self.assertEqual(code, 0)
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(payload["reference"]["in_ref"], 1)
+        self.assertEqual(payload["reference"]["not_in_ref"], 3)
+        self.assertTrue((out / "manifest.json").is_file())
 
     def test_lua_string_escape_edges(self):
         self.assertEqual(build.lua_string('a"b\\c'), '"a\\"b\\\\c"')
