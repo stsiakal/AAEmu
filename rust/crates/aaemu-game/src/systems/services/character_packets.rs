@@ -672,13 +672,13 @@ impl ClientPacket for CSRequestUIDataPacket {
     }
 }
 
-/// Highest UI data type accepted. The 1.2 client uses 1 (options), 2 (key bindings) and 5
-/// (quest / roadmap data); 16 leaves room without making the `options` map unbounded.
-pub const MAX_UI_DATA_TYPE: u16 = 16;
-/// Largest UI data value accepted. The values observed from the real 1.2 client are 280,
-/// 4 708 (key bindings) and 313 bytes; 16 KiB is 3.5x the largest and stays below the 64 KiB
-/// `options.value` TEXT column.
-pub const MAX_UI_DATA_LEN: usize = 16 * 1024;
+/// Highest UI data type accepted. The native 1.2 table has seven entries
+/// (`0 system_option` .. `6 common_local_data_1`); the client requests 1 (character options) and
+/// 2 (key bindings) with `CSRequestUIData` and the server also pushes 5 (common server data).
+pub const MAX_UI_DATA_TYPE: u16 = 6;
+/// Largest UI data value accepted. The native sender serialises into an 8192-byte buffer with a
+/// trailing NUL (`0x392f3350` / `0x39217640`), so the client itself caps a save at 8191 bytes.
+pub const MAX_UI_DATA_LEN: usize = 8191;
 
 /// `CSSaveUIDataPacket` -> `ActiveChar.SetOption(type, data)`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1042,7 +1042,28 @@ mod tests {
         .handle(&server, &mut a.conn)
         .await
         .unwrap();
-        assert_eq!(a.drain_ops(), vec![sc::SCResponseUIDataPacket]);
+        assert_eq!(
+            a.drain(),
+            vec![(
+                sc::SCResponseUIDataPacket,
+                vec![1, 0, 0, 0, 5, 0, 3, 0, b'x', b'=', b'1', 4, 0, 0, 0]
+            )]
+        );
+        // No stored blob: the response carries the default empty string.
+        CSRequestUIDataPacket {
+            ui_data_type: 1,
+            id: 1,
+        }
+        .handle(&server, &mut a.conn)
+        .await
+        .unwrap();
+        assert_eq!(
+            a.drain(),
+            vec![(
+                sc::SCResponseUIDataPacket,
+                vec![1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0]
+            )]
+        );
         CSIdleStatusPacket { status: true }
             .handle(&server, &mut a.conn)
             .await
@@ -1098,9 +1119,69 @@ mod tests {
         .await
         .unwrap();
         assert!(
-            pa.data().get_option(1).len() <= 16 * 1024,
+            pa.data().get_option(1).len() <= MAX_UI_DATA_LEN,
             "an oversized UI data value was stored"
         );
+        // Exactly the native buffer limit is accepted; one byte more is not.
+        CSSaveUIDataPacket {
+            ui_data_type: 2,
+            id: 1,
+            data: "y".repeat(MAX_UI_DATA_LEN),
+        }
+        .handle(&server, &mut a.conn)
+        .await
+        .unwrap();
+        assert_eq!(pa.data().get_option(2).len(), MAX_UI_DATA_LEN);
+        CSSaveUIDataPacket {
+            ui_data_type: 2,
+            id: 1,
+            data: "z".repeat(MAX_UI_DATA_LEN + 1),
+        }
+        .handle(&server, &mut a.conn)
+        .await
+        .unwrap();
+        assert_eq!(pa.data().get_option(2).len(), MAX_UI_DATA_LEN);
         assert!(a.drain_ops().is_empty());
+    }
+
+    #[tokio::test]
+    async fn ui_data_survives_a_relog() {
+        let server = test_server();
+        let mut a = TestClient::new(&server, 1, 1001);
+        let pa = spawn_player(&server, &a, test_character(1, "Al", 10.0, 10.0), 0x100);
+        a.conn.active_char = Some(pa.clone());
+        a.drain();
+        CSSaveUIDataPacket {
+            ui_data_type: 2,
+            id: 1,
+            data: "bindings".into(),
+        }
+        .handle(&server, &mut a.conn)
+        .await
+        .unwrap();
+
+        // A relog loads the character from `character_ui_data`; only the loaded `options` map
+        // reaches the new connection.
+        let mut reloaded = test_character(1, "Al", 10.0, 10.0);
+        reloaded.options = pa.data().options.clone();
+        let mut b = TestClient::new(&server, 3, 1001);
+        b.conn.characters = vec![reloaded];
+        CSRequestUIDataPacket {
+            ui_data_type: 2,
+            id: 1,
+        }
+        .handle(&server, &mut b.conn)
+        .await
+        .unwrap();
+        assert_eq!(
+            b.drain(),
+            vec![(
+                sc::SCResponseUIDataPacket,
+                vec![
+                    1, 0, 0, 0, 2, 0, 8, 0, b'b', b'i', b'n', b'd', b'i', b'n', b'g', b's', 9, 0,
+                    0, 0
+                ]
+            )]
+        );
     }
 }

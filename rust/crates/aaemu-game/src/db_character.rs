@@ -250,20 +250,40 @@ pub async fn load_character(
     c.experience = experience;
     // PostUpdateCurrentHp(character, 0, Hp, Unknown): no HP triggers on characters.
 
-    let rows = sqlx::query("SELECT `key`, `value` FROM `options` WHERE `owner` = ?")
-        .bind(character_id)
-        .fetch_all(pool)
-        .await?;
+    load_character_ui_data(pool, character_id, &mut c).await?;
+    Ok(Some((c, delete_time)))
+}
+
+/// `Character.Load` UI-data rows (`character_ui_data`): the opaque per-type client blobs
+/// (`1` character options, `2` key bindings, `5` common server data).
+pub async fn load_character_ui_data(
+    pool: &MySqlPool,
+    character_id: u32,
+    c: &mut Character,
+) -> Result<()> {
+    c.options.clear();
+    let rows = sqlx::query(
+        "SELECT `ui_data_type`, `data` FROM `character_ui_data` WHERE `character_id` = ?",
+    )
+    .bind(character_id)
+    .fetch_all(pool)
+    .await?;
     for r in rows {
-        let key: String = r.try_get("key")?;
-        let value: String = r.try_get("value")?;
-        let key = key
-            .trim()
-            .parse::<u16>()
-            .map_err(|e| GameError::Protocol(format!("options key {key:?}: {e}")))?;
+        let key: u16 = r.try_get("ui_data_type")?;
+        let value: String = r.try_get("data")?;
         c.options.insert(key, value);
     }
-    Ok(Some((c, delete_time)))
+    Ok(())
+}
+
+/// Removes a deleted character's UI data. Called when the character's deletion is finalised;
+/// the soft-deleted `characters` row itself is kept.
+pub async fn delete_character_ui_data(pool: &MySqlPool, character_id: u32) -> Result<()> {
+    sqlx::query("DELETE FROM `character_ui_data` WHERE `character_id` = ?")
+        .bind(character_id)
+        .execute(pool)
+        .await?;
+    Ok(())
 }
 
 /// `GameConnection.LoadAccount` (characters; houses are a later phase). Characters whose
@@ -334,6 +354,7 @@ pub async fn check_for_deleted_characters_deletion(
             // mail returns are a later phase.
             crate::systems::housing::delete_character_assets(server, character.id);
             crate::systems::social::session::delete_character_assets(server, character).await;
+            delete_character_ui_data(&server.db, character.id).await?;
             if let Some(p) = packets {
                 p.push(Box::new(crate::packets::world::SCCharacterDeletedPacket {
                     character_id: character.id,
@@ -955,12 +976,14 @@ pub async fn save_character(
     }
 
     for (k, v) in &c.options {
-        sqlx::query("REPLACE INTO `options` (`key`,`value`,`owner`) VALUES (?,?,?)")
-            .bind(k)
-            .bind(v)
-            .bind(c.id)
-            .execute(&mut **tx)
-            .await?;
+        sqlx::query(
+            "REPLACE INTO `character_ui_data` (`character_id`,`ui_data_type`,`data`) VALUES (?,?,?)",
+        )
+        .bind(c.id)
+        .bind(k)
+        .bind(v)
+        .execute(&mut **tx)
+        .await?;
     }
     for a in &c.abilities.abilities {
         sqlx::query("REPLACE INTO abilities(`id`,`exp`,`owner`) VALUES (?, ?, ?)")
@@ -1429,6 +1452,71 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "requires private MySQL3317 via AAEMU_TEST_MYSQL; uses only temporary tables"]
+    async fn private_mysql_ui_data_survives_save_reload_and_delete() {
+        use crate::systems::social::achievement_persistence::temporary_shadow_definition;
+
+        let Ok(url) = std::env::var("AAEMU_TEST_MYSQL") else {
+            return;
+        };
+        let options = MySqlConnectOptions::from_str(&url).expect("valid private MySQL URL");
+        assert_eq!(
+            options.get_port(),
+            3317,
+            "only private MySQL3317 is allowed"
+        );
+        let pool = MySqlPoolOptions::new()
+            .max_connections(1)
+            .connect_with(options)
+            .await
+            .expect("private MySQL");
+        for table in [
+            "characters",
+            "character_active_buffs",
+            "character_records",
+            "character_achievements",
+            "accounts",
+            "character_ui_data",
+        ] {
+            let (_, definition): (String, String) =
+                sqlx::query_as(&format!("SHOW CREATE TABLE `{table}`"))
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            assert!(definition.starts_with("CREATE TABLE "));
+            sqlx::query(&temporary_shadow_definition(&definition))
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+
+        let mut character = Character::new(1, 1, UnitCustomModelParams::default());
+        character.unit.name = "UiDataFixture".into();
+        character.created = Utc::now().timestamp();
+        character.options.insert(1, "options-blob".into());
+        character.options.insert(2, "x".repeat(8191));
+        let mut transaction = pool.begin().await.unwrap();
+        save_character(&mut transaction, &mut character, Utc::now().timestamp())
+            .await
+            .unwrap();
+        transaction.commit().await.unwrap();
+
+        let mut reloaded = Character::new(1, 1, UnitCustomModelParams::default());
+        load_character_ui_data(&pool, 1, &mut reloaded)
+            .await
+            .unwrap();
+        assert_eq!(reloaded.options, character.options);
+
+        delete_character_ui_data(&pool, 1).await.unwrap();
+        let mut deleted = Character::new(1, 1, UnitCustomModelParams::default());
+        load_character_ui_data(&pool, 1, &mut deleted)
+            .await
+            .unwrap();
+        assert!(deleted.options.is_empty());
+        pool.close().await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires private MySQL3317 via AAEMU_TEST_MYSQL; uses only temporary tables"]
     async fn private_mysql_direct_save_failure_keeps_receipts_and_bookkeeping() {
         use crate::systems::social::achievement_persistence::{
             load_achievement_state, temporary_shadow_definition,
@@ -1744,7 +1832,7 @@ mod tests {
             "item_containers",
             "auction_house",
             "characters",
-            "options",
+            "character_ui_data",
             "abilities",
             "actabilities",
             "appellations",
@@ -1864,7 +1952,7 @@ mod tests {
             "items",
             "item_containers",
             "characters",
-            "options",
+            "character_ui_data",
             "abilities",
             "actabilities",
             "appellations",
