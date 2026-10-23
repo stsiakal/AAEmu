@@ -1,0 +1,144 @@
+{
+  "name": "mount_ride",
+  "description": "Summon and mount the Brown Lilyut Horse, then drive forward, brake, turn, reverse and jump. Metrics come from the CSMoveUnit field trace (position-derived speed, decel, turn rate, jump height and the velocity field).",
+  "setup": [
+    {
+      "name": "setup_tutorial",
+      "action": "lua",
+      "code": "if tutorial and tutorial.window then tutorial.window:Show(false) end",
+      "wait": 0.5
+    },
+    {
+      "name": "setup_dismiss",
+      "action": "lua",
+      "code": "if X2Mate and X2Mate.IsPlayerPetExists and X2Mate:IsPlayerPetExists() then X2Mate:DismissPet() end",
+      "wait": 2
+    },
+    {
+      "name": "setup_horse",
+      "action": "gm",
+      "command": "item add self 8159 1",
+      "wait": 2
+    },
+    {
+      "name": "setup_move",
+      "action": "move",
+      "x": 10512,
+      "y": 15585,
+      "z": 232,
+      "wait": 10
+    }
+  ],
+  "steps": [
+    {
+      "name": "summon",
+      "action": "use_item",
+      "item": 8159,
+      "wait": 10
+    },
+    {
+      "name": "mount",
+      "action": "mount",
+      "wait": 4
+    },
+    {
+      "name": "run",
+      "action": "key_down",
+      "key": "w",
+      "hold_ms": 7000,
+      "wait": 3.2
+    },
+    {
+      "name": "decel",
+      "action": "key_up",
+      "key": "w",
+      "wait": 1.8
+    },
+    {
+      "name": "turn",
+      "action": "key_down",
+      "key": "a",
+      "hold_ms": 3000,
+      "wait": 2.0
+    },
+    {
+      "name": "turn_stop",
+      "action": "key_up",
+      "key": "a",
+      "wait": 1.0
+    },
+    {
+      "name": "back",
+      "action": "key_down",
+      "key": "s",
+      "hold_ms": 3000,
+      "wait": 2.0
+    },
+    {
+      "name": "back_stop",
+      "action": "key_up",
+      "key": "s",
+      "wait": 1.0
+    },
+    {
+      "name": "jump",
+      "action": "key_down",
+      "key": "w",
+      "hold_ms": 4000,
+      "wait": 1.0
+    },
+    {
+      "name": "jump_tap",
+      "action": "key",
+      "key": "space",
+      "wait": 1.5
+    },
+    {
+      "name": "jump_stop",
+      "action": "key_up",
+      "key": "w",
+      "wait": 1.0
+    }
+  ],
+  "screenshots": [
+    "summon",
+    "run",
+    "decel",
+    "turn",
+    "back",
+    "jump"
+  ],
+  "checks": [
+    {
+      "name": "mounted movement",
+      "type": "mount_metrics",
+      "steps": {
+        "run": "run",
+        "decel": "decel",
+        "turn": "turn",
+        "back": "back",
+        "jump": "jump_tap"
+      }
+    },
+    {
+      "name": "summon",
+      "type": "shot"
+    },
+    {
+      "name": "run",
+      "type": "shot"
+    },
+    {
+      "name": "turn",
+      "type": "shot"
+    },
+    {
+      "name": "back",
+      "type": "shot"
+    },
+    {
+      "name": "jump",
+      "type": "shot"
+    }
+  ]
+}

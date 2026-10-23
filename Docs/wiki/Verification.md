@@ -160,3 +160,24 @@ The seed suites:
 
 The script exits non-zero when any suite fails; `--only` selects a subset, and the report always
 describes the suites actually run.
+
+## Original client vs Bevy client (oracle suite)
+
+`rust/tools/oracle_suite` is the side-by-side oracle: it plays one JSON scenario
+in the hidden ArcheAge 1.2 client (via `aaemu-clientdriver`) and in the Bevy
+`aa-client` (`--offscreen-shot --mute`) against the same lane server with
+`RUST_LOG=info,aaemu_game::net::fields=trace`. Reports contain per-check
+SAME/DIFFERENT/NOT RUN, the extracted packet fields and Lua values, and
+side-by-side screenshot contact sheets.
+
+```sh
+python rust/tools/oracle_suite/oracle_suite.py --lane <lane>
+python rust/tools/oracle_suite/oracle_suite.py list
+```
+
+Scenarios (`actionbar_pages`, `mount_ride`, `house_place`) are maintained in
+`rust/tools/oracle_suite/scenarios/`; add a JSON file with setup, abstract steps,
+checks and screenshots to cover a new feature. The tool creates throwaway
+accounts and deletes their temporary password file; it never touches another
+lane or the shared MySQL. See `rust/tools/oracle_suite/README.md`.
+
