@@ -8,7 +8,8 @@ use anyhow::Context;
 use crate::auth::{
     AuthFlow, KoreaAuthFlow, KoreaStep, LoginClient, PasswordAuthFlow, ReconnectAuthFlow,
 };
-use crate::models::GsRegisterResult;
+use crate::controllers::game::send_with_delay;
+use crate::models::{GameServerId, GsRegisterResult};
 use crate::network::internal::InternalConnection;
 use crate::network::login::LoginConnection;
 use crate::packets::c2l::C2lPacket;
@@ -88,108 +89,79 @@ pub async fn handle_c2l(
     }
 }
 
-/// Constant-time comparison of the shared secret.
-fn secret_matches(given: &str, expected: &str) -> bool {
-    given.len() == expected.len()
-        && given
-            .bytes()
-            .zip(expected.bytes())
-            .fold(0u8, |d, (a, b)| d | (a ^ b))
-            == 0
-}
-
 /// Dispatches a game server packet.
 pub async fn handle_g2l(
     server: &Arc<LoginServer>,
     conn: &Arc<InternalConnection>,
     packet: G2lPacket,
 ) -> anyhow::Result<()> {
-    // Deviation: the C# handled every packet from any peer. Only `RegisterGameServer` (which
-    // carries the shared secret) is honoured before the peer is registered; anything else
-    // from an unauthenticated peer drops the connection.
-    if conn.game_server().is_none() && !matches!(packet, G2lPacket::RegisterGameServer(_)) {
-        tracing::warn!(
-            "Connection {}: packet before registration from an unauthenticated peer, closing",
-            conn.ip
-        );
-        conn.close();
-        return Ok(());
-    }
     match packet {
         G2lPacket::GameServerLoad(p) => {
-            // C#: `connection.GameServer!.Load` (NullReferenceException if not registered).
-            let gs_id = conn
-                .game_server()
-                .context("Object reference not set to an instance of an object (GameServer)")?;
+            let gs_id = authorize_game_server(server, conn, None)?;
             server.games.set_load(gs_id, p.load)
         }
         G2lPacket::PlayerEnter(p) => {
-            if !conn.may_act_for(&server.games, p.gs_id) {
-                tracing::warn!(
-                    "Connection {}: enter-world result for game server {} not sent by it, ignored",
-                    conn.ip,
-                    p.gs_id
-                );
-                return Ok(());
-            }
+            authorize_game_server(server, conn, Some(p.gs_id))?;
             server
                 .games
                 .route_enter_world_response(p.connection_id, p.gs_id, p.result);
             Ok(())
         }
         G2lPacket::PlayerReconnect(p) => {
-            // Deviation: the C# accepted tokens from any internal peer, so an unregistered
-            // connection could mint reconnect logins for any account. Only the registered game
-            // server (or one of its mirrors) may add tokens for its id.
-            if !conn.may_act_for(&server.games, p.gs_id) {
-                tracing::warn!(
-                    "Connection {}: reconnect token for game server {} not sent by it, ignored",
-                    conn.ip,
-                    p.gs_id
-                );
-                return Ok(());
-            }
+            authorize_game_server(server, conn, Some(p.gs_id))?;
             server
                 .logins
                 .add_reconnection_token(conn, p.gs_id, p.account_id, p.token);
             Ok(())
         }
         G2lPacket::RegisterGameServer(p) => {
-            if conn.game_server().is_some() {
-                tracing::warn!("Connection {}: already registered, ignoring", conn.ip);
-                return Ok(());
-            }
-            if !secret_matches(&p.secret_key, &server.config.secret_key) {
+            if p.secret_key != server.config.secret_key {
                 tracing::error!("Connection {}, bad secret key", conn.ip);
-                // Deviation: the C# kept the connection open after the error reply.
-                let conn = conn.clone();
-                tokio::spawn(async move {
-                    tokio::time::sleep(Duration::from_secs(5)).await;
-                    conn.send_packet(&LgRegisterGameServer {
+                send_with_delay(
+                    conn.clone(),
+                    Duration::from_secs(5),
+                    LgRegisterGameServer {
                         result: GsRegisterResult::Error,
-                    });
-                    tokio::time::sleep(Duration::from_millis(200)).await;
-                    conn.close();
-                });
+                    },
+                );
                 return Ok(());
             }
             server.games.add(p.gs_id, p.mirrors, conn);
             Ok(())
         }
         G2lPacket::RequestInfo(p) => {
-            let login_connection = server.connections.get(p.connection_id);
-            if !p.characters.is_empty() {
-                // C#: `loginConnection!` / `connection.GameServer!` throw before ReleaseId.
-                let login_connection = login_connection.context(
-                    "Object reference not set to an instance of an object (login connection)",
-                )?;
-                let gs_id = conn
-                    .game_server()
-                    .context("Object reference not set to an instance of an object (GameServer)")?;
-                login_connection.add_characters(gs_id, p.characters)?;
-            }
-            server.requests.release_id(p.request_id);
-            Ok(())
+            authorize_game_server(server, conn, None)?;
+            server.games.complete_character_request(
+                conn,
+                p.connection_id,
+                p.request_id,
+                p.characters,
+            )
         }
     }
 }
+
+/// Registration alone is insufficient: a newer connection may now own the world. Mirrors
+/// are authorized through the controller's current connection, not a packet's claimed id.
+fn authorize_game_server(
+    server: &LoginServer,
+    conn: &Arc<InternalConnection>,
+    claimed_id: Option<GameServerId>,
+) -> anyhow::Result<GameServerId> {
+    let registered_id = conn
+        .game_server()
+        .context("Internal connection has not registered a game server")?;
+    anyhow::ensure!(
+        server.games.owns_connection(registered_id, conn),
+        "Internal connection no longer owns game server {registered_id}"
+    );
+    let gs_id = claimed_id.unwrap_or(registered_id);
+    anyhow::ensure!(
+        server.games.owns_connection(gs_id, conn),
+        "Internal connection is not authorized for game server {gs_id}"
+    );
+    Ok(gs_id)
+}
+
+#[cfg(test)]
+mod tests;
