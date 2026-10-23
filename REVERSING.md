@@ -29,7 +29,7 @@ files in them (a client writing its own logs at runtime is fine). Put all RE out
   `game_pak` copy it is not plain SQLite). Its private-server guard (`daruguard.dll`) is only loaded by that
   project's own launcher, not by `archeage.exe` started directly. Static inventory: `D:\aa-re\aac\INVENTORY.md`.
 - **AA Classic 3.5 install** `C:\Games\AAClassic`: its `x2game.dll`/`xlcommon.dll` import the private server's
-  modules. **Do not run or dump it.**
+  modules.
 
 **Same engine, different game layer.** The CryPhysics in both clients is the same generation (48 of 55
 matched vtables have identical slot counts; same contact dispatch tables and default tuning values), so 10.x physics behaviour
