@@ -22,6 +22,9 @@ use crate::packets::world_objects::{
 
 /// `AttachUnitReason.None`.
 const ATTACH_UNIT_REASON_NONE: u8 = 0;
+/// `AttachUnitReason.BoardTransfer` (a transfer passenger; the C# `Transfer.AttachedCharacters`
+/// list was never filled, so no reason was ever sent).
+const ATTACH_UNIT_REASON_BOARD_TRANSFER: u8 = 7;
 
 fn owner_name(ctx: &ViewCtx<'_>, owner_id: u32) -> String {
     if owner_id == 0 {
@@ -213,9 +216,23 @@ pub(crate) fn add_visible_object(
             // C#: `IsVisible = true` here.
             e.core().set_visible(true);
             let name = owner_name(ctx, e.data().unit.owner_id);
-            let state = unit_state::transfer_unit_state(e.obj_id, &mut e.data(), &name, now);
+            let (state, attached) = {
+                let mut t = e.data();
+                let state = unit_state::transfer_unit_state(e.obj_id, &mut t, &name, now);
+                (state, t.attached_characters.clone())
+            };
             target.send(state);
             base_add(world, obj, target, ctx);
+            for (point, char_obj_id) in attached {
+                if char_obj_id > 0 && world.character_by_obj_id(char_obj_id).is_some() {
+                    target.send(SCUnitAttachedPacket {
+                        child_obj_id: char_obj_id,
+                        point,
+                        reason: ATTACH_UNIT_REASON_BOARD_TRANSFER,
+                        obj_id: e.obj_id,
+                    });
+                }
+            }
         }
         WorldObject::Shipyard(e) => {
             let name = owner_name(ctx, e.data().unit.owner_id);

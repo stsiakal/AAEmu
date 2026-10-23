@@ -27,11 +27,11 @@ use crate::systems::npcs::npc::data::NpcTemplate;
 use crate::systems::skills::ext::ItemSkillHooks;
 use crate::systems::DataLoadCtx;
 use crate::test_support::*;
-use crate::world::{NpcRef, PlayerRef, WorldObject};
+use crate::world::{NpcRef, PlayerRef, TransferRef, WorldObject};
 
 use super::data::{
-    attach_point, ShipyardStep, ShipyardTemplate, SlaveTemplate, TransferPath, TransferRoad,
-    TransferTemplate, VehicleModel,
+    attach_point, ShipyardStep, ShipyardTemplate, SlaveTemplate, TransferBinding, TransferPath,
+    TransferRoad, TransferTemplate, VehicleModel,
 };
 use super::{mates, shipyards, slaves, transfers};
 
@@ -2072,6 +2072,343 @@ fn transfer_rotation_helpers() {
     #[allow(clippy::approx_constant)]
     let yaw = (-std::f64::consts::FRAC_PI_2 + 3.14159 * 2.0 - 3.14159 * 0.5) as f32;
     assert!((q[1] - (yaw * 0.5).sin()).abs() < 1e-6);
+}
+
+/// `transfer_data()` plus a boarding part (template 46, the 1.2 "순환 마차 탑승 부분") bound to
+/// the motor at `Trailed0`, like the `transfer_bindings` row of every carriage motor.
+fn boarding_transfer_data() -> GameData {
+    let mut d = transfer_data();
+    d.systems
+        .vehicles
+        .transfer_templates
+        .get_mut(&6)
+        .unwrap()
+        .transfer_bindings
+        .push(TransferBinding {
+            id: 1,
+            owner_id: 6,
+            owner_type: "Transfer".into(),
+            attach_point_id: attach_point::TRAILED0,
+            transfer_id: 46,
+        });
+    d.systems.vehicles.transfer_templates.insert(
+        46,
+        TransferTemplate {
+            id: 46,
+            name: "Boarding Part".into(),
+            model_id: 653,
+            cyclic: true,
+            path_smoothing: 8.0,
+            transfer_binding_doodads: vec![
+                super::data::TransferBindingDoodad {
+                    id: 1,
+                    owner_id: 46,
+                    owner_type: "Transfer".into(),
+                    attach_point_id: attach_point::PASSENGER0,
+                    doodad_id: 5890,
+                },
+                super::data::TransferBindingDoodad {
+                    id: 2,
+                    owner_id: 46,
+                    owner_type: "Transfer".into(),
+                    attach_point_id: attach_point::PASSENGER1,
+                    doodad_id: 5890,
+                },
+            ],
+            ..TransferTemplate::default()
+        },
+    );
+    d.systems
+        .vehicles
+        .model_types
+        .insert(653, (55, "VehicleModel".into()));
+    d.systems.vehicles.vehicle_models.insert(
+        55,
+        VehicleModel {
+            id: 55,
+            velocity: 2.0,
+            ang_vel: 10.0,
+            wheeled_vehicle_mass: 1.0,
+            wheeled_vehicle_max_gear: 1,
+            wheeled_vehicle_gear_speed_ratio_1: 1.0,
+            ..VehicleModel::default()
+        },
+    );
+    d
+}
+
+/// Spawns the motor + boarding part at `(100, 100)` and parks the part at `(100, 91)` on the
+/// players' plane (the test world has no heightmap, so `Create` puts it on height 0).
+fn spawn_boarding_transfer(server: &GameServer) -> (TransferRef, TransferRef) {
+    let world = server.world.world(0).unwrap();
+    server.systems.npcs.spawns.get_or_create(&world);
+    let def = SimpleSpawnerDef {
+        base: SpawnerBase {
+            id: 1,
+            unit_id: 6,
+            position: WorldSpawnPosition {
+                world_id: 0,
+                zone_id: TEST_ZONE,
+                x: 100.0,
+                y: 100.0,
+                z: 100.0,
+                ..WorldSpawnPosition::default()
+            },
+            ..SpawnerBase::default()
+        },
+        count: 1,
+    };
+    transfers::spawn_all(server, &world, vec![def]);
+    let active = server.systems.vehicles.transfers.get(0).get_transfers();
+    let motor = active
+        .iter()
+        .find(|t| {
+            let d = t.data();
+            d.bonding_obj_id == 0 && d.bounded_obj_id != 0
+        })
+        .cloned()
+        .expect("motor");
+    let part = active
+        .iter()
+        .find(|t| t.data().bonding_obj_id == motor.obj_id)
+        .cloned()
+        .expect("boarding part");
+    part.data()
+        .unit
+        .transform
+        .set_position(100.0, 91.0, 100.0, 0.0, 0.0, 0.0);
+    (motor, part)
+}
+
+#[tokio::test]
+async fn transfer_boarding_attaches_the_passenger_and_broadcasts_it() {
+    use crate::net::registry::ClientPacket;
+
+    let server = server_with(boarding_transfer_data());
+    let mut a = TestClient::new(&server, 1, 1);
+    let mut b = TestClient::new(&server, 2, 2);
+    let pa = spawn_player(&server, &a, test_character(1, "A", 100.0, 91.0), PA);
+    spawn_player(&server, &b, test_character(2, "B", 100.0, 95.0), PB);
+    pa.data().unit.hp = 100;
+    a.drain();
+    b.drain();
+    let (motor, part) = spawn_boarding_transfer(&server);
+    let tl = part.data().unit.tl_id;
+    assert_eq!(tl, motor.data().unit.tl_id);
+    a.drain();
+    b.drain();
+
+    // The real packet handler (`ap` 2 = Passenger0).
+    a.conn.active_char = Some(pa.clone());
+    super::packets::CSBoardingTransferPacket {
+        tl,
+        ap: attach_point::PASSENGER0,
+    }
+    .handle(&server, &mut a.conn)
+    .await
+    .unwrap();
+
+    assert_eq!(
+        part.data().attached_characters,
+        vec![(attach_point::PASSENGER0, pa.obj_id)]
+    );
+    {
+        let c = pa.data();
+        assert_eq!(c.attached_point, attach_point::PASSENGER0);
+        assert_eq!(c.unit.transform.parent_obj_id, part.obj_id);
+        assert!(!c.is_riding);
+    }
+    assert_eq!(pa.core().sticky_parent(), part.obj_id);
+    let pos = server
+        .world
+        .world(0)
+        .unwrap()
+        .world_pos_rot(&WorldObject::from(&pa));
+    let part_pos = server
+        .world
+        .world(0)
+        .unwrap()
+        .world_pos_rot(&WorldObject::from(&part));
+    assert!((pos.x - part_pos.x).abs() < 0.01 && (pos.y - part_pos.y).abs() < 0.01);
+
+    // Byte-exact SCUnitAttachedPacket(child bc, point, parent bc, reason).
+    let mut attached = bc(PA);
+    attached.push(attach_point::PASSENGER0);
+    attached.extend(bc(part.obj_id));
+    attached.push(transfers::BOARD_REASON);
+    assert_eq!(body(&a.drain(), sc::SCUnitAttachedPacket), attached);
+    let seen = b.drain();
+    assert_eq!(body(&seen, sc::SCUnitAttachedPacket), attached);
+
+    // A player arriving later learns the seat from the transfer's visibility.
+    let mut c = TestClient::new(&server, 3, 3);
+    spawn_player(
+        &server,
+        &c,
+        test_character(3, "C", 100.0, 94.0),
+        0x00F0_0003,
+    );
+    assert_eq!(body(&c.drain(), sc::SCUnitAttachedPacket), attached);
+}
+
+#[tokio::test]
+async fn transfer_boarding_rejects_a_taken_seat_and_out_of_range() {
+    let server = server_with(boarding_transfer_data());
+    let mut a = TestClient::new(&server, 1, 1);
+    let mut b = TestClient::new(&server, 2, 2);
+    let pa = spawn_player(&server, &a, test_character(1, "A", 100.0, 91.0), PA);
+    let pb = spawn_player(&server, &b, test_character(2, "B", 130.0, 130.0), PB);
+    pa.data().unit.hp = 100;
+    pb.data().unit.hp = 100;
+    a.drain();
+    b.drain();
+    let (_motor, part) = spawn_boarding_transfer(&server);
+    let tl = part.data().unit.tl_id;
+    a.drain();
+    b.drain();
+
+    // Out of range (the boarding part is at (100, 91), 4 m).
+    transfers::boarding(&server, &pb, tl, attach_point::PASSENGER0);
+    assert!(part.data().attached_characters.is_empty());
+    assert!(b.drain().iter().all(|f| f.0 != sc::SCUnitAttachedPacket));
+
+    transfers::boarding(&server, &pa, tl, attach_point::PASSENGER0);
+    assert_eq!(
+        part.data().attached_characters,
+        vec![(attach_point::PASSENGER0, pa.obj_id)]
+    );
+
+    // In range, but passenger 0 is taken.
+    pa.data().unit.transform.set_xyz(100.0, 91.0, 100.0);
+    pb.data().unit.transform.set_xyz(100.0, 92.0, 100.0);
+    a.drain();
+    b.drain();
+    transfers::boarding(&server, &pb, tl, attach_point::PASSENGER0);
+    assert_eq!(part.data().attached_characters.len(), 1);
+    assert!(b.drain().iter().all(|f| f.0 != sc::SCUnitAttachedPacket));
+
+    // The next point is free.
+    transfers::boarding(&server, &pb, tl, attach_point::PASSENGER1);
+    assert_eq!(
+        part.data().attached_characters,
+        vec![
+            (attach_point::PASSENGER0, pa.obj_id),
+            (attach_point::PASSENGER1, pb.obj_id)
+        ]
+    );
+}
+
+#[tokio::test]
+async fn transfer_passenger_moves_with_the_boarding_part() {
+    let server = server_with(boarding_transfer_data());
+    let mut a = TestClient::new(&server, 1, 1);
+    let pa = spawn_player(&server, &a, test_character(1, "A", 100.0, 91.0), PA);
+    pa.data().unit.hp = 100;
+    a.drain();
+    let (motor, part) = spawn_boarding_transfer(&server);
+    let tl = part.data().unit.tl_id;
+    a.drain();
+
+    transfers::boarding(&server, &pa, tl, attach_point::PASSENGER0);
+    let world = server.world.world(0).unwrap();
+    let before = world.world_pos_rot(&WorldObject::from(&pa));
+    // The route runs (100,100) -> (110,100): the motor drags the boarding part, the child
+    // follows in its local frame.
+    for _ in 0..40 {
+        motor.data().wait_time_ms = 0;
+        transfers::move_to(&server, &motor);
+    }
+    let after = world.world_pos_rot(&WorldObject::from(&pa));
+    let part_pos = world.world_pos_rot(&WorldObject::from(&part));
+    assert!((after.x - before.x).abs() > 1.0, "the passenger rode along");
+    assert!((after.x - part_pos.x).abs() < 0.01);
+    assert!((after.y - part_pos.y).abs() < 0.01);
+    assert_eq!(pa.data().unit.transform.parent_obj_id, part.obj_id);
+}
+
+#[tokio::test]
+async fn transfer_unboarding_detaches_and_frees_the_seat() {
+    let server = server_with(boarding_transfer_data());
+    let mut a = TestClient::new(&server, 1, 1);
+    let mut b = TestClient::new(&server, 2, 2);
+    let pa = spawn_player(&server, &a, test_character(1, "A", 100.0, 91.0), PA);
+    spawn_player(&server, &b, test_character(2, "B", 100.0, 95.0), PB);
+    pa.data().unit.hp = 100;
+    a.drain();
+    b.drain();
+    let (_motor, part) = spawn_boarding_transfer(&server);
+    let tl = part.data().unit.tl_id;
+    a.drain();
+    b.drain();
+
+    transfers::boarding(&server, &pa, tl, attach_point::PASSENGER0);
+    a.drain();
+    b.drain();
+
+    transfers::boarding(&server, &pa, tl, 0);
+
+    assert!(part.data().attached_characters.is_empty());
+    {
+        let c = pa.data();
+        assert_eq!(c.attached_point, attach_point::NONE);
+        assert_eq!(c.unit.transform.parent_obj_id, 0);
+    }
+    assert_eq!(pa.core().sticky_parent(), 0);
+    let mut detached = bc(PA);
+    detached.push(transfers::BOARD_REASON);
+    assert_eq!(body(&a.drain(), sc::SCUnitDetachedPacket), detached);
+    assert_eq!(
+        body(&b.drain(), sc::SCUnitDetachedPacket),
+        detached,
+        "observers see the rider leave"
+    );
+
+    // The seat is free again.
+    transfers::boarding(&server, &pa, tl, attach_point::PASSENGER0);
+    assert_eq!(
+        part.data().attached_characters,
+        vec![(attach_point::PASSENGER0, pa.obj_id)]
+    );
+}
+
+#[tokio::test]
+async fn transfer_despawn_unboards_the_passengers() {
+    let server = server_with(boarding_transfer_data());
+    let mut a = TestClient::new(&server, 1, 1);
+    let pa = spawn_player(&server, &a, test_character(1, "A", 100.0, 91.0), PA);
+    pa.data().unit.hp = 100;
+    a.drain();
+    let (motor, part) = spawn_boarding_transfer(&server);
+    let tl = part.data().unit.tl_id;
+    a.drain();
+    transfers::boarding(&server, &pa, tl, attach_point::PASSENGER0);
+    a.drain();
+
+    let spawner = server
+        .systems
+        .vehicles
+        .transfers
+        .spawner_of(motor.obj_id)
+        .expect("spawner");
+    spawner.despawn(&server, &motor);
+
+    assert!(part.data().attached_characters.is_empty());
+    assert_eq!(pa.data().unit.transform.parent_obj_id, 0);
+    assert_eq!(pa.data().attached_point, attach_point::NONE);
+    assert!(server
+        .world
+        .world(0)
+        .unwrap()
+        .transfer(part.obj_id)
+        .is_none());
+    assert!(server
+        .systems
+        .vehicles
+        .transfers
+        .get(0)
+        .get_transfers()
+        .iter()
+        .all(|t| t.obj_id != motor.obj_id && t.obj_id != part.obj_id));
 }
 
 #[derive(Default)]

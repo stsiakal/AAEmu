@@ -312,7 +312,7 @@ Cross-subsystem: mates are despawned on dungeon entry and `PlayerCanEnter` check
 | `MateGameData`, `SlaveGameData` (templates, unit modifiers, initial items / buffs, passive buffs, doodad / healing point / slave bindings, drop doodads, mount skills, repairable slaves, `slave_equip_slots`, `item_slave_equipments`, `allow_to_equip_slaves` / `allow_to_equip_slots`, `slave_attach_points*.json`), `TransferGameData` (templates, bindings, binding doodads, paths, client `transfer_path.xml` roads + `GetOwnerPaths`), `ShipyardManager.Load`, `TaxationsManager` table, `ModelManager` vehicle / ship models | `systems/vehicles/data.rs` | done | Gated test `real_compact_db_vehicle_tables` checks the row counts; `real_transfer_follows_its_client_route` loads the roads from the game_pak. |
 | `MateManager` (per instance), `CharacterMates` (load / save / spawn / despawn), `Mate` (`AddExp`, `MateXpUpdateTask`, `RegenTick`, `DoFallDamage`, `OnZoneChange`, stats) | `systems/vehicles/mates.rs`, `stats.rs` | done | Mount / dismount (`SCUnitAttached` / `SCUnitDetached`, rider becomes a transform child), rename, target, user state, mate equipment packet (item move through `VehicleItemHooks`), kill exp, stun / unmount skills, death despawn. |
 | `SlaveManager` (per instance), `SlaveSpawner`, `SummonSlave` details, `Slave` (`DoDie`, `DoHpChangeTrigger` / repair points, `RegenTick`, `Save`, `OnZoneChange`, stats) | `systems/vehicles/slaves.rs` | done | Create (saved slave / persistent doodads / saved child slaves from MySQL, position, boats on the water surface, doodad and slave bindings at the model attach points), bind / unbind, delete with portal-time despawn, Rider's Escape, repair cooldown, `RepairSlaveEffect`, `SendMySlaveTask`, logout (+10 min) / disconnect despawn task, `slaves` table (`AfterCharacters`). |
-| `TransferManager` (per instance, 100 ms tick), `TransferSpawner`, `Transfer` route following (`GoToPath`, `MoveTo`, `NextPoint`) | `systems/vehicles/transfers.rs` | done | Carriage motor + boarding part + bench doodads, `SCOneUnitMovementPacket` (transfer move type) for both parts. Spawned from `SpawnManager.SpawnAll`. |
+| `TransferManager` (per instance, 100 ms tick), `TransferSpawner`, `Transfer` route following (`GoToPath`, `MoveTo`, `NextPoint`) | `systems/vehicles/transfers.rs` | done | Carriage motor + boarding part + bench doodads, `SCOneUnitMovementPacket` (transfer move type) for both parts. Spawned from `SpawnManager.SpawnAll`. `CSBoardingTransfer` (the C# only logged it): passenger boarding at points 2..7, `SCUnitAttached`/`SCUnitDetached` (reason `BoardTransfer` 7) with the passenger as a sticky transform child of the seat-bearing part, seats freed on `ap` 0 / death / logout / despawn. Seat list sent with the transfer's `SCUnitStatePacket` visibility. |
 | `ShipyardManager` runtime, `Shipyard` build steps, `CraftEffect` shipyard branches, `ShipyardTickTask`, `ShipyardCompleteTask` | `systems/vehicles/shipyards.rs`, `effects.rs` | done | Requirements via the skills item hooks + money (`SCItemTaskSuccess` money form). |
 | `ShipHarpoonRopeController`, `CSUnhangPacket` | `systems/vehicles/harpoon.rs` | done | Tow forces are physics (`ShipHarpoonTowPhysics`): the per-tick entry points are exposed for the physics port. |
 | `CSMoveUnitPacket` vehicle branches (ship request, vehicle, mate xp, riding, standing on objects) | `systems/vehicles/movement.rs`, `world/session.rs` | done | Ship-deck support accepts the actor standing flag independently of the movement header, preserving valid GC-relative positions and the current-parent sentinel during controller updates. This corrects the mirrored C# header-only attachment test; clearing both support flags still disembarks. A unit no longer hanging (`HangingFromObject` unset) loses its sticky parent unless it is boarded on a transfer. |
@@ -1235,8 +1235,28 @@ is no longer mirrored (see "Known deviations", dead NPC returned and healed).
 * systems::vehicles: the transfer motor is not a transform child of its boarding part (the C#
   sets and immediately clears that parent); the boarding part is moved explicitly by the motor's
   tick, as the C# does for its packets. The transfer's own sticky link to its motor is not
-  recorded (only `IsBoardedOnTransfer` reads sticky parents of transfers, and the C#
-  `AttachedCharacters` list is never filled).
+  recorded (only `IsBoardedOnTransfer` reads sticky parents of transfers).
+* systems::vehicles (transfer boarding): the C# `CSBoardingTransferPacket` only logged `tl` and
+  `ap` and never filled `Transfer.AttachedCharacters`, so `IsBoardedOnTransfer` was dead code.
+  Rust completes it from the 1.2 client's send sites (`re-transport.md` §7: `FUN_393565c0` boards
+  the target transfer at the first free point 2..7 via `FUN_393546b0`, `FUN_39440d30` sends
+  `ap = 0` with the current transfer's tl). `Transfer.AttachedCharacters` therefore holds
+  `(attach point, character obj id)` (the C# `List<Character>` had no seats). The seat-bearing
+  target is the transfer sharing the packet's `tl` whose `AttachPointId` is not `System` (the
+  motor and its boarding part share the tl; the C# `Create` marks the motor `System`), falling
+  back to the motor for single-part transfers. There is no 1.2 server-side reference for the
+  rules the C# omitted, so these are **inferences**, checked congruently with the client:
+  the 4 m bind range (`BOARD_RANGE`, the squared-16.0 vehicle bind constant `DAT_39ac7408` of
+  `re-transport.md` §2), 3D distance (the C# `GetDistance` is 2D, an airship passenger below the
+  hull must not board), the dead/busy/not-already-bound precheck of `FUN_39346290`
+  (`re-transport.md` §2), a dead transfer being refused, and `ap` outside 0 / 2..7 ignored.
+  Unboarding uses reason 7 (`BoardTransfer`), except death (`None`) and despawn
+  (`PrefabChanged`); the 1.2 client does not send a reason with `ap = 0`. The
+  `TRANSFER_BOARDING` / `TRANSFER_UNBOARDING` bar events 0x64/0x65 are client-side: the 1.2
+  `sc` table has no boarding-transfer S->C packet (only `CSBoardingTransferPacket` 0x67), so the
+  client derives the bar from `SCUnitAttached` / `SCUnitDetached` (inference; the event fire
+  site itself was not found, `re-transport.md` §10.4). The despawn path now also removes the
+  transfer from `TransferManager` and despawns the bounded boarding part with its motor.
 * systems::vehicles: `Transform.Parent = null` keeps the world position (`detach_child`); the C#
   keeps the local values until the next position update.
 * systems::vehicles: `Thread.Sleep(50)` between `SCMateSpawnedPacket` and the mate spawn is not
