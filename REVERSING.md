@@ -55,6 +55,13 @@ confirm a 10.x behaviour against what the 1.2 client sends/expects before portin
 - The 10.x client `game_pak` `game\db\compact.sqlite3` is **plain SQLite** (233 MB, 1003 tables); only the zone's
   own `game.sqlite3` is encrypted. The 1.2 `game_pak` ships AI behaviour Lua source under
   `game/scripts/ai/behaviors` (a static oracle for AI that needs no running zone).
+- **10.0 server database, decrypted**: `D:\aa-re\db-references\10.0-server\server_decrypted.sqlite3` (552 MB,
+  1,374 tables; provenance and hash in the folder's `README.md`). It is the zone's `game.sqlite3` in plain form and
+  holds **all 41 server-only tables** above (spawners, spawn effects, NPC groups, loot groups, buff rules, siege
+  plans, indun rooms), so the zone no longer lacks its data. Use it read-only as retail evidence where 1.2 server
+  data is missing or broken (quests, spawns, loot, AI params) **and the system did not change since 1.2**;
+  NickMesser fixed quests this way. Do not copy 10.x values into later-rebalanced systems (item stats, skill
+  numbers), and never commit it.
 
 ## Tools
 
