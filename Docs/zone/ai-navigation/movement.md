@@ -60,9 +60,10 @@ Per NPC and frame:
 
 ## 4. The 336-byte movement state
 
-Serializer `sub_3938B0B0` (3920 B, `DD.c:910686`); outer buffer header (8 bytes) is unit id at `+24`
-and an unknown dword at `+28` in the entry (serializer `sub_3938C000`, 304 B). Relative to the
-336-byte state:
+Serializer `sub_3938B0B0` (3920 B, `DD.c:910686`); the outer buffer adds a unit header before the
+state: `sub_3938C000` (304 B) marshals `"unitId"` into the entry at `+24` (a 3-dword marshal, so the
+exact header/state split at `+24..35` vs the state start at `+32` is **[I]**; reads as an 8-byte
+header plus the state). Relative to the 336-byte state:
 
 | off | field (marshal name) | type / encoding |
 |---|---|---|
