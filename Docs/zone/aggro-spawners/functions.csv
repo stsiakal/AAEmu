@@ -1,0 +1,124 @@
+address,size,name,scope,transferable_to_1_2,rust_site
+0x3931EF20,267,NpcAggroTable::NpcAggroTable (ctor),A,yes,systems/skills/state.rs:197
+0x3931F040,890,NpcAggroTable::CreateAggro,A,yes,skills/combat.rs:1091-1104
+0x39321340,492,NpcAggroTable::AddAggro,A,yes,skills/combat.rs:1064-1104
+0x3931FD30,192,NpcAggroTable::UpdateAggro,A,yes,"skills/combat.rs:1086-1089 (baked, not refreshed)"
+0x3931FE00,282,NpcAggroTable::CopyTopAggro,A,yes,missing
+0x39320FE0,189,NpcAggroTable::TauntedBy,A,yes,missing
+0x3931F710,112,NpcAggroTable::CancelTauntedBy,A,yes,missing
+0x39322950,87,GetAggroPerSecond (inferred),A,likely,missing
+0x3931CF00,52,GetAggroMultiplier (inferred),A,yes,skills/stats.rs:250-253
+0x3931D6F0,244,GetDistanceCoefficient (inferred),A,unknown,missing
+0x3931D650,146,NpcAggroTable::GetGroupAveragePosition,A,likely,missing
+0x3931E2F0,627,NpcAggroTable::CollectSharedAggroMembers,A,likely,missing
+0x3931F790,634,RefreshTopTarget (inferred),A,yes,behaviors.rs:792-845
+0x3931EB70,931,SortEntries (inferred),A,unknown,behaviors.rs:847-860
+0x3933BA80,265,Npc::_OnAggroTableChanged,A,yes,behaviors.rs (state machine)
+0x3935CCC0,237,Npc::SetTargetAndNotify (inferred),A,no,n/a
+0x393210B0,293,NpcAggroTable::RemoveFromTable,A,yes,skills/combat.rs:37-60
+0x3931FF80,256,RemoveEntryAt (inferred),A,yes,skills/combat.rs:37-60
+0x393200D0,864,NpcAggroTable::RemoveAll (inferred),A,yes,skills/combat.rs:66-98
+0x39322850,177,GetAggroRemoveReasonName,A,yes,n/a
+0x3931E240,158,UpdateAbuserRegistration (inferred),A,likely,n/a
+0x3931E180,181,RegisterAbuser (inferred),A,likely,n/a
+0x3931DD40,112,IsUnitInAbuserSet (inferred),A,likely,n/a
+0x3931DDC0,231,CanRegisterAbuser (inferred),A,likely,n/a
+0x393204B0,2000,NpcAggroTable::ProcessAggroCancel,A,yes,missing
+0x393211E0,335,NpcAggroTable::ProcessReturn,A,yes,behaviors.rs:753-772
+0x39320D20,187,BossAbsoluteReturnCheck (inferred),A,likely,missing
+0x39320C90,128,AbsoluteReturnCheck (inferred),A,yes,behaviors.rs:753-772
+0x39320440,96,HousingAreaCheck (inferred),A,likely,missing
+0x39320DF0,106,CombatAreaCheck (inferred),A,unknown,missing
+0x39363890,161,WZUpdateAggro handler (inferred),A,no,n/a
+0x39322500,231,ApplyUpdateAggroHostile (inferred),A,likely,missing
+0x39321830,460,ApplyUpdateAggroFriendly (inferred),A,unknown,missing
+0x39321740,224,AddAggroForSource (inferred),A,likely,skills/combat.rs:1064
+0x39321C80,1957,ShareAggroWithLinkedNpcs (inferred),A,yes,behaviors.rs:616-680
+0x3933C8D0,227,Npc::OnAffectedByDamage,A,yes,skills/combat.rs:1064
+0x393225F0,200,WZUnitDamaged router (inferred),A,yes,n/a
+0x39363580,28,WZUnitDamaged handler (inferred),A,no,n/a
+0x39345770,1632,Npc::FindNewTargetIfItNeed,A,yes,behaviors.rs:792-845
+0x39345570,492,CollectTargetCandidates (inferred),A,yes,behaviors.rs:495-542
+0x3933BDC0,112,GetEffectiveAggroRange (inferred),A,yes,"behaviors.rs:549,609 (wrong base)"
+0x39346960,1774,Npc::InitializeAggroOnSpawn (inferred),A,yes,spawner.rs:1607-1692 (partial)
+0x3933B490,116,Npc::UpdateAggroTick (inferred),A,yes,ai/manager.rs:881-905
+0x393482D0,354,Npc::Update,A,cadence 10.x,ai/manager.rs:881-905
+0x3944DA20,986,SendAiAggroDebug (inferred),A,no,n/a
+0x3931DF00,240,ClearTargetBookkeeping (inferred),A,yes,n/a
+0x3931DCE0,90,LookupPlayerTable (inferred),A,unknown,n/a
+0x393226C0,18,SetAggroTarget (inferred),A,yes,behaviors.rs:822-827
+0x39321540,402,AggroLinkFollowUp (inferred),A,likely,behaviors.rs:616-680
+0x39321A10,610,AggroLinkVariant (inferred),A,likely,behaviors.rs:616-680
+0x3931E570,1516,Per64FramePass (inferred),A,unknown,n/a
+0x3933B970,163,RaiseAiSignal (inferred),A,yes,framework.rs transitions
+0x3933C9C0,169,GetSpawnPosition (inferred),A,yes,npc::world_pos
+0x3933B460,27,TeleportHome (inferred),A,yes,behaviors.rs (return)
+0x3931D120,1125,AggroSourceLog (inferred),A,n/a,n/a
+0x3931D0B0,91,SetAggroSourceContext (inferred),A,n/a,n/a
+0x39322AB0,158,ClearEntryBookkeeping (inferred),A,yes,n/a
+0x3935FAC0,162,RemoveUnitAggroListEntry (inferred),A,yes,skills/combat.rs:37-60
+0x3935EC10,54,AddUnitToEnemyList (inferred),A,likely,n/a
+0x3931D890,469,UnitVisibleToNpc (inferred),A,likely,behaviors.rs:495-542
+0x3931D000,163,UnitUnderTerrain (inferred),A,likely,missing
+0x39327360,0,ServerAIUnitSystem::RegisterAbuser,A,likely,n/a
+0x39AFE6F0,744,LoadNpcGroupMemberDescs,B,yes,missing
+0x39AFE9E0,784,LoadNpcGroupDescs,B,yes,missing
+0x39AFECF0,760,LoadNpcSpawnerNpcDescs,B,yes,systems/npcs/npc/spawner_data.rs:34-72
+0x39AFEFF0,1187,LoadNpcSpawnerDescs,B,yes,spawner_data.rs:74-119
+0x39C0F3E0,748,LoadNpcSpawnerSpawnEffectDescs,B,yes,skills/data/effects.rs:988-1000
+0x39C0F6D0,427,LoadNpcSpawnerDespawnEffectDescs,B,yes,skills/data/effects.rs:1001-1013
+0x3934AD80,858,NpcManager::LoadSpawners,B,no,systems/npcs/spawn_manager.rs:1010-1145
+0x3934A7F0,214,NpcSpawner::LoadFromData,B,no,n/a
+0x3934F380,1823,ParseSpawnerData (inferred),B,no,n/a
+0x3934A410,869,NpcSpawner::InitFromSpawnerParam,B,mechanism yes,spawner.rs:387-412
+0x39343580,209,NpcManager::RegisterSpawner (inferred),B,likely,spawn_manager.rs:758-777
+0x39349F80,490,NpcSpawner::Update,B,yes,spawn_manager.rs:73; spawner.rs:413-457
+0x393438D0,178,NpcSpawner::QueueSpawn,B,yes,spawner.rs:2005
+0x39343990,457,NpcSpawner::QueueSpawnAll,B,yes,spawner.rs:923-946
+0x39348AF0,3123,NpcSpawner::Spawn,B,mechanism yes,spawner.rs:1246-1400
+0x39348A40,170,SendSpawnNpc (inferred),B,no,n/a
+0x39344530,958,NpcSpawner::SpawnNpcGroup,B,yes,missing
+0x39344900,406,NpcSpawner::HandleNpcSpawnFailed,B,no,n/a
+0x39347A00,269,NpcSpawner::ValidateSpawn,B,yes,spawner.rs:768-790
+0x39347F90,818,NpcSpawner::HandleSpawn,B,yes,spawner.rs:1350-1398
+0x39346050,744,NpcSpawner::RemoveSpawnedNpcs,B,yes,spawner.rs:979-1067
+0x39344AA0,560,NpcSpawner::HandleNpcRemoved (inferred),B,yes,spawner.rs:1068-1135
+0x39345220,159,NotifySpawnerOfUnitRemoval (inferred),B,yes,spawn_manager.rs:460-475
+0x39347B20,1123,RecordSpawnInfo (inferred),B,unknown,n/a
+0x39349730,187,NpcSpawner::SpawnAllOnce,B,yes,spawner.rs:923-946
+0x39349800,900,NpcSpawner::OnEvent,B,partly,spawner.rs:1468-1509
+0x3933C590,168,NpcSpawner::IsSpawningTime,B,yes,spawner.rs:1429-1443
+0x3933D720,91,NpcSpawner::Save,B,mechanism yes,n/a
+0x3934B7A0,1948,SaveToData (inferred),B,unknown,n/a
+0x3933EDF0,1119,NpcSpawner::SpawnForDev,B,no,n/a
+0x39341EF0,979,NpcGroupSupporter::RespawnLostGroupMembers,B,likely,missing
+0x39343310,328,NpcGroupSupporter::HandleGroupMemberRemoved,B,likely,missing
+0x39342920,450,OnSpawnerRemovedRespawnGroups (inferred),B,likely,missing
+0x3934A2D0,310,NpcSpawner ctor (inferred),B,yes,spawner.rs:233-257
+0x39350310,156,NpcSpawner dtor (inferred),B,n/a,n/a
+0x39350410,77,AllocateNpcSpawner (inferred),B,n/a,n/a
+0x3933FC60,97,FindSpawnerByUid (inferred),B,yes,spawn_manager.rs:369
+0x393410B0,108,FindSpawnerPlayer (inferred),B,likely,n/a
+0x3933B8F0,119,UnitGroupInfo (inferred),B,likely,n/a
+0x3933AFF0,89,FindNpcById (inferred),B,yes,n/a
+0x39347470,495,IsSpawnPointFree (inferred),B,yes,spawner.rs:787-837
+0x39340E40,532,OtherNpcsNear (inferred),B,yes,spawner.rs:887-922
+0x3934CA40,290,FormationContext (inferred),B,yes,missing
+0x3934BFB0,340,FormationMemberPosition (inferred),B,yes,missing
+0x39344350,470,AllocateGroupId (inferred),B,yes,missing
+0x39340BF0,107,GroupMemberAlive (inferred),B,likely,missing
+0x39340AE0,109,GroupMemberSpawned (inferred),B,likely,missing
+0x39340D90,53,FindGroupMemberUnit (inferred),B,likely,missing
+0x39340000,125,ResetAfterDestroyTime (inferred),B,likely,missing
+0x39344CE0,550,SpawnerBaseUpdate (inferred),B,yes,spawner.rs:413-457
+0x3934CB90,71,QueueFront (inferred),B,yes,n/a
+0x3934CBE0,57,QueuePop (inferred),B,yes,n/a
+0x3934D9A0,388,QueuePush (inferred),B,yes,n/a
+0x3933B700,8,QueueComparator (inferred),B,n/a,n/a
+0x3934B230,339,CopySpawnInfo (inferred),B,n/a,n/a
+0x3936E940,1144,SpawnerListReconcile (inferred),B,n/a,n/a
+0x39364140,86,OnNpcSpawnerEvent,B,no,n/a
+0x3938DF30,272,WZNpcSpawnerEvent schema,B,no,n/a
+0x3938E0E0,767,ZWSpawnNpc schema,B,no,n/a
+0x39387FD0,325,WZSpawnerList schema,B,no,n/a
+0x39347670,892,ValidateSpawnPosition (inferred),B,yes,spawner.rs:768-790
