@@ -58,9 +58,11 @@ group average position into `v20/v21`.
 Cap check: `((end-begin) & ~0x3F) == 0x1900` → 6400 bytes = 100 entries; over the cap one entry is
 dropped first (`sub_3931FF80(a1, &v30, end-64)`).
 
-Self check: `*(a1+8) + 8 == a2` → log `Can't add myself to my aggro list table` (DD.c:821329).
+Self check: `a1+8` is the owner unit; the code compares the pointer at `*(owner+8)` with the target
+`a2` → log `Can't add myself to my aggro list table` (DD.c:821329).
 Group check: `sub_3931E000(a1, a2)` → log `Can't add my group members...` (DD.c:821336). That helper
-resolves the AI group of the table owner and searches the given unit id in its member list.
+resolves the table's group (`*(a1+0)`) through the AI system and searches the given unit id in its
+member list.
 Validity: `sub_39261710(a2, owner)` must be non-zero (hostile/alive pair).
 
 First entry (`v11 = begin == end` before insertion): `*(a1+124) = v20; *(a1+132) = v21` (pull
