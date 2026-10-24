@@ -1,0 +1,85 @@
+addr	size	dll	role	callers	callees	fields	data	verdict	rust
+0x311FF4B8	640	cryaisystem	goal-op name/code table (40 pairs, code 40 = subpipe)	sub_310F5994, sub_310F59A4	name strings 0x311E44xx..0x311E4620	(code,name) pairs	none	yes (same names used by 1.2 Lua)	lua10x/lua12 goalpipes use the same names; no Rust goal-pipe engine
+0x310F5994	16	cryaisystem	name to opcode lookup	Lua PushGoal parser (sub_31156C64)	table 0x311FF4B8	returns 40 if not found	none	yes	n/a
+0x310F59A4	26	cryaisystem	opcode to name reverse	debug/serializer	n/a	code 40 returns null	none	yes	n/a
+0x310F6574	3765	cryaisystem	CGoalPipe::PushGoal (build entry + COP object)	CGoalPipe vtable +8, called by Lua bind/PushSubPipe	all COP ctors, sub_310F8D60	pipe entry: +8 opcode, +68 jump, +72 blocking, +76 grouping	opcode switch	yes	no goal pipes in Rust; behavior graph framework.rs:366
+0x310F7434	272	cryaisystem	CGoalPipe::PushSubPipe (opcode 40)	CGoalPipe vtable +16	sub_310F84B8, sub_310F7E58	entry as above	subpipe names	unknown	n/a
+0x310F7604	483	cryaisystem	goal-pipe label fix-up / branch jump offsets	sub_31156314	label map a1+40	entry +68 relative jump	label names	yes (branch Lua exists in 1.2)	framework.rs:575 transition instead of jumps
+0x310D6DD8	54	cryaisystem	COPRun ctor	CGoalPipe::PushGoal case 8	vt 0x311E10E0	object +16 speed, +24 duration	run fValue	yes	behaviors.rs speed via npc.rs:123 (differs)
+0x310D6E18	103	cryaisystem	COPRun::Execute	CGoalPipe executor (vtable +24)	0x3116783C	agent +1192/+1196 speed, +4432..4444 action	run fValue	yes	npc.rs:123-155 base_move_speed (differs: ignores run)
+0x310DAC48	70	cryaisystem	COPTimeout ctor	PushGoal case 9	vt 0x311E1AA0	+16 start, +24 min, +28 max, +32 fValue	timeout min/max	yes	per-behavior timers (rule matches)
+0x310D6BB8	110	cryaisystem	COPTimeout::Execute	CGoalPipe executor	0x310D6B58	+16 start time, +32 limit	none	yes	behaviors.rs next_* timestamps
+0x310F8150	169	cryaisystem	COPSignal ctor	PushGoal case 13	vt 0x311E4750	+16 signal id, +24 name, +32 filter, +40 target, +48 sent, +52 prio	AI.Signal	n/a	direct transitions (framework.rs:575)
+0x310D71D8	296	cryaisystem	COPSignal::Execute	CGoalPipe executor	0x3104B388, entity vtable +32 / AI system +624	+16/+24/+32/+40/+48/+52	signal name/filter	yes	n/a
+0x310D7308	148	cryaisystem	branch/clear/devalue side effect (vt 0x311E4690)	CGoalPipe executor	pipe user vtable +144/+64/+784	+16 bool, +17 clear	a1+2304 state	yes	framework transitions
+0x310D5E18	16	cryaisystem	ignoreall Execute (vt 0x311E4630)	CGoalPipe executor	n/a	pipe user +41	none	yes	n/a
+0x310D6D68	25	cryaisystem	COPBodyPos ctor	PushGoal case 7	vt 0x311E1080	+16 mask, +20 force	BODYPOS_*	yes	npc::set_game_stance (differs mechanism)
+0x310D6D88	71	cryaisystem	COPBodyPos::Execute	CGoalPipe executor	0x3116786C	agent +244, +4448, +4452	BODYPOS_*	yes	npc::set_game_stance
+0x310D7848	21	cryaisystem	COPLookAt ctor	PushGoal case 23	vt 0x311E1320	+16 bool	AI_LOOKAT_*	yes	npc::look_towards (differs)
+0x310D5F38	15	cryaisystem	COPLookAt::Execute	CGoalPipe executor	n/a	CAIObject +3188	none	yes	npc::look_towards
+0x310D6C38	32	cryaisystem	COPStrafe ctor	PushGoal case 6	vt 0x311E1020	+16 float, +20 float, +24 bool	AI_STRAFE_*	yes (10.x strafe params table is 10.x-only)	missing in Rust (only strafe_during_delay)
+0x310D6C88	203	cryaisystem	COPStrafe::Execute	CGoalPipe executor	0x3116771C	CAIObject +4416/+4420/+4424	strafe args	n/a	missing
+0x310F8054	134	cryaisystem	COPLocate ctor	PushGoal case 11	vt 0x311E46F0	+16 name, +24 type, +28 max dist	refpoint names	yes	no refpoint registry in Rust
+0x310DBE38	385	cryaisystem	COPLocate::Execute	CGoalPipe executor	AI system vtable +184/+376, 0x31158734	+16/+24/+28	refpoint/formation	yes	direct positions
+0x310E06A8	133	cryaisystem	COPApproach ctor	PushGoal case 2	vt 0x311E2470	+16..+96 see goal-ops.md	approach args	yes	move_in_range behaviors.rs:975
+0x310E4F88	2610	cryaisystem	COPApproach::Execute	CGoalPipe executor	0x310E1298, 0x310DBFC8, 0x310D64E8, signal 0x3103AD40	see goal-ops.md	approach args	yes	move_in_range (differs stand-off/stuck)
+0x310E3C88	720	cryaisystem	COPStick ctor	PushGoal case 19	vt 0x311E25E0	+1048..+1260 see goal-ops.md	stick flags/args	yes	chase path path_handler.rs (differs)
+0x310F24D8	5720	cryaisystem	COPStick::Execute	CGoalPipe executor	0x310E1298, 0x310DBFC8, 0x310F18E8, 0x310D5A18	see goal-ops.md	stick flags/args	yes	behaviors.rs:865-955 (differs)
+0x310F18E8	1203	cryaisystem	COPStick::RegeneratePath	COPStick Execute (3 sites)	0x310D5EA8, 0x310D7648	+1108..1116 dest, +1148 path limit	path	yes	repath_reason behaviors.rs:922
+0x310DC558	321	cryaisystem	COPStick::Reset	COPStick lifecycle	n/a	+1232/+1240 cleared	none	yes	path reset
+0x310D75A8	144	cryaisystem	COPStick::OnObjectRemoved	object removal	AI system	+1128 target	signal "OnObjectRemoved"	yes	n/a
+0x310E8748	264	cryaisystem	COPBackoff ctor	PushGoal case 5	vt 0x311E3810	+64/68/120/152 flags see goal-ops.md	backoff args	yes	missing in Rust attack_tick
+0x310EAF38	3798	cryaisystem	COPBackoff::Execute	CGoalPipe executor	0x310E1298, 0x310DBFC8, 0x31004040	see goal-ops.md	dword_311FF428=0.1	yes	missing
+0x310D6828	135	cryaisystem	COPBackoff::OnObjectRemoved	object removal	n/a	+160 target	"OnBackOffFailed"	yes	n/a
+0x310D6798	128	cryaisystem	COPFollow (legacy) ctor	PushGoal case 3	vt 0x311E0F50	+16 refpoint, +24 target, +72 helper	follow args	n/a (not used by follow_unit.lua)	n/a
+0x310E59C8	1362	cryaisystem	COPFollow::Execute	CGoalPipe executor	0x3114EE8C, 0x3105AF48, 0x3114F36C	+16/+24/+36/+56/+72	_FollowTarget	unknown	Rust follows unit directly behaviors.rs:1555
+0x310E07A8	205	cryaisystem	COPFollowPath ctor	PushGoal case 4	vt 0x311E24D0	+88..+128 see goal-ops.md	followpath args	yes	behaviors.rs:1457
+0x310E95A8	2025	cryaisystem	COPFollowPath::Execute	CGoalPipe executor	0x310E1298, 0x310DBFC8, 0x310D64E8	+64/+72/+80/+88..+128	followpath args	yes	behaviors.rs:1457 (differs stuck/speed)
+0x310DBFC8	224	cryaisystem	COPTrace ctor	PushGoal case 12, pathing ops	vt 0x311E11E0	+148 started, +156 distance	trace args	yes	path_handler.rs
+0x310F1878	97	cryaisystem	COPTrace::Execute	CGoalPipe executor	0x310EE988	+3192 state	none	yes	path_handler.rs:155
+0x310EE988	3283	cryaisystem	COPTrace core (path following, landing, exact pos)	COPTrace Execute	path/trace helpers	see CAI strings 0x311E3DF0..0x311E4050	none	n/a	path_handler.rs
+0x310E1298	211	cryaisystem	COPPathFind ctor	pathing ops	vt 0x311E2560	+16 name, +24 type, +32 max, +40 flags	path targets	yes	geodata/mod.rs:160
+0x310DBA08	1066	cryaisystem	COPPathFind::Execute	CGoalPipe executor	AI system pathfinder	+16/+24/+32/+40	path targets	yes	geodata
+0x310EA0B8	230	cryaisystem	COPUseSkill ctor (USF flags to +32..35, event name)	PushGoal case 36	vt 0x311E3D10	+32..35 flags, +40 event	name "OnRequestSkillInfo"	yes	skills.rs:56 + npc_events.rs (differs)
+0x310E6B68	508	cryaisystem	COPUseSkill::Execute (6-state dispatch)	CGoalPipe executor	0x310D9788..0x310DFBD8	+12 state, +56 time, +64 changed, +72 stick	a1+3536..3548 skill ranges	yes	behaviors.rs:319-459 (differs)
+0x310D9788	225	cryaisystem	COPUseSkill state 0 (raise OnRequestSkillInfo)	Execute	entity vtable +448/+32	+40 name, +48/+56	none	yes	no request event in Rust
+0x310E4838	1043	cryaisystem	COPUseSkill state 1 (pick; vertical stick >1.5 m)	Execute	AI vtable +312/+320, 0x310E3C88	+32/+34 flags, +64, +72	2 s timeout; 1.5 m	yes	behaviors.rs:319 (differs)
+0x310DF478	228	cryaisystem	COPUseSkill state 2 (stick sub-goal)	Execute	0x310E6B58	+56/+64/+72	2 s	yes	n/a
+0x310DF568	942	cryaisystem	COPUseSkill state 3 (can-use + use skill)	Execute	0x310D9B08, AI vtable +80/+96/+128	+3528 skill, +3532, +3384/3416 lists	0.85 range	yes	behaviors.rs:406 use_skill (differs)
+0x310DF928	667	cryaisystem	COPUseSkill state 4 (wait start/end)	Execute	0x310D9B08	+3540 min, +3544/+3548 ranges	2 s / 60 s	yes	n/a
+0x310DFBD8	377	cryaisystem	COPUseSkill state 5 (finish)	Execute	n/a	none	none	yes	n/a
+0x310D9B08	403	cryaisystem	COPUseSkill::IsTargetInSkillRange (0.85 factor, 14/0/15)	states 1/3/4	0x3103CA08, AI system +376	skill min +3544, max +3548, agent +3544/3548	0.85 / 7.0	yes	move_in_range behaviors.rs:975 (differs)
+0x393482D0	368	x2game	Npc::Update (stagger 4/8/16/64/128)	NPC manager per frame	0x3933B490, 0x3933BE40, 0x39345770, 0x3933D0E0, 0x393405B0	gEnv+284 frame counter	none	likely (1.2 zone unknown)	manager.rs:652 tick_all (differs)
+0x3933B490	128	x2game	aggro housekeeping sub-cadences	Update	0x393204B0, 0x393211E0, 0x3931E570, 0x3931F790	Npc+104 aggro table	NpcAggroTable	likely	behaviors.rs aggro helpers
+0x3933B3B0	112	x2game	Npc::ActivateAITimeEvent	ScriptBindUnit 0x39353EE0	time api	Npc+60/+64/+68	interval ms	yes	per-behavior timers
+0x3933BE40	96	x2game	AI time event dispatch (every 4 frames)	Update	signal 0x3933B970	+60 flag, +64 interval, +68 last	"OnAITimeEvent"	yes	npc timers
+0x3933B970	176	x2game	raise named AI script event/signal	13 call sites	AI system vtable +624 (or +1352)	none	event names	yes	direct calls
+0x3933D0E0	1440	x2game	Npc::CheckPos (leash contexts 1/2/3/4/5/6/7)	Update every 128 frames	0x3933B510, 0x3933C9C0, actor +168	Npc+156 context, idlePos/talkPos, spawnPos	radii 15/7/7/-/-/50-15/3	behaviour yes (1.2 Lua), function no (10.x)	check_idle_leash behaviors.rs:1595 (match thresholds)
+0x3933C9C0	176	x2game	read script spawnPos	CheckPos	n/a	script field spawnPos	none	yes	no equivalent
+0x3933B510	80	x2game	reset movement/time counters after teleport	CheckPos	CVar objects 0x3A607D18/20	Npc+264/+268/+272	none	yes	no equivalent
+0x3933CA70	624	x2game	Npc::_FollowPath	ScriptBind NpcFollowPath	script setter vtable +40, signal 0x3933B970	followPathType/Name/Speed	ai_files / followPathSpeed	yes	behaviors.rs:1457
+0x3933F880	576	x2game	Npc::_FollowUnit	ScriptBind NpcFollowUnit	0x39258830, 0x3933BCD0, signal 0x3933B970	followUnit script field	unit id	yes	behaviors.rs:1555 (differs)
+0x3933C270	320	x2game	follow-unit lost check (every 64 frames)	Update	0x3933BCD0	signal "OnLostFollowUnit"	none	yes	behaviors.rs:1555 (no removal)
+0x39341E00	240	x2game	Npc::GotoAnchor (10.x)	ScriptBind/ScriptBindUnit	0x396F0C60, 0x3933D790	anchor list +120..128, +152	anchorType	no (10.x only)	missing (10.x only)
+0x3933CDF0	608	x2game	Npc::ChangeNewAnchor (10.x)	0x3933D0E0 callers	0x3933BCD0, script +40	anchor list stride 116, id at +100	anchorType	no (10.x only)	missing
+0x3933D790	2448	x2game	Npc::RunAICommandSet	4 call sites (GotoAnchor, scripts)	Lua commandSet.RunCommandSet	command list, commanderUnit, runType=4	ai_commands/ai_command_sets	yes (1.2 tables identical)	behaviors.rs:1917 (differs)
+0x39343CF0	1216	x2game	talk end check (every 64 frames)	Update	n/a	signal "OnTalkEnd"	talkPos	yes	talk_tick behaviors.rs:2068
+0x39345770	1648	x2game	FindNewTargetIfItNeed (every 4 frames)	Update	0x3931EF20, aggro Add	attack/sight radii	npcs columns	yes	check_aggression/check_alert behaviors.rs:544/601
+0x393405B0	1328	x2game	per-NPC movement send decision	Update	0x3936D860	Npc+264..325 cache	npc_move_* CVars	no (ZW-specific)	send_move npc.rs:295 (differs)
+0x3936D860	96	x2game	enqueue 336-byte movement state (ring 1000)	movement send + ship/vehicle	ZoneClient+200/+208	unit id	none	no (ZW-specific)	no batching
+0x3936A380	448	x2game	flush ZW movement buffers	server update	0x393656D0	GameServer+336216/672248, +1008280	none	no (ZW-specific)	no batching
+0x393656D0	240	x2game	send one ZW movement buffer (op 8) + stats	flush	ZoneClient vtable +32	stats ring +1008292	none	no (ZW-specific)	SCUnitMovements unused
+0x3938B0B0	3920	x2game	336-byte ZW movement state serializer	flush	called with entry+32	entry fields see movement.md	none	no (ZW-specific)	models/movement.rs MoveType
+0x393289C0	1072	x2game	ServerAIUnitSystem::PickSkill (list, base fallback, other targets)	AI vtable +328	0x39327430, 0x39328290, 0x39AF0B90	skill list, flags	base_skill_id	yes	behaviors.rs:319 pick (mostly match)
+0x39329E00	2048	x2game	ServerAIUnitSystem::PickAiSkill (phase lists)	AI vtable +320, COPUseSkill state 1	0x39327A20, 0x39327CF0	phase state, time/health windows	aiSkillLists	likely	behaviors.rs:1301 almighty (differs)
+0x39327430	1232	x2game	skill candidate test + uniform random pick	PickSkill/PickAiSkill	CryRandom, 0x39B0EEF0	predicted target position for types 6/11/15/23	skills/np_skills	yes	behaviors.rs:337 filter (differs)
+0x39328290	1840	x2game	other-aggro-target skill fallback	PickSkill	n/a	aggro table	none	yes	missing
+0x39327A20	1440	x2game	AI skill-list sequence evaluation	PickAiSkill	n/a	timeRange/healthRange/useType	aiSkillLists	likely	missing (flat queue)
+0x39327CF0	1440	x2game	"no skill found, find nearest" fallback	PickAiSkill	n/a	range gap	none	likely	missing
+0x39326730	592	x2game	ServerAIUnitSystem::UseSkill -> ZWStartSkill op 24	AI vtable +72	0x39362920, ZoneClient	unit id, skill id	none	yes	skills.rs:110 use_skill (world-side)
+0x39326980	448	x2game	ServerAIUnitSystem::CanUseSkill	AI vtable +96, COPUseSkill state 3	0x39457B60	result reason byte	skill/target	yes	no full cast check in AI pick
+0x393260E0	256	x2game	GetBaseSkillInfoResult	PickSkill	0x39ABF2C0	base skill	base_skill_id	yes	behaviors.rs:373 base fallback (match)
+0x39354BB0	2656	x2game	ScriptBindUnit::StartAiSkillLists (phase lists)	Lua almighty_attack	phase list parser, "phase_base"	aiPhaseChangeType, aiSkillLists, options	phase params	yes (1.2 calls it too; ProcessAiPhase is 1.2-only)	behaviors.rs:1301 (differs)
+0x39354860	848	x2game	ScriptBindUnit::NpcSetSkillList	Lua OnRequestSkillInfo	AI unit skill vector	Lua skill table	np_skills	yes	no event/list in Rust
+0x39227ED0	208	x2game	MoveSkillController::RequestPathFinding (skill controllers)	0x392428F0	AI system +1544/+1512	path request	none	likely (skill controllers exist in 1.2)	geodata A*
+0x310656B8	7047	cryaisystem	CAISystem::UpdatePathFinder (A*, beautify, partial/straight)	AI system update	CAStarSolver, CGraph	path queue	ai_PathfindTimeLimit	yes	geodata/mod.rs:160 (adapted)
