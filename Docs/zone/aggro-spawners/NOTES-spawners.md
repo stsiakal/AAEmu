@@ -207,9 +207,9 @@ representative npc = member+8 (Npc) or the first member of the group with is_lea
 brief = GetNpcBriefData(rep)         // 0x3933B680: fills {flags, scale, ...}
 if (area type == 0) {
     point = random(points)
-    if (IsSpawnPointFree(point) || otherNpcNear(point)) { suspend/retry }
+    if (!force && (IsSpawnPointFree(point) || otherNpcNear(point))) { suspend/retry }
 } else if (area type == 1) {
-    tri = pick triangle with max(weight - filled/area_count) + random*0.001
+    tri = pick triangle with max(weight - filled/area_count), random*0.001 as tie-break
     attempts = (brief.LOWORD == 0 ? 50 : 5)
     for each attempt:
         barycentric random point from the 3 vertices
