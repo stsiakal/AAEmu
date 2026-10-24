@@ -43,7 +43,7 @@ pathing, physics (see `ZONE-PHYSICS-USAGE.md` and `AI-ORACLE.md`).
 ## 0. Summary
 
 * **Aggro.** The zone owns a per-NPC table of up to **100** entries (`NpcAggroTable`, 240 bytes,
-  ctor `0x3931EF20`), sorted per frame so `entry[0]` is the current target. Entries carry three
+  ctor `0x3931EF20`), re-sorted whenever the entry set changes so `entry[0]` is the current target. Entries carry three
   integer channels (`damage`, `heal`, `etc` in our terms), an NPC-side multiplier (stat 62), a
   distance coefficient (0.909 below 10 m, 0.833 at or above), a taunt timestamp, both the pull
   position and the target position, creation and last-hit times. The world feeds it with
@@ -167,14 +167,17 @@ is inferred from the column names (and agrees with `AI-ORACLE.md` §2.4-2.6).
 
 ## A.2 Function map
 
-Sizes are `end-start` from `funcs.csv`. "1.2?" is the transfer verdict; the reason is in A.4.
+Sizes are `end-start` from `funcs.csv`. The "1.2?" column is the transfer verdict: **yes** = the 1.2
+DB columns/data and the 1.2 Lua support this behaviour and it should be reproduced; **likely** = the
+data exists but the exact 1.2 implementation is unverifiable; **unknown** = no 1.2 counterpart we can
+check; **no** = a 10.x protocol/format feature that cannot be transferred verbatim.
 
 ### A.2.1 Table lifecycle and scoring
 
 | Address | Size | Name | Callers → key callees | What it does | 1.2? |
 |---|---|---|---|---|---|
 | `0x3931EF20` | 267 | `NpcAggroTable::NpcAggroTable` [V class] | `0x39346960` → `0x394A2F40`, vector ctor | Initialises the 240-byte table: distances from the npc desc (`return_distance`, `absolute_return_distance`), combat-start pos sentinel, `-1` tops, `minAPS=-1`, 3 abuser sets. | yes |
-| `0x3931F040` | 890 | `NpcAggroTable::CreateAggro` [V] | `AddAggro`, `UpdateAggro`, `CopyTopAggro`, `TauntedBy`, `0x3931FA10` → `0x3931E000`, `0x39261710`, `0x3931D6F0`, `0x3931D650`, `0x39362CA0` | New entry: refuses self (`0x821329`), group members (`0x3931E000`), invalid targets; builds the 64-byte entry (channels 0, unit id +28, npc multiplier, distance coefficient, pull position, target position, times); on the **first** entry stores the pull position at +124..+132; caps at 100 entries by dropping one; sends **`ZWMakeAggroTargetHostile` (13: npc uid, target uid)**; notifies. | yes |
+| `0x3931F040` | 890 | `NpcAggroTable::CreateAggro` [V] | `AddAggro`, `UpdateAggro`, `CopyTopAggro`, `TauntedBy`, `0x3931FA10` → `0x3931E000`, `0x39261710`, `0x3931D6F0`, `0x3931D650`, `0x39362CA0` | New entry: refuses self (`0x821329`), group members (`0x3931E000`), invalid targets; builds the 64-byte entry (channels 0, unit id +28, npc multiplier, distance coefficient, pull position, target position, times); on the **first** entry stores the pull position at +124..+132; caps at 100 entries by dropping the last entry; sends **`ZWMakeAggroTargetHostile` (13: npc uid, target uid)**; notifies. | yes |
 | `0x39321340` | 492 | `NpcAggroTable::AddAggro` [V] | `0x39321740`, `0x39321540`, `0x39321A10`, `0x39345770`, `0x39346960` → `0x3931DD40`, `0x3931F040`, `0x39322950`, `0x3931D6F0`, `0x3931FCE0`, `0x3931E240` | Adds `int[3]` to an existing entry (creating it if absent), each scaled by the **attacker's** stat 90 `(100+stat90)/100`; updates last-hit (+60); a brand-new entry whose APS is below `minAPS` is removed at once (reason 9); recomputes the distance coefficient when the total is non-zero; marks dirty and notifies. Early-outs when the table's mutation lock (+117) is set, and skips units already registered in an abuser set (`0x3931DD40`). | yes |
 | `0x3931FD30` | 192 | `NpcAggroTable::UpdateAggro` [V] | `AddAggro`/`CopyTopAggro` → `0x3931CF00`, `0x3931FCE0` | Refreshes an existing entry's multiplier (+16) from the NPC's current stat 62. Covers buff-driven `AggroMul` changes that happen after the entry was created. | yes |
 | `0x3931FE00` | 282 | `NpcAggroTable::CopyTopAggro` [V] | `AddAggro`, `TauntedBy` → `0x3931F040`, `0x3931FCE0` | Raises the entry's channel 2 so its total equals the current maximum total in the table, i.e. makes this unit the top target without disturbing channels 0/1. | yes |
