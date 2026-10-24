@@ -32,6 +32,11 @@ Conventions
   A 1.2 zone binary does not exist in our sources; 1.2 facts come from the 1.2 Lua and `compact.sqlite3`.
 * Every difference from our Rust is a **SUSPECT**, not a bug, until reproduced against the running
   10.x zone (or a 1.2 client observation).
+* Data: 10.x server DB `D:/aa-re/db-references/10.0-server/server_decrypted.sqlite3` and 1.2 DB
+  `C:/Users/stsiakal/AAEmu/rust/crates/aaemu-game/app/Data/compact.sqlite3`, both read-only. Row
+  counts in this file were queried from them (`ai_commands`, `npc_ai_params`, `np_skills`,
+  `game_stances`); the lane's `app/Data/compact.sqlite3` is a 0-byte placeholder, so the integration
+  checkout's DB was used.
 
 ---
 
