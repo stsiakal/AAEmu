@@ -18,8 +18,10 @@ use crate::record::Recorder;
 use crate::stream::StreamClient;
 
 mod cometsboon;
+mod craft;
 mod doodad;
 mod fixes;
+mod lunafrost;
 mod plant;
 mod portal;
 mod questitem;
@@ -75,10 +77,19 @@ pub enum Kind {
     /// (see `scenario/fixes.rs`). GM account.
     #[serde(rename = "ghost")]
     Ghost,
+    /// Lunafrost enchant (skill 11285, `MAGICAL_ENCHANT`) of a bag and of a worn head armor (see
+    /// `scenario/lunafrost.rs`). GM account.
+    #[serde(rename = "lunafrost")]
+    Lunafrost,
     /// Portal book delete (`SCPortalDeleted`) and the Memory Tome recall-point binding (skill
     /// 14602 cast at doodad 841, see `scenario/portal.rs`). GM account.
     #[serde(rename = "portal")]
     Portal,
+    /// A craft batch that runs out of labor ends with the `SCErrorMsg` 148 the client needs to
+    /// unlock its craft window (Gilda Star disintegration at an Archeum Workbench, see
+    /// `scenario/craft.rs`). GM account.
+    #[serde(rename = "craft")]
+    Craft,
     /// Ad-hoc live checks driven by the command file `$AAEMU_SCRIPT` (see `scenario/script.rs`).
     /// GM account.
     #[serde(rename = "script")]
@@ -102,10 +113,12 @@ impl std::str::FromStr for Kind {
             "cometsboon" => Self::CometsBoon,
             "stonethrow" => Self::StoneThrow,
             "ghost" => Self::Ghost,
+            "lunafrost" => Self::Lunafrost,
             "portal" => Self::Portal,
+            "craft" => Self::Craft,
             "script" => Self::Script,
             _ => bail!(
-                "unknown scenario '{s}' (login, lobby, full, combat, npc-return, mate-revive, questitem, doodad, \n                 plant, cometsboon, stonethrow, ghost, portal, script, load)"
+                "unknown scenario '{s}' (login, lobby, full, combat, npc-return, mate-revive, questitem, doodad, \n                 plant, cometsboon, stonethrow, ghost, lunafrost, portal, craft, script, load)"
             ),
         })
     }
@@ -663,8 +676,18 @@ async fn run_inner(
         drop(stream);
         return Ok(());
     }
+    if kind == Kind::Lunafrost {
+        lunafrost::run(&mut game, r).await?;
+        drop(stream);
+        return Ok(());
+    }
     if kind == Kind::Portal {
         portal::run(&mut game, cfg, r).await?;
+        drop(stream);
+        return Ok(());
+    }
+    if kind == Kind::Craft {
+        craft::run(&mut game, r).await?;
         drop(stream);
         return Ok(());
     }
