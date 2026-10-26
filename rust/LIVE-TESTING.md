@@ -572,9 +572,9 @@ time), `SCSkillEnded` / `SCSkillStopped`, plot skills' `SCPlotEvent` / `SCPlotEn
 events' `SCUnitDamaged` / `SCUnitHealed`, `SCErrorMsg`, `SCUnitPoints` (mana spent, target HP
 delta), `SCBuffCreated` / `SCBuffRemoved` on caster and target, and a second immediate cast for
 the cooldown check. **Every inner packet of a `CompressedGamePackets` (`DD04`) batch is
-decoded** (`game::split_compressed_batch` measures each lengthless body with its codec's field
-sizes) and handed out as a normal level-1 packet, so plot events, unit points, buff and damage
-packets inside a batch are seen like any other. Damage and heal packets are matched by skill
+decoded** (`game::split_game_batch` measures each lengthless body with its codec's field
+sizes after the bounded inflate) and handed out as a normal level-1 packet, so plot events,
+unit points, buff and damage packets inside a batch are seen like any other. Damage and heal packets are matched by skill
 id on every unit other than the caster (an area skill hits them all): a miss, an absorbed hit
 (packet damage 0) and a row whose gates were not met are `notes`, not mismatches.
 

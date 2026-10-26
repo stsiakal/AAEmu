@@ -1,8 +1,8 @@
 //! Game server client (C2G / G2C + the proxy channel) for the 1.2 protocol.
 //!
 //! Every frame payload is `[0xDD][level]...`: level 1 (game) carries `[hash][count][u16 opcode]`,
-//! level 2 (proxy / CryNetwork) just `[u16 opcode]`. 1.2 traffic is neither encrypted nor
-//! compressed.
+//! level 2 (proxy / CryNetwork) just `[u16 opcode]`. Traffic is unencrypted; native level-4
+//! game batches carry raw DEFLATE.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::time::{Duration, Instant};
@@ -13,11 +13,11 @@ use aaemu_commons::PacketStream;
 use aaemu_game::opcodes::{cs, name_of, pp, sc};
 use aaemu_game::systems::quests::model::status as quest_status;
 use aaemu_game::systems::services::commands::COMMAND_PREFIX;
-use aaemu_game::systems::skills::types::{SkillCastTarget, SkillCaster, SkillObject};
+use aaemu_game::systems::skills::types::{SkillCastTarget, SkillCaster};
 use aaemu_game::systems::social::chat::chat_type;
 use anyhow::{anyhow, bail, ensure, Context};
 use futures::{SinkExt, StreamExt};
-use tokio::net::tcp::OwnedWriteHalf;
+use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 use tokio_util::codec::{FramedRead, FramedWrite};
@@ -30,6 +30,235 @@ pub const LEVEL_GAME: u8 = 1;
 pub const LEVEL_PROXY: u8 = 2;
 /// `CompressedGamePackets` (`DD04`).
 pub const LEVEL_COMPRESSED: u8 = 4;
+
+/// The transport has a u16 frame length. Batches may compress at most 1 MiB into that
+/// frame and contain at most 4096 entries (enough for the native all-skill cooldown reset).
+/// Every expanded entry must also fit a normal level-1 frame. Limits apply before copies
+/// and before inflater output growth, not just when events reach the recorder.
+pub const MAX_GAME_FRAME: usize = u16::MAX as usize;
+pub const MAX_BATCH_BYTES: usize = 1024 * 1024;
+pub const MAX_BATCH_PACKETS: usize = 4096;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum BatchError {
+    Inflate,
+    Limit,
+    Structure,
+    Unsupported,
+}
+
+impl std::fmt::Display for BatchError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Inflate => "invalid DD04 compression",
+            Self::Limit => "DD04 limit exceeded",
+            Self::Structure => "invalid DD04 structure",
+            Self::Unsupported => "unsupported DD04 opcode",
+        })
+    }
+}
+impl std::error::Error for BatchError {}
+
+/// miniz_oxide 0.8.9 core::decompress writes only into the supplied slice and returns
+/// (status, input consumed, output written). Unlike DecompressError, status contains no
+/// partial plaintext. A fixed 1 MiB output slice bounds allocation even for a tiny bomb.
+/// Requiring all input consumed also rejects trailing or concatenated deflate streams.
+fn inflate_batch(input: &[u8]) -> Result<Vec<u8>, BatchError> {
+    use miniz_oxide::inflate::core::{decompress, inflate_flags, DecompressorOxide};
+    use miniz_oxide::inflate::TINFLStatus;
+    if input.len() > MAX_GAME_FRAME - 4 {
+        return Err(BatchError::Limit);
+    }
+    let mut output = vec![0; MAX_BATCH_BYTES];
+    let mut inflater = Box::<DecompressorOxide>::default();
+    let (status, used, written) = decompress(
+        &mut inflater,
+        input,
+        &mut output,
+        0,
+        inflate_flags::TINFL_FLAG_USING_NON_WRAPPING_OUTPUT_BUF,
+    );
+    match status {
+        TINFLStatus::Done if used == input.len() => {
+            output.truncate(written);
+            Ok(output)
+        }
+        TINFLStatus::HasMoreOutput => Err(BatchError::Limit),
+        _ => Err(BatchError::Inflate),
+    }
+}
+
+fn batch_caster(s: &mut PacketStream) -> anyhow::Result<()> {
+    let kind = s.read_u8()?;
+    aaemu_game::systems::skills::types::SkillCaster::read(kind, s)?;
+    Ok(())
+}
+
+fn batch_cast_action(s: &mut PacketStream) -> anyhow::Result<()> {
+    // CastAction has a native writer but no reader (types.rs, CastAction.Write).
+    let len = match s.read_u8()? {
+        0 => 6,
+        1 => 14,
+        2 => 13,
+        3 => 11,
+        4 => 7,
+        _ => bail!(BatchError::Structure),
+    };
+    s.read_bytes(len)?;
+    Ok(())
+}
+
+fn batch_plot_object(s: &mut PacketStream) -> anyhow::Result<()> {
+    // PlotObject.Write: Unit = type1+BC; Position = type2+position9+rotation3.
+    let len = match s.read_u8()? {
+        1 => 3,
+        2 => 12,
+        _ => bail!(BatchError::Structure),
+    };
+    s.read_bytes(len)?;
+    Ok(())
+}
+
+/// Consume exactly one native body. No boundary scanning or treating remaining bytes as
+/// an unknown body: an unsupported opcode rejects the *whole* batch before publication.
+/// Covers every current CompressedGamePackets producer: plots, damage/heal and reset_all.
+fn batch_body(dir: Dir, opcode: u16, s: &mut PacketStream) -> anyhow::Result<()> {
+    if dir == Dir::C2S {
+        if opcode == cs::X2EnterWorldPacket {
+            s.read_bytes(29)?;
+            return Ok(());
+        }
+        bail!(BatchError::Unsupported);
+    }
+    match opcode {
+        sc::SCReconnectAuthPacket => {
+            s.read_u32()?;
+        }
+        sc::X2EnterWorldResponsePacket => {
+            s.read_bytes(17)?; // reason, gm, stream token, port, world time
+            s.read_bytes_sized()?; // pubKeySize / pubKey (both native u16-sized)
+            s.read_string()?;
+        }
+        sc::SCSkillCooldownResetPacket => {
+            s.read_bytes(12)?;
+        }
+        sc::SCSkillEndedPacket | sc::SCPlotEndedPacket => {
+            s.read_bytes(2)?;
+        }
+        sc::SCErrorMsgPacket => {
+            s.read_bytes(9)?;
+        }
+        sc::SCCastingStoppedPacket => {
+            s.read_bytes(6)?;
+        }
+        sc::SCBuffRemovedPacket | sc::SCBuffLearnedPacket | sc::SCSkillStoppedPacket => {
+            s.read_bytes(7)?;
+        }
+        sc::SCUnitDamagedPacket => {
+            batch_cast_action(s)?;
+            batch_caster(s)?;
+            s.read_bytes(7)?; // casterBC, targetBC, crime
+            s.read_pisc_w(3)?;
+            s.read_pisc_w(3)?;
+            s.read_bytes(5)?; // holdable, hit type, flag, result
+        }
+        sc::SCUnitHealedPacket => {
+            batch_cast_action(s)?;
+            batch_caster(s)?;
+            s.read_bytes(14)?; // targetBC, heal/hit, value, zero, result
+        }
+        sc::SCPlotEventPacket => {
+            s.read_bytes(10)?; // tl, event, skill
+            batch_plot_object(s)?;
+            batch_plot_object(s)?;
+            s.read_bytes(18)?; // item, objectBC, casting, zeroBC, zeroi16
+            let count = s.read_u8()?;
+            s.read_bytes(usize::from(count) * 3)?;
+            let flag = s.read_u8()?;
+            if flag & 8 != 0 {
+                s.read_bytes(13 * 4)?;
+            }
+        }
+        sc::SCBuffCreatedPacket => {
+            batch_caster(s)?;
+            s.read_bytes(22)?; // caster, ownerBC, index, buff, level, ability, skill
+            s.read_pisc_w(4)?;
+        }
+        sc::SCSkillStartedPacket | sc::SCSkillFiredPacket => {
+            use aaemu_game::systems::skills::types::{SkillCastTarget, SkillObject};
+            s.read_bytes(6)?; // skill and transport ids
+            batch_caster(s)?;
+            let kind = s.read_u8()?;
+            SkillCastTarget::read(kind, s)?;
+            let flag = s.read_u8()?;
+            anyhow::ensure!(flag <= 7, "invalid skill object type");
+            SkillObject::read(flag, s)?;
+            if opcode == sc::SCSkillFiredPacket {
+                s.read_bytes(10)?;
+            } else {
+                s.read_bytes(5)?; // real/base cast, synergy
+                let extra = s.read_u8()?;
+                anyhow::ensure!(extra & !7 == 0, "invalid skill extra flags");
+                if extra & 1 != 0 {
+                    s.read_u8()?;
+                }
+                if extra & 2 != 0 {
+                    s.read_u16()?;
+                }
+                if extra & 4 != 0 {
+                    s.read_u32()?;
+                }
+            }
+        }
+        _ => bail!(BatchError::Unsupported),
+    }
+    Ok(())
+}
+
+/// Shared native batch validation for GameClient and Recorder. The input is the already
+/// bounded inflated body, whose entries are [u16 zero][u16 opcode][native body]. No nesting
+/// exists in this format. Any nonzero header, bad count/trailing bytes, or unknown body is
+/// rejected atomically with a fixed error, never with input bytes or an underlying cause.
+pub(crate) fn split_game_batch(
+    dir: Dir,
+    count: u16,
+    body: &[u8],
+) -> Result<Vec<Packet>, BatchError> {
+    if body.len() > MAX_BATCH_BYTES || usize::from(count) > MAX_BATCH_PACKETS {
+        return Err(BatchError::Limit);
+    }
+    let mut stream = PacketStream::from_bytes(body.to_vec());
+    let mut packets = Vec::with_capacity(usize::from(count));
+    for _ in 0..count {
+        if stream.read_u16().map_err(|_| BatchError::Structure)? != 0 {
+            return Err(BatchError::Structure);
+        }
+        let opcode = stream.read_u16().map_err(|_| BatchError::Structure)?;
+        let start = stream.pos();
+        if let Err(error) = batch_body(dir, opcode, &mut stream) {
+            return Err(
+                if error.downcast_ref::<BatchError>() == Some(&BatchError::Unsupported) {
+                    BatchError::Unsupported
+                } else {
+                    BatchError::Structure
+                },
+            );
+        }
+        let end = stream.pos();
+        if end - start > MAX_GAME_FRAME - 6 {
+            return Err(BatchError::Limit);
+        }
+        packets.push(Packet {
+            level: LEVEL_GAME,
+            opcode,
+            body: body[start..end].to_vec(),
+        });
+    }
+    if stream.remaining() != 0 {
+        return Err(BatchError::Structure);
+    }
+    Ok(packets)
+}
 
 /// A received G2C / proxy packet.
 #[derive(Debug)]
@@ -62,257 +291,6 @@ pub fn packet_name(dir: Dir, level: u8, opcode: u16) -> &'static str {
         (Dir::C2S, _) => cs::NAMES,
     };
     name_of(table, opcode).unwrap_or("Unknown")
-}
-
-/// Splits the inflated payload of a `CompressedGamePackets` batch
-/// (`([u16 0][u16 opcode][body])*`) into its packets. The inner bodies carry no length, so each
-/// one is measured by decoding its codec's fields; the first opcode whose body cannot be decoded
-/// ends the split (the packets before it are returned).
-pub fn split_compressed_batch(payload: &[u8]) -> Vec<(u16, Vec<u8>)> {
-    let mut out = Vec::new();
-    let mut pos = 0usize;
-    while pos + 4 <= payload.len() {
-        if payload[pos..pos + 2] != [0, 0] {
-            break;
-        }
-        let opcode = u16::from_le_bytes([payload[pos + 2], payload[pos + 3]]);
-        let Some(len) = inner_body_len(opcode, &payload[pos + 4..]) else {
-            break;
-        };
-        if pos + 4 + len > payload.len() {
-            break;
-        }
-        out.push((opcode, payload[pos + 4..pos + 4 + len].to_vec()));
-        pos += 4 + len;
-    }
-    out
-}
-
-/// Wire length of one inner batch packet body, decoded from the body itself.
-fn inner_body_len(opcode: u16, body: &[u8]) -> Option<usize> {
-    let mut s = PacketStream::from_bytes(body.to_vec());
-    match opcode {
-        sc::SCUnitPointsPacket => {
-            s.read_bc().ok()?;
-            s.read_i32().ok()?;
-            s.read_i32().ok()?;
-        }
-        sc::SCSkillStartedPacket => {
-            s.read_u32().ok()?;
-            s.read_u16().ok()?;
-            skip_skill_caster(&mut s)?;
-            skip_cast_target(&mut s)?;
-            skip_skill_object(&mut s)?;
-            s.read_u16().ok()?; // real cast time / 10
-            s.read_u16().ok()?; // base cast time / 10
-            s.read_u8().ok()?; // synergy
-            let flags = s.read_u8().ok()?;
-            if flags & 1 != 0 {
-                s.read_u8().ok()?;
-            }
-            if flags & 2 != 0 {
-                s.read_u16().ok()?;
-            }
-            if flags & 4 != 0 {
-                s.read_u32().ok()?;
-            }
-        }
-        sc::SCSkillFiredPacket => {
-            s.read_u32().ok()?;
-            s.read_u16().ok()?;
-            skip_skill_caster(&mut s)?;
-            skip_cast_target(&mut s)?;
-            skip_skill_object(&mut s)?;
-            s.read_i16().ok()?; // computed delay / 10 + 10
-            s.read_i16().ok()?; // channeling time / 10 + 10
-            s.read_u8().ok()?; // f
-            s.read_u32().ok()?; // fire anim id
-            s.read_u8().ok()?; // flag
-        }
-        sc::SCSkillEndedPacket => {
-            s.read_u16().ok()?;
-        }
-        sc::SCSkillStoppedPacket => {
-            s.read_bc().ok()?;
-            s.read_u32().ok()?;
-        }
-        sc::SCCastingStoppedPacket => {
-            s.read_u16().ok()?;
-            s.read_u32().ok()?;
-        }
-        sc::SCBuffCreatedPacket => {
-            skip_skill_caster(&mut s)?;
-            s.read_u32().ok()?; // caster id
-            s.read_bc().ok()?; // owner obj id
-            s.read_u32().ok()?; // index
-            s.read_u32().ok()?; // buff id
-            s.read_u8().ok()?; // caster level
-            s.read_i16().ok()?; // ab level
-            s.read_u32().ok()?; // skill id
-            s.read_pisc_w(4).ok()?; // charge, duration, 0, tick
-        }
-        sc::SCBuffRemovedPacket => {
-            s.read_bc().ok()?;
-            s.read_u32().ok()?;
-        }
-        sc::SCUnitDamagedPacket => {
-            skip_cast_action(&mut s)?;
-            skip_skill_caster(&mut s)?;
-            s.read_bc().ok()?; // caster id
-            s.read_bc().ok()?; // target id
-            s.read_u8().ok()?; // crime state
-            s.read_pisc_w(3).ok()?; // damage, absorbed, 0
-            s.read_pisc_w(3).ok()?; // 0, 0, mana burn
-            s.read_u8().ok()?; // holdable id
-            s.read_u16().ok()?; // 288 | hit type
-            s.read_u8().ok()?; // flag
-            s.read_u8().ok()?; // result
-        }
-        sc::SCUnitHealedPacket => {
-            skip_cast_action(&mut s)?;
-            skip_skill_caster(&mut s)?;
-            s.read_bc().ok()?; // target id
-            s.read_u8().ok()?; // heal type
-            s.read_u8().ok()?; // heal hit type
-            s.read_i32().ok()?; // value
-            s.read_i32().ok()?; // o
-            s.read_u8().ok()?; // result
-        }
-        sc::SCUnitDeathPacket => {
-            s.read_bc().ok()?;
-            s.read_u8().ok()?; // kill reason
-            s.read_i32().ok()?; // resurrect wait
-            s.read_i32().ok()?; // lost exp
-            s.read_u8().ok()?; // durability loss rate
-            let killer = s.read_bc().ok()?;
-            if killer != 0 {
-                s.read_u8().ok()?; // game type
-                s.read_u16().ok()?; // kill streak
-                s.read_u8().ok()?;
-                s.read_u8().ok()?;
-                s.read_u8().ok()?;
-                s.read_string().ok()?; // killer name
-            }
-        }
-        sc::SCAiAggroPacket => {
-            s.read_bc().ok()?;
-            let count = s.read_i32().ok()?;
-            if count > 0 {
-                s.read_bc().ok()?; // hostile unit id
-                s.read_i32().ok()?; // summarize damage
-                s.read_i32().ok()?; // val2
-                s.read_i32().ok()?; // val3
-                s.read_u8().ok()?; // top flags
-            }
-        }
-        sc::SCSkillCooldownResetPacket => {
-            s.read_bc().ok()?;
-            s.read_u32().ok()?; // skill id
-            s.read_u32().ok()?; // tag id
-            s.read_bool().ok()?;
-        }
-        sc::SCPlotEventPacket => {
-            s.read_u16().ok()?; // tl
-            s.read_u32().ok()?; // event id
-            s.read_u32().ok()?; // skill id
-            skip_plot_object(&mut s)?; // caster
-            skip_plot_object(&mut s)?; // target
-            s.read_u64().ok()?; // item id
-            s.read_bc().ok()?; // obj id
-            s.read_u16().ok()?; // casting time
-            s.read_bc().ok()?;
-            s.read_i16().ok()?;
-            let targets = s.read_u8().ok()?;
-            for _ in 0..targets {
-                s.read_bc().ok()?;
-            }
-            let flag = s.read_u8().ok()?;
-            if (flag >> 3) & 1 == 1 {
-                for _ in 0..13 {
-                    s.read_i32().ok()?;
-                }
-            }
-        }
-        sc::SCPlotEndedPacket => {
-            s.read_u16().ok()?;
-        }
-        sc::SCPlotCastingStoppedPacket | sc::SCPlotChannelingStoppedPacket => {
-            s.read_u16().ok()?; // tl
-            s.read_u32().ok()?; // duration
-            s.read_u8().ok()?; // last event
-        }
-        _ => return None,
-    }
-    Some(s.pos())
-}
-
-fn skip_skill_caster(s: &mut PacketStream) -> Option<()> {
-    let kind = s.read_u8().ok()?;
-    SkillCaster::read(kind, s).ok()?;
-    Some(())
-}
-
-fn skip_cast_target(s: &mut PacketStream) -> Option<()> {
-    let kind = s.read_u8().ok()?;
-    SkillCastTarget::read(kind, s).ok()?;
-    Some(())
-}
-
-fn skip_skill_object(s: &mut PacketStream) -> Option<()> {
-    let flag = s.read_u8().ok()?;
-    SkillObject::read(flag, s).ok()?;
-    Some(())
-}
-
-fn skip_cast_action(s: &mut PacketStream) -> Option<()> {
-    match s.read_u8().ok()? {
-        0 => {
-            s.read_u32().ok()?;
-            s.read_u16().ok()?;
-        }
-        1 => {
-            s.read_u32().ok()?;
-            s.read_u16().ok()?;
-            s.read_u32().ok()?;
-            s.read_u32().ok()?;
-        }
-        2 => {
-            s.read_u32().ok()?;
-            s.read_bc().ok()?;
-            s.read_u32().ok()?;
-            s.read_bool().ok()?;
-            s.read_bool().ok()?;
-        }
-        3 => {
-            s.read_i32().ok()?;
-            s.read_i32().ok()?;
-            s.read_bc().ok()?;
-        }
-        4 => {
-            s.read_i32().ok()?;
-            s.read_bc().ok()?;
-        }
-        _ => return None,
-    }
-    Some(())
-}
-
-/// `PlotObject`: `[u8 1][bc objId]` for a unit, `[u8 2][9-byte position][i8 roll][i8 pitch]
-/// [i8 yaw]` for a position.
-fn skip_plot_object(s: &mut PacketStream) -> Option<()> {
-    match s.read_u8().ok()? {
-        1 => {
-            s.read_bc().ok()?;
-        }
-        2 => {
-            s.read_position().ok()?;
-            s.read_i8().ok()?;
-            s.read_i8().ok()?;
-            s.read_i8().ok()?;
-        }
-        _ => return None,
-    }
-    Some(())
 }
 
 /// A character of `SCCharacterListPacket` / `SCCreateCharacterResponsePacket`. The first
@@ -620,6 +598,9 @@ pub struct GameState {
     pub selected_char: u32,
     pub self_obj: u32,
     pub self_pos: (f32, f32, f32),
+    /// Last position actually received from the server, independent of local movement sends.
+    pub observed_self_pos: Option<(f32, f32, f32)>,
+    pub observation_errors: u64,
     /// The world instance the last `SCLoadInstancePacket` reported (0 = the main world); every
     /// unit / doodad seen before it is stale (the observer clears them).
     pub world_instance: u32,
@@ -740,8 +721,10 @@ impl GameState {
 }
 
 pub struct GameClient {
-    writer: FramedWrite<OwnedWriteHalf, FrameCodec>,
-    rx: mpsc::UnboundedReceiver<Vec<u8>>,
+    writer: Option<FramedWrite<Box<dyn AsyncWrite + Unpin + Send>, FrameCodec>>,
+    reader: SocketReader,
+    rx: mpsc::Receiver<Vec<u8>>,
+    expanded: VecDeque<Packet>,
     rec: Recorder,
     count: u8,
     pub account_id: u32,
@@ -759,6 +742,26 @@ pub struct GameClient {
     pub player: Option<Box<crate::player::PlayerMode>>,
 }
 
+/// Aborting a client (including a cancelled connection attempt) must release the read half.
+struct SocketReader(Option<tokio::task::JoinHandle<()>>);
+
+impl SocketReader {
+    async fn close(&mut self) {
+        if let Some(task) = self.0.take() {
+            task.abort();
+            let _ = task.await;
+        }
+    }
+}
+
+impl Drop for SocketReader {
+    fn drop(&mut self) {
+        if let Some(task) = self.0.take() {
+            task.abort();
+        }
+    }
+}
+
 impl GameClient {
     pub async fn connect(addr: &str, rec: Recorder) -> anyhow::Result<Self> {
         let sock = TcpStream::connect(addr)
@@ -766,18 +769,36 @@ impl GameClient {
             .with_context(|| format!("connecting to game server {addr}"))?;
         sock.set_nodelay(true)?;
         let (rd, wr) = sock.into_split();
-        let (tx, rx) = mpsc::unbounded_channel();
-        tokio::spawn(async move {
+        Ok(Self::from_parts(rd, wr, rec))
+    }
+
+    /// Use the same packet/state client over an owned async transport (including in-memory
+    /// deterministic fixtures). Production TCP keeps its native owned socket halves.
+    pub fn from_io(
+        io: impl AsyncRead + AsyncWrite + Unpin + Send + 'static,
+        rec: Recorder,
+    ) -> Self {
+        let (rd, wr) = tokio::io::split(io);
+        Self::from_parts(rd, wr, rec)
+    }
+
+    fn from_parts(
+        rd: impl AsyncRead + Unpin + Send + 'static,
+        wr: impl AsyncWrite + Unpin + Send + 'static,
+        rec: Recorder,
+    ) -> Self {
+        let (tx, rx) = mpsc::channel(256);
+        let reader = tokio::spawn(async move {
             let mut reader = FramedRead::new(rd, FrameCodec);
             loop {
                 match reader.next().await {
                     Some(Ok(frame)) => {
-                        if tx.send(frame).is_err() {
+                        if tx.send(frame).await.is_err() {
                             break;
                         }
                     }
-                    Some(Err(e)) => {
-                        tracing::warn!("game socket read error: {e}");
+                    Some(Err(_)) => {
+                        tracing::warn!("game socket read failed");
                         break;
                     }
                     None => {
@@ -787,9 +808,11 @@ impl GameClient {
                 }
             }
         });
-        Ok(Self {
-            writer: FramedWrite::new(wr, FrameCodec),
+        Self {
+            writer: Some(FramedWrite::new(Box::new(wr), FrameCodec)),
+            reader: SocketReader(Some(reader)),
             rx,
+            expanded: VecDeque::new(),
             rec,
             count: 0,
             account_id: 0,
@@ -800,11 +823,34 @@ impl GameClient {
             started: Instant::now(),
             pending: VecDeque::new(),
             player: None,
-        })
+        }
     }
 
     pub fn recorder(&self) -> &Recorder {
         &self.rec
+    }
+
+    /// Close both game socket halves, without sending `CSLeaveWorldPacket`.
+    /// Awaiting the aborted reader confirms that its socket half was dropped.
+    pub async fn disconnect_hard(mut self) {
+        drop(self.writer.take());
+        self.reader.close().await;
+        // Earlier accepted events are already flushed. Drain already-delivered evidence
+        // in order for a bounded cleanup slice; do not let an inbound backlog consume the
+        // command's reporting reserve. No socket remains open while this work runs.
+        let until = Instant::now() + Duration::from_millis(25);
+        while Instant::now() < until {
+            if let Some(packet) = self.expanded.pop_front() {
+                self.accept(packet);
+                continue;
+            }
+            let Ok(frame) = self.rx.try_recv() else {
+                break;
+            };
+            let _ = self.decode(frame);
+        }
+        self.rx.close();
+        self.state.disconnected = true;
     }
 
     /// Sends a level-1 (`CS*`) packet.
@@ -822,7 +868,11 @@ impl GameClient {
         self.count = self.count.wrapping_add(1);
         p.extend_from_slice(&opcode.to_le_bytes());
         p.extend_from_slice(body);
-        self.writer.send(p).await?;
+        self.writer
+            .as_mut()
+            .context("game writer closed")?
+            .send(p)
+            .await?;
         Ok(())
     }
 
@@ -840,13 +890,20 @@ impl GameClient {
         p.extend_from_slice(&[0xDD, LEVEL_PROXY]);
         p.extend_from_slice(&opcode.to_le_bytes());
         p.extend_from_slice(body);
-        self.writer.send(p).await?;
+        self.writer
+            .as_mut()
+            .context("game writer closed")?
+            .send(p)
+            .await?;
         Ok(())
     }
 
-    fn decode(&mut self, frame: Vec<u8>) -> anyhow::Result<Packet> {
-        if frame.len() < 4 {
-            bail!("short game frame ({} bytes)", frame.len());
+    fn decode(&mut self, frame: Vec<u8>) -> anyhow::Result<Option<Packet>> {
+        if frame.len() > MAX_GAME_FRAME {
+            bail!(BatchError::Limit);
+        }
+        if frame.len() < 4 || frame[0] != 0xdd {
+            bail!("invalid game frame");
         }
         let level = frame[1];
         if level == LEVEL_COMPRESSED {
@@ -857,8 +914,17 @@ impl GameClient {
             // inner packets are handed out one by one like normal level-1 packets, so every
             // parser and `wait_for` sees them.
             let count = u16::from_le_bytes([frame[2], frame[3]]);
-            let body = miniz_oxide::inflate::decompress_to_vec(&frame[4..])
-                .map_err(|e| anyhow!("DD04 inflate failed: {e:?}"))?;
+            if usize::from(count) > MAX_BATCH_PACKETS {
+                bail!(BatchError::Limit);
+            }
+            let body = inflate_batch(&frame[4..])?;
+            if self.rec.is_incremental() {
+                // Validate the whole batch before any entry reaches a capture or state.
+                self.expanded
+                    .extend(split_game_batch(Dir::S2C, count, &body)?);
+                return Ok(self.expanded.pop_front().map(|packet| self.accept(packet)));
+            }
+            // Ordinary scenario captures keep their existing aggregate inflated body.
             self.rec.push(
                 Channel::Game,
                 Dir::S2C,
@@ -867,33 +933,33 @@ impl GameClient {
                 "CompressedGamePackets",
                 &body,
             );
-            let packets = split_compressed_batch(&body);
-            if packets.len() != usize::from(count) {
-                tracing::debug!(
-                    "CompressedGamePackets: decoded {} of {} inner packets",
-                    packets.len(),
-                    count
-                );
-            }
-            for (opcode, inner) in packets {
-                let p = Packet {
-                    level: LEVEL_GAME,
-                    opcode,
-                    body: inner,
-                };
-                if let Err(e) = self.observe(&p) {
-                    tracing::debug!("could not parse {}: {e}", p.name());
+            match split_game_batch(Dir::S2C, count, &body) {
+                Ok(packets) => {
+                    for p in packets {
+                        // Credentials stay in the aggregate capture; never hand them out
+                        // as standalone packets (the control path filters them too).
+                        if matches!(
+                            p.opcode,
+                            sc::SCReconnectAuthPacket | sc::X2EnterWorldResponsePacket
+                        ) {
+                            continue;
+                        }
+                        if let Err(e) = self.observe(&p) {
+                            tracing::debug!("could not parse {}: {e}", p.name());
+                        }
+                        self.pending.push_back(p);
+                    }
                 }
-                self.pending.push_back(p);
+                Err(e) => tracing::debug!("CompressedGamePackets: {e}"),
             }
-            if let Some(p) = self.pending.pop_front() {
-                return Ok(p);
-            }
-            return Ok(Packet {
+            return Ok(Some(Packet {
                 level,
                 opcode: count,
                 body,
-            });
+            }));
+        }
+        if !matches!(level, LEVEL_GAME | LEVEL_PROXY) {
+            bail!("unsupported game frame level");
         }
         let (opcode, body) = if level == LEVEL_GAME {
             if frame.len() < 6 {
@@ -914,12 +980,24 @@ impl GameClient {
             opcode,
             body,
         };
-        self.rec
-            .push(Channel::Game, Dir::S2C, level, opcode, p.name(), &p.body);
-        if let Err(e) = self.observe(&p) {
-            tracing::debug!("could not parse {}: {e}", p.name());
+        Ok(Some(self.accept(p)))
+    }
+
+    fn accept(&mut self, packet: Packet) -> Packet {
+        self.rec.push(
+            Channel::Game,
+            Dir::S2C,
+            packet.level,
+            packet.opcode,
+            packet.name(),
+            &packet.body,
+        );
+        if self.observe(&packet).is_err() {
+            self.state.observation_errors += 1;
+            // Native/parser errors can retain input; never format their Display/Debug/cause.
+            tracing::debug!(packet = packet.name(), "could not parse game packet");
         }
-        Ok(p)
+        packet
     }
 
     /// `PingPacket` (proxy): `tPhy`, `ping` and `local`, like the client's keep-alive.
@@ -949,6 +1027,9 @@ impl GameClient {
             return Ok(Some(p));
         }
         self.keep_alive().await?;
+        if let Some(packet) = self.expanded.pop_front() {
+            return Ok(Some(self.accept(packet)));
+        }
         let wait = wait.min(self.ping_every);
         match tokio::time::timeout(wait, self.rx.recv()).await {
             Err(_) => Ok(None),
@@ -956,7 +1037,7 @@ impl GameClient {
                 self.state.disconnected = true;
                 Err(anyhow!("game server closed the connection"))
             }
-            Ok(Some(frame)) => Ok(Some(self.decode(frame)?)),
+            Ok(Some(frame)) => self.decode(frame),
         }
     }
 
@@ -1009,6 +1090,7 @@ impl GameClient {
 /// Applies one received packet to `state` (a free function so tests can drive the parsing
 /// without a connection).
 pub(crate) fn observe_into(st: &mut GameState, p: &Packet) -> anyhow::Result<()> {
+    st.observation_seq += 1;
     if let Some(ev) = crate::social::decode(p) {
         st.social.push(ev);
     }
@@ -1023,12 +1105,14 @@ pub(crate) fn observe_into(st: &mut GameState, p: &Packet) -> anyhow::Result<()>
     } else if p.is_sc(sc::SCCharacterListPacket) {
         let last = s.read_bool()?;
         let n = s.read_u8()?;
-        // A packet carries up to two rows (`SCCharacterListPacket::chunked`); only the first
-        // head can be decoded (the equipment / model data after it is variable), so the total
-        // comes from the per-packet count.
+        // A packet carries up to two complete rows (`SCCharacterListPacket::chunked`). Parse
+        // the whole list atomically; a malformed later entry must not authorize a partial list.
         st.character_count = st.character_count.saturating_add(u32::from(n));
-        if n > 0 {
-            let info = read_character_head(&mut s)?;
+        let characters = (0..n)
+            .map(|_| read_character(&mut s))
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        anyhow::ensure!(s.remaining() == 0, "trailing character-list bytes");
+        for info in characters {
             if !st.characters.iter().any(|c| c.id == info.id) {
                 st.characters.push(info);
             }
@@ -1073,6 +1157,7 @@ pub(crate) fn observe_into(st: &mut GameState, p: &Packet) -> anyhow::Result<()>
         if unit_type == 0 && id == st.selected_char && id != 0 {
             st.self_obj = obj_id;
             st.self_pos = pos;
+            st.observed_self_pos = Some(pos);
         }
         st.units.insert(
             obj_id,
@@ -1097,6 +1182,9 @@ pub(crate) fn observe_into(st: &mut GameState, p: &Packet) -> anyhow::Result<()>
                 s.read_u8()?;
             }
             let pos = s.read_position()?;
+            if obj_id == st.self_obj {
+                st.observed_self_pos = Some(pos);
+            }
             if let Some(u) = st.units.get_mut(&obj_id) {
                 u.pos = pos;
             }
@@ -1378,6 +1466,7 @@ pub(crate) fn observe_into(st: &mut GameState, p: &Packet) -> anyhow::Result<()>
         s.read_f32()?; // z2 (yaw)
         st.last_teleport = Some(pos);
         st.self_pos = pos;
+        st.observed_self_pos = Some(pos);
         if st.self_obj != 0 {
             if let Some(u) = st.units.get_mut(&st.self_obj) {
                 u.pos = pos;
@@ -1398,6 +1487,7 @@ pub(crate) fn observe_into(st: &mut GameState, p: &Packet) -> anyhow::Result<()>
         st.world_instance = instance_id;
         st.world_zone = zone_id;
         st.self_pos = pos;
+        st.observed_self_pos = Some(pos);
         st.units.clear();
         st.doodads.clear();
         st.buffs.clear();
@@ -1450,6 +1540,87 @@ fn read_character_head(s: &mut PacketStream) -> anyhow::Result<CharInfo> {
     s.read_i32()?; // mp
     s.read_u32()?; // zone id
     let faction = s.read_u32()?;
+    Ok(CharInfo {
+        id,
+        name,
+        race,
+        gender,
+        level,
+        faction,
+    })
+}
+
+/// Consume one complete native `Character.Write` record. The list has no entry lengths;
+/// stopping after the head would parse the next character from equipment or model bytes.
+fn read_character(s: &mut PacketStream) -> anyhow::Result<CharInfo> {
+    use aaemu_game::models::container::{equip_slot, EQUIPMENT_CONTAINER_SIZE};
+    use aaemu_game::models::item::detail_body_len;
+    use aaemu_game::models::unit_model::UnitCustomModelParams;
+
+    let id = s.read_u32()?;
+    let name = s.read_string()?;
+    let race = s.read_u8()?;
+    let gender = s.read_u8()?;
+    let level = s.read_u8()?;
+    s.read_i32()?; // hp
+    s.read_i32()?; // mp
+    s.read_u32()?; // zone
+    let faction = s.read_u32()?;
+    s.read_string()?; // faction name (variable length)
+    s.read_u32()?; // expedition
+    s.read_u32()?; // family
+    for slot in 0..EQUIPMENT_CONTAINER_SIZE {
+        let template = s.read_u32()?;
+        // Native appearance slots use BodyPart.Write (template only), including nonzero ids.
+        if template == 0 || (equip_slot::FACE..=equip_slot::BEARD).contains(&slot) {
+            continue;
+        }
+        s.read_u64()?; // instance id
+        s.read_u8()?; // grade
+        s.read_u8()?; // flags
+        s.read_i32()?; // count
+        let detail = s.read_u8()?;
+        let len = detail_body_len(detail);
+        anyhow::ensure!(detail == 0 || len != 0, "unknown equipment detail type");
+        s.read_bytes(len)?;
+        s.read_i64()?; // create time
+        s.read_i32()?; // lifespan
+        s.read_u32()?; // made unit id
+        s.read_u8()?; // world id
+        s.read_i64()?; // unsecure time
+        s.read_i64()?; // unpack time
+    }
+    s.read_bytes(3)?; // abilities
+    s.read_i64()?; // x
+    s.read_i64()?; // y
+    s.read_f32()?; // z
+    let _: UnitCustomModelParams = s.read()?;
+    s.read_i16()?; // labor
+    s.read_i64()?; // labor modified
+    s.read_i16()?; // dead count
+    s.read_i64()?; // dead time
+    s.read_i32()?; // rez wait
+    s.read_i64()?; // rez time
+    s.read_i32()?; // rez penalty
+    s.read_i64()?; // last world leave
+    s.read_i64()?; // money
+    s.read_i64()?; // money amount
+    s.read_i16()?; // crime
+    s.read_i32()?; // infamy
+    s.read_i16()?; // trials
+    s.read_i64()?; // delete request
+    s.read_i64()?; // transfer request
+    s.read_i64()?; // delete delay
+    s.read_i32()?; // consumed labor
+    s.read_i64()?; // loyalty
+    s.read_i64()?; // money2
+    s.read_i64()?; // money amount
+    s.read_bool()?; // auto AA point
+    s.read_i32()?; // prev point
+    s.read_i32()?; // point
+    s.read_i32()?; // gift
+    s.read_i64()?; // updated
+    s.read_u8()?; // force name change
     Ok(CharInfo {
         id,
         name,
@@ -2216,6 +2387,76 @@ impl GameClient {
     }
 }
 
+#[cfg(test)]
+mod socket_reader_tests {
+    use super::SocketReader;
+    use tokio::sync::oneshot;
+
+    struct OnDrop(Option<oneshot::Sender<()>>);
+
+    impl Drop for OnDrop {
+        fn drop(&mut self) {
+            let _ = self.0.take().unwrap().send(());
+        }
+    }
+
+    async fn reader() -> (SocketReader, oneshot::Receiver<()>) {
+        let (started, ready) = oneshot::channel();
+        let (stopped, done) = oneshot::channel();
+        let task = tokio::spawn(async move {
+            let _resource = OnDrop(Some(stopped));
+            let _ = started.send(());
+            std::future::pending::<()>().await;
+        });
+        ready.await.unwrap();
+        (SocketReader(Some(task)), done)
+    }
+
+    #[tokio::test]
+    async fn explicit_close_and_cancelled_owner_release_reader_resources() {
+        let (mut task, stopped) = reader().await;
+        task.close().await;
+        assert!(stopped.await.is_ok());
+        task.close().await;
+
+        let (task, stopped) = reader().await;
+        drop(task);
+        assert!(stopped.await.is_ok());
+    }
+}
+
+#[cfg(test)]
+mod observed_position_tests {
+    use super::*;
+
+    #[test]
+    fn server_observation_does_not_report_a_locally_predicted_position() {
+        let mut state = GameState {
+            self_obj: 42,
+            self_pos: (900.0, 900.0, 900.0),
+            ..GameState::default()
+        };
+        assert_eq!(state.observed_self_pos, None);
+        let mut body = PacketStream::new();
+        body.write_bc(42)
+            .write_u8(1)
+            .write_u32(123)
+            .write_u8(0)
+            .write_position(10.0, 20.0, 30.0);
+        state
+            .observe(&Packet {
+                level: LEVEL_GAME,
+                opcode: sc::SCOneUnitMovementPacket,
+                body: body.as_bytes().to_vec(),
+            })
+            .unwrap();
+        // The native position codec quantizes the authored Z=30 to 29.9995.
+        assert_eq!(state.observed_self_pos, Some((10.0, 20.0, 29.9995)));
+        assert_eq!(state.self_pos, (900.0, 900.0, 900.0));
+        assert_eq!(state.observation_seq, 1);
+    }
+}
+
 fn dist2(a: (f32, f32, f32), b: (f32, f32, f32)) -> f32 {
     let (dx, dy, dz) = (a.0 - b.0, a.1 - b.1, a.2 - b.2);
     dx * dx + dy * dy + dz * dz
@@ -2470,66 +2711,6 @@ mod body_tests {
     }
 
     #[test]
-    fn character_list_head_carries_count_and_race_gender_level() {
-        // `SCCharacterListPacket::write`: [last][u8 count], then `Character.Write` rows of
-        // which only the head is needed (id, name, race, gender, level, hp, mp, zone, faction;
-        // `models/character.rs`).
-        let mut st = GameState::default();
-        let mut body = PacketStream::new();
-        body.write_bool(true)
-            .write_u8(1)
-            .write_u32(0x1234)
-            .write_str("Tester")
-            .write_u8(4)
-            .write_u8(2)
-            .write_u8(7)
-            .write_i32(1200)
-            .write_i32(300)
-            .write_u32(2)
-            .write_u32(101);
-        observe_into(
-            &mut st,
-            &packet(sc::SCCharacterListPacket, body.into_bytes()),
-        )
-        .unwrap();
-        assert_eq!(st.character_count, 1);
-        assert_eq!(
-            st.characters,
-            vec![CharInfo {
-                id: 0x1234,
-                name: "Tester".into(),
-                race: 4,
-                gender: 2,
-                level: 7,
-                faction: 101,
-            }]
-        );
-        assert!(st.char_list_done);
-
-        // Pairs: the count counts both rows, the parsed list keeps the first of each packet.
-        let mut body = PacketStream::new();
-        body.write_bool(false)
-            .write_u8(2)
-            .write_u32(1)
-            .write_str("A")
-            .write_u8(1)
-            .write_u8(1)
-            .write_u8(3)
-            .write_i32(120)
-            .write_i32(30)
-            .write_u32(1)
-            .write_u32(101); // the second row is not decoded (variable data follows)
-        observe_into(
-            &mut st,
-            &packet(sc::SCCharacterListPacket, body.into_bytes()),
-        )
-        .unwrap();
-        assert_eq!(st.character_count, 3);
-        assert_eq!(st.characters.len(), 2);
-        assert_eq!(st.characters[1].name, "A");
-    }
-
-    #[test]
     fn create_response_head_carries_race_gender_level() {
         let mut body = PacketStream::new();
         body.write_u32(0x99)
@@ -2737,279 +2918,395 @@ mod body_tests {
 #[cfg(test)]
 mod compressed_batch_tests {
     use super::*;
-    use aaemu_game::systems::skills::packets::{
-        body_of, deflate_stored, CompressedGamePackets, SCAiAggroPacket, SCBuffCreatedPacket,
-        SCBuffRemovedPacket, SCPlotEndedPacket, SCPlotEventPacket, SCSkillEndedPacket,
-        SCSkillStartedPacket, SCUnitDamagedPacket,
+    use crate::record::Event;
+    use aaemu_game::net::packet::encode;
+    use aaemu_game::packets::g2c::{SCReconnectAuthPacket, X2EnterWorldResponsePacket};
+    use aaemu_game::systems::skills::packets::*;
+    use aaemu_game::systems::skills::types::{
+        CastAction, HealHitType, HealType, PlotObject, SkillCaster,
     };
-    use aaemu_game::systems::skills::types::{CastAction, PlotObject};
+    use std::io::Write;
+    use std::sync::{Arc, Mutex};
 
-    /// The exact payload the server builds in `CompressedGamePackets::raw_payload`.
-    fn payload(packets: &[CompressedGamePackets]) -> Vec<u8> {
-        packets.iter().flat_map(|p| p.raw_payload()).collect()
+    #[derive(Clone, Default)]
+    struct Bytes(Arc<Mutex<Vec<u8>>>);
+    impl Write for Bytes {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
     }
 
-    fn unit_points() -> CompressedGamePackets {
-        let mut b = CompressedGamePackets::new();
-        b.add(&aaemu_game::packets::world::SCUnitPointsPacket {
-            obj_id: 0x1234,
-            hp: 555,
-            mp: 777,
+    fn safe_native_batch() -> CompressedGamePackets {
+        let mut batch = CompressedGamePackets::new();
+        batch.add(&SCSkillCooldownResetPacket {
+            obj_id: 42,
+            skill_id: 15307,
+            tag_id: 0,
+            gcd: false,
         });
-        b
-    }
-
-    fn skill_started() -> CompressedGamePackets {
-        let mut b = CompressedGamePackets::new();
-        let mut p = SCSkillStartedPacket::new(
-            10375,
-            7,
-            SkillCaster::Unit(0x100),
-            SkillCastTarget::Unit(0x200),
-            SkillObject::default(),
-        );
-        p.real_cast_time_div10 = 150;
-        p.base_cast_time_div10 = 150;
-        p.set_skill_result(8);
-        p.set_result_uint(0xDEAD_BEEF);
-        b.add(&p);
-        b
-    }
-
-    fn buff_created() -> CompressedGamePackets {
-        let mut b = CompressedGamePackets::new();
-        b.add(&SCBuffCreatedPacket {
-            skill_caster: SkillCaster::Unit(0x100),
-            caster_id: 42,
-            owner_obj_id: 0x100,
-            index: 3,
-            buff_id: 870,
-            caster_level: 55,
-            ab_level: 55,
-            skill_id: 10644,
-            charge: 2,
-            duration: 10_000,
-            tick: 1.5,
-        });
-        b
-    }
-
-    fn plot_event() -> CompressedGamePackets {
-        let mut b = CompressedGamePackets::new();
-        b.add(&SCPlotEventPacket {
-            tl: 9,
-            event_id: 5315,
-            skill_id: 10644,
-            caster: PlotObject::Unit(0x100),
+        batch.add(&SCPlotEventPacket {
+            tl: 7,
+            event_id: 8,
+            skill_id: 15307,
+            caster: PlotObject::Unit(42),
             target: PlotObject::Position {
-                x: 10.0,
-                y: 20.0,
-                z: 30.0,
-                roll: 1,
-                pitch: 2,
-                yaw: 3,
+                x: 1.0,
+                y: 2.0,
+                z: 3.0,
+                roll: 0,
+                pitch: 0,
+                yaw: 0,
             },
-            obj_id: 0,
-            casting_time: 0,
-            flag: 2,
-            item_id: 0,
-            target_unit_count: 1,
+            obj_id: 43,
+            casting_time: 100,
+            flag: 8,
+            item_id: 100,
+            target_unit_count: 2,
         });
-        b
-    }
-
-    fn unit_damaged() -> CompressedGamePackets {
-        let mut b = CompressedGamePackets::new();
-        let mut p = SCUnitDamagedPacket::new(
-            CastAction::Skill {
-                skill_id: 19050,
-                tl_id: 9,
+        batch.add(&SCUnitDamagedPacket::new(
+            CastAction::Plot {
+                plot_id: 1,
+                tl_id: 7,
+                event_id: 8,
+                skill_id: 15307,
             },
-            SkillCaster::Unit(0x100),
-            0x100,
-            0x200,
-            163,
-            0,
+            SkillCaster::Item {
+                obj_id: 42,
+                item_id: 100,
+                item_template_id: 23398,
+                type1: 0,
+                type2: 0,
+            },
+            42,
+            43,
+            20000,
+            1000,
+        ));
+        batch.add(&SCUnitHealedPacket {
+            cast_action: CastAction::Buff {
+                buff_id: 1,
+                owner_obj_id: 42,
+                index: 2,
+            },
+            skill_caster: SkillCaster::Mount {
+                obj_id: 42,
+                mount_skill_template_id: 3,
+            },
+            target_id: 43,
+            heal_type: HealType::Health,
+            heal_hit_type: HealHitType::HealHit,
+            value: 400,
+        });
+        batch.add(&SCBuffCreatedPacket {
+            skill_caster: SkillCaster::Unit(42),
+            caster_id: 1,
+            owner_obj_id: 42,
+            index: 2,
+            buff_id: 3,
+            caster_level: 10,
+            ab_level: 10,
+            skill_id: 15307,
+            charge: 300,
+            duration: 20000,
+            tick: 100.0,
+        });
+        batch.add(&SCSkillEndedPacket { tl: 7 });
+        batch.add(&SCBuffRemovedPacket {
+            obj_id: 42,
+            index: 2,
+        });
+        batch.add(&aaemu_game::packets::world::SCErrorMsgPacket::new(
+            7, 0, false,
+        ));
+        let mut started = SCSkillStartedPacket::new(
+            15307,
+            7,
+            SkillCaster::Unit(42),
+            aaemu_game::systems::skills::types::SkillCastTarget::Position {
+                obj_id: 0,
+                x: 1.0,
+                y: 2.0,
+                z: 3.0,
+                rot: 0.0,
+                obj_id1: 0,
+                obj_id2: 0,
+            },
+            aaemu_game::systems::skills::types::SkillObject::Text("safe".into()),
         );
-        p.mana_burn = 12;
-        p.holdable_id = 3;
-        p.hit_type = aaemu_game::systems::skills::types::SkillHitType::MeleeHit;
-        b.add(&p);
-        b
+        started
+            .set_skill_result(2)
+            .set_result_ushort(300)
+            .set_result_uint(400);
+        batch.add(&started);
+        batch.add(&SCSkillFiredPacket {
+            id: 15307,
+            tl: 7,
+            caster: SkillCaster::Unit(42),
+            target: aaemu_game::systems::skills::types::SkillCastTarget::Doodad(43),
+            skill_object: aaemu_game::systems::skills::types::SkillObject::None,
+            computed_delay: 100,
+            channeling_time: 0,
+            fire_anim_id: 1,
+        });
+        batch
     }
 
-    #[test]
-    fn decodes_every_inner_packet_of_a_batch() {
-        let batch = payload(&[
-            unit_points(),
-            skill_started(),
-            buff_created(),
-            {
-                let mut b = CompressedGamePackets::new();
-                b.add(&SCBuffRemovedPacket {
-                    obj_id: 0x100,
-                    index: 3,
-                });
-                b
-            },
-            plot_event(),
-            {
-                let mut b = CompressedGamePackets::new();
-                b.add(&SCPlotEndedPacket { tl: 9 });
-                b
-            },
-            unit_damaged(),
-            {
-                let mut b = CompressedGamePackets::new();
-                b.add(&SCSkillEndedPacket { tl: 7 });
-                b
-            },
-            {
-                let mut b = CompressedGamePackets::new();
-                b.add(&SCAiAggroPacket {
-                    npc_id: 0x200,
-                    count: 1,
-                    hostile_unit_id: 0x100,
-                    summarize_damage: 163,
-                    val2: 0,
-                    val3: 0,
-                });
-                b
-            },
-        ]);
+    fn client(rec: Recorder) -> GameClient {
+        let (io, _peer) = tokio::io::duplex(64 * 1024);
+        GameClient::from_io(io, rec)
+    }
 
-        let decoded = split_compressed_batch(&batch);
-        let expected = vec![
-            (
-                sc::SCUnitPointsPacket,
-                body_of(&aaemu_game::packets::world::SCUnitPointsPacket {
-                    obj_id: 0x1234,
-                    hp: 555,
-                    mp: 777,
-                }),
-            ),
-            (
-                sc::SCSkillStartedPacket,
-                body_of(&{
-                    let mut p = SCSkillStartedPacket::new(
-                        10375,
-                        7,
-                        SkillCaster::Unit(0x100),
-                        SkillCastTarget::Unit(0x200),
-                        SkillObject::default(),
-                    );
-                    p.real_cast_time_div10 = 150;
-                    p.base_cast_time_div10 = 150;
-                    p.set_skill_result(8);
-                    p.set_result_uint(0xDEAD_BEEF);
-                    p
-                }),
-            ),
-            (
-                sc::SCBuffCreatedPacket,
-                body_of(&SCBuffCreatedPacket {
-                    skill_caster: SkillCaster::Unit(0x100),
-                    caster_id: 42,
-                    owner_obj_id: 0x100,
-                    index: 3,
-                    buff_id: 870,
-                    caster_level: 55,
-                    ab_level: 55,
-                    skill_id: 10644,
-                    charge: 2,
-                    duration: 10_000,
-                    tick: 1.5,
-                }),
-            ),
-            (
-                sc::SCBuffRemovedPacket,
-                body_of(&SCBuffRemovedPacket {
-                    obj_id: 0x100,
-                    index: 3,
-                }),
-            ),
-            (
-                sc::SCPlotEventPacket,
-                body_of(&SCPlotEventPacket {
-                    tl: 9,
-                    event_id: 5315,
-                    skill_id: 10644,
-                    caster: PlotObject::Unit(0x100),
-                    target: PlotObject::Position {
-                        x: 10.0,
-                        y: 20.0,
-                        z: 30.0,
-                        roll: 1,
-                        pitch: 2,
-                        yaw: 3,
-                    },
-                    obj_id: 0,
-                    casting_time: 0,
-                    flag: 2,
-                    item_id: 0,
-                    target_unit_count: 1,
-                }),
-            ),
-            (sc::SCPlotEndedPacket, body_of(&SCPlotEndedPacket { tl: 9 })),
-            (
-                sc::SCUnitDamagedPacket,
-                body_of(&{
-                    let mut p = SCUnitDamagedPacket::new(
-                        CastAction::Skill {
-                            skill_id: 19050,
-                            tl_id: 9,
-                        },
-                        SkillCaster::Unit(0x100),
-                        0x100,
-                        0x200,
-                        163,
-                        0,
-                    );
-                    p.mana_burn = 12;
-                    p.holdable_id = 3;
-                    p.hit_type = aaemu_game::systems::skills::types::SkillHitType::MeleeHit;
-                    p
-                }),
-            ),
-            (
-                sc::SCSkillEndedPacket,
-                body_of(&SCSkillEndedPacket { tl: 7 }),
-            ),
-            (
-                sc::SCAiAggroPacket,
-                body_of(&SCAiAggroPacket {
-                    npc_id: 0x200,
-                    count: 1,
-                    hostile_unit_id: 0x100,
-                    summarize_damage: 163,
-                    val2: 0,
-                    val3: 0,
-                }),
-            ),
+    fn control_events(frame: Vec<u8>) -> (Vec<Event>, Vec<Event>) {
+        let sink = Bytes::default();
+        let rec = Recorder::incremental_game_to(sink.clone());
+        rec.control_game_ready(true);
+        let mut game = client(rec.clone());
+        game.decode(frame).unwrap();
+        while let Some(packet) = game.expanded.pop_front() {
+            game.accept(packet);
+        }
+        let output = rec.take_live_events().unwrap();
+        let capture = String::from_utf8(sink.0.lock().unwrap().clone())
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        (output, capture)
+    }
+
+    #[tokio::test]
+    async fn real_repo_encoded_plot_combat_and_cooldown_batches_reach_both_sinks() {
+        let batch = safe_native_batch();
+        let (events, capture) = control_events(encode(&batch));
+        assert_eq!(events, capture);
+        assert_eq!(events.len(), batch.len());
+        for (event, (opcode, body)) in events.iter().zip(&batch.packets) {
+            assert_eq!(event.level, LEVEL_GAME);
+            assert_eq!(event.opcode, *opcode);
+            assert_eq!(event.body_bytes(), *body);
+        }
+        let mut large = CompressedGamePackets::new();
+        for skill in 0..1024 {
+            large.add(&SCSkillCooldownResetPacket {
+                obj_id: 42,
+                skill_id: skill,
+                tag_id: 0,
+                gcd: false,
+            });
+        }
+        assert_eq!(control_events(encode(&large)).0.len(), 1024);
+        assert!(control_events(encode(&CompressedGamePackets::new()))
+            .0
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn mixed_auth_batches_only_publish_the_safe_inner_packets() {
+        const TOKEN: u32 = u32::from_le_bytes(*b"KEY!");
+        let safe = safe_native_batch();
+        let mut mixed = CompressedGamePackets::new();
+        mixed.add(&SCReconnectAuthPacket { token: TOKEN });
+        mixed.packets.extend(safe.packets.clone());
+        mixed.add(&X2EnterWorldResponsePacket {
+            reason: 0,
+            gm: true,
+            token: TOKEN,
+            port: 25250,
+            world_time: 0,
+        });
+        let (events, capture) = control_events(encode(&mixed));
+        assert_eq!(events, capture);
+        assert_eq!(events.len(), safe.len());
+        for event in &events {
+            assert_eq!(event.level, 1);
+            assert!(!matches!(
+                event.opcode,
+                sc::SCReconnectAuthPacket | sc::X2EnterWorldResponsePacket
+            ));
+            assert!(!event.body.contains("4b455921"));
+        }
+        // A recorder receiving an already-inflated aggregate uses the identical splitter.
+        let sink = Bytes::default();
+        let rec = Recorder::incremental_game_to(sink.clone());
+        rec.control_game_ready(true);
+        rec.push(
+            Channel::Game,
+            Dir::S2C,
+            4,
+            mixed.len() as u16,
+            "CompressedGamePackets",
+            &mixed.raw_payload(),
+        );
+        let direct = rec.take_live_events().unwrap();
+        assert_eq!(
+            direct
+                .iter()
+                .map(|e| (e.opcode, e.body.clone()))
+                .collect::<Vec<_>>(),
+            events
+                .iter()
+                .map(|e| (e.opcode, e.body.clone()))
+                .collect::<Vec<_>>()
+        );
+        assert!(!String::from_utf8_lossy(&sink.0.lock().unwrap()).contains("4b455921"));
+        // C2S's credential transition is X2EnterWorld (native 29-byte body).
+        let mut auth = PacketStream::new();
+        auth.write_u32(0)
+            .write_u32(0)
+            .write_u32(1)
+            .write_u32(TOKEN)
+            .write_i32(0)
+            .write_u8(0)
+            .write_u64(0);
+        let mut inbound = CompressedGamePackets::new();
+        inbound
+            .packets
+            .push((cs::X2EnterWorldPacket, auth.into_bytes()));
+        let sink = Bytes::default();
+        let rec = Recorder::incremental_game_to(sink.clone());
+        rec.control_game_ready(true);
+        rec.push(
+            Channel::Game,
+            Dir::C2S,
+            4,
+            1,
+            "CompressedGamePackets",
+            &inbound.raw_payload(),
+        );
+        assert!(rec.take_live_events().unwrap().is_empty());
+        assert!(sink.0.lock().unwrap().is_empty());
+        // Ordinary private scenario captures preserve their existing inflated aggregate.
+        let ordinary = Recorder::new(true);
+        let mut game = client(ordinary.clone());
+        let packet = game.decode(encode(&mixed)).unwrap().unwrap();
+        assert_eq!(packet.level, 4);
+        assert_eq!(ordinary.events()[0].body_bytes(), mixed.raw_payload());
+        assert_eq!(ordinary.events().len(), 1);
+    }
+
+    fn redacted(error: &anyhow::Error) {
+        for text in [
+            format!("{error}"),
+            format!("{error:#}"),
+            format!("{error:?}"),
+        ] {
+            for secret in ["KEY!", "4b455921", "75, 69, 89, 33"] {
+                assert!(!text.contains(secret), "payload in formatted parser error");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn malformed_compressed_auth_never_reaches_errors_or_debug_logs() {
+        let mut raw = PacketStream::new();
+        raw.write_u16(0)
+            .write_u16(sc::SCReconnectAuthPacket)
+            .write_raw(b"KEY!");
+        let mut bad = deflate_stored(raw.as_bytes());
+        bad[0] = 0; // valid non-final stored block produces the secret before the invalid block
+        bad.push(7); // final reserved BTYPE=3
+        let mut frame = vec![0xdd, 4, 1, 0];
+        frame.extend_from_slice(&bad);
+        let logs = Bytes::default();
+        let writer = logs.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .without_time()
+            .with_ansi(false)
+            .with_max_level(tracing::Level::DEBUG)
+            .with_writer(move || writer.clone())
+            .finish();
+        let _guard = tracing::subscriber::set_default(subscriber);
+        let sink = Bytes::default();
+        let rec = Recorder::incremental_game_to(sink.clone());
+        rec.control_game_ready(true);
+        let mut game = client(rec.clone());
+        let error = game.decode(frame).unwrap_err();
+        assert_eq!(
+            error.downcast_ref::<BatchError>(),
+            Some(&BatchError::Inflate)
+        );
+        redacted(&error);
+        tracing::debug!(debug=?error,display=%error,"sanitized batch error");
+        // The observation path also avoids formatting errors with retained native input.
+        game.decode(aaemu_game::net::packet::encode_raw(
+            1,
+            sc::X2EnterWorldResponsePacket,
+            b"KEY!",
+        ))
+        .unwrap();
+        let logs = String::from_utf8(logs.0.lock().unwrap().clone()).unwrap();
+        assert!(logs.contains("sanitized batch error"));
+        for secret in ["KEY!", "4b455921", "75, 69, 89, 33"] {
+            assert!(!logs.contains(secret));
+        }
+        assert!(rec.take_live_events().unwrap().is_empty());
+        assert!(sink.0.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn count_nested_unknown_truncated_and_trailing_batches_fail_atomically() {
+        let safe = safe_native_batch();
+        let raw = safe.raw_payload();
+        let mut nonzero = raw.clone();
+        nonzero[0] = 1;
+        let mut trailing = raw.clone();
+        trailing.push(0xff);
+        let mut inner = CompressedGamePackets::new();
+        inner.add(&SCSkillEndedPacket { tl: 7 });
+        let mut nested = CompressedGamePackets::new();
+        nested.add(&inner);
+        let cases = [
+            (safe.len() as u16, nonzero),
+            (safe.len() as u16, trailing),
+            (safe.len() as u16 + 1, raw.clone()),
+            (safe.len() as u16 - 1, raw.clone()),
+            (safe.len() as u16, raw[..raw.len() - 1].to_vec()),
+            (1, vec![0, 0, 0xff, 0xff, b'K', b'E', b'Y', b'!']),
+            (1, nested.raw_payload()),
+            (1, encode(&inner)), // nested DD04 level header is not an inner zero/opcode header
         ];
-        assert_eq!(decoded, expected);
+        for (count, body) in cases {
+            let sink = Bytes::default();
+            let rec = Recorder::incremental_game_to(sink.clone());
+            rec.control_game_ready(true);
+            let mut game = client(rec.clone());
+            let mut frame = vec![0xdd, 4];
+            frame.extend_from_slice(&count.to_le_bytes());
+            frame.extend_from_slice(&deflate_stored(&body));
+            redacted(&game.decode(frame).unwrap_err());
+            assert!(rec.take_live_events().unwrap().is_empty());
+            assert!(sink.0.lock().unwrap().is_empty());
+        }
     }
 
-    #[test]
-    fn the_deflated_wire_batch_decodes_to_the_same_packets() {
-        let batch = payload(&[unit_points(), plot_event()]);
-        let wire = deflate_stored(&batch);
-        let inflated = miniz_oxide::inflate::decompress_to_vec(&wire).unwrap();
-        assert_eq!(inflated, batch);
-        let decoded = split_compressed_batch(&inflated);
-        assert_eq!(decoded.len(), 2);
-        assert_eq!(decoded[0].0, sc::SCUnitPointsPacket);
-        assert_eq!(decoded[1].0, sc::SCPlotEventPacket);
-    }
-
-    #[test]
-    fn an_unknown_inner_opcode_stops_the_split() {
-        let mut raw = payload(&[unit_points()]);
-        let before = raw.len();
-        raw.extend_from_slice(&[0, 0, 0x34, 0x12, 1, 2, 3]);
-        let decoded = split_compressed_batch(&raw);
-        assert_eq!(decoded.len(), 1);
-        assert_eq!(decoded[0].0, sc::SCUnitPointsPacket);
-        assert_eq!(decoded[0].1.len(), before - 4);
+    #[tokio::test]
+    async fn inflater_refuses_bombs_and_frame_count_limits_before_unbounded_growth() {
+        // Only cap+1 plaintext bytes are needed to test a bomb; no huge fixture allocation.
+        let bomb = miniz_oxide::deflate::compress_to_vec(&vec![b'A'; MAX_BATCH_BYTES + 1], 9);
+        assert!(bomb.len() < MAX_GAME_FRAME - 4);
+        assert_eq!(inflate_batch(&bomb).unwrap_err(), BatchError::Limit);
+        let exact = miniz_oxide::deflate::compress_to_vec(&vec![b'A'; MAX_BATCH_BYTES], 9);
+        assert_eq!(inflate_batch(&exact).unwrap().len(), MAX_BATCH_BYTES);
+        let mut trailing = exact;
+        trailing.extend_from_slice(&[0xaa; 64]);
+        assert_eq!(inflate_batch(&trailing).unwrap_err(), BatchError::Inflate);
+        let mut game = client(Recorder::new(false));
+        let error = game.decode(vec![0; MAX_GAME_FRAME + 1]).unwrap_err();
+        redacted(&error);
+        let mut frame = vec![0xdd, 4];
+        frame.extend_from_slice(&((MAX_BATCH_PACKETS + 1) as u16).to_le_bytes());
+        frame.extend_from_slice(&deflate_stored(&[]));
+        assert_eq!(
+            game.decode(frame).unwrap_err().downcast_ref::<BatchError>(),
+            Some(&BatchError::Limit)
+        );
+        assert_eq!(
+            split_game_batch(Dir::S2C, 0, &vec![0; MAX_BATCH_BYTES + 1]).unwrap_err(),
+            BatchError::Limit
+        );
     }
 }

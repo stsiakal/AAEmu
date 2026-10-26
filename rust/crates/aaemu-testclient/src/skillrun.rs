@@ -1771,7 +1771,7 @@ fn parse_skill_stopped(p: &Packet) -> Option<(u32, u32)> {
 
 /// `SCPlotEventPacket`: plot skills (`skills.plot_id`) announce their steps with it instead of
 /// `SCSkillStarted` / `SCSkillFired`. The batch it arrives in is split into level-1 packets by
-/// [`crate::game::split_compressed_batch`], so each event is read on its own.
+/// [`crate::game::split_game_batch`], so each event is read on its own.
 fn parse_plot_event(p: &Packet) -> Option<PlotEvent> {
     if !p.is_sc(sc::SCPlotEventPacket) {
         return None;
