@@ -5,6 +5,7 @@
 //! (`OnReceivedRequest`), which keeps the C# routing (regex routes on the raw URL), status
 //! codes and bodies.
 
+mod auth;
 pub mod controllers;
 pub mod hooks;
 pub mod http;
@@ -19,15 +20,17 @@ use axum::extract::State;
 use axum::response::Response;
 use tokio_util::sync::CancellationToken;
 
-use self::http::{HttpRequest, HttpResponse};
-use self::route_mapper::{ControllerCtx, RouteMapper};
-use crate::config::NetworkConfig;
+use self::http::{error_model, json_response, HttpRequest, HttpResponse};
+use self::route_mapper::{ControllerCtx, Method, RouteMapper};
+use crate::config::WebApiConfig;
 use crate::server::GameServer;
 
 /// `WebApiServer`: the routes plus the server the controllers reach.
 pub struct WebApiServer {
     pub route_mapper: RouteMapper,
     server: Weak<GameServer>,
+    /// Snapshot at listener creation; rotating the key requires a WebAPI restart.
+    api_key: Option<String>,
 }
 
 impl WebApiServer {
@@ -35,17 +38,22 @@ impl WebApiServer {
     pub fn new(server: Weak<GameServer>) -> Result<Self, route_mapper::RouteError> {
         let mut route_mapper = RouteMapper::new();
         route_mapper.discover_routes()?;
-        Ok(Self {
-            route_mapper,
-            server,
-        })
+        Ok(Self::with_routes(route_mapper, server))
     }
 
     /// `new WebApiServer(address, port, routeMapper)`.
     pub fn with_routes(route_mapper: RouteMapper, server: Weak<GameServer>) -> Self {
+        let api_key = server.upgrade().and_then(|s| {
+            s.config
+                .web_api_network
+                .as_ref()
+                .filter(|c| c.enabled)
+                .and_then(|c| c.api_key.clone())
+        });
         Self {
             route_mapper,
             server,
+            api_key,
         }
     }
 }
@@ -62,6 +70,14 @@ pub async fn on_received_request(server: &WebApiServer, request: HttpRequest) ->
             response.set_body("Not found");
             return Ok(response);
         };
+        // Check the selected route, not a URL prefix: legacy regexes also match inside
+        // query strings and prefixed paths. Only the read-only status handler is public.
+        let public_status = route.method == Method::Get && route.path == "/status";
+        if !(public_status || auth::authorized(server.api_key.as_deref(), &request.headers)) {
+            let mut response = json_response(401, &error_model("Unauthorized"));
+            response.set_header("WWW-Authenticate", "Bearer realm=\"AAEmu Web API\"");
+            return Ok(response);
+        }
         let target = route.target.clone();
         let ctx = ControllerCtx {
             server: server.server.upgrade(),
@@ -121,101 +137,10 @@ async fn dispatch(
         method: parts.method.as_str().to_string(),
         url,
         protocol: format!("{:?}", parts.version),
+        headers: parts.headers,
         body: String::from_utf8_lossy(&bytes).into_owned(),
     };
     to_axum(on_received_request(&server, request).await)
-}
-
-/// Outcome of the web API token check.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TokenCheck {
-    /// Public route, or the token matched.
-    Allowed,
-    /// No token is configured: the route is refused.
-    NotConfigured,
-    /// Missing or wrong token.
-    Denied,
-}
-
-/// Routes reachable without the token (read-only server status).
-fn is_public_path(path: &str) -> bool {
-    path == "/status"
-}
-
-/// Constant-time byte comparison (the length is not secret).
-fn token_eq(a: &str, b: &str) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
-    a.bytes().zip(b.bytes()).fold(0u8, |d, (x, y)| d | (x ^ y)) == 0
-}
-
-/// Deviation from the C# server (no authentication at all): every route except `/status`
-/// needs the configured token as `Authorization: Bearer <token>` or `X-Api-Key: <token>`.
-pub fn check_token(
-    path: &str,
-    authorization: Option<&str>,
-    api_key: Option<&str>,
-    token: &str,
-) -> TokenCheck {
-    if is_public_path(path) {
-        return TokenCheck::Allowed;
-    }
-    if token.is_empty() {
-        return TokenCheck::NotConfigured;
-    }
-    let bearer = authorization.and_then(|a| {
-        a.get(..7)
-            .filter(|p| p.eq_ignore_ascii_case("bearer "))
-            .map(|_| a[7..].trim())
-    });
-    if [bearer, api_key.map(str::trim)]
-        .into_iter()
-        .flatten()
-        .any(|given| token_eq(given, token))
-    {
-        TokenCheck::Allowed
-    } else {
-        TokenCheck::Denied
-    }
-}
-
-async fn require_token(
-    State(token): State<Arc<str>>,
-    req: axum::extract::Request,
-    next: axum::middleware::Next,
-) -> Response {
-    let check = {
-        let header = |name: &str| req.headers().get(name).and_then(|v| v.to_str().ok());
-        check_token(
-            req.uri().path(),
-            header("authorization"),
-            header("x-api-key"),
-            &token,
-        )
-    };
-    let (status, message) = match check {
-        TokenCheck::Allowed => return next.run(req).await,
-        TokenCheck::NotConfigured => (
-            403,
-            "WebApiNetwork.Token is not configured; this route is disabled",
-        ),
-        TokenCheck::Denied => (401, "Unauthorized"),
-    };
-    let mut response = HttpResponse::new(status);
-    response.set_body(message);
-    to_axum(response)
-}
-
-/// The axum router: the dispatcher behind the token check.
-pub fn router(api: Arc<WebApiServer>, token: &str) -> axum::Router {
-    axum::Router::new()
-        .fallback(dispatch)
-        .with_state(api)
-        .layer(axum::middleware::from_fn_with_state(
-            Arc::<str>::from(token),
-            require_token,
-        ))
 }
 
 /// `WebApiService` (`IHostedService`): starts / stops the HTTP listener.
@@ -233,11 +158,9 @@ impl std::fmt::Debug for WebApiService {
 }
 
 /// `config.Host.Equals("*") ? IPAddress.Any : IPAddress.Parse(config.Host)`.
-pub fn bind_address(config: &NetworkConfig) -> anyhow::Result<SocketAddr> {
-    // Rust deviation: an empty host binds loopback (the C# default was any address).
-    let ip: IpAddr = if config.host.is_empty() {
-        IpAddr::V4(Ipv4Addr::LOCALHOST)
-    } else if config.host == "*" {
+pub fn bind_address(config: &WebApiConfig) -> anyhow::Result<SocketAddr> {
+    auth::validate_key(config.api_key.as_deref())?;
+    let ip: IpAddr = if config.host == "*" {
         IpAddr::V4(Ipv4Addr::UNSPECIFIED)
     } else {
         config
@@ -245,6 +168,10 @@ pub fn bind_address(config: &NetworkConfig) -> anyhow::Result<SocketAddr> {
             .parse()
             .map_err(|_| anyhow::anyhow!("An invalid IP address was specified."))?
     };
+    anyhow::ensure!(
+        ip.is_loopback() || config.api_key.as_ref().is_some_and(|key| !key.is_empty()),
+        "WebApiNetwork.ApiKey is required for a non-loopback Host; use 127.0.0.1 for local status tooling or set Enabled to false"
+    );
     Ok(SocketAddr::new(ip, config.port))
 }
 
@@ -255,8 +182,15 @@ impl WebApiService {
             tracing::warn!("WebApi server configuration not found. WebApi will not start");
             return Ok(());
         };
+        if !config.enabled {
+            tracing::info!("WebApi server disabled by configuration");
+            return Ok(());
+        }
         let addr = bind_address(&config)?;
-        let api = Arc::new(WebApiServer::new(Arc::downgrade(server))?);
+        let mut api = WebApiServer::new(Arc::downgrade(server))?;
+        // Use the same snapshot that passed the bind check even during a config reload.
+        api.api_key = config.api_key.clone();
+        let api = Arc::new(api);
         let listener = match tokio::net::TcpListener::bind(addr).await {
             Ok(l) => l,
             Err(e) => {
@@ -267,18 +201,7 @@ impl WebApiService {
         };
         let token = CancellationToken::new();
         let stop = token.clone();
-        if config.token.is_empty() {
-            tracing::warn!(
-                "WebApiNetwork.Token is not set: every web API route except /status is refused"
-            );
-        }
-        if !addr.ip().is_loopback() {
-            tracing::warn!(
-                "WebApi listens on {} (not loopback); the token is sent in clear text",
-                config.host
-            );
-        }
-        let app = router(api, &config.token);
+        let app = axum::Router::new().fallback(dispatch).with_state(api);
         let task = tokio::spawn(async move {
             let serve = axum::serve(listener, app).with_graceful_shutdown(async move {
                 stop.cancelled().await;
@@ -308,5 +231,7 @@ impl WebApiService {
     }
 }
 
+#[cfg(test)]
+mod auth_tests;
 #[cfg(test)]
 mod session_tests;

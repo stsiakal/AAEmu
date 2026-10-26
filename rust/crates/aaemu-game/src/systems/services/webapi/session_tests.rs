@@ -3,6 +3,7 @@
 
 use std::sync::Weak;
 
+use super::auth_tests::{authenticated, TEST_KEY};
 use super::http::{ok_html, HttpRequest};
 use super::route_mapper::{handler, Controller, Method, RouteMapper, RouteSpec};
 use super::*;
@@ -65,7 +66,9 @@ fn server() -> WebApiServer {
     mapper
         .discover_routes_from_type::<MyRegexController>()
         .unwrap();
-    WebApiServer::with_routes(mapper, Weak::new())
+    let mut api = WebApiServer::with_routes(mapper, Weak::new());
+    api.api_key = Some(TEST_KEY.into());
+    api
 }
 
 #[tokio::test]
@@ -89,7 +92,11 @@ async fn on_received_request_when_route_found_should_return_html() {
         ("GET", "/test/1", "test"),
         ("POST", "/test/1", "test-post"),
     ] {
-        let r = on_received_request(&server(), HttpRequest::new(method, path, "HTTP/1.1")).await;
+        let r = on_received_request(
+            &server(),
+            authenticated(HttpRequest::new(method, path, "HTTP/1.1")),
+        )
+        .await;
         assert_eq!(r.status, 200, "{method} {path}");
         assert_eq!(r.status_phrase, "OK");
         assert_eq!(r.content_type(), Some("text/html"));
@@ -111,7 +118,11 @@ async fn on_received_request_when_route_found_with_regex_should_return_html_with
             ["players", "search"],
         ),
     ] {
-        let r = on_received_request(&server(), HttpRequest::new(method, path, "HTTP/1.1")).await;
+        let r = on_received_request(
+            &server(),
+            authenticated(HttpRequest::new(method, path, "HTTP/1.1")),
+        )
+        .await;
         assert_eq!(r.status, 200);
         assert_eq!(r.status_phrase, "OK");
         assert_eq!(r.content_type(), Some("text/html"));
@@ -126,7 +137,11 @@ async fn on_received_request_when_route_found_with_regex_should_return_html_with
 
 #[tokio::test]
 async fn controller_errors_produce_the_500_page() {
-    let r = on_received_request(&server(), HttpRequest::new("GET", "/fail", "HTTP/1.1")).await;
+    let r = on_received_request(
+        &server(),
+        authenticated(HttpRequest::new("GET", "/fail", "HTTP/1.1")),
+    )
+    .await;
     assert_eq!(r.status, 500);
     assert_eq!(r.status_phrase, "Internal Server Error");
     assert_eq!(r.content_type(), Some("text/html"));
@@ -168,7 +183,7 @@ async fn served_over_http() {
     });
     let mut s = tokio::net::TcpStream::connect(addr).await.unwrap();
     s.write_all(
-        b"POST /multipleMatches/a/b?x=1 HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+        b"POST /multipleMatches/a/b?x=1 HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer synthetic-webapi-test-key\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
     )
     .await
     .unwrap();
@@ -178,76 +193,4 @@ async fn served_over_http() {
     assert!(buf.to_ascii_lowercase().contains("content-type: text/html"));
     assert!(buf.ends_with("group: name(2) value(b?x=1)"), "{buf}");
     task.abort();
-}
-
-#[test]
-fn token_check_rules() {
-    // /status is public, with or without a configured token.
-    assert_eq!(check_token("/status", None, None, ""), TokenCheck::Allowed);
-    assert_eq!(check_token("/status", None, None, "t"), TokenCheck::Allowed);
-    // No token configured: everything else is refused.
-    let api = "/api/commands/kick";
-    assert_eq!(
-        check_token(api, Some("Bearer t"), None, ""),
-        TokenCheck::NotConfigured
-    );
-    assert_eq!(check_token(api, None, None, "t"), TokenCheck::Denied);
-    assert_eq!(
-        check_token(api, Some("Bearer x"), None, "t"),
-        TokenCheck::Denied
-    );
-    assert_eq!(check_token(api, Some("t"), None, "t"), TokenCheck::Denied);
-    assert_eq!(
-        check_token(api, Some("Bearer t"), None, "t"),
-        TokenCheck::Allowed
-    );
-    assert_eq!(
-        check_token(api, Some("bearer  t"), None, "t"),
-        TokenCheck::Allowed
-    );
-    assert_eq!(check_token(api, None, Some("t"), "t"), TokenCheck::Allowed);
-    // A look-alike path is not public.
-    assert_eq!(
-        check_token("/status/x", None, None, "t"),
-        TokenCheck::Denied
-    );
-}
-
-#[tokio::test]
-async fn token_enforced_over_http() {
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    async fn get(addr: std::net::SocketAddr, path: &str, extra: &str) -> String {
-        let mut s = tokio::net::TcpStream::connect(addr).await.unwrap();
-        let req = format!("GET {path} HTTP/1.1\r\nHost: x\r\n{extra}Connection: close\r\n\r\n");
-        s.write_all(req.as_bytes()).await.unwrap();
-        let mut buf = String::new();
-        s.read_to_string(&mut buf).await.unwrap();
-        buf
-    }
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let app = router(Arc::new(server()), "sekret");
-    let task = tokio::spawn(async move {
-        axum::serve(listener, app).await.unwrap();
-    });
-    // Without / with a wrong token: refused before routing.
-    assert!(get(addr, "/world/1", "").await.starts_with("HTTP/1.1 401"));
-    let wrong = get(addr, "/world/1", "Authorization: Bearer nope\r\n").await;
-    assert!(wrong.starts_with("HTTP/1.1 401"), "{wrong}");
-    // Correct token reaches the router (an unknown route is a 404, not a 401).
-    let ok = get(addr, "/nothing-here", "X-Api-Key: sekret\r\n").await;
-    assert!(ok.starts_with("HTTP/1.1 404"), "{ok}");
-    // The public route needs no token (reaches routing: 404 here as the test server has no /status).
-    let public = get(addr, "/status", "").await;
-    assert!(!public.starts_with("HTTP/1.1 40") || public.starts_with("HTTP/1.1 404"));
-    task.abort();
-}
-
-#[test]
-fn empty_host_binds_loopback() {
-    let cfg = crate::config::NetworkConfig {
-        port: 1280,
-        ..Default::default()
-    };
-    assert_eq!(bind_address(&cfg).unwrap().to_string(), "127.0.0.1:1280");
 }

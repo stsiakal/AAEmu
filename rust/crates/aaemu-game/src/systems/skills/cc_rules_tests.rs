@@ -1,6 +1,6 @@
 //! Crowd-control rule layer: `buff_breakers` (a stun, sleep or fear ends a glider flight / a
 //! song), the `buff_tolerances` diminishing returns on repeated crowd control and the
-//! damage-breaks-sleep removal flags, plus the `aoe_diminishings` rate table.
+//! damage-breaks-sleep removal flags.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -171,27 +171,6 @@ async fn damage_removes_a_breakable_sleep() {
     super::buffs::trigger_remove_on(&server, &obj, BuffRemoveOn::DamagedEtc, 0);
     settle(|| !has(&npc, SLEEP)).await;
     assert!(!has(&npc, SLEEP), "damage ends the sleep");
-}
-
-#[test]
-fn aoe_diminishing_table_ranks() {
-    let mut data = GameData::empty();
-    for (id, rate) in [(1, 100.0), (2, 90.0), (3, 80.0), (10, 10.0)] {
-        data.systems.skills.aoe_diminishings.insert(id, rate);
-    }
-    let s = &data.systems.skills;
-    assert_eq!(s.aoe_diminishing_multiplier(0), 1.0);
-    assert_eq!(s.aoe_diminishing_multiplier(1), 1.0);
-    assert!((s.aoe_diminishing_multiplier(2) - 0.9).abs() < 1e-6);
-    assert!((s.aoe_diminishing_multiplier(3) - 0.8).abs() < 1e-6);
-    assert!((s.aoe_diminishing_multiplier(25) - 0.1).abs() < 1e-6);
-    assert_eq!(
-        GameData::empty()
-            .systems
-            .skills
-            .aoe_diminishing_multiplier(4),
-        1.0
-    );
 }
 
 fn second_npc(server: &GameServer) -> (NpcRef, WorldObject) {

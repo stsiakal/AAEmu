@@ -856,11 +856,13 @@ impl ValueChecker {
             ..NpcTemplate::default()
         };
         let bonuses = Bonuses::default();
+        let limits = aaemu_game::data::attribute_limits::UnitAttributeLimits::default();
         let calc = NpcStatCalc {
             formulas: &self.formulas,
             template: &template,
             level,
             bonuses: &bonuses,
+            limits: &limits,
             mainhand: None,
             offhand: None,
             ranged: None,

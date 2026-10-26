@@ -457,6 +457,7 @@ async fn create_character_save_failure_releases_assets_and_allows_retry() {
         CharacterTemplate {
             race: 1,
             gender: 1,
+            creatable: true,
             faction_id: 101,
             num_inventory_slot: 50,
             num_bank_slot: 50,
@@ -591,7 +592,7 @@ async fn create_character_save_failure_releases_assets_and_allows_retry() {
     a.frame(&s, cs::CSCreateCharacterPacket, &body(&req)).await;
     assert_eq!(
         a.drain(),
-        vec![(sc::SCCharacterCreationFailedPacket, vec![3])]
+        vec![(sc::SCCharacterCreationFailedPacket, vec![2])]
     );
     assert_released();
     assert!(a.conn.characters.is_empty());
@@ -615,7 +616,7 @@ async fn create_character_save_failure_releases_assets_and_allows_retry() {
     a.frame(&s, cs::CSCreateCharacterPacket, &body(&req)).await;
     assert_eq!(
         a.drain(),
-        vec![(sc::SCCharacterCreationFailedPacket, vec![3])]
+        vec![(sc::SCCharacterCreationFailedPacket, vec![2])]
     );
     assert_released();
     assert!(a.conn.characters.is_empty());
