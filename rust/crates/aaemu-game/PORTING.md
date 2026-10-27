@@ -3024,44 +3024,6 @@ the death never started its timer):
   comes back at full HP only after its repair wait, not when it is still on cooldown. (As the
   mirrored `SummonSlave.ReadDetails` bug above notes, the timer itself is still lost on restart.)
 
-## Level 51-55 capstones and experience (3.0.4.2 backport, opt-in since 2026-10-22)
-
-The 1.2 `compact.sqlite3` hides the ten ability-level 55 capstones (`skills.show = 'f'`) and
-carries a placeholder level 51-55 curve (level 51 needs 8,082,000 total exp, level 55
-179,307,360), so the last five levels are not playable the retail way. The **opt-in** patch
-`SQL/patches/compact/backports/2026-10-20-level-55-retail-3.0.sql` backports the values from the
-3.0.4.2 compact (`D:/aa-re/db-references/3.0.4.2-20240828/compact.sqlite3`):
-
-* `skills.show = 't'` for the one capstone of each ability: 23587, 23588, 23589, 23591, 23592,
-  23593, 23594, 23595, 23596 and 23934 (all `ability_level` 55).
-* `levels.total_exp` 51..55 = 5,174,400 / 6,550,320 / 8,751,792 / 12,164,073 / 17,453,110.
-  The 1.2 `skill_points` (24..28) are kept.
-* `quest_supplies.exp` for levels 51..55 = 9,023 / 12,604 / 16,986 / 21,989 / 27,512, matched
-  by level (`quest_supplies` is keyed by level in both databases); the 1.2 copper is kept.
-* `levels.total_mate_exp` stays at the 1.2 values: the 3.0 rows for 51-55 (1,032,880 ..
-  3,488,622) rise above the untouched 1.2 level 56 row (2,849,000), and
-  `ExperienceManager.Load` (`ExperienceTable::from_templates`) requires strictly increasing
-  `total_mate_exp`, so applying them would make the game data fail to load.
-* `ExperienceTable::level_from_exp_min` clamps the returned level to the cap. The C# search
-  window (`Min(Count - minLevel, maxLevel)`) can reach a row above the cap when the table has
-  more rows than the cap (the 1.2 `levels` table has 101), which would return level 51 with a
-  cap of 50; the clamp keeps both the 1.2 cap (50) and the backport cap (55) exact.
-
-Each `UPDATE` is guarded by the 1.2 original value, so the script is rerun-safe and leaves
-customized rows alone. It applies like the other compact patches (`cargo xtask compact-patches
-<db> --backports`, default off), and the server behavior is opt-in too: `Backports.Enabled`
-(`config.rs`, default false) selects `player_level_cap()` in `data/experience.rs`, 50 for pure
-1.2 and 55 with the backport data. With `Backports.Enabled=true`, `/level 55` raises the active
-abilities to 55 (`Abilities.AddActiveExp` is capped by the level-55 exp), so the capstones are
-offered and pass the learn-path ability-level check once the data is patched; with it false the
-player stays capped at 50 and `/level` refuses 51-55. The regression test
-`data::level55_patch_tests::level55_patch_applies_to_a_copy_and_loads` (`#[ignore]`, gated by
-`AAEMU_COMPACT_DB`) executes the real patch file twice on a copy and checks the values and the
-server loaders; `data::experience::tests::the_vanilla_cap_is_50_and_backports_raise_it_to_55`
-covers the cap switch. Open (out of tree): the Bevy client's hardcoded XP table
-(`D:/aaemu-client/AABevy1.2/crates/aa-net/src/model.rs`) must be updated to the same 51-55 values
-for its UI to agree.
-
 ## Global cooldown enforcement and plot-only skill cooldowns (2026-10-21)
 
 Deviations from the C# `Skill.Use` (`Skill.cs` 135-153 + `Helper.CheckInterval`):

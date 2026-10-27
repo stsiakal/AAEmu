@@ -2,23 +2,10 @@
 //! `Character.ValidateAndFixExpAndLevel`, which `Character.Load` runs before the character list
 //! is written (it can change the level that is sent).
 
-/// `ExperienceManager.PlayerLevelCap` with the opt-in 3.0 backports (`Backports:Enabled`); the
-/// pure 1.2 cap is [`VANILLA_PLAYER_LEVEL_CAP`].
+/// `ExperienceManager.PlayerLevelCap`.
 pub const PLAYER_LEVEL_CAP: u8 = 55;
-/// The 1.2 player level cap (level 50 is the last retail 1.2 level; 51-55 are placeholders).
-pub const VANILLA_PLAYER_LEVEL_CAP: u8 = 50;
 /// `ExperienceManager.MateLevelCap`.
 pub const MATE_LEVEL_CAP: u8 = 50;
-
-/// The player level cap for the running configuration: 55 with `Backports:Enabled`, else the
-/// pure 1.2 cap of 50.
-pub fn player_level_cap(backports: bool) -> u8 {
-    if backports {
-        PLAYER_LEVEL_CAP
-    } else {
-        VANILLA_PLAYER_LEVEL_CAP
-    }
-}
 
 /// One `levels` row (`ExperienceLevelTemplate`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -60,7 +47,7 @@ pub struct ExperienceTable {
 impl ExperienceTable {
     /// `ExperienceManager.Load(loader, PlayerLevelCap, MateLevelCap)` with the loader's checks
     /// (levels must start at 1 without gaps, experience strictly increasing). `player_level_cap`
-    /// is [`player_level_cap`] for the server configuration.
+    /// is the configured player cap ([`PLAYER_LEVEL_CAP`] on the server).
     pub fn from_templates(
         templates: Vec<LevelTemplate>,
         player_level_cap: u8,
@@ -191,8 +178,7 @@ impl ExperienceTable {
         // `List.BinarySearch(minLevel, count, exp)` with C#'s count. Note: the count is
         // `Min(Count - minLevel, maxLevel)`, so the searched range may extend past maxLevel when
         // the table has more rows than the cap. The C# then returns that row's level, above the
-        // cap; here the result is clamped to `max_level` so the 1.2 data (101 rows) really stops
-        // at the 1.2 cap of 50 and the backport data at 55.
+        // cap; here the result is clamped to `max_level` so the table really stops at the cap.
         let start = usize::from(min_level);
         let count = (exp_by_level.len() - start).min(usize::from(max_level));
         let index = match exp_by_level[start..start + count].binary_search(&exp) {
@@ -273,27 +259,6 @@ mod tests {
         );
         let t = table(60);
         assert_eq!((t.max_player_level(), t.max_mate_level()), (55, 50));
-    }
-
-    #[test]
-    fn the_vanilla_cap_is_50_and_backports_raise_it_to_55() {
-        let rows = |n: u8| {
-            (1..=n)
-                .map(|l| LevelTemplate {
-                    level: l,
-                    total_exp: (i32::from(l) - 1) * 100,
-                    total_mate_exp: (i32::from(l) - 1) * 10,
-                    skill_points: 0,
-                })
-                .collect::<Vec<_>>()
-        };
-        assert_eq!(player_level_cap(false), VANILLA_PLAYER_LEVEL_CAP);
-        let vanilla = ExperienceTable::from_templates(rows(60), player_level_cap(false)).unwrap();
-        assert_eq!(vanilla.max_player_level(), 50);
-        assert_eq!(vanilla.level_from_exp(99_999, 1, false).unwrap().0, 50);
-        let backports = ExperienceTable::from_templates(rows(60), player_level_cap(true)).unwrap();
-        assert_eq!(backports.max_player_level(), 55);
-        assert_eq!(backports.level_from_exp(99_999, 1, false).unwrap().0, 55);
     }
 
     #[test]
