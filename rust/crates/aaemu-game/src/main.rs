@@ -173,7 +173,6 @@ async fn run() -> anyhow::Result<()> {
         &config.app_path,
         &config.client_data.sources,
         &config.default_language,
-        config.backports.enabled,
     )
     .context("Failed to load compact.sqlite3 database check if it exists!")?;
     // The retail Halloween `game_schedules` rows are dated 2013/2014 and compact.sqlite3 is

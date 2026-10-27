@@ -11,12 +11,7 @@
 //! * `ci` — the checks CI runs: `cargo fmt --check`, `cargo clippy -D warnings`, `cargo test`, and
 //!   the S->C packet coverage ratchet and its tests (`tools/opcode_coverage/`, needs python).
 //! * `compact-patches` — apply `SQL/patches/compact/*.sql` to a `compact.sqlite3` copy and record
-//!   each one in its `aaemu_compact_patches` table (also run by `publish` and live-stack `sync`);
-//!   `--backports` (or `AAEMU_BACKPORTS=1`) also applies `SQL/patches/compact/backports/*.sql`.
-//! * `overlay-pak` — build a small overlay `game_pak` from later-version paks, with optional
-//!   reference closure and an "already present in the stock pak" filter.
-
-mod overlay_pak;
+//!   each one in its `aaemu_compact_patches` table (also run by `publish` and live-stack `sync`).
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader};
@@ -40,7 +35,6 @@ Commands:
               --profile <name>   cargo profile (default: release)
               --name <name>      folder name (default: aaemu-<version>-<target>)
               --no-compact-db    do not copy Data/*.sqlite3 into the game folder
-              --backports        also apply SQL/patches/compact/backports/*.sql (or AAEMU_BACKPORTS=1)
               --archive          also pack the folder (.zip on Windows, .tar.gz elsewhere)
   dev       Start MySQL (docker compose service `db`), the login server and the game server
               --release          run release builds
@@ -50,20 +44,7 @@ Commands:
   ci        cargo fmt --check, clippy -D warnings, test, S->C coverage ratchet + tests (the CI checks)
   compact-patches [<db>]  Apply SQL/patches/compact/*.sql in name order, recording each file
               --patches <dir>    patch directory (default: <repo>/SQL/patches/compact)
-              --backports        also apply <dir>/backports/*.sql after them (or AAEMU_BACKPORTS=1)
               (default db: rust/crates/aaemu-game/app/Data/compact.sqlite3)
-  overlay-pak Build an overlay game_pak from later-version sources
-              --source <pak>     source pak, repeatable, first one wins
-              --list <file>      pak paths to include (one per line, # comments)
-              --out <pak>        output overlay pak (TypeA/WIBO)
-              --report <file>    optional JSON report
-              --closure          follow .cdf/.chr/.cgf/.skin/.mtl references
-              --closure-anim     also add .caf/.dba from .cal/.chrparams lists
-              --exclude-present-in <pak>  skip files identical in this pak (repeatable)
-              --exclude-path <text>      skip paths containing this text (repeatable)
-              --new-only         skip every file present in an exclude pak, changed or not
-              --repair-missing-textures  rewrite missing .mtl texture refs to a same-suffix match
-              --unresolved-list <file>   write the roots whose texture refs could not be repaired
 ";
 
 /// The login server's internal (game-server registration) port in the shipped `Config.json`.
@@ -76,7 +57,6 @@ fn main() {
         Some("dev") => dev(&args[1..]),
         Some("ci") => ci(),
         Some("compact-patches") => compact_patches(&args[1..]),
-        Some("overlay-pak") => overlay_pak::run(&args[1..]),
         Some("help" | "-h" | "--help") | None => {
             print!("{USAGE}");
             Ok(())
@@ -278,7 +258,7 @@ fn publish(args: &[String]) -> Result<()> {
     let o = Opts::parse(
         args,
         &["--out", "--target", "--profile", "--name"],
-        &["--no-compact-db", "--backports", "--archive"],
+        &["--no-compact-db", "--archive"],
     )?;
     let root = repo_root();
     let profile = o.value("--profile").unwrap_or("release");
@@ -342,9 +322,7 @@ fn publish(args: &[String]) -> Result<()> {
     }
     let compact = dist.join("AAEmu.Game/Data/compact.sqlite3");
     if !skip_db && compact.is_file() {
-        let backports = o.flag("--backports") || env_flag("AAEMU_BACKPORTS");
-        let outcome =
-            apply_compact_patches(&compact, &root.join("SQL/patches/compact"), backports)?;
+        let outcome = apply_compact_patches(&compact, &root.join("SQL/patches/compact"))?;
         report_compact_patches(&outcome, &format!("{}", compact.display()))?;
     } else if !compact.is_file() {
         println!(
@@ -427,26 +405,8 @@ fn strip_transaction_control(sql: &str) -> String {
         .join("\n")
 }
 
-/// The subdirectory of the patch directory that holds the opt-in 3.0 backports.
-const BACKPORTS_DIR: &str = "backports";
-
-/// Whether a `--backports`-style switch value means enabled (`1`, `true`, `yes` or `on`).
-fn flag_value(value: &str) -> bool {
-    matches!(
-        value.trim().to_ascii_lowercase().as_str(),
-        "1" | "true" | "yes" | "on"
-    )
-}
-
-/// `--backports`-style environment switch (`AAEMU_BACKPORTS=1`).
-fn env_flag(name: &str) -> bool {
-    std::env::var(name)
-        .ok()
-        .is_some_and(|value| flag_value(&value))
-}
-
-/// The `*.sql` files of `dir` in file-name order, with `prefix` prepended to the recorded name.
-fn patch_files(dir: &Path, prefix: &str) -> Result<Vec<(String, PathBuf)>> {
+/// The `*.sql` files of `dir` in file-name order.
+fn patch_files(dir: &Path) -> Result<Vec<(String, PathBuf)>> {
     let mut files = Vec::new();
     for entry in std::fs::read_dir(dir)
         .with_context(|| format!("reading patch directory {}", dir.display()))?
@@ -461,21 +421,18 @@ fn patch_files(dir: &Path, prefix: &str) -> Result<Vec<(String, PathBuf)>> {
                 .file_name()
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_default();
-            files.push((format!("{prefix}{name}"), path));
+            files.push((name, path));
         }
     }
     files.sort_by(|a, b| a.0.cmp(&b.0));
     Ok(files)
 }
 
-/// Applies every patch in `dir` that is not recorded in the database yet and records it. The
-/// opt-in 3.0 backports live in `dir/backports` and only run (after the regular patches) when
-/// `backports` is set; they are recorded with their `backports/` prefix, so enabling them later
-/// applies each one once.
+/// Applies every patch in `dir` that is not recorded in the database yet and records it.
 ///
 /// A recorded patch whose file content changed is reported as [`PatchStatus::Changed`] and is
 /// never re-run: compact patches are immutable, so a fix must arrive as a new dated file.
-fn apply_compact_patches(db: &Path, dir: &Path, backports: bool) -> Result<PatchOutcome> {
+fn apply_compact_patches(db: &Path, dir: &Path) -> Result<PatchOutcome> {
     let mut conn =
         rusqlite::Connection::open(db).with_context(|| format!("opening {}", db.display()))?;
     conn.busy_timeout(Duration::from_secs(30))?;
@@ -486,13 +443,7 @@ fn apply_compact_patches(db: &Path, dir: &Path, backports: bool) -> Result<Patch
          name TEXT PRIMARY KEY, sha256 TEXT NOT NULL, applied_at TEXT NOT NULL);"
     ))?;
 
-    let mut files = patch_files(dir, "")?;
-    if backports {
-        files.extend(patch_files(
-            &dir.join(BACKPORTS_DIR),
-            &format!("{BACKPORTS_DIR}/"),
-        )?);
-    }
+    let files = patch_files(dir)?;
 
     let mut outcome = PatchOutcome::default();
     for (name, path) in files {
@@ -553,7 +504,6 @@ fn report_compact_patches(outcome: &PatchOutcome, db: &str) -> Result<()> {
 fn compact_patches(args: &[String]) -> Result<()> {
     let mut db: Option<PathBuf> = None;
     let mut dir: Option<PathBuf> = None;
-    let mut backports = env_flag("AAEMU_BACKPORTS");
     let mut it = args.iter();
     while let Some(arg) = it.next() {
         match arg.as_str() {
@@ -561,7 +511,6 @@ fn compact_patches(args: &[String]) -> Result<()> {
                 let value = it.next().context("--patches needs a value")?;
                 dir = Some(PathBuf::from(value));
             }
-            "--backports" => backports = true,
             other if other.starts_with("--") => bail!("unknown option `{other}`\n\n{USAGE}"),
             other if db.is_none() => db = Some(PathBuf::from(other)),
             other => bail!("unexpected argument `{other}`\n\n{USAGE}"),
@@ -573,7 +522,7 @@ fn compact_patches(args: &[String]) -> Result<()> {
     if !db.is_file() {
         bail!("compact database not found: {}", db.display());
     }
-    let outcome = apply_compact_patches(&db, &dir, backports)?;
+    let outcome = apply_compact_patches(&db, &dir)?;
     report_compact_patches(&outcome, &db.display().to_string())
 }
 
@@ -1113,11 +1062,11 @@ mod tests {
         )
         .unwrap();
 
-        let first = apply_compact_patches(&db, &patches, false).unwrap();
+        let first = apply_compact_patches(&db, &patches).unwrap();
         assert_eq!(first.names(PatchStatus::Applied).count(), 2);
         assert_eq!(first.names(PatchStatus::AlreadyRecorded).count(), 0);
 
-        let second = apply_compact_patches(&db, &patches, false).unwrap();
+        let second = apply_compact_patches(&db, &patches).unwrap();
         assert_eq!(second.names(PatchStatus::Applied).count(), 0);
         assert_eq!(second.names(PatchStatus::AlreadyRecorded).count(), 2);
         assert!(report_compact_patches(&second, "test db").is_ok());
@@ -1142,10 +1091,10 @@ mod tests {
             "CREATE TABLE t (id INTEGER);\nINSERT INTO t VALUES (1);\n",
         )
         .unwrap();
-        apply_compact_patches(&db, &patches, false).unwrap();
+        apply_compact_patches(&db, &patches).unwrap();
 
         std::fs::write(&file, "INSERT INTO t VALUES (2);\n").unwrap();
-        let second = apply_compact_patches(&db, &patches, false).unwrap();
+        let second = apply_compact_patches(&db, &patches).unwrap();
         assert_eq!(second.names(PatchStatus::Changed).count(), 1);
         assert!(report_compact_patches(&second, "test db").is_err());
 
@@ -1165,7 +1114,7 @@ mod tests {
             "CREATE TABLE u (id INTEGER);\nINSERT INTO no_such_table VALUES (1);\n",
         )
         .unwrap();
-        assert!(apply_compact_patches(&db, &patches, false).is_err());
+        assert!(apply_compact_patches(&db, &patches).is_err());
 
         let conn = rusqlite::Connection::open(&db).unwrap();
         assert_eq!(
@@ -1179,75 +1128,5 @@ mod tests {
             count(&conn, "SELECT COUNT(*) FROM aaemu_compact_patches"),
             0
         );
-    }
-
-    #[test]
-    fn flag_value_accepts_the_documented_switches() {
-        for value in ["1", "true", "TRUE", "yes", "on", " 1 "] {
-            assert!(flag_value(value), "{value:?} is enabled");
-        }
-        for value in ["", "0", "false", "no", "off"] {
-            assert!(!flag_value(value), "{value:?} is disabled");
-        }
-    }
-
-    #[test]
-    fn compact_patches_apply_backports_only_when_opted_in_and_record_their_path() {
-        let (_tmp, patches, db) = setup("compact-backports");
-        let backports = patches.join(BACKPORTS_DIR);
-        std::fs::create_dir(&backports).unwrap();
-        std::fs::write(
-            patches.join("01-base.sql"),
-            "CREATE TABLE t (id INTEGER PRIMARY KEY);\nINSERT INTO t VALUES (1);\n",
-        )
-        .unwrap();
-        std::fs::write(
-            backports.join("10-level.sql"),
-            "INSERT INTO t VALUES (10);\n",
-        )
-        .unwrap();
-        std::fs::write(
-            backports.join("20-gear.sql"),
-            "INSERT INTO t VALUES (20);\n",
-        )
-        .unwrap();
-
-        // The default run leaves the backports alone.
-        let first = apply_compact_patches(&db, &patches, false).unwrap();
-        assert_eq!(
-            first.names(PatchStatus::Applied).collect::<Vec<_>>(),
-            ["01-base.sql"]
-        );
-        let conn = rusqlite::Connection::open(&db).unwrap();
-        assert_eq!(count(&conn, "SELECT COUNT(*) FROM t"), 1);
-
-        // Opting in applies them after the regular patches, in file-name order.
-        let second = apply_compact_patches(&db, &patches, true).unwrap();
-        assert_eq!(
-            second.names(PatchStatus::Applied).collect::<Vec<_>>(),
-            ["backports/10-level.sql", "backports/20-gear.sql"]
-        );
-        assert_eq!(count(&conn, "SELECT COUNT(*) FROM t"), 3);
-        let recorded: Vec<String> = conn
-            .prepare("SELECT name FROM aaemu_compact_patches ORDER BY name")
-            .unwrap()
-            .query_map([], |r| r.get(0))
-            .unwrap()
-            .collect::<Result<_, _>>()
-            .unwrap();
-        assert_eq!(
-            recorded,
-            [
-                "01-base.sql",
-                "backports/10-level.sql",
-                "backports/20-gear.sql"
-            ]
-        );
-
-        // A later run with backports still enabled applies each one only once.
-        let third = apply_compact_patches(&db, &patches, true).unwrap();
-        assert_eq!(third.names(PatchStatus::Applied).count(), 0);
-        assert_eq!(third.names(PatchStatus::AlreadyRecorded).count(), 3);
-        assert_eq!(count(&conn, "SELECT COUNT(*) FROM t"), 3);
     }
 }

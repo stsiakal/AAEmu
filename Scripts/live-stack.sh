@@ -101,13 +101,8 @@ cmd_sync() {
   fi
   # SQL/patches/compact/*.sql are the source of truth for fixes to the read-only game data;
   # record and apply them to the runtime copy (a no-op when they are already recorded).
-  # AAEMU_BACKPORTS=1 also applies the opt-in 3.0 backports in SQL/patches/compact/backports/.
-  local backports=()
-  case "$(printf '%s' "${AAEMU_BACKPORTS:-0}" | tr '[:upper:]' '[:lower:]')" in
-    1|true|yes|on) backports=(--backports) ;;
-  esac
   if [ -s "$LIVE/rs-game/Data/compact.sqlite3" ]; then
-    (cd "$REPO/rust" && cargo run -q -p xtask -- compact-patches "${backports[@]}" "$(winpath "$LIVE/rs-game/Data/compact.sqlite3")")
+    (cd "$REPO/rust" && cargo run -q -p xtask -- compact-patches "$(winpath "$LIVE/rs-game/Data/compact.sqlite3")")
   fi
   [ -n "$LANE" ] && lane_configs
   for f in "$LIVE/rs-login/Config.Local.json" "$LIVE/rs-game/Config.Local.json"; do

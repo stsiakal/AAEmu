@@ -3,7 +3,7 @@
 use std::sync::Mutex;
 
 use super::prelude::*;
-use crate::data::experience::{player_level_cap, ExperienceTable, MATE_LEVEL_CAP};
+use crate::data::experience::{ExperienceTable, MATE_LEVEL_CAP, PLAYER_LEVEL_CAP};
 use crate::models::char_data::ability;
 use crate::systems::skills::progress::{self, SCLevelChangedPacket};
 
@@ -32,9 +32,9 @@ pub struct ChangeLevel {
 }
 
 impl ChangeLevel {
-    pub fn new(env: &ScriptEnv) -> Self {
+    pub fn new(_env: &ScriptEnv) -> Self {
         Self {
-            max_levels: Mutex::new((player_level_cap(env.backports), MATE_LEVEL_CAP)),
+            max_levels: Mutex::new((PLAYER_LEVEL_CAP, MATE_LEVEL_CAP)),
         }
     }
 }
@@ -168,9 +168,8 @@ impl Command for ChangeLevel {
 
 #[cfg(test)]
 mod tests {
-    use super::super::add_xp::tests::{chars_data, chars_data_capped, spawn_mate};
+    use super::super::add_xp::tests::{chars_data, spawn_mate};
     use super::super::harness;
-    use crate::data::experience::VANILLA_PLAYER_LEVEL_CAP;
     use crate::models::char_data::ability;
     use crate::opcodes::sc;
 
@@ -225,31 +224,6 @@ mod tests {
         assert_eq!(
             out,
             ["Help for |cFFFFFFFF/level|r |cFFEEEEAA(target) <level>|r\n|cFF888888Adds experience points needed to reach target <level>\nAllowed range is 2-55 and 50 for pets\n|r"]
-        );
-    }
-
-    #[tokio::test]
-    async fn the_vanilla_cap_stops_at_level_50() {
-        let server = harness::server_with(chars_data_capped(VANILLA_PLAYER_LEVEL_CAP));
-        let gm = harness::pc(&server, 1, "Gm", 100.0, 100.0);
-        {
-            let mut c = gm.p.data();
-            c.ability1 = 1;
-            c.ability2 = ability::NONE;
-            c.ability3 = ability::NONE;
-        }
-        let (_, out) = harness::run(&server, &gm.p, "level 55").await;
-        assert_eq!(
-            out,
-            [harness::error("level", "Allowed level range: 2-50|r")]
-        );
-        let (_, out) = harness::run(&server, &gm.p, "level 50").await;
-        assert!(out.is_empty());
-        assert_eq!(gm.p.data().unit.level, 50);
-        let (_, out) = harness::run(&server, &gm.p, "level").await;
-        assert_eq!(
-            out,
-            ["Help for |cFFFFFFFF/level|r |cFFEEEEAA(target) <level>|r\n|cFF888888Adds experience points needed to reach target <level>\nAllowed range is 2-50 and 50 for pets\n|r"]
         );
     }
 

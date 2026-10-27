@@ -109,9 +109,6 @@ pub mod water_debug_cmd;
 pub struct ScriptEnv {
     /// `FileManager.AppPath`.
     pub app_path: PathBuf,
-    /// `Backports:Enabled`: the level command advertises the 3.0 cap (level 55) instead of the
-    /// pure 1.2 cap (level 50) before it has read the loaded experience table.
-    pub backports: bool,
 }
 
 /// The common imports of the command modules.

@@ -483,7 +483,6 @@ mod tests {
             &["sphere"],
             Arc::new(Sphere::new(&ScriptEnv {
                 app_path: app.to_path_buf(),
-                ..Default::default()
             })),
         );
         server

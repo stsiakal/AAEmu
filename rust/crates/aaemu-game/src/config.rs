@@ -99,9 +99,6 @@ pub struct AppConfig {
     /// `Events` (Rust only: seasonal event windows).
     #[serde(rename = "events")]
     pub events: EventsConfig,
-    /// `Backports` (Rust only: the opt-in 3.0 backports).
-    #[serde(rename = "backports")]
-    pub backports: BackportsConfig,
     /// `CharacterNameRegex` (`None` = NameManager's default pattern).
     #[serde(rename = "characternameregex")]
     pub character_name_regex: Option<String>,
@@ -155,7 +152,6 @@ impl Default for AppConfig {
             specialty: SpecialtyConfig::default(),
             scripts: ScriptsConfig::default(),
             events: EventsConfig::default(),
-            backports: BackportsConfig::default(),
             character_name_regex: None,
             default_language: "en_us".into(),
             debug_info: true,
@@ -525,18 +521,6 @@ pub struct EventsConfig {
     /// `Events:Halloween`.
     #[serde(rename = "halloween")]
     pub halloween: HalloweenConfig,
-}
-
-/// `Backports` (Rust only): the opt-in later-version backports. The compact-data part is
-/// switched separately (`cargo xtask compact-patches --backports` /
-/// `AAEMU_BACKPORTS=1`); this flag covers the server behavior that depends on it.
-#[derive(Debug, Clone, Default, Deserialize)]
-#[serde(default)]
-pub struct BackportsConfig {
-    /// `Backports:Enabled` (default false: pure 1.2 behavior, player level cap 50). When true
-    /// the 3.0 data backports are used as intended (player level cap 55).
-    #[serde(rename = "enabled", deserialize_with = "lenient")]
-    pub enabled: bool,
 }
 
 /// `Events:Halloween`: the window applied in memory to the retail Halloween rows of
@@ -1412,25 +1396,6 @@ mod tests {
         assert!(!cfg.events.halloween.enabled);
         assert_eq!(cfg.events.halloween.start, "2026-10-14T00:00:00Z");
         assert_eq!(cfg.events.halloween.end, "2026-11-01T00:00:00Z");
-    }
-
-    #[test]
-    fn backports_default_to_disabled_and_bind_leniently() {
-        let cfg = AppConfig::from_value(json!({})).unwrap();
-        assert!(!cfg.backports.enabled);
-        // The disabled flag keeps the pure 1.2 player level cap.
-        assert_eq!(
-            crate::data::experience::player_level_cap(cfg.backports.enabled),
-            50
-        );
-        let cfg = AppConfig::from_value(json!({ "Backports": { "Enabled": "true" } })).unwrap();
-        assert!(cfg.backports.enabled);
-        assert_eq!(
-            crate::data::experience::player_level_cap(cfg.backports.enabled),
-            55
-        );
-        let cfg = AppConfig::from_value(json!({ "backports": { "enabled": false } })).unwrap();
-        assert!(!cfg.backports.enabled);
     }
 
     #[test]
