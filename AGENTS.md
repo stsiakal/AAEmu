@@ -14,6 +14,12 @@ Guidance for coding agents working in this repository.
   `rust-rewrite-bots` with a merge.
 - **When merging `rust-rewrite` into `rust-rewrite-bots`**, take upstream's version for a fix both
   sides carry and keep fork-only code. Parity fixes go upstream as pull requests.
+- The Rust 1.2 server now lives in its own repository,
+  [`AAEmu/AAEmu-1.2-Rust`](https://github.com/AAEmu/AAEmu-1.2-Rust) (default branch `main`, identical
+  to `NickMesser/AAEmu` `rust-rewrite` when it was created). Fetch it read-only (remote `aaemu12`, push URL
+  `no_push`); new upstream pull requests target its `main`.
+- **`AAEmu/AAEmu` must not lose anything** until its owner says otherwise: never delete, archive, rename or
+  transfer it, and never delete any of its branches or tags, by any route (git, `gh`, REST or GraphQL).
 
 ## Sessions work in lanes (mandatory, every session)
 
