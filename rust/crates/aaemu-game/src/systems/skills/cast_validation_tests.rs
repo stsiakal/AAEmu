@@ -917,7 +917,7 @@ async fn obstacle_checks_reject_a_physical_wall_before_any_cast_mutation() {
     assert_eq!(cast(&server, &skill, &player, &npc).0, 0);
 }
 
-/// `X2::Unit::ValidateLocation` (10.x client 0x3923C370): the obstacle ray runs at unit
+/// 1.2 client `FUN_390B5540` (`x2game.dll.c:149877`): the obstacle ray runs at unit
 /// position height, uses the static/sleeping/rigid classes with collision class 2 (terrain
 /// only with `check_terrain`), and skips the source and target colliders.
 #[tokio::test]
@@ -1066,8 +1066,9 @@ async fn obstacle_ray_matches_the_retail_height_mask_and_collision_class() {
     );
 }
 
-/// 1.2 `FUN_390B5650` casts no ray at all when `dist <= radius`; position (ground) targets
-/// (`FUN_390B5A30` -> `FUN_390B5790`) use radius 0.5 and skip only the source.
+/// 1.2 `FUN_390B5650` (`x2game.dll.c:149951`) casts no ray at all when `dist <= radius`;
+/// position (ground) targets (`FUN_390B5A30` -> `FUN_390B5790`) use radius 0.5
+/// (`DAT_3999C47C`) and skip only the source.
 #[tokio::test]
 async fn obstacle_ray_skips_inside_radius_and_uses_the_position_radius() {
     use crate::models::transform::PositionAndRotation;
@@ -1175,6 +1176,36 @@ async fn obstacle_ray_skips_inside_radius_and_uses_the_position_radius() {
     npc.data().unit.model_id = 1;
     npc.data().unit.transform.set_xyz(100.0, 100.2, 100.0);
     assert!(check(&server, &player, &Target::Obj(WorldObject::from(&npc))).is_ok());
+
+    // A thin obstacle just inside the target radius is not on the ray: the end point
+    // stops 1 m short of a target at 110.
+    let mut data = GameData::empty();
+    data.systems.skills.model_radii.insert(1, 1.0);
+    let (server, _client1b, player, npc) = setup(
+        data,
+        Vec3::new(100.0, 109.5, 101.0),
+        Vec3::new(1.0, 0.05, 1.0),
+    );
+    npc.data().unit.model_id = 1;
+    npc.data().unit.transform.set_xyz(100.0, 110.0, 100.0);
+    assert!(check(&server, &player, &Target::Obj(WorldObject::from(&npc))).is_ok());
+
+    // A wall further back still blocks the unit target.
+    let mut data = GameData::empty();
+    data.systems.skills.model_radii.insert(1, 1.0);
+    let (server, _client1c, player, npc) = setup(
+        data,
+        Vec3::new(100.0, 105.0, 101.0),
+        Vec3::new(1.0, 0.5, 1.0),
+    );
+    npc.data().unit.model_id = 1;
+    npc.data().unit.transform.set_xyz(100.0, 110.0, 100.0);
+    assert_eq!(
+        check(&server, &player, &Target::Obj(WorldObject::from(&npc)))
+            .unwrap_err()
+            .0,
+        skill_result::OBSTACLE
+    );
 
     // A position target inside 0.5 m: no ray, even with a wall behind the caster.
     let (server, _client2, player, _npc2) = setup(

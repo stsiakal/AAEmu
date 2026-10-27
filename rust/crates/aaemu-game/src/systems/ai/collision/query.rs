@@ -18,8 +18,8 @@ pub mod mask {
     /// static + sleeping + rigid + terrain: unmount check `sub_3972C690`, building
     /// `sub_398351E0`.
     pub const SOLID_TERRAIN: u32 = 0x107;
-    /// static + sleeping + rigid: the 10.x skill obstacle ray without `check_terrain`
-    /// (`sub_3923B970`, client `X2::Unit::ValidateLocation`).
+    /// static + sleeping + rigid: the 1.2 skill obstacle ray without `check_terrain`
+    /// (`FUN_390B5540`, `x2game.dll.c:149916`).
     pub const SOLID: u32 = 0x007;
     /// all entities + terrain: tornado `sub_3920FE10`, surface id `sub_394B6660`.
     pub const ALL_TERRAIN: u32 = 0x11F;
@@ -37,8 +37,8 @@ pub mod mask {
 pub mod ray_flags {
     /// `rwi_stop_at_pierceable | rwi_ignore_back_faces` (0x8F): most x2game rays.
     pub const DEFAULT: u32 = 0x8F;
-    /// Skill obstacle ray (`sub_3923B970`): colltype-any with collision class 2,
-    /// ignore back faces, pierceability 15.
+    /// Skill obstacle ray (`FUN_390B5540`, `x2game.dll.c:149930`): colltype-any with
+    /// collision class 2, ignore back faces, pierceability 15.
     pub const SKILL_OBSTACLE: u32 = 0x0002_048F;
     /// `WZRayCasting` (0xFFFE048F: colltype-any with every class but 0).
     pub const WZ_RAYCASTING: u32 = 0xFFFE_048F;

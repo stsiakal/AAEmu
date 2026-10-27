@@ -114,7 +114,7 @@ systems::{skills, npcs, economy, social, quests}: Data (tables), System (manager
 | `Core/Managers/ItemManager` (templates + user items) | `data/items.rs`, `managers/item.rs`, `models/item.rs`, `models/container.rs` | done | See `systems::economy`. |
 | `Models/Game/Items/Containers` (ItemContainer, EquipmentContainer, MateEquipmentContainer, CofferContainer, LootingContainer) | `models/container.rs`, `systems/economy/looting.rs` | done | See `systems::economy`. |
 | `Core/Managers/UnitManagers/CharacterManager` | `data/character_templates.rs`, `managers/character.rs`, `db_character.rs` | partial | Load (templates, body parts, buffs, supplies, equip packs, appellations, actabilities, expert limits, CharTemplates.json), Create, SetDeleteCharacter, SetRestoreCharacter, CheckForDeletedCharacters(+Deletion) with the delete task, IsCharacterPendingDeletion, LoadCharacters. Bag expands, beauty salon, rolls, online tracking todo. |
-| `Models/Game/Char` (Character, Inventory, Abilities, Actability, Skills, Appellations, Portals, Friends, Blocked, Quests (rows), VisualOptions, ActionSlot) | `models/character.rs`, `models/char_data.rs`, `db_character.rs` | partial | Character.Load (both variants' columns), Character.Load() sub-loads, Save / SaveDirectlyToDatabase (characters, character_ui_data, abilities, actabilities, appellations, active buffs, portals, friends, blocked, skills, quests), Write, CheckWantedThreshold (buffs + pirate faction). Mates, craft, combat, events todo. |
+| `Models/Game/Char` (Character, Inventory, Abilities, Actability, Skills, Appellations, Portals, Friends, Blocked, Quests (rows), VisualOptions, ActionSlot) | `models/character.rs`, `models/char_data.rs`, `db_character.rs` | partial | Character.Load (both variants' columns), Character.Load() sub-loads, Save / SaveDirectlyToDatabase (characters, options, abilities, actabilities, appellations, active buffs, portals, friends, blocked, skills, quests), Write, CheckWantedThreshold (buffs + pirate faction). Mates, craft, combat, events todo. |
 | `Models/Game/Units/Buffs`, `Models/Game/Skills/Buff` | `models/buff.rs`, `systems/mod.rs` | partial | Indices, stack rules, GetAllBuffs, CheckBuff(s), GetEffectByIndex / FromBuffId, GetBuffCountById, RemoveBuff / RemoveEffect (index, template+skill) / RemoveAllEffects, persistence (SaveActiveBuffs / LoadActiveBuffs), the NetBuff wire format and `BuffEvent`s (started / refreshed / removed) dispatched to `systems::UnitHooks`. Effects (`Start` / `Dispel`), tolerance, triggers, `TriggerRemoveOn`, tag checks, timers, buff packets: skills subsystem. |
 | `Models/Game/World/GameObject`, `Models/Game/Units/{BaseUnit,Unit,IBaseUnit,IUnit,BaseUnitType,UnitTypeFlag,ModelPostureType}` | `models/unit.rs`, `world/object.rs` | partial | All data members (`UnitBase`), `Hpp`, `IsDead`, `NeedsRegen`, trigger counts, `CalculateWithBonuses`, `UnitData` / `BaseUnitData` traits, handles (`Entity<D>`, `WorldObject`). Behaviour (`ReduceCurrentHp`, `DoDie`, `CanAttack`, regen, aggro, `UseSkill`, `SetFaction`, `UpdateGearBonuses`, the `SetPosition` underwater state) lives in the phase-3 subsystems (`systems::skills`). |
 | `Models/Game/Units/{UnitCooldowns,CombatBuffs,UnitAttribute,UnitModifierType}`, `Models/Game/Skills/{Bonus,DynamicBonus,SkillModifier(s),BuffModifier(s)}`, `Skills/Static/{SkillAttribute,BuffAttribute}`, `Templates/{BonusTemplate,DynamicBonusTemplate,LinearFuncTemplate}` | `models/unit.rs` | done / partial | Data model + pure logic (`ApplyModifiers`, `Evaluate`, cooldown checks). The DB loaders for the rows and `TriggerCombatBuffs` are the skills subsystem's. |
@@ -410,7 +410,7 @@ Cross-subsystem: mates are despawned on dungeon entry and `PlayerCanEnter` check
 | `MateGameData`, `SlaveGameData` (templates, unit modifiers, initial items / buffs, passive buffs, doodad / healing point / slave bindings, drop doodads, mount skills, repairable slaves, `slave_equip_slots`, `item_slave_equipments`, `allow_to_equip_slaves` / `allow_to_equip_slots`, `slave_attach_points*.json`), `TransferGameData` (templates, bindings, binding doodads, paths, client `transfer_path.xml` roads + `GetOwnerPaths`), `ShipyardManager.Load`, `TaxationsManager` table, `ModelManager` vehicle / ship models | `systems/vehicles/data.rs` | done | Gated test `real_compact_db_vehicle_tables` checks the row counts; `real_transfer_follows_its_client_route` loads the roads from the game_pak. |
 | `MateManager` (per instance), `CharacterMates` (load / save / spawn / despawn), `Mate` (`AddExp`, `MateXpUpdateTask`, `RegenTick`, `DoFallDamage`, `OnZoneChange`, stats) | `systems/vehicles/mates.rs`, `stats.rs` | done | Mount / dismount (`SCUnitAttached` / `SCUnitDetached`, rider becomes a transform child), rename, target, user state, mate equipment packet (item move through `VehicleItemHooks`), kill exp, stun / unmount skills, death despawn. |
 | `SlaveManager` (per instance), `SlaveSpawner`, `SummonSlave` details, `Slave` (`DoDie`, `DoHpChangeTrigger` / repair points, `RegenTick`, `Save`, `OnZoneChange`, stats) | `systems/vehicles/slaves.rs` | done | Create (saved slave / persistent doodads / saved child slaves from MySQL, position, boats on the water surface, doodad and slave bindings at the model attach points), bind / unbind, delete with portal-time despawn, Rider's Escape, repair cooldown, `RepairSlaveEffect`, `SendMySlaveTask`, logout (+10 min) / disconnect despawn task, `slaves` table (`AfterCharacters`). |
-| `TransferManager` (per instance, 100 ms tick), `TransferSpawner`, `Transfer` route following (`GoToPath`, `MoveTo`, `NextPoint`) | `systems/vehicles/transfers.rs` | done | Carriage motor + boarding part + bench doodads, `SCOneUnitMovementPacket` (transfer move type) for both parts. Spawned from `SpawnManager.SpawnAll`. `CSBoardingTransfer` (the C# only logged it): passenger boarding at points 2..7, `SCUnitAttached`/`SCUnitDetached` (reason `BoardTransfer` 7) with the passenger as a sticky transform child of the seat-bearing part, seats freed on `ap` 0 / death / logout / despawn. Seat list sent with the transfer's `SCUnitStatePacket` visibility. |
+| `TransferManager` (per instance, 100 ms tick), `TransferSpawner`, `Transfer` route following (`GoToPath`, `MoveTo`, `NextPoint`) | `systems/vehicles/transfers.rs` | done | Carriage motor + boarding part + bench doodads, `SCOneUnitMovementPacket` (transfer move type) for both parts. Spawned from `SpawnManager.SpawnAll`. |
 | `ShipyardManager` runtime, `Shipyard` build steps, `CraftEffect` shipyard branches, `ShipyardTickTask`, `ShipyardCompleteTask` | `systems/vehicles/shipyards.rs`, `effects.rs` | done | Requirements via the skills item hooks + money (`SCItemTaskSuccess` money form). |
 | `ShipHarpoonRopeController`, `CSUnhangPacket` | `systems/vehicles/harpoon.rs` | done | Tow forces are physics (`ShipHarpoonTowPhysics`): the per-tick entry points are exposed for the physics port. |
 | `CSMoveUnitPacket` vehicle branches (ship request, vehicle, mate xp, riding, standing on objects) | `systems/vehicles/movement.rs`, `world/session.rs` | done | Ship-deck support accepts the actor standing flag independently of the movement header, preserving valid GC-relative positions and the current-parent sentinel during controller updates. This corrects the mirrored C# header-only attachment test; clearing both support flags still disembarks. A unit no longer hanging (`HangingFromObject` unset) loses its sticky parent unless it is boarded on a transfer. |
@@ -498,62 +498,6 @@ live acceptance remain pending.
 | `WaterBodies`, `WaterBodyArea`, `Models/CryEngine/Objects` (`object.dat`) | `systems/ai/physics/{water,objects_file}.rs` | done | Water areas of all 1 294 client `object.dat` files equal the C# output bit for bit (differential harness, gated test `real_ai_object_dat_water_bodies`). Gimmick `FloatToSurface` uses them. |
 | `ShipTuningDebug`, `HarpoonMechanicsDebug` logging, `ShipHarpoonRopeController` | – | not ported / slaves | Debug code is hard-wired off in the C#; the rope controller belongs to the slaves subsystem. |
 | (Rust only) the 10.x zone server's collision world: terrain heightfield, `brush.dat` / `vegetation.dat` statics from CGF `MeshPhysicsData`, doodad colliders, ocean / water-volume buoyancy areas, living-entity proxies of units, ray / sweep query service, `GetBlinkPosition`, ZWUnitFell, ZWReportMoveHack, ZWUnitCollision, CryPhysics hulls | `systems/ai/collision/`, `systems/ai/physics/cry.rs` | done | On the CryPhysics port (`aaemu-physics`), `Configurations/Physics.json`. See "systems::ai collision" below. |
-
-#### systems::ai retail alignment (2026-10-19, 1.2 AI Lua as the oracle)
-
-The C# AI differs from the 1.2 client's own AI Lua (`game/scripts/ai/**`, extracted to
-`D:\aa-re\zone\ai\lua12`; study in `AI-ORACLE.md`) in the places below. Each was measured live with
-`aaemu-testclient ai` first (`ai-sweep.md`) and is changed where the 1.2 Lua or 1.2 data defines the
-behaviour.
-
-* **Alert (S3, S11)**: `alertDuration` (`npc_ai_params`; default 3.0 as in `default.lua`) sets the alert
-  length instead of the fixed 5 s. After it, `alert.lua` `OnAITimeEvent`: an aggressive species
-  (`npcs.aggression`) attacks the attention target (`NpcAddAggro`), anything else remembers it as
-  alert-safe (`alertSafeTargetRememberTime`, default 5 s, per target) and leaves. `alertDuration < 0.1`
-  (`default.lua:1753` `OnAlertTargetChanged`) means no alert state at all: aggressive NPCs attack from
-  sight range at once, calm ones ignore the target. The C# `_nextAlertCheckTime` global 7 s cooldown is
-  gone. `alertDuration` / `alertSafeTargetRememberTime` of the 1.2 rows of AI types without typed
-  parameters (roaming, hold position, default, ...; the C# ignores those rows) are read into
-  `AiData::alert_only`. `alertToAttack` is not read by any 1.2 Lua file (dead data in retail); the
-  Almighty spawning use of it is unchanged.
-* **Leash (S1)**: `npcs.return_distance` is applied per target (a target farther than it from the NPC is
-  removed from the aggro table; `0` disables the check, the C# substituted 50), and
-  `absolute_return_distance` is measured from where the fight started (first combat tick) instead of from
-  the idle position (`0` disables, the C# substituted 200). The 1.2 Lua has no leash code; the column
-  names and meaning come from the 10.x `NpcAggroTable::ProcessAggroCancel` / `ProcessReturn`, and the
-  1.2 data carries the same columns. **Open suspects** (10.x only, not corroborated by 1.2 data/Lua, not
-  implemented): the 3 s no-hit grace before a far target is dropped, the `2 * absolute_return_distance`
-  hard leash from spawn for boss grades 3/4/5/8 (S13), the target-under-terrain cancel, and `Npc::Update`
-  staggering.
-* **Idle position (S5)**: hold-position NPCs run `hold_position.lua` `UpdateHoldPosition` every 2 s:
-  7 m or more from the idle position teleports home, 3 m or more goes through `ReturnToIdlePos`
-  (return state). Roaming (`UpdateIdleEnd`) and alert (`UpdateAlert`) teleport home beyond 15 m
-  (`X2AI:IsOutOfIdleArea`; the group-member 50 m case is not ported, formations are missing). The
-  `returnSpawnPos` param (2 rows) is not read. The talk 7 m / 3 m rule is unchanged.
-* **Archer make-a-gap (S6)**: after the make-a-gap skill the NPC backs away from the target
-  (`archerAttack_MakeAGap`: `backoff` by `preferedCombatDist`, 3 s) instead of walking to its idle
-  position.
-* **Wild boar spurt (S7)**: `wild_boar_attack.lua` `OnAITimeEvent`: a spurt skill is queued once when the
-  HP% crosses its `healthCondition` downward (`curr < cond <= prev`), only while nothing is queued, and
-  cast through the skill list; the C# cast on every pick while below the threshold. The
-  `onCombatStartSkill` list is still cast as its first entry only.
-* **Spawn window (S9)**: the `Spawning` behavior waits `spawning.lua`'s minimum `spawningEffectTime`
-  (0.1 s of AI tick time; the real value is set by the zone C++ and is not in the 1.2 data) before the
-  command set. **Open**: the `NPC_SPAWN_INVINCIBLE_BUFF_TYPE` buff and the Busy state object are
-  C++/engine constants with no 1.2 buff id, so NPCs are not invulnerable while spawning.
-* **minAPS (S10)**: left open. `tower_defense_attacker.lua` only calls `NpcSetMinAps(minAPS)`; what the
-  C++ does with it exists only in the 10.x zone (`NpcAggroTable` APS filter), the 1.2 rows carry
-  `minAPS` 20 (and 1e8 for NPC 8828) without a 1.2 definition. Not implemented.
-* **Other open suspects** from the oracle, unchanged: S2 radii (the live server behaves as
-  `attackStartRange 15 / sightrange 10` times the scale although `behaviors.rs` reads `10 / 15`; the
-  measured radii agree with retail, the source-level reason is not explained), S4 ranged stop distance
-  (0.85 factor, 10.x only), 0.3/0.5 backoff, roaming cadence, formations, `skills.onAlert`
-  per-second alert skills, and the combat-start burst (S8, nothing to cast in the 1.2 data).
-* **`/spawn npc <template>`** (and `/spawngrid`, `npc spawn`): the C# registered memberwise clones of the
-  natural spawners for an NPC that has some and left the command's own spawner without a template, so the
-  command logged `[Spawn] Can't spawn NPC 0:<id> - template is null` and the NPC only appeared when its
-  natural spawner (schedule, population) was active. The command now always uses a generated spawner
-  (`SpawnManager::add_generated_npc_spawner`, template 1 for exactly this NPC).
 
 #### systems::ai collision (the zone's physics, Rust only)
 
@@ -654,13 +598,6 @@ the x2game / cry3dengine decompiles (addresses below). Config `Physics` (`Config
 * Ground-targeted plot positions, doodad spawns / respawns, backpack drops, land slave summons and
   transfer parts use the physics ground (static + terrain) instead of the bilinear heightmap; ship
   summons read the sea floor with `GetTerrainElevation`.
-* A ship summoned on a client-chosen spot (`SummonPos`, `validated_summon_placement`; the C# only
-  had the in-front placement) is refused with `SlaveSpawnErrorInvalidArea` when the water there
-  (`surface - floor`) is shallower than the hull's draft, `mass_box_size_z / 2 - mass_center_z`
-  (11.25 m for the clipper / galleon model 393). Without it a clipper summoned in the 1 m deep
-  Desireen pond was buried in the bed and CryPhysics threw it ~14 m above the water. The C#
-  in-front search (`min_depth = MassBoxSizeZ - MassCenterZ + 1`) never refused and has the same
-  failure when no deep spot lies within 50 m.
 * Walking NPCs (not flying / holding / idling) stand on the physics ground (`reference_height_in`);
   NPC spawner points snap to it within 1 m (`npc_spawn_on_terrain`). Real data: 1 487 of the 1 524
   NPC spawns of the 4 busiest main_world cells are within 1 m of the physics ground (1 407 of the
@@ -902,6 +839,24 @@ is no longer mirrored (see "Known deviations", dead NPC returned and healed).
   differ between zero-extended sheet IDs and sign-extended native cache keys.
   No evidence establishes a safe ID-width or ownership-policy change here.
 
+* systems::skills (music): the C# (and this port) send `SCSkillStarted` only for casts with a
+  cast time. The play (22213), pause (22214) and close-the-score (22217) skills are instant
+  (`casting_time` 0, `effect_delay` 200 ms), so the 1.2 client never received the own
+  `SCSkillStarted` it reacts to with CS121 (MIDI) / CS124 (End): the play effect then
+  broadcast an empty MIDI cache. A validated player cast of a skill whose catalog join
+  `skill_effects -> effects(SpecialEffect) -> special_effects` contains type 93 (`PlayUserMusic`)
+  or 94 (`PauseUserMusic`) now sends `SCSkillStarted` (same timeline id as the fire, cast times
+  0, no extra data) directly before its `SCSkillFired` (`skill::schedule_effects`,
+  `SkillRunState::music_started_pending`). No id list, no `application_method` filter, no change
+  for other instant skills, NPC casters, rejected casts (they keep the failure `SCSkillStarted`)
+  or the item-caster refusal of 22213 (sheet 28051 has no `use_skill_id`). Not a retail capture:
+  derived from the client contract. The authored 200 ms `effect_delay` is unchanged, so the
+  client's CS121 / CS122 must reach the server within `200 ms - one-way latency` of the fire
+  (compose relies on the same window for CS122); the live lane measured the CS121 arriving
+  ~0 ms after the Started on loopback. CS124 (`CSEndMusicPacket`) matches the C#: it is a no-op
+  while the 30 s ScoreMemorized (6010) buff is active and otherwise removes the tag-1155 play
+  buffs (6176 / 6177); pause (dispel tag 1202) keeps 6010, close (dispel tag 1155) removes it.
+
 * systems::skills / systems::npcs (`Interaction` special effect 10): the former C# class was a
   TODO stub. The 1.2 `special_effects` rows put a `WorldInteractionType` in `value1` (row 11030:
   19 `Use`, 36: 10 `DigTerrain`, 215: 29 `SummonBeanstalk`) and an optional doodad id in
@@ -1117,15 +1072,11 @@ is no longer mirrored (see "Known deviations", dead NPC returned and healed).
   return online character profiles through the existing 1.2 outbound formats (the C# inbound
   handlers only logged). Offline, absent and unauthenticated requests receive no reply; offline
   lookup and failure-response semantics remain unresolved.
-* systems::services (UI data, 2026-10-23): `CSRequestUIDataPacket` / `CSSaveUIDataPacket` store the
-  opaque blob per character and type in `character_ui_data` (the C# reused the generic `options`
-  table); the SQL update copies the legacy numeric keys. Saves accept the native types `0..=6` and
-  at most 8191 bytes: the 1.2 sender serialises into an 8192-byte buffer with a trailing NUL
-  (`0x392f3350` / `0x39217640`), and no 1.2 producer can send more. Values observed from the real
-  client are 280, 4 708 (key bindings) and 313 bytes. Unknown types and oversized payloads are
-  dropped with a warning (the C# stored any `ushort` key and any length in memory). Requests answer
-  with the stored blob or the empty default, the world-entry push of types 1/2/5 reads the same
-  map, and a finalised character deletion removes its rows.
+* systems::services (UI data caps, 2026-10-20): `CSSaveUIDataPacket` accepts only keys `0..=16` and
+  values of at most 16 KiB. Values observed from the real 1.2 client are 280, 4 708 (key bindings)
+  and 313 bytes; 16 KiB is 3.5x the largest and stays below the 64 KiB `options.value` TEXT
+  column. Unknown keys and oversized values are dropped with a warning (the C# stored any
+  `ushort` key and any length in memory).
 * systems::social: family title and steward requests require targets in the caller's own family.
   Authorized packet changes call the existing family snapshot save immediately; the C# handlers
   only changed memory. Team risky actions require membership and known actions, with owner
@@ -1291,30 +1242,25 @@ is no longer mirrored (see "Known deviations", dead NPC returned and healed).
   fabricated. RedeemBuff's second and third value slots (the damage / cap slots of other special
   actions), recipe/account/cinema placeholders, several other special actions and generic
   Anchor/Flowgraph still need authoritative behavior or protocol evidence. Passing covered tests does not certify every data-defined skill.
-* systems::skills (2026-10-19, `check_obstacle`): the C# tree had no obstacle check at all
+* systems::skills (2026-10-27, `check_obstacle`): the C# tree had no obstacle check at all
   (`git show a2ab80abd^:AAEmu.Game/Models/Game/Skills/Skill.cs`), but the 1.2 skills data has
-  the retail column. The **1.2 client is the primary oracle** (unpacked `x2game.dll`, Ghidra
-  `aa12u`; full notes `D:/aaemu-audits/research/oracle/obstacle-ray-1.2.md`):
-  `FUN_390B5650` shortens `to` by the target radius and **casts no ray when `dist <= radius`**,
-  then `FUN_390B5540` calls `RayWorldIntersection(Game)` with objtypes **7** (static +
-  sleeping rigid + rigid), or **0x107** when `check_terrain` is set, and ray flags **0x2048F**
-  (colltype-any, collision class 2, ignore back faces, pierceability 15), one hit max.
-  Unit targets (`FUN_390B5C60` -> `FUN_3989C0D0`) run at unit position height (no eye offset)
-  from the source to the target surface and skip the source and target physics objects;
-  position (ground) targets (`FUN_390B5A30` -> `FUN_390B5790`) use radius **0.5** and skip
-  only the source. The order is TOO_CLOSE, TOO_FAR, height, angle, then OBSTACLE. The 10.x
-  client confirms the same rule (`X2::Unit::ValidateLocation` 0x3923C370; `ClientRaycaster`
-  callback 0x3923C5A0 -> `sub_3923B970`; unit path 0x39B8E360). Not modelled: the 1.2
-  multi-part target variant `FUN_3989DAE0` (loops the target's sub-shapes and passes if any
-  part passes). The former Rust ray was 1 m above both ends, used static+terrain (0x101) and
-  the default collision class; it rejected ground-anchored doodad interactions through nearby
-  doodad colliders (entrance doodad template 3674 / skill 10999, exit 4535 / skill 16560) and
-  re-checked at fire time with the same wrong rule. `check_terrain`, the radius gate and the
-  0.5 m position-target radius are now enforced. Rejections are logged at `warn` with
-  character, skill, target and result key. Live: the entrance 10999 and instance exit 16560
-  casts succeed with no `skill_obstacle` rejections (2026-10-19 lane run); the flow tests in
-  `cast_validation_tests.rs` prove a class-2 static wall still blocks and cover the radius
-  gate and position radius.
+  the retail column. The 1.2 client is the oracle (`x2game_unpacked.dll`; Ghidra `aa12u`):
+  `FUN_390B5540` calls `RayWorldIntersection(Game)` with objtypes **7** (static + sleeping rigid
+  + rigid), or **0x107** when `check_terrain` is set, ray flags **0x2048F** (colltype-any,
+  collision class 2, ignore back faces, pierceability 15) and one hit; a hit maps to skill
+  result 0xC (`skill_obstacle`). `FUN_390B5650` shortens the end point by the target radius and
+  casts no ray when `distance <= radius`. Unit targets (`FUN_390B5C60` -> `FUN_3989C0D0`) run at
+  unit position height and skip the source and target colliders; position (ground) targets
+  (`FUN_390B5A30` -> `FUN_390B5790`) use the constant 0.5 (`DAT_3999C47C`) and skip only the
+  source. The former Rust ray was 1 m above both ends, used static+terrain (0x101) and the
+  default collision class, and had no radius gate; it rejected ground-anchored doodad
+  interactions through nearby doodad colliders (entrance doodad template 3674 / skill 10999,
+  exit 4535 / skill 16560) and re-checked at fire time with the same wrong rule. Rejections are
+  logged at `warn` with character, skill, target and result key (NPC casters at `debug`: AI
+  retries blocked casts). The flow tests in
+  `cast_validation_tests.rs` cover the height/mask/class rule, the radius gate, the 0.5 m
+  position radius and the terrain gate. Not modelled: the multi-part target variant
+  `FUN_3989DAE0` (loops the target's sub-shapes and passes if any part passes).
 * systems::skills: the labor margin requirement uses `GetMaxLabor(Payment.PremiumState)`; every
   connection has the default C# `AccountPayment` (premium until 2030), so the cap is 5000.
 * systems::skills (in-place resurrection, 2026-10-20): `CSResurrectCharacterPacket(in_place =
@@ -1393,7 +1339,7 @@ is no longer mirrored (see "Known deviations", dead NPC returned and healed).
   operation (null decoration design / doodad template / taxation, missing furniture item), the
   operation is aborted and logged.
 
-* systems::instances: the dungeon loader awaits the spawn tasks before registering the indun events again (C# does not await `Task.WhenAll`, a race) and reads the spawn files there instead of in `CreateWorldInstance`; `DestroyInstantGame` cleans the instance up and releases its id right away (C#: the finalizer, later); `Environment.TickCount` is a process-relative monotonic clock; the `World.Template.SpawnPosition` mutation in `MoveCharacterTo*` is a local value; paths that throw in C# (missing action / room / zone / rule set, `_members[x]` of a non-member, a destroyed dungeon's `World`) log and return, keeping the side effects done before the throw; `EndGame().Start()` throwing after a victory is modelled as "the rest of `OnKill` (respawn) does not run"; the timed `EndGame` decides the result instead of sending both corps as `Lose` (kill count, then score, equal as a draw; see the ranking note under "Ranking boards"); the cross-instance region switch removes the object from every old neighbour once (no double notification of its own sector).
+* systems::instances: the dungeon loader awaits the spawn tasks before registering the indun events again (C# does not await `Task.WhenAll`, a race) and reads the spawn files there instead of in `CreateWorldInstance`; `DestroyInstantGame` cleans the instance up and releases its id right away (C#: the finalizer, later); `Environment.TickCount` is a process-relative monotonic clock; the `World.Template.SpawnPosition` mutation in `MoveCharacterTo*` is a local value; paths that throw in C# (missing action / room / zone / rule set, `_members[x]` of a non-member, a destroyed dungeon's `World`) log and return, keeping the side effects done before the throw; `EndGame().Start()` throwing after a victory is modelled as "the rest of `OnKill` (respawn) does not run"; the cross-instance region switch removes the object from every old neighbour once (no double notification of its own sector).
 * systems::instances (battlefield rules, 2026-10-19): `game_score_rules` is now loaded instead of the hard-coded 30-point kill. A kill uses event 200 (`event_value` 0) and an assist event 204; a corps-bound row wins over the `rule_set_corps = -1` row. Shipped rows: rule set 28 (Gladiator) event 200 -> 30 (id 93); rule sets 8/17/22/26/27 event 200 -> 3 and events 202/203/204 -> 2 (ids 26/53/68/73/76 and 81-92); rule set 2 authors no kill row, so its kills award 0. The assist rows do not distinguish healer / dealer in 1.2, so one 204 row is paid per assist (the three rows carry the same value). `game_rule_events` is loaded (rule set 28: 4 rows; 8/17/22/26/27: 1 each) but has no consumer with defined semantics in the 1.2 C#, in the 10.x zone decompile (loader only) or in the 1.2 client UI, so no behaviour is invented for `condition_id` / `kind_id` / `param1` / `param2`. `battle_field_buffs` is applied at match start (after the reset that clears buffs) with the row's `value` as the buff charge and removed on leave / disconnect: battlefield 7 has 8 rows (6266/100, 7006/1, 7007/2, 7061/3, 7062/4, 8246/1, 8247/1, 8000007/10) and battlefield 11 has 3 (8246/1, 8247/1, 8000007/1); the 3.0 successor `battle_field_honor_buffs.basic_value` repeats the same buff ids and values. Regression: `battlefield_kill_and_assist_scores_come_from_game_score_rules`, `battlefield_buffs_are_granted_at_start_and_removed_on_leave`, `battlefield_data_loads_with_json_quirks` and `real_instances_data`.
 * systems::instances / systems::social (RPA-09 temporary factions): duel Red / Blue team and battlefield corps factions are temporary. `UnitBase::faction_temporary` marks them, `SCUnitFactionChangedPacket.temp` is `true`, and they skip `Character.SetFaction`'s housing update, guild kick and party removal. `db_character::persisted_faction` writes the origin faction, so an autosave, logout or crash during a duel / battlefield never stores the temporary faction; the faction is also restored on duel end, battlefield leave and departure/save (`world::session::save_and_remove_from_world`). Tested by `duel::tests::temporary_team_factions_keep_guild_and_restore`, `disconnect_during_a_duel_restores_the_origin_faction`, `instances::flow_tests::battlefield_entered_requires_actual_instance_and_subscribes_kills_once` and `db_character::tests::a_temporary_faction_is_never_persisted`.
 * systems::instances (tower defense): the C# command only sent packets to its caller and hard-coded zone group 5. The Rust runtime reserves controller positions from the existing NPC JSON by compact spawner membership; these controllers no longer spawn permanently. Manual controls affect the caller's instance/group. Automatic schedules are disabled by default and validate every selected event at startup. Orphan waves/targets no longer truncate later valid rows. Kill notifications use only `DoDie`, deduplicate the NPC handle and retain id-reuse semantics. Timers use monotonic real seconds; `tod` uses the accelerated game clock and day intervals count from scheduler startup. Spawn effects carry explicit event ownership for cleanup even when Unit.OwnerId is zero. Unsupported `DoodadAlmighty` targets, NPC groups without authored controller positions and reward/victory chains remain unavailable rather than being synthesized.
@@ -1406,28 +1352,8 @@ is no longer mirrored (see "Known deviations", dead NPC returned and healed).
 * systems::vehicles: the transfer motor is not a transform child of its boarding part (the C#
   sets and immediately clears that parent); the boarding part is moved explicitly by the motor's
   tick, as the C# does for its packets. The transfer's own sticky link to its motor is not
-  recorded (only `IsBoardedOnTransfer` reads sticky parents of transfers).
-* systems::vehicles (transfer boarding): the C# `CSBoardingTransferPacket` only logged `tl` and
-  `ap` and never filled `Transfer.AttachedCharacters`, so `IsBoardedOnTransfer` was dead code.
-  Rust completes it from the 1.2 client's send sites (`re-transport.md` §7: `FUN_393565c0` boards
-  the target transfer at the first free point 2..7 via `FUN_393546b0`, `FUN_39440d30` sends
-  `ap = 0` with the current transfer's tl). `Transfer.AttachedCharacters` therefore holds
-  `(attach point, character obj id)` (the C# `List<Character>` had no seats). The seat-bearing
-  target is the transfer sharing the packet's `tl` whose `AttachPointId` is not `System` (the
-  motor and its boarding part share the tl; the C# `Create` marks the motor `System`), falling
-  back to the motor for single-part transfers. There is no 1.2 server-side reference for the
-  rules the C# omitted, so these are **inferences**, checked congruently with the client:
-  the 4 m bind range (`BOARD_RANGE`, the squared-16.0 vehicle bind constant `DAT_39ac7408` of
-  `re-transport.md` §2), 3D distance (the C# `GetDistance` is 2D, an airship passenger below the
-  hull must not board), the dead/busy/not-already-bound precheck of `FUN_39346290`
-  (`re-transport.md` §2), a dead transfer being refused, and `ap` outside 0 / 2..7 ignored.
-  Unboarding uses reason 7 (`BoardTransfer`), except death (`None`) and despawn
-  (`PrefabChanged`); the 1.2 client does not send a reason with `ap = 0`. The
-  `TRANSFER_BOARDING` / `TRANSFER_UNBOARDING` bar events 0x64/0x65 are client-side: the 1.2
-  `sc` table has no boarding-transfer S->C packet (only `CSBoardingTransferPacket` 0x67), so the
-  client derives the bar from `SCUnitAttached` / `SCUnitDetached` (inference; the event fire
-  site itself was not found, `re-transport.md` §10.4). The despawn path now also removes the
-  transfer from `TransferManager` and despawns the bounded boarding part with its motor.
+  recorded (only `IsBoardedOnTransfer` reads sticky parents of transfers, and the C#
+  `AttachedCharacters` list is never filled).
 * systems::vehicles: `Transform.Parent = null` keeps the world position (`detach_child`); the C#
   keeps the local values until the next position update.
 * systems::vehicles: `Thread.Sleep(50)` between `SCMateSpawnedPacket` and the mate spawn is not
@@ -1956,41 +1882,6 @@ is no longer mirrored (see "Known deviations", dead NPC returned and healed).
   (`item_handlers::CSDestroyItemPacket`) pushes `ItemFx::Consumed` for the destroyed units and
   `ItemContainer::add_or_move_inner` pushes it for the source owner when the item moves between two
   characters' bags (trade), so the objective is recounted when items leave.
-* systems::economy (trade safety, 2026-10-19): a trade is made only when both sides locked and
-  both confirmed (`OkTrade` previously accepted a confirmation with one side locked). Only the
-  put-up amount changes hands: a larger stack is split at finish, the receiver's
-  `SCOtherTradeItemPutupPacket` shows the offered amount, and the giver's `SCTradeMade` task names
-  the slot the item had in the giver's container (the C# moved the whole item and built the
-  removal from the moved object, i.e. the receiver's slot). Negative money put-ups are rejected
-  (the C# stored them unsent and skipped them at finish), money transfers use checked `i64`
-  arithmetic, and trade ids are released on cancel / departure / finish. Live oracle: two
-  `aaemu-testclient` bots (lock one side only -> no trade; negative money -> rejected; 5-unit
-  stack, 2 put up -> only 2 move, 3 stay).
-* systems::economy (shop currency checks, 2026-10-19): `CSBuyItems` refuses when *any* required
-  currency (money, honor or vocation) is short (already so since 80b6411c9; the mirrored
-  entry was stale); the C# checked `money > have && honor > have &&
-  vocation > have`. Checked totals and per-currency `checked_sub` already reject overflow.
-  Covered by `craft_store_tests::shop_checkout_rejects_money_only_and_mixed_currency_shortages`.
-* systems::economy (cash shop, 2026-10-19): loyalty is charged the displayed
-  `DiscountPrice > 0 ? DiscountPrice : Price` (already so since the port, test
-  `checkout_charges_displayed_discount_for_coins_and_loyalty`; the C# debited `Price`); above `level_max` the buyer gets `LEVEL_HIGH_TO_USE` (1.2 `ui_texts`
-  4157, "level too high to use") instead of `INGAME_SHOP_BUY_LOW_LEVEL` (4708, generic "(level)");
-  page 0 still shows page 1 on purpose: the 1.2 `x2ui/baselib/page.alb` page control starts at
-  `currentPage = 1` and clamps previous/next to `1..maxPage`, so the client never sends page 0,
-  and the C# `Skip(itemsPerPage * (page - 1))` clamps the invalid value to the first page.
-* systems::economy (auction, 2026-10-19): the "ExpireDate" sort uses `end_time` (the C# sorted by
-  `PostDate`) and a buyout sends `SCAuctionBidPacket` with `isBuyout = true`, the lot's
-  `direct_money` and the buyer's identity (the C# buyout branch sent nothing although the 1.2
-  packet carries the flag). Seller / item mail delivery is unchanged.
-* systems::economy (auction settlement, 2026-10-20): the C# ignored `MailForAuction.Send()`
-  (`RemoveAuctionLotSold` / `RemoveAuctionLotFail` / `CancelAuctionLot` removed the lot anyway),
-  so a mail that was not stored lost the seller's money or the buyer's item. Here a settlement
-  removes the lot only after every one of its mails was delivered; otherwise the lot (or, for an
-  outbid refund in the bidding path, just the refund) stays queued in `AuctionManager::pending`
-  and `update_auction_house` retries the still-missing mails on its next tick, remembering which
-  ones are already out so nothing is delivered twice. The queue is in memory: a restart inside
-  the retry window loses a pending outbid refund, and a pending sale that has not reached its
-  `end_time` reverts to the lot's saved bidder fields.
 
 * systems::economy (trade safety, 2026-10-19): a trade is made only when both sides locked and
   both confirmed (`OkTrade` previously accepted a confirmation with one side locked). Only the
@@ -2046,24 +1937,9 @@ The 1.2 C# never answered `CSRankCharacterPacket` (empty, log-only) and has no `
 
 - **Requests.** 0x12f answers `SCRankCharacterPacket` (one row per supported board, zeros where the character has no score; `type_id` 0 because the request carries nothing to echo). 0x130 answers `SCRankSnapshotPacket` with the current period's standings (<= 100 lines); the racing board and unknown boards are not answered. The snapshot scope list stays empty (the raw scope figures are unresolved). The row's "account" string is the character name: the game database does not know the login account names. 0x130 is the one registration the C# registry-parity test exempts.
 - **Persistence.** `character_rank_scores` (one row per character, board and period) and `rank_period_payouts` (periods already paid), loaded at startup and upserted by every `SaveManager` pass (`AfterCharacters`). Every row is rewritten on each save (idempotent, so a rolled-back save loses nothing); `Character::ranking_state` is unused (standings need offline characters, so the store is global).
-- **Events.** The arena board scores at the end of an instant game (`instant_game::record_rankings`, once per game): win/lose/draw/invalid points are `game_rule_sets.rank_*_point` (only rule set 28, the gladiator duel in zone group 77: win 4, lose 1). Deviation (timed result): the C# `EndGame` sent both corps as `Lose` with reason `AchievementScore` when the timer ran out, so a timed-out duel scored both players as losers. Here `finish_timeover` decides by the rule set's victory conditions - kills first, then score (`game_score_rules` event 200 gives 30 per kill for rule set 28 against its `victory_score` 60), equal kills and score as a draw - and sends `BFER_TIMEOVER_COMPARE_KILL_COUNT`, the only time-over reason the 1.2 client names; the duel draw text exists (`ui_texts` 3829 "결투에서 비겼습니다.") and the battlefield tip scores a draw 0 (`ui_texts` 5887). A draw pays no winner/loser bonus and no arena points for rule set 28 (`rank_draw_point` 0). The two fishing boards score each trophy fish a player lands (`fishing::record_catch`, from `DoodadFuncConvertFish` and the equipped-fish conversion) in the player's zone group; they only count inside the board's authored window, which ended in 2014, so on the shipped data no catch scores. The racing board is never recorded.
+- **Events.** The arena board scores at the end of an instant game (`instant_game::record_rankings`, once per game): win/lose/draw/invalid points are `game_rule_sets.rank_*_point` (only rule set 28, the gladiator duel in zone group 77: win 4, lose 1). Because `EndGame` leaves both corps `LOSE` when the timer runs out (mirrored C# bug), a timed-out duel scores both players as losers. The two fishing boards score each trophy fish a player lands (`fishing::record_catch`, from `DoodadFuncConvertFish` and the equipped-fish conversion) in the player's zone group; they only count inside the board's authored window, which ended in 2014, so on the shipped data no catch scores. The racing board is never recorded.
 - **Period close.** A once-a-minute task (first tick at start-up) mails every closed, unpaid period: place -> `rank_scope_links` band -> `rank_rewards` item (count and grade as authored) as a `SYS_EXPRESS` letter (offline winners included), then `SCRankRewardMailPacket` to online winners. The period is marked paid before the letters are built, inside the economy operation gate; a crash between the letters and the next save can therefore lose (never duplicate) the mark. `rank_rewards.weeks` (how long the reward lasts) and appellation rewards (none authored) are not applied.
 - **Not sent.** `SCRankAlarmPacket` (0x205): only the fishing contest authors alarms (`start_time_alarm` -5 / `end_time_alarm` 0 and message strings), that board ended in 2014 and the packet's `kind` / `rank_alarm_kind` values are unresolved, so no trigger is invented.
-
-### Hosting hardening (Rust only, RPA-19/20)
-
-Security deviations from the C# servers (no retail oracle needed; the C# had none of these):
-
-- Login internal port: only `GLRegisterGameServer` with the shared `SecretKey` is honoured from
-  an unregistered peer; any other packet closes the connection. A bad secret closes it after the
-  error reply. Unregistered peers: 10 s handshake window, at most 8 at once. `GLPlayerEnter` and
-  `GLPlayerReconnect` are bound to the registered game server (or its mirrors). Shipped
-  `InternalNetwork.Host` is `127.0.0.1`, `AutoAccount` is `false` (`cargo xtask dev` sets it).
-- Web API: every route except `/status` needs `WebApiNetwork.Token` (`Authorization: Bearer` or
-  `X-Api-Key`); no token configured = those routes answer 403. An empty host binds loopback.
-- Level-0 commands are pinned to `help`, `online`, `soloparty`, `dungeon`, `collectdominion`,
-  `joinsiege`, `leavesiege` by a shipped-config test (`/fly`, `/teleport` are 50).
-- Compose: MySQL published on `127.0.0.1` only, Adminer behind `--profile tools`.
 
 ### Startup warnings (Rust only)
 
@@ -2104,7 +1980,7 @@ servers (see `rust/LIVE-TESTING.md`). Fixed porting bugs are in the git history 
   same (lowest free) connection id to the next client. C# then throws in `AddAccount` and stops
   answering the login server (every later enter-world is denied, the world shows as inactive).
   Rust replaces the stale entry and answers.
-* Regen stats follow the retail client (oracle `aaemu-clientdriver oracle stats`, 2026-10-18:
+* Regen stats follow the retail client (the real client's stat oracle, 2026-10-18:
   levels 1-55 plus the persistent-regen buffs 5872 / 4698). `HealthRegen` / `ManaRegen` are
   `trunc(base formula + bonuses) + Persistent(raw) / 5` (client 47.4000015 at L55 with buff
   4698). The C# `+ Spi / 10` in `ManaRegen` is removed: the client never has it (pre-fix server
@@ -2156,9 +2032,6 @@ the same S->C traffic as the C# servers after id / time normalisation (0 finding
 and in NPC wandering / buff remaining times.
 
 ## C# bugs noticed (mirrored, not fixed)
-
-Later sections record fixes for several of these entries; check the subsystem's later
-feature-audit/deviation note before porting one as-is.
 
 * systems::social: `AchievementGameData` reads the `'t'` / `'f'` text booleans of compact.sqlite3 with
   `GetBoolean(column)` (`GetInt64 != 0`), so `is_active`, `is_hidden`, `complete_or` and
@@ -2332,30 +2205,6 @@ feature-audit/deviation note before porting one as-is.
 * systems::vehicles: `ShipyardCompleted` builds a `SkillItem` with only `ItemId`, so
   `SlaveManager.Create` returns on its `ItemTemplateId == 0` check: the finished ship is never
   summoned (the owner's active vehicle is still removed).
-* systems::vehicles (**deviation**, summoned vehicle ownership; fork fixes found by live ship
-  tests, see the `ship-owner` verify suite): (1) the C# kept a logged-out owner's vehicle in the
-  world for the 10 minute `ForceDismountAndDespawn` / `Leave` delay (kept, and now logged with
-  `the delay ran out, despawning the vehicle of the offline owner`) but announced a slave to its
-  owner only when it was created (`SCSlaveCreatedPacket`, then the 5 s `SCMySlavePacket`), so an
-  owner who logged in again inside the delay never learned which slave was theirs and could not
-  board (the Bevy client sets its "own slave" from `SCSlaveCreatedPacket` only, and its F key
-  falls back to skill 15307 "store backpack" on the vehicle). `vehicles::on_player_join`
-  (`CSNotifyInGameCompleted`) sends the owner, and only the owner, `SCSlaveCreatedPacket` (spawn
-  effect hidden) and the first `SCMySlavePacket` for its still active slave. (2) GM
-  `slave remove` only did `Slave.Hide()` in the C#: the slave stayed in the world (still found by
-  `slave info`, back for its owner on the next login). A summoned slave now goes through
-  `slaves::delete` (saved, riders dismounted, `SCSlaveDespawn` + `SCSlaveRemoved` around the
-  slave, ids released by the despawn tick; the doodads become non-persistent as for the owner's
-  own despawn) and a spawner slave through `SlaveSpawner::despawn`; `slaves::delete` therefore
-  also broadcasts for a summoned slave when the caller is not its owner. (3) `Create` summoned a
-  second vehicle when the owner's previous one refused to despawn (cargo loaded,
-  `SlaveEquipmentLoadedItem`), leaving two active slaves; the summon is now refused instead.
-  Checked and unchanged: one `slaves` row per summoning item (`REPLACE` by the slave's db id, a
-  resummon of the same item reuses it; a new item is a new row), nothing restores slaves at
-  startup, a fresh galleon has no default cannon children (their attach points 9-16 are
-  equipment slots; cannons appear after equipping and are restored with the equipment
-  container), object and timeline ids of live slaves are never handed out twice (obj ids are
-  released only by the despawn tick, tl ids never).
 * systems::vehicles: a slave's `TlId` is never released; the transfer spawner's `Despawn` and
   the spawn manager's despawn tick both release the transfer's obj id.
 * systems::vehicles: `SummonSlave.ReadDetails` always fails on `RepairStartTime` (so the repair
@@ -2630,62 +2479,9 @@ See Docs/wiki/Quest-Audit.md and Docs/wiki/Mail-Audit.md.
 | --- | --- | --- | --- |
 | Quest NPCs / doodads missing from every `*_spawns.json` | `app/Data/Worlds/{main_world,instance_library,instance_prologue,instance_nachashgar,instance_burntcastle_armory,arche_mall_world}`, `rust/tools/spawn_import/` | data | Positions from the 10.x pak (per-zone `npc_spawners.g`, per-cell `doodad.g`), the 1.2 `npc_spawner_npcs` rows and the git history of upstream spawn JSON. A position is imported only when it sits on the 1.2 heightmap (`|dz| <= 5 m`, ignored test `dump_terrain_heights`), next to an existing spawn of the same world (`<= 40 m`, `|dz| <= 8 m`: interiors, caves, bridges) or on clipped ground (heights are `u16 / 64`, so ground above 1024 m reads 1024) of a zone/frame verified by its other candidates. Editor-tier positions win over git-only ones. Imported: main_world 181 NPC / 58 doodad entries, instance_library 131 doodads, instance_prologue 8, instance_nachashgar 2, instance_burntcastle_armory 1, arche_mall_world 3 NPC / 1 doodad. Entries carry a `Title` naming the basis (the loader ignores it). |
 | Zones whose origin differs between the 1.2 and 10.x `world.xml` (190, 192, 193, 200, 227, 251, 266, 281, 286, 287) | same | data | The content sits at the 10.x position (zone origin x 1024 + local): the 1.2 origin never fits the 1.2 heightmap (0 of 154 editor candidates with unclipped terrain), the 10.x frame does (many points within 0.1 m). Z values above the 1024 m ceiling cannot be verified. Candidates whose terrain differs by tens of metres (10.x-only zones such as 157, parts of 190/281) were rejected. |
-| 10.x world spawns backported into 1.2 `main_world` | `app/Data/Worlds/main_world/{npc_spawns_10x,doodad_spawns_10x}.json`, `rust/tools/spawn_import/backport_10x.py` | data | Source: the 10.x `main_world` `npc_spawns.json` (28,434) / `doodad_spawns.json` (89,121). Filters in order: template id exists in the 1.2 compact (NPC -2,563, doodad -8,200); 10.x `Title` equals the 1.2 `en_us` name (ids were reused: NPC -2,202, doodad -60); the X/Y lies in a non-zero 1.2 `world.xml` zone (doodad -1,618); excluded doodad names `Restricted Area: Under Construction` (1,105) and `Sunken Treasure Chest` (1,323; no 1.2 system); the terrain rule of the October 17 import (`|dz| <= 5 m` to the 1.2 heightmap, or within 40 m / 8 m of an existing 1.2 spawn, or clipped ground; NPC -256, doodad -10,995) after the match; a one-to-one match per template before the terrain rule: each 10.x entry is paired, greedily by ascending XY distance, with the nearest unmatched existing 1.2 spawn of the same template within 20 m (NPC) / 10 m (doodad) and dropped (NPC -22,828, doodad -30,481), so shifted copies of an existing pack are not doubled and only the surplus survives; 10.x entries within 2 m of each other then collapse (NPC -6, doodad -3,677). Result: 579 NPC and 31,662 doodad entries (the loader's `npc_spawns*.json` / `doodad_spawns*.json` glob reads them; they carry `Title`). Zones whose 10.x terrain differs from 1.2 (e.g. most of Rookborne Basin, zone 270: 128 of 145 10.x Iron Veins sit 100-300 m off the 1.2 ground) are correctly rejected by the terrain rule, so that zone gains only 3 veins. Rerun steps are in the script docstring (the heightmap dump is the ignored test `dump_terrain_heights`). |
+| 10.x world spawns backported into 1.2 `main_world` | `app/Data/Worlds/main_world/{npc_spawns_10x,doodad_spawns_10x}.json`, `rust/tools/spawn_import/backport_10x.py` | data | Source: the 10.x `main_world` `npc_spawns.json` (28,434) / `doodad_spawns.json` (89,121). Filters in order: template id exists in the 1.2 compact (NPC -2,563, doodad -8,200); 10.x `Title` equals the 1.2 `en_us` name (ids were reused: NPC -2,202, doodad -60); the X/Y lies in a non-zero 1.2 `world.xml` zone (doodad -1,618); excluded doodad names `Restricted Area: Under Construction` (1,105) and `Sunken Treasure Chest` (1,323; no 1.2 system); the terrain rule of the October 17 import (`|dz| <= 5 m` to the 1.2 heightmap, or within 40 m / 8 m of an existing 1.2 spawn, or clipped ground; NPC -256, doodad -10,995) after the match; a one-to-one match per template before the terrain rule: each 10.x entry is paired, greedily by ascending XY distance, with the nearest unmatched existing 1.2 spawn of the same template within 20 m (NPC) / 10 m (doodad) and dropped (NPC -22,828, doodad -30,481), so shifted copies of an existing pack are not doubled and only the surplus survives; 10.x entries within 2 m of each other then collapse (NPC -6, doodad -3,677). Result: 579 NPC and 31,662 doodad entries. The NPC entries and the 670 mining veins (645 Iron Vein, 25 Starshard Vein) ship (the loader's `npc_spawns*.json` / `doodad_spawns*.json` glob reads them; they carry `Title`). The 10.x source is a live-server snapshot: its other surviving doodads were mostly player-planted trees, crops, livestock and housing furniture, which share templates with natural spawns and cannot be told apart, so they were removed (2026-10-27). Zones whose 10.x terrain differs from 1.2 (e.g. most of Rookborne Basin, zone 270: 128 of 145 10.x Iron Veins sit 100-300 m off the 1.2 ground) are correctly rejected by the terrain rule, so that zone gains only 3 veins. Rerun steps are in the script docstring (the heightmap dump is the ignored test `dump_terrain_heights`). |
 | `NpcSpawner.SelectSpawnerId` for NORMAL multi-member spawners | `systems/npcs/npc/spawner.rs` (`select_spawner_id`) | matches the C# | Not changed. A JSON entry clones every game-data spawner that has its unit as a member and (memberwise clone) shares one `NpcSpawnerIds` list, so with more than one spawner only an AUTOCREATED unscheduled one or a scheduled one is ever selected: a unit that has no JSON entry of its own and is only a sibling of a NORMAL group spawner (Vicious/Silent Treant 3105/3106, Goblin Fighter 527, ...) never spawns. The 13 audit findings of this kind are all `ConAcceptNpcKill` starters, which `starter_accepts` evaluates as an OR over the component's acts, and in every one of the 7 quests other listed NPCs spawn, so no quest is blocked; the data would need real positions for these units (the 10.x editor has no placement of those group spawners). |
 
-### Later-version spawn fill (October 19, 2026)
-
-A deliberate fill from the 10.x client pak (`10.0.2.13`, r575): positions come from
-`game/worlds/*/level_design/zone/*/zone_server/npc_spawners.g`, world metres are
-`world.xml origin * 1024 + local`. Only zones whose 1.2 and 10.x origin are identical are used
-(ten moved zones excluded), and templates / NPC members must exist in the 1.2
-`compact.sqlite3`; 10.x-only templates and worlds absent from 1.2 are skipped. Z is re-snapped
-to the 1.2 heightmap (`|dz| <= 5 m`); interiors keep the authored Z when an existing spawn is
-within 40 m / 8 m or the ground is clipped, like the October 17 import. The shipped event
-entries show the same >50 m terrain differences in instances (Howling Abyss), so unverified
-dungeon placements keep their authored Z instead of being dropped.
-
-* **Summon/despawn effects**: 2,901 event entries for 1,214 event spawner ids
-  (`NpcSpawnerIds`), one per NPC member per placement. 1,456 of the 2,006 dangling spawn rows
-  are now placeable, including all 162 boss and all 34 player-item rows.
-* **Unplaced ambient/dungeon/schedule spawners: not shipped.** The tool can generate 653
-  entries (`--include-ambient`, opt-in), but our existing placements come from the 1.2 client
-  `npc_map` (retail 1.2 data) and these 10.x placements were never in it; adding them needs 1.2
-  evidence first. They were removed from the world files.
-* **Resolver fix**: `SpawnManager::GetNpcSpawner` now falls back to ordinary `NpcSpawners`
-  after the event spawners, so the 16 shipped effect rows that reference normal spawner ids
-  resolve. Event entries are no longer dropped by the UnitId/position duplicate filter (several
-  waves can share an anchor and each id must stay registered for `GetNpcSpawner`).
-
-Data only where the source is reliable: no 2014 coordinates, no disabled ("비활성") or
-memberless spawners, and no invented positions for the 543 effect rows with no placement in any
-client. The tool, reproduction commands and parser tests are in `rust/tools/spawn_import/`;
-generated entries carry a `Title` naming the 10.x source (the loader ignores it).
-
-### Crowd-control and buff rule layer (October 19, 2026)
-
-| Area | Rust | Status | Evidence / confidence |
-| --- | --- | --- | --- |
-| `buff_tolerances` / `buff_tolerance_steps` (diminishing returns of repeated CC) | `systems/skills/buffs.rs` `add_buff` | already ported from the C# (`BuffGameData.GetBuffToleranceForBuffTag`); a debug line now logs the step reduction | C# original; flow test `repeated_stuns_follow_the_tolerance_steps` |
-| `buff_breakers` (661 rows, 92 buffs) | `skills/data/mod.rs` (`buff_breakers`), `buffs::on_buff_event` → `remove_broken_buffs` after an accepted Started/Refreshed | new: a buff carrying a breaker tag ends the active buffs it breaks, and an arriving breakable buff ends at once when a breaker tag is already active | The C# ignored the table. The 10.x zone loads it (`LoadBuffBreakersRelation`, `SELECT buff_id, buff_tag_id FROM buff_breakers`) but no consumer was traced. **Direction is derived from the rows (medium confidence):** the `buff_id` side is gliders (tags stun 6, fear 12, spear 13, sleep 97, silence 99, knock-down 107, psychokinesis 150, bubble 346, root 27), bard songs 656-667/778 and the ice-wall step buff 431 (broken by glider flight tag 294); a stun ending a flight or a song is the natural reading, the reverse (a glider ending a stun) is not. |
-| Damage ends sleep | `buffs::trigger_remove_on` (`remove_on_damaged_*` columns) | already ported; covered by `damage_removes_a_breakable_sleep` | the buff columns (sleep buffs 414/523/2276/... carry all four `remove_on_damaged_*` flags) |
-| `aoe_diminishings` (10 rows: 100, 90, 80, 70, 55, 40, 25, 10, 10, 10) + plot event flag `aoe_diminishing` (13 of 9,074 events) | `skills/data/plots.rs` (`PlotData.aoe_diminishings`), `PlotEventTemplate.aoe_diminishing`, `PlotState::aoe_damage_multiplier`, `plots::apply_plot_effect` → `effects::apply_plot` → `effects::combat::damage_with_aoe` | new: the n-th distinct target of a plot event with the flag takes damage times `rate(n) / 100`, with the ranks scoped to that plot instance and reset by `ResetAoeDiminishing` | The 10.x damage log prints `damage %d <= aoe diminishing %f` between the actability and the minimum-damage steps and loads the table into a float array indexed by id (`LoadAoeDiminishingDescs`). The C# stored the flag and never used it. |
-| `Anchor` skill controller (kind 6, controllers 7736 / 7739, `end_skill_id` 23437 "Land on the ground", used by monster skills 22268 / 23103) | `skills/controllers.rs` (`Behavior::Anchor`, `anchor_tick`), `SkillControllerTemplate.end_skill_id` | new, **partial**: the owner descends to the ground under it at the first stage speed (`value2` mm/s, timeout `value3` ms), then fires `end_skill_id` on itself | 10.x zone `X2::AnchorSkillController` (stages of speed + ground-entity id, finish on time over / ragdoll / arrival, then the end skill). The stage targets are ground-collider doodads this server does not model, so the stage kinds in `value1/4/7` are not interpreted and only the first stage is used. Movement timing for 1.2 is unverified. |
-| Live check (lane stack, headless bot, GM `/buff` + a real melee hit) | - | done | Stun 2219 on one target: 5000, 4000, 3000 ms, then the stun-immunity final buff 2371; sleep 523 ends on the bot's melee hit; song 663 ends when stun/sleep arrives and ends at once when applied under an active sleep. Not driven live: `aoe_diminishing` events, ExplodeBuff (monster skill) and the Anchor landing skills (flow tests only). GM `/buff view` hides buffs that expired between commands (each GM command takes ~2 s). |
-| `buff_unit_modifiers` (17 rows), `buff_mount_skills` (64 rows) | - | not applied | `buff_unit_modifiers` are the `unit_modifiers` rows with `owner_type = 'BuffUnitModifier'` keyed by skill-tag + buff pairs (Sorcery 232-244 skill tags); how they combine with the skill damage is not documented in the C#, the client or the zone strings. `buff_mount_skills` lists the mount skills a siege-stance / mount buff grants to the client bar and has no server-side effect. Neither claims retail behaviour here. |
-
-### 1.2 `npc_map` placements missing from `main_world/npc_spawns.json` (small batch)
-
-The 1.2 client's `game/worlds/main_world/map_data/npc_map/*.dat` (retail 1.2 data) lists 326 placements (176 ids) that the shipped JSON lacked. Git history (`git log --all -- '*main_world/npc_spawns.json'`): all of them were once in the file; they were dropped by upstream rewrites (2022-06-19 `277753513`, the raw-export rewrite, 54; 2024-04-24 `58cdf34c6`, "Z height and added NPCs", 63; 2023-06-13 `5a0b59496`, 8) and by our own ambient revert `1ff1eaa9c` (15), none with a per-entry reason. Added: 58 entries, with `Title` `1.2 client npc_map (<zone>)`.
-
-Left out, with the reason:
-
-* 181 records whose NPC id has no `npcs` row (and no spawner) in the 1.2 `compact.sqlite3`: nothing can spawn them.
-* 52 within 5 m of an existing placement of the same id (curated position tweak) and 21 within 2 m of a placement of another id (curated id swap, e.g. 4228 over another NPC): already covered.
-* 8 `Arcum Iris`/Rainbow Field event caravan NPCs (12007/12008/12009/12124): `5a0b59496` removed them deliberately ("npc that weren't there in 1.2"); kept out.
-* 13878/14033 (Korean Liberation Day event NPCs, no schedule in the 1.2 data, would stand permanently) and 14745 (zone-name marker NPC "Shining Shore", empty comment): not ambient world NPCs.
-
-Every added id has a 1.2 `npc_spawner_npcs` row. Positions are the client map's own metres (no yaw in the format).
 ### `RedeemBuff` special effect (type 44)
 
 Removes one of the caster's own beneficial effects (the same filter as ExplodeBuff: `buffs.kind`
@@ -2741,10 +2537,6 @@ the Timeout trigger 2194 of buff 449 (effect 20330).
 
 The C# charged `value1 + value2 / 6.35` (with a TODO: "value2 is based on skill level somehow"). The 1.2 data shows `value1` = the skill's `mana_cost` and `value2` = `mana_level_md * 100` for 59 of the 68 plot-only skills that carry the effect (e.g. 11854: md 1.55, effect 0/155; 18132: mana_cost 30, effect 30/0). The 1.2 client shows the cost in the skill tooltip as `mana_cost + mana_level_md * f(ability level)` (Ghidra `aa12u`, x2game `FUN_3941e750` -> `manaCost` of `FUN_394ace10`, via the unit formulas 12 and 13: `(ab_level * 1.6 + 8) * 3 / 3.65`), and the cast pre-check (`validation.rs`) already requires exactly that amount. The effect therefore now charges `value1 + value2 / 100 * scale` with the same scale as `skill::mana_cost`; at ability level 55 skill 11854 costs 120 instead of 24. The scale is no longer hardcoded: `skill::mana_level_scale` evaluates the character `unit_formulas` rows of `compact.sqlite3` (kind 12 `LevelDps` = `(ab_level * 1.6 + 8) * 3`, id 12; kind 13 `LevelMana` = `level_dps / 3.65`, id 13) through the precompiled formula expressions. The C# `Skill.ManaCost` (`Skill.cs` ~line 1561) hardcodes `((abLevel - 1) * 1.6 + 8) * 3 / 3.65`; the data and the client decompile cited above have no `- 1` (and `CharStats` evaluates `LevelDps` with `ab_level = level` as well), so the data formula is used for both `ManaCost` paths: every skill's mana cost rises by `1.6 * 3 / 3.65 * mana_level_md` (about 1.3 * md mana). The divisor `value2 / 100` was re-checked against the data: of 84 distinct (skill, `ManaCost` effect values) rows reached through the skills' plots, 62 have `value1 == mana_cost` and `value2 / 100 == mana_level_md`; the other 22 have `mana_level_md` 0 or 1 with `value2` 1 or 100-600, i.e. an effect-only charge that the same formula takes at face value. Deviation from the C#: the charge side is inferred from the tooltip/data (no retail charge capture); the 9 plot-only skills whose effect differs from the skill row follow the same rule.
 
-### Premium for every account (`Account.PremiumForAll`)
-
-The C# `AccountPayment` is never loaded from anywhere (TODO "Load payment and account tier information"), so every account is premium (`Premium`, location 1, until 2030-01-01): it feeds `SCAccountInfo`, labor limits/regen, the offline-labor tick, the schedule-item patron check and the `max_labor` unit requirement. This stays the default, now an explicit option `Account.PremiumForAll` (`Configurations/CharacterSettings.json`, default `true`); `false` makes every connection `PaymentMethodType::None` with no validity window (non-premium). The value is read once at startup (`net::connection::set_premium_for_all`); there is still no per-account payment source.
-
 ## Achievement producers (live wiring)
 
 The achievement subsystem has no 1.2 C# manager; the behaviour follows `rust/docs/achievement-hook-audit.txt`
@@ -2768,74 +2560,6 @@ The achievement subsystem has no 1.2 C# manager; the behaviour follows `rust/doc
   unwired (see the audit for why). `SCAchievementResetedPacket` (0x1ff) has no 1.2 trigger and is
   deliberately never sent.
 
-## Bevy-client server fixes (October 19, 2026)
-
-Found by the open-source Bevy client's reverse-engineering notes (`AABevy1.2/docs/aa-net.md`,
-digest `D:/aaemu-audits/bevy/DIGEST.md`). Items marked "per Bevy RE notes" were not re-derived
-from the unpacked 1.2 client here.
-
-- **Repair reachable (deviation from the C#).** The C# advertised the repair skill (12086) only
-  for `repairman` NPC templates but repaired only at `blacksmith` ones; the data has 331
-  blacksmith-only and a handful of repairman-only templates, so repair was unreachable through
-  NPC interaction. The original client's `npc_interaction` script maps `"blacksmith"` to the
-  repair window and its `"repairman"` branch references an undefined constant (per Bevy RE
-  notes), so the blacksmith is the retail repair NPC. Now the repair handlers accept a
-  blacksmith *or* a repairman, and `CSStartInteraction` appends `REPAIR` to the advertised skill
-  list of every blacksmith/repairman (the primary option, e.g. `USE_STORE`, stays first).
-- **One tick origin (deviation).** `Pong.world/remote` and `SCInstantGameStart/End` counted
-  from two separate `OnceLock<Instant>` origins; the client maps battlefield timers through
-  the Pong samples (per Bevy RE notes, `TimeKeeper::AddSample`), so they were skewed by the
-  difference of the first uses. Both now use `packets::proxy::tick_count`.
-- **Ability-tree skills need an active ability and a learned skill (deviation).** The C#
-  `CSStartSkill` handler fell through to a catch-all that cast any skill id. The 1.2 client
-  refuses unlearned / inactive-tree skills locally (`URK_TRAINED_SKILL`, per Bevy RE notes), so
-  only other clients could cast them. `handlers::class_skill_denial` now refuses a client cast of
-  a skill with `ability_id != 0` when that ability is not one of the three active ones
-  (`SkillResult` `INACTIVE_ABILITY`) or, for `need_learn` skills, when neither the skill nor a
-  same-ability-level variant is learned (`INVALID_SKILL`). Mount, item, default/common and
-  auto-attack casts are decided before the check, ability-less skills (doodad / quest /
-  buff-granted) are unaffected, and GM commands cast through the server skill API. The exact
-  result codes are our choice (the client only needs a non-success `SCSkillStarted`).
-- **Keep-alive grace (deviation).** The 30 s dead-connection sweep (`accounts::remove_dead_connections`)
-  closed a registered connection that had not pinged yet at the next sweep (C#: `LastPing =
-  MinValue`). It now measures such a connection from when it connected. The Bevy client pings
-  every 3 s from the moment the TCP connection opens, so a healthy client always stays well
-  inside the 30 s window; the grace only covers a sweep that lands right after registration.
-- **Player guilds have political system 0; guild rename (deviation).** The C# created (and
-  loaded) every expedition faction with `PoliticalSystem = 1`. The 1.2 client's `SCFactionCreated`
-  handler (`x2game.dll` `FUN_392febb0`: membership/menu effects only when the faction's
-  political-system field at +0x118 is 0) and its rename-task planner (`FUN_392f8db0` via
-  `FUN_398a36e0`: the cached faction's political system must be 0) both ignore a faction with
-  another value, so a guild created with 1 could not open the rename dialog (verified in the
-  unpacked 1.2 x2game; that the field is the wire `political_system` byte is per Bevy RE
-  notes). New and loaded guilds now use 0 (kingdom factions in `system_factions` stay 1).
-  `CSRenameExpedition` (the C# only logged it) now renames: the guild owner only, under the
-  creation name rules (length, `Expedition.NameRegex`, unique), no cost; it broadcasts
-  `SCFactionRenamed` (`by_gm = false`) and saves. The retail gating by `allow_change_name`
-  (the client clears it on a player rename) is not known and not implemented; the guild chat
-  channel keeps its creation-time name.
-- **Not changed (checked against the Bevy findings).**
-  - *Auction refund wedge*: not reproduced on the current tree. The Bevy lane (a snapshot 278
-    commits older) hung on `TakeAllAndDelete` of an outbid-refund mail and then refused
-    `enter world`. On this tree the whole sequence works live (post / cancel + claim, bid +
-    buyout by a third player + claim of the refund, seller proceeds claim with its labor cost, a
-    two-bot concurrent post/cancel/claim loop, relog) and as `auction_tests`
-    (`cancel_refund_mail_can_be_taken_all_and_deleted`, `sale_and_win_mails_...`,
-    `outbid_refund_mail_can_be_taken_all_and_deleted`, all under `finishes_in_time`). Open audit
-    note: `mail::store_quest_rewards_locked` takes the mail state while the caller holds the
-    character lock (quest "locked hooks"), whereas `delete_mail`, `check_all_mail_timings`,
-    `get_current_mail_list` and `notify_new_mail_by_name_if_online` take a character lock while
-    holding the mail state; a quest mail reward racing a mail delivery for the same character
-    could deadlock. No reproduction, so no change.
-  - *Party leave / kick / dismiss*: already work through `CSAskRiskyTeamAction` (0x088,
-    `teams.ask_risky_team`; the original client's path, layout `team_id u32, target u32, action
-    u8`, dismiss sends target 0 like the Bevy client). The C# opcodes 0x07d-0x07f
-    (`CSLeaveTeam`, `CSKickTeamMember`, `CSDismissTeam`) stay log-only as in the C#.
-  - *`SCNoticeMessage` (0x0d0)*: the 1.2 client's `OnNoticeMessage` handler
-    (`x2game.dll` `FUN_391d8d60` -> `FUN_393c2780(type, alpha, visTime, text)`) reads a `u8`
-    type, a short string, an `i32` and a text string, which is our layout; the Bevy client
-    simply does not decode this opcode yet.
-
 ## PvP duel fixes (duel disconnect, GM faction, quit relog)
 
 * **Duel participant leaves** (`DuelManager::on_participant_leave`, called first in `session::save_and_remove_from_world`): the C# had no handling, so the opponent stayed in the Red / Blue faction with the duel registered until the end timer, and `DuelAccepted` answered "already started". A started duel now ends at once as a **draw** (`SCDuelEndedPacket` `det` 3; the C# end timer instead decided by remaining HP) for both sides and restores both factions, so a disconnect is neither a win for the opponent (no `WIN_DUEL` credit to farm by dropping) nor a surrender; a pending request is dropped. No 1.2 oracle for the retail result.
@@ -2844,7 +2568,6 @@ from the unpacked 1.2 client here.
 * **Disconnect after a leave does not save again** (`session::on_disconnect`): a connection keeps its `active_char` after quit / character select (as in the C#), so the closing socket re-ran the departure and re-saved a character that was already saved and removed, and that may meanwhile be online on a newer connection. The disconnect now returns early when the character is no longer the live world entry.
 * **Battlefield buffs are never saved** (`Buff::session_only`, set by `instant_game::apply_battlefield_buffs`): `battle_field_buffs` 6266 (1 200 000 ms) and 8000007 (3 600 000 ms) have save rule 1 and a duration, so autosave or a logout to the character select persisted them; they were only removed in leave / disconnect. `Buffs::should_persist` is false for session-only effects.
 * **Battlefield assists / duel scoring data**: `game_score_rules` has no assist (204) row for rule set 28 and no rows at all for rule set 24, so the data authors no assist score there and none is invented.
-* **Rotate-winner and bind-on-pickup rolls** (checked, no change): with the party rule `ROTATE_WINNER` and more than one eligible player, `TryTakeLootLocked` hands the item to the round-robin winner before the `rollMandatory` check, so `RollForBindOnPickup` and `MinimumGrade` never roll under that rule (a mirrored C# order). Rolls happen under `FREE_FOR_ALL` and `LOOT_MASTER`.
 
 ## Duel fixes (2026-10-20)
 
@@ -2897,21 +2620,6 @@ Doc-only items:
 
 ## Portal use range (2026-10-21)
 
-Oracles: the 1.2 localized texts of `compact.sqlite3` (skill 11216 `desc`: "Worldgates remain open
-for 30 seconds (or 60 seconds for characters Lv20+ in Occultism)"; `ui_texts` 1291: "Opens a
-worldgate with 1000 HP, 5 meters away, that takes 30 seconds to open. An Occultism skillset of
-Lv20+ increases this duration to 60 seconds") and the unpacked 1.2 `x2game.dll` (Ghidra
-`proj-aa12u`, scratch copy): `FUN_391d38e0` (`OnPortalDeleted`) reads a type (1 = district list,
-2 = private list) and an id and removes that row; `FUN_391d3970` (`OnUnitPortalUsed`) looks the
-unit id up in the client's objects and plays an effect (`FUN_393558e0`) on it when found;
-`FUN_391dc8c0` (`OnNaviTeleport`) moves the camera/player to the sent position.
-
-* Upstream's portal work (`6e3d9490f`, merged 2026-10-20) supersedes the first version of this
-  section: the open distance, `SCPortalDeleted`, `SCUnitPortalUsed` and the navi / teleporter
-  packets follow upstream now (see its section). Kept on top of it:
-* Portal lifetime: 30 s, or 60 s when the owner's Occultism (`AbilityType.Death` = 5) level, read
-  from the ability exp like the quest requirements do, is 20 or more (C# and upstream: fixed
-  30 s).
 * `CSUsePortal` needs the character within `World.PortalUseRange` (default 5 m) of the gate NPC
   and `CSNaviTeleport` within the same range of the navi doodad, measured like `GetDistanceTo`
   (2D, minus the model radii). The C# `PortalManager.UsePortal` and the `CSNaviTeleport` handler
@@ -3008,6 +2716,26 @@ two bots before the fix (a foreign `Mount` caster, an NPC-only skill and a far d
   (`np_skills`) are deliberately absent. Possible over-blocking: a skill the 1.2 client casts that
   none of these tables names (the retail rule is not confirmed); such a cast is refused with a
   warning naming the skill id, so it is easy to add the table.
+- **Ability-tree skills need an active ability and a learned skill.** The C# `CSStartSkill` fell
+  through to the catch-all above and cast any skill id. The 1.2 client marks unlearned and
+  inactive-tree skills unusable in its UI: the action-slot UI carries `canUse` / `learned`
+  states (`scriptsbin/x2ui/components/action_slot.alb`) and the native
+  `X2::GameClient::SkillAccessor` publishes `learned`; that the client also refuses the press
+  is not shown in the decompile and was not observed live. The result codes are the client's:
+  `INVALID_SKILL` 0x1e and `INACTIVE_ABILITY` 0x1f (`out-x2game/x2game.dll.c`). `handlers::class_skill_denial` now refuses a client cast of a
+  skill with `ability_id != 0` when that ability is not one of the three active ones
+  (`SkillResult.INACTIVE_ABILITY`) or, for `need_learn` skills, when neither the skill nor a
+  same-ability-level variant is learned (`SkillResult.INVALID_SKILL`); the 27 tree skills with
+  `need_learn` false only need their ability active. Item, mount, default /
+  common and auto-attack casts are decided before the check; ability-less skills (buff, quest,
+  doodad, craft, NPC interaction, slash command, housing / shipyard) are unaffected, and the
+  real-data test pins that every id those tables name is ability-less. The only ability-tree
+  skills a client-facing source table names are mount skill 13572 (mount branch) and
+  quest/doodad conditions 10664, 10134, 12075 and 11380; they still need their ability active and
+  the skill learned, as the client requires. The exact result codes are our choice (the client
+  only needs a non-success `SCSkillStarted`). Not closed here: a `Mount` caster naming the player
+  itself still runs the mount branch (the self allowance above), and a bind-on-pickup item caster
+  can still name a different skill id (the legacy fireplace exception, narrowed for UCC effects).
 
 ## Ship repair timer and destroyed-vehicle HP (2026-10-20)
 

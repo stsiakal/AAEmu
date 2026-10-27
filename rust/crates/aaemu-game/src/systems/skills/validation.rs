@@ -16,18 +16,6 @@ fn fail(key: &str) -> Result<(), (u8, u32)> {
     Err((skill_result_for_key(key), 0))
 }
 
-/// The physics collider kind of a world object (matches the keys `ai::collision` registers).
-fn collision_kind(obj: &WorldObject) -> crate::systems::ai::collision::world::ObjKind {
-    use crate::systems::ai::collision::world::ObjKind;
-    match obj {
-        WorldObject::Doodad(_) => ObjKind::Doodad,
-        WorldObject::House(_) => ObjKind::House,
-        WorldObject::Slave(_) | WorldObject::Shipyard(_) => ObjKind::Ship,
-        WorldObject::Gimmick(_) => ObjKind::Gimmick,
-        _ => ObjKind::Unit,
-    }
-}
-
 /// Item-caster tags belong to the owned item's server-side template, never the wire hint.
 pub(super) fn check_item_zone(
     server: &GameServer,
@@ -51,6 +39,18 @@ pub(super) fn check_item_zone(
         }
     }
     Ok(())
+}
+
+/// The physics collider kind of a world object (matches the keys `ai::collision` registers).
+fn collision_kind(obj: &WorldObject) -> crate::systems::ai::collision::world::ObjKind {
+    use crate::systems::ai::collision::world::ObjKind;
+    match obj {
+        WorldObject::Doodad(_) => ObjKind::Doodad,
+        WorldObject::House(_) => ObjKind::House,
+        WorldObject::Slave(_) | WorldObject::Shipyard(_) => ObjKind::Ship,
+        WorldObject::Gimmick(_) => ObjKind::Gimmick,
+        _ => ObjKind::Unit,
+    }
 }
 
 fn in_water(server: &GameServer, target: &Target) -> bool {
@@ -317,13 +317,14 @@ pub(super) fn check(
         return fail("skill_too_far_range");
     }
     if template.check_obstacle && !target.as_obj().is_some_and(|o| o.same(caster)) {
-        // 1.2 client `FUN_390B5650` (radius shortening; no ray at all when
-        // `dist <= radius`) -> `FUN_390B5540` (RayWorldIntersection(Game), objtypes 7 or
-        // 0x107 with check_terrain, flags 0x2048F). Unit targets: `FUN_390B5C60` ->
-        // `FUN_3989C0D0` (target position minus its radius, source+target colliders
-        // skipped). Position (ground) targets: `FUN_390B5A30` -> `FUN_390B5790` (radius
-        // 0.5, source collider skipped; there is no target collider). 10.x confirmation:
-        // `X2::Unit::ValidateLocation` 0x3923C370 -> 0x39B8E360.
+        // 1.2 client `FUN_390B5650` (x2game.dll.c:149951): shorten the end point by the
+        // target radius and cast no ray when `dist <= radius`; `FUN_390B5540`
+        // (x2game.dll.c:149877) uses objtypes 7 (0x107 with `check_terrain`), ray flags
+        // 0x2048F (collision class 2) and one hit, mapping a hit to skill result 0xC.
+        // Unit targets (`FUN_390B5C60` -> `FUN_3989C0D0`) use the target radius at target
+        // +0x80 and skip the source and target colliders; position targets
+        // (`FUN_390B5A30` -> `FUN_390B5790`) use the constant 0.5 (DAT_3999C47C) and skip
+        // only the source.
         let dx = destination.x - source.x;
         let dy = destination.y - source.y;
         let dz = destination.z - source.z;
@@ -334,7 +335,7 @@ pub(super) fn check(
         };
         if len > target_radius {
             let mut to = [destination.x, destination.y, destination.z];
-            if len > 0.0 && target_radius > 0.0 {
+            if target_radius > 0.0 {
                 to[0] -= dx / len * target_radius;
                 to[1] -= dy / len * target_radius;
                 to[2] -= dz / len * target_radius;
@@ -359,18 +360,31 @@ pub(super) fn check(
                 crate::systems::ai::collision::query::ray_flags::SKILL_OBSTACLE,
                 &ignored,
             ) {
-                let character = caster.with_base_unit(|b| b.name().to_string());
-                tracing::warn!(
-                    character = %character,
-                    skill = template.id,
-                    target = target.obj_id(),
-                    result_key = "skill_obstacle",
-                    check_terrain = template.check_terrain,
-                    from = ?source,
-                    to = ?to,
-                    ?hit,
-                    "Skill line of sight blocked"
-                );
+                // NPC AI retries blocked casts, so only player rejections are warnings.
+                if let Some(player) = caster.as_player() {
+                    let character = player.data().unit.name.clone();
+                    tracing::warn!(
+                        character = %character,
+                        skill = template.id,
+                        target = target.obj_id(),
+                        result_key = "skill_obstacle",
+                        check_terrain = template.check_terrain,
+                        from = ?source,
+                        to = ?to,
+                        ?hit,
+                        "Skill line of sight blocked"
+                    );
+                } else {
+                    tracing::debug!(
+                        caster = caster.obj_id(),
+                        skill = template.id,
+                        target = target.obj_id(),
+                        from = ?source,
+                        to = ?to,
+                        ?hit,
+                        "Skill line of sight blocked"
+                    );
+                }
                 return fail("skill_obstacle");
             }
         }
