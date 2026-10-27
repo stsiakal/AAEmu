@@ -4,6 +4,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context;
+use subtle::ConstantTimeEq;
 
 use crate::auth::{
     AuthFlow, KoreaAuthFlow, KoreaStep, LoginClient, PasswordAuthFlow, ReconnectAuthFlow,
@@ -88,14 +89,9 @@ pub async fn handle_c2l(
     }
 }
 
-/// Constant-time comparison of the shared secret (fork deviation: upstream compares with `!=`).
+/// Constant-time comparison of the shared game-server secret.
 fn secret_matches(given: &str, expected: &str) -> bool {
-    given.len() == expected.len()
-        && given
-            .bytes()
-            .zip(expected.bytes())
-            .fold(0u8, |d, (a, b)| d | (a ^ b))
-            == 0
+    bool::from(given.as_bytes().ct_eq(expected.as_bytes()))
 }
 
 /// Dispatches a game server packet.
@@ -104,6 +100,15 @@ pub async fn handle_g2l(
     conn: &Arc<InternalConnection>,
     packet: G2lPacket,
 ) -> anyhow::Result<()> {
+    // A connection that sent a wrong secret stays refused until its delayed error reply and
+    // close, so a correct secret in that window cannot register it.
+    if conn.is_poisoned() {
+        tracing::warn!(
+            "Connection {}: packet after a failed registration, ignored",
+            conn.ip
+        );
+        return Ok(());
+    }
     match packet {
         G2lPacket::GameServerLoad(p) => {
             let gs_id = authorize_game_server(server, conn, None)?;
@@ -126,8 +131,9 @@ pub async fn handle_g2l(
         G2lPacket::RegisterGameServer(p) => {
             if !secret_matches(&p.secret_key, &server.config.secret_key) {
                 tracing::error!("Connection {}, bad secret key", conn.ip);
-                // Fork deviation: the error reply is followed by closing the connection, so a peer
-                // cannot keep guessing the secret on one connection.
+                conn.poison();
+                // Reply after the same delay as before, then close: a peer must not keep
+                // guessing the secret on the same connection.
                 let conn = conn.clone();
                 tokio::spawn(async move {
                     tokio::time::sleep(Duration::from_secs(5)).await;
