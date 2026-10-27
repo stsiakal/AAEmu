@@ -85,8 +85,7 @@ impl GameData {
         let path = app_path.join("Data").join("compact.sqlite3");
         let conn = Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
 
-        let experience =
-            ExperienceTable::from_templates(load_levels(&conn)?, PLAYER_LEVEL_CAP)?;
+        let experience = ExperienceTable::from_templates(load_levels(&conn)?, PLAYER_LEVEL_CAP)?;
         let items = ItemData::load(&conn)?;
         let localization = Localization::load(&conn, language)?;
         let factions = FactionData::load(&conn, &localization)?;
