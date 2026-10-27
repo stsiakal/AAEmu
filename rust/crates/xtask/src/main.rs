@@ -12,10 +12,6 @@
 //!   the S->C packet coverage ratchet and its tests (`tools/opcode_coverage/`, needs python).
 //! * `compact-patches` — apply `SQL/patches/compact/*.sql` to a `compact.sqlite3` copy and record
 //!   each one in its `aaemu_compact_patches` table (also run by `publish` and live-stack `sync`).
-//! * `overlay-pak` — build a small overlay `game_pak` from later-version paks, with optional
-//!   reference closure and an "already present in the stock pak" filter.
-
-mod overlay_pak;
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader};
@@ -49,18 +45,6 @@ Commands:
   compact-patches [<db>]  Apply SQL/patches/compact/*.sql in name order, recording each file
               --patches <dir>    patch directory (default: <repo>/SQL/patches/compact)
               (default db: rust/crates/aaemu-game/app/Data/compact.sqlite3)
-  overlay-pak Build an overlay game_pak from later-version sources
-              --source <pak>     source pak, repeatable, first one wins
-              --list <file>      pak paths to include (one per line, # comments)
-              --out <pak>        output overlay pak (TypeA/WIBO)
-              --report <file>    optional JSON report
-              --closure          follow .cdf/.chr/.cgf/.skin/.mtl references
-              --closure-anim     also add .caf/.dba from .cal/.chrparams lists
-              --exclude-present-in <pak>  skip files identical in this pak (repeatable)
-              --exclude-path <text>      skip paths containing this text (repeatable)
-              --new-only         skip every file present in an exclude pak, changed or not
-              --repair-missing-textures  rewrite missing .mtl texture refs to a same-suffix match
-              --unresolved-list <file>   write the roots whose texture refs could not be repaired
 ";
 
 /// The login server's internal (game-server registration) port in the shipped `Config.json`.
@@ -73,7 +57,6 @@ fn main() {
         Some("dev") => dev(&args[1..]),
         Some("ci") => ci(),
         Some("compact-patches") => compact_patches(&args[1..]),
-        Some("overlay-pak") => overlay_pak::run(&args[1..]),
         Some("help" | "-h" | "--help") | None => {
             print!("{USAGE}");
             Ok(())
